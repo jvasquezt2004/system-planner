@@ -7,6 +7,7 @@ import {
 	type Design,
 	type DesignColumn,
 	type DesignTable,
+	type RelationshipCardinality,
 } from "../shared/design";
 import { describeColumnDefault } from "../shared/column-defaults";
 import {
@@ -51,7 +52,11 @@ export type TableCanvasProps = {
 	selectedRelationshipId: string | null;
 	onSelectTable: (tableId: string | null) => void;
 	onSelectRelationship: (relationshipId: string | null) => void;
-	onRelateTables: (referencingTableId: string, referencedTableId: string) => void;
+	onRelateTables: (
+		referencingTableId: string,
+		referencedTableId: string,
+		cardinality: RelationshipCardinality,
+	) => void;
 	onMoveTable: (tableId: string, position: CanvasPoint) => void;
 	onViewportChange: (viewport: CanvasViewport) => void;
 	onAddTable: (name: string, position: CanvasPoint) => void;
@@ -78,10 +83,15 @@ export function TableCanvas({
 	const viewportRef = useRef(viewport);
 	viewportRef.current = viewport;
 
-	// Relating starts on a table card and ends on the table it references.
+	// Relating starts on a table card and ends on the table it references. The
+	// starting card is always the referencing side that stores the constraint.
 	const [relatingFrom, setRelatingFrom] = useState<string | null>(null);
+	const [relatingCardinality, setRelatingCardinality] =
+		useState<RelationshipCardinality>("one-to-many");
 	const relatingFromRef = useRef(relatingFrom);
 	relatingFromRef.current = relatingFrom;
+	const relatingCardinalityRef = useRef(relatingCardinality);
+	relatingCardinalityRef.current = relatingCardinality;
 
 	useEffect(() => {
 		if (!relatingFrom) return;
@@ -171,7 +181,7 @@ export function TableCanvas({
 			event.preventDefault();
 			setRelatingFrom(null);
 			if (tableId && tableId !== relating) {
-				onRelateTables(relating, tableId);
+				onRelateTables(relating, tableId, relatingCardinalityRef.current);
 			} else {
 				onSelectTable(tableId ?? null);
 			}
@@ -293,6 +303,12 @@ export function TableCanvas({
 	const foreignKeyColumnIds = new Set(
 		design.relationships.map((relationship) => relationship.referencingColumnId),
 	);
+	// Uniqueness the relationship contributes, never an independent column setting.
+	const relationshipUniqueColumnIds = new Set(
+		relationships
+			.filter((view) => view.ownsUniqueness)
+			.map((view) => view.relationship.referencingColumnId),
+	);
 	const selectedRelationship =
 		relationships.find(
 			(view) => view.relationship.id === selectedRelationshipId,
@@ -376,9 +392,11 @@ export function TableCanvas({
 						position={positionOf(table)}
 						highlightedColumnIds={highlightedColumns(table.id)}
 						foreignKeyColumnIds={foreignKeyColumnIds}
+						relationshipUniqueColumnIds={relationshipUniqueColumnIds}
 						onSelect={() => onSelectTable(table.id)}
 						onStartRelate={() => {
 							onSelectTable(table.id);
+							setRelatingCardinality("one-to-many");
 							setRelatingFrom(table.id);
 						}}
 					/>
@@ -388,13 +406,41 @@ export function TableCanvas({
 			{relatingTable && (
 				<div
 					data-testid="relate-banner"
+					data-cardinality={relatingCardinality}
 					onPointerDown={(event) => event.stopPropagation()}
 					role="status"
-					className="absolute left-1/2 top-4 flex -translate-x-1/2 items-center gap-3 rounded-lg border border-indigo-500/60 bg-indigo-500/15 px-4 py-2 text-xs text-indigo-100 shadow-lg backdrop-blur"
+					className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-lg border border-indigo-500/60 bg-indigo-500/15 px-4 py-2 text-xs text-indigo-100 shadow-lg backdrop-blur"
 				>
 					<span>
-						Relating from <strong>“{relatingTable.name}”</strong>. Click the table it
-						references.
+						Relating from <strong>“{relatingTable.name}”</strong>, which will store
+						the reference. Click the table it references.
+					</span>
+					<span
+						role="group"
+						aria-label="Relationship cardinality"
+						className="flex items-center gap-1 rounded-md border border-indigo-400/60 p-0.5"
+					>
+						{(
+							[
+								["one-to-many", "many"],
+								["one-to-one", "one-to-one"],
+							] as const
+						).map(([value, label]) => (
+							<button
+								key={value}
+								type="button"
+								data-testid={`relate-cardinality-${value}`}
+								aria-pressed={relatingCardinality === value}
+								onClick={() => setRelatingCardinality(value)}
+								className={`rounded px-2 py-0.5 text-[11px] ${
+									relatingCardinality === value
+										? "bg-indigo-500 text-white"
+										: "text-indigo-100 hover:bg-indigo-500/20"
+								}`}
+							>
+								{label}
+							</button>
+						))}
 					</span>
 					<button
 						type="button"
@@ -576,10 +622,10 @@ function RelationshipConnector({
 	if (!geometry) return null;
 	const stroke = selected ? "#818cf8" : "rgba(148, 163, 184, 0.5)";
 	const width = selected ? 2 : 1.25;
-	// Stacked marks at the referencing end express many; one mark at the
-	// referenced end expresses one.
+	// One mark at an end expresses one; three stacked marks express many.
 	const direction = geometry.fromSide === "right" ? 1 : -1;
-	const marks = [4, 10, 16].map((offset) => {
+	const startOffsets = view.oneToOne ? [5] : [4, 10, 16];
+	const marks = startOffsets.map((offset) => {
 		const x = geometry.start.x + direction * offset;
 		return `M ${x} ${geometry.start.y - 6} L ${x} ${geometry.start.y + 6}`;
 	});
@@ -590,6 +636,7 @@ function RelationshipConnector({
 		<g
 			data-testid="relationship"
 			data-relationship-id={view.relationship.id}
+			data-cardinality={view.oneToOne ? "one-to-one" : "one-to-many"}
 			data-selected={selected ? "true" : undefined}
 		>
 			<path d={geometry.path} fill="none" stroke={stroke} strokeWidth={width} />
@@ -619,6 +666,7 @@ function TableCard({
 	position,
 	highlightedColumnIds,
 	foreignKeyColumnIds,
+	relationshipUniqueColumnIds,
 	onSelect,
 	onStartRelate,
 }: {
@@ -629,6 +677,7 @@ function TableCard({
 	position: CanvasPoint;
 	highlightedColumnIds: Set<string>;
 	foreignKeyColumnIds: Set<string>;
+	relationshipUniqueColumnIds: Set<string>;
 	onSelect: () => void;
 	onStartRelate: () => void;
 }) {
@@ -694,6 +743,7 @@ function TableCard({
 						index={index}
 						highlighted={highlightedColumnIds.has(column.id)}
 						foreignKey={foreignKeyColumnIds.has(column.id)}
+						relationshipUnique={relationshipUniqueColumnIds.has(column.id)}
 					/>
 				))}
 			</div>
@@ -706,11 +756,13 @@ function ColumnRow({
 	index,
 	highlighted,
 	foreignKey,
+	relationshipUnique,
 }: {
 	column: DesignColumn;
 	index: number;
 	highlighted: boolean;
 	foreignKey: boolean;
+	relationshipUnique: boolean;
 }) {
 	return (
 		<div
@@ -742,6 +794,13 @@ function ColumnRow({
 			)}
 			{column.unique && !column.primaryKey && (
 				<ColumnBadge label="UQ" className="text-emerald-300" title="Unique" />
+			)}
+			{relationshipUnique && (
+				<ColumnBadge
+					label="UQ"
+					className="text-emerald-300"
+					title="Unique — at most one record may name the same one"
+				/>
 			)}
 			{column.identity && (
 				<ColumnBadge label="ID" className="text-sky-300" title="Identity generation" />

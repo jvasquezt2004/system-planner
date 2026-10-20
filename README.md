@@ -17,12 +17,16 @@ timestamp, UUID generation, or integer identity. A new table starts with a
 default `id bigint` identity primary key. Moving cards or changing the viewport
 saves layout without advancing the schema revision or rebuilding the sandbox,
 and notes-only edits do the same. Relating two table cards creates a
-one-to-many relationship: the referencing table gets a generated foreign-key
-column with the referenced primary key's type, required by default with a
-Required toggle, shown as a subtle connector with stacked cardinality marks and
-column highlighting, and enforced with `NO ACTION` on updates and deletes.
-Deleting a referenced table or column first lists the affected relationships and
-asks for confirmation; removing a relationship keeps its columns.
+one-to-many or one-to-one relationship: the referencing table gets a generated
+foreign-key column with the referenced primary key's type, required by default
+with a Required toggle, shown as a subtle connector with endpoint marks and
+column highlighting, and enforced with `NO ACTION` on updates and deletes. A
+one-to-one relationship also owns uniqueness on that column, so at most one
+referencing record may name the same referenced record, and the referencing
+card shows `UQ` for it. Deleting a referenced table or column first lists the
+affected relationships, including whether their uniqueness is affected, and
+asks for confirmation; removing a relationship keeps its columns and drops only
+its own foreign key and uniqueness.
 
 ## Commands
 
