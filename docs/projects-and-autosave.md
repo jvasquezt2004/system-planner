@@ -36,6 +36,11 @@ a project switch cannot change the active project's design or save feedback.
 The SQLite write itself is revision-guarded and transactional, so an
 out-of-order completion also cannot overwrite a newer stored document.
 
+Layout-only edits (moving a card, panning, zooming) are saved the same way but
+never advance the schema revision or rebuild the sandbox. They carry their own
+monotonic document revision so a delayed structural save cannot roll back a
+newer layout. See [canvas-and-layout.md](canvas-and-layout.md).
+
 ## Verification
 
 Behavioral tests use the public workspace interface with real temporary SQLite:

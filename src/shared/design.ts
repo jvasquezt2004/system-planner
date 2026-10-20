@@ -20,6 +20,22 @@ export type ColumnType =
 	| "timestamptz"
 	| "jsonb";
 
+export type CanvasPoint = {
+	x: number;
+	y: number;
+};
+
+/** Screen-space pan and zoom of the infinite canvas. */
+export type CanvasViewport = {
+	x: number;
+	y: number;
+	zoom: number;
+};
+
+/** The view and the workspace both clamp zoom, so they share the limits. */
+export const CANVAS_MIN_ZOOM = 0.3;
+export const CANVAS_MAX_ZOOM = 2.5;
+
 export type DesignColumn = {
 	id: string;
 	name: string;
@@ -32,12 +48,13 @@ export type DesignColumn = {
 export type DesignTable = {
 	id: string;
 	name: string;
-	position: { x: number; y: number };
+	position: CanvasPoint;
 	columns: DesignColumn[];
 };
 
 export type Design = {
 	tables: DesignTable[];
+	viewport: CanvasViewport;
 };
 
 export type SaveState =
@@ -96,4 +113,8 @@ export type WorkspaceState = {
 
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
-export type AddTableAction = { name: string };
+export type AddTableAction = { name: string; position?: CanvasPoint };
+export type RenameTableAction = { tableId: string; name: string };
+export type RemoveTableAction = { tableId: string };
+export type MoveTableAction = { tableId: string; position: CanvasPoint };
+export type SetViewportAction = CanvasViewport;
