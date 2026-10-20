@@ -1,58 +1,64 @@
-# React + Tailwind + Vite Electrobun Template
+# Schema Designer
 
-A fast Electrobun desktop app template with React, Tailwind CSS, and Vite for hot module replacement (HMR).
+A local, Windows-first PostgreSQL schema designer. Each project holds one
+authoritative design saved in local SQLite, with a read-only SQL preview and a
+disposable PGlite sandbox that validates the generated schema. No Docker or
+installed PostgreSQL server is required.
 
-## Getting Started
+This is the first vertical slice: create a project, add a table with a default
+`id bigint` identity primary key, autosave, reopen, and inspect the generated
+SQL and real sandbox result. The canvas, column editor, and relationship
+workflows arrive in later tickets.
+
+## Commands
 
 ```bash
-# Install dependencies
-hutch run install
-
-# Development without HMR (uses bundled assets)
-hutch run dev
-
-# Development with HMR (recommended)
-hutch run dev:hmr
-
-# Build for production
-hutch run build:canary
+hutch run install      # install dependencies
+hutch run dev          # run the desktop app (bundled view, no HMR)
+hutch run dev:hmr      # run with Vite HMR
+hutch run build        # package the Windows app and setup executable
+bun test               # behavioral tests (real SQLite + real PGlite)
+bunx tsc --noEmit      # typecheck
 ```
 
-## How HMR Works
+## Architecture
 
-When you run `hutch run dev:hmr`:
+- `src/shared/design.ts` — domain vocabulary and observable workspace state.
+- `src/shared/rpc.ts` — typed Electrobun RPC schema between Bun and the view.
+- `src/bun/workspace.ts` — the public design workspace interface used by the
+  React view and behavioral tests. Autosave, SQL generation, and sandbox
+  orchestration stay behind it.
+- `src/bun/store.ts` — atomic local SQLite persistence (one design per project).
+- `src/bun/sql.ts` — one-way PostgreSQL SQL generation with explicit errors for
+  incomplete designs.
+- `src/bun/sandbox.ts` — disposable PGlite preview and catalog inspection.
+- `src/mainview/App.tsx` — minimal React UI.
 
-1. **Vite dev server** starts on `http://localhost:5173` with HMR enabled
-2. **Electrobun** starts and detects the running Vite server
-3. The app loads from the Vite dev server instead of bundled assets
-4. Changes to React components update instantly without full page reload
+The design is authoritative; the sandbox is a rebuildable preview. Sandbox
+failure never discards a saved design.
 
-When you run `hutch run dev` (without HMR):
+## Local data
 
-1. Electrobun starts and loads from `views://mainview/index.html`
-2. Vite rebuilds the bundled assets before Electrobun starts
-
-## Project Structure
+The packaged app stores its SQLite database at:
 
 ```
-├── src/
-│   ├── bun/
-│   │   └── index.ts        # Main process (Electrobun/Bun)
-│   └── mainview/
-│       ├── App.tsx         # React app component
-│       ├── main.tsx        # React entry point
-│       ├── index.html      # HTML template
-│       └── index.css       # Tailwind CSS
-├── electrobun.config.ts    # Electrobun configuration
-├── vite.config.ts          # Vite configuration
-├── tailwind.config.js      # Tailwind configuration
-└── package.json
+%LOCALAPPDATA%\com.dbplanner.schema-designer\stable\<install-root>\schema-designer.sqlite
 ```
 
-## Customizing
+Set `DB_PLANNER_DATABASE_PATH` to override it (used by the packaged smoke check).
 
-- **React components**: Edit files in `src/mainview/`
-- **Tailwind theme**: Edit `tailwind.config.js`
-- **Vite settings**: Edit `vite.config.ts`
-- **Window settings**: Edit `src/bun/index.ts`
-- **App metadata**: Edit `electrobun.config.ts`
+## PGlite packaging
+
+PGlite resolves `pglite.wasm`, `pglite.data`, and `initdb.wasm` relative to the
+bundled main process. `electrobun.config.ts` copies those assets into
+`Resources/app/bun/`; removing them breaks the packaged sandbox even though
+development still works. The verification procedure and recorded result live in
+[docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md).
+
+## Documentation
+
+- [GLOSSARY.md](GLOSSARY.md) — canonical domain terms.
+- [docs/spec.md](docs/spec.md) — product spec for the full application.
+- [docs/adr](docs/adr) — architecture decisions.
+- [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
+  packaged Windows verification.
