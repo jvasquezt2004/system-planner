@@ -2,9 +2,10 @@
 
 The design canvas arranges **table cards** that describe schema structure. A
 card lists column definitions — names, exact PostgreSQL type names, a
-type-family symbol, key/identity markers, and nullability — never stored
-records. Card position, canvas pan, and zoom are layout, not database
-structure.
+type-family symbol, key/identity/uniqueness markers, a note marker, and
+nullability — never stored records. Card position, canvas pan, and zoom are
+layout, not database structure. All column editing happens in the focused
+side panel described in [column-editing.md](column-editing.md).
 
 ## Using the canvas
 
@@ -31,7 +32,14 @@ structure.
 | Edit | Schema revision | SQL preview / sandbox | Saved |
 | --- | --- | --- | --- |
 | Add, rename, remove a table | advances | regenerated and rebuilt | yes |
+| Add, edit, or remove a column | advances | regenerated and rebuilt | yes |
+| Edit column notes | unchanged | unchanged and **not** rebuilt | yes |
 | Move a card, pan, zoom | unchanged | unchanged and **not** rebuilt | yes |
+
+Column editing keeps the same distinction: structure and notes are saved with
+the design document, but notes describe intent rather than schema, so they
+do not rebuild the database preview. See
+[column-editing.md](column-editing.md) for the side panel and type coverage.
 
 Layout is saved with the same design document. Every stored write carries a
 monotonic document revision separate from the schema revision, so a delayed

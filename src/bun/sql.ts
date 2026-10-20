@@ -1,23 +1,9 @@
-import type { ColumnType, Design, DesignColumn, DesignTable } from "../shared/design";
+import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
+import type { Design, DesignColumn, DesignTable } from "../shared/design";
 
 export type SqlGeneration =
 	| { ok: true; sql: string }
 	| { ok: false; errors: string[] };
-
-const SUPPORTED_TYPES = new Set<ColumnType>([
-	"bigint",
-	"integer",
-	"smallint",
-	"text",
-	"uuid",
-	"boolean",
-	"numeric",
-	"date",
-	"timestamptz",
-	"jsonb",
-]);
-
-const INTEGER_TYPES = new Set<ColumnType>(["bigint", "integer", "smallint"]);
 
 /**
  * Generates read-only PostgreSQL from the authoritative design. An incomplete
@@ -75,11 +61,23 @@ function validateColumn(
 	}
 	columnNames.add(name);
 
-	if (!SUPPORTED_TYPES.has(column.type)) {
+	if (!isSupportedColumnType(column.type)) {
 		errors.push(`Column ${label} in table ${tableLabel} uses an unsupported type.`);
-	}
-	if (column.identity && !INTEGER_TYPES.has(column.type)) {
+	} else if (column.identity && !columnTypeInfo(column.type).identity) {
 		errors.push(`Column ${label} in table ${tableLabel} can only use identity on integer types.`);
+	}
+
+	// A nullable primary key or identity column is contradictory; keep the
+	// draft saved but block SQL until the designer resolves it.
+	if (column.primaryKey && column.nullable) {
+		errors.push(
+			`Primary key column ${label} in table ${tableLabel} must be required; turn off Nullable.`,
+		);
+	}
+	if (column.identity && column.nullable) {
+		errors.push(
+			`Identity column ${label} in table ${tableLabel} must be required; turn off Nullable.`,
+		);
 	}
 }
 
@@ -94,6 +92,8 @@ function renderColumn(column: DesignColumn): string {
 	const parts = [`  ${quoteIdentifier(column.name)} ${column.type}`];
 	if (column.identity) parts.push("GENERATED ALWAYS AS IDENTITY");
 	if (column.primaryKey || column.identity || !column.nullable) parts.push("NOT NULL");
+	// A primary key is already unique, so it does not repeat the constraint.
+	if (column.unique && !column.primaryKey) parts.push("UNIQUE");
 	return parts.join(" ");
 }
 

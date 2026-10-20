@@ -1,6 +1,12 @@
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { Electroview } from "electrobun/view";
-import type { CanvasPoint, CanvasViewport, WorkspaceState } from "../shared/design";
+import type {
+	CanvasPoint,
+	CanvasViewport,
+	ColumnChanges,
+	ColumnType,
+	WorkspaceState,
+} from "../shared/design";
 import type { AppRPCSchema } from "../shared/rpc";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
@@ -48,6 +54,23 @@ export const workspaceClient = {
 	},
 	moveTable(tableId: string, position: CanvasPoint): Promise<WorkspaceState> {
 		return rpc.request.moveTable({ tableId, position });
+	},
+	addColumn(
+		tableId: string,
+		name?: string,
+		type?: ColumnType,
+	): Promise<WorkspaceState> {
+		return rpc.request.addColumn({ tableId, name, type });
+	},
+	updateColumn(
+		tableId: string,
+		columnId: string,
+		changes: ColumnChanges,
+	): Promise<WorkspaceState> {
+		return rpc.request.updateColumn({ tableId, columnId, changes });
+	},
+	removeColumn(tableId: string, columnId: string): Promise<WorkspaceState> {
+		return rpc.request.removeColumn({ tableId, columnId });
 	},
 	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport(viewport);

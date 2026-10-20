@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { PGlite } from "@electric-sql/pglite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Design, DesignTable } from "../shared/design";
+import { COLUMN_TYPE_DEFINITIONS } from "../shared/column-types";
+import type { Design, DesignColumn, DesignTable } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { openDesignStore, type DesignStore } from "./store";
 import {
@@ -112,6 +114,8 @@ describe("design workspace", () => {
 						dataType: "bigint",
 						isIdentity: true,
 						nullable: false,
+						primaryKey: true,
+						unique: false,
 					},
 				],
 			},
@@ -478,6 +482,416 @@ describe("design workspace", () => {
 		expect(workspace.getState().revision).toBe(2);
 	});
 
+	test("adds, edits, and removes columns with stable identities and persisted properties", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = requireTable(withTable.design?.tables[0]);
+		const key = requireColumn(table, 0);
+
+		const withColumn = await workspace.addColumn({ tableId: table.id });
+		const column = requireColumn(requireTable(withColumn.design?.tables[0]), 1);
+		expect(column).toMatchObject({
+			name: "column",
+			type: "text",
+			nullable: true,
+			primaryKey: false,
+			unique: false,
+			identity: false,
+			notes: "",
+		});
+		expect(column.id).not.toBe(key.id);
+		expect(withColumn.revision).toBe(3);
+		expect(withColumn.save).toMatchObject({ status: "saved", revision: 3 });
+
+		const edited = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: column.id,
+			changes: {
+				name: "isbn",
+				type: "text",
+				nullable: false,
+				unique: true,
+				notes: "  International Standard Book Number  ",
+			},
+		});
+		const editedColumn = requireColumn(requireTable(edited.design?.tables[0]), 1);
+		expect(editedColumn).toEqual({
+			...column,
+			name: "isbn",
+			nullable: false,
+			unique: true,
+			notes: "International Standard Book Number",
+		});
+		expect(editedColumn.id).toBe(column.id);
+		expect(requireTable(edited.design?.tables[0]).id).toBe(table.id);
+		expect(edited.revision).toBe(4);
+		expect(edited.save).toMatchObject({ status: "saved", revision: 4 });
+		expect(edited.sql.status).toBe("current");
+		if (edited.sql.status !== "current") {
+			throw new Error("Expected current SQL after the column edit.");
+		}
+		expect(edited.sql.sql).toContain('"isbn" text NOT NULL UNIQUE');
+		expect(edited.sandbox.status).toBe("applied");
+		if (edited.sandbox.status !== "applied") {
+			throw new Error("Expected the sandbox to accept the edited column.");
+		}
+		expect(edited.sandbox.tables[0].columns[1]).toEqual({
+			name: "isbn",
+			dataType: "text",
+			isIdentity: false,
+			nullable: false,
+			primaryKey: false,
+			unique: true,
+		});
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		const reopenedColumn = requireColumn(
+			requireTable(reopened.getState().design?.tables[0]),
+			1,
+		);
+		expect(reopenedColumn).toEqual(editedColumn);
+
+		// A rename keeps the column identity and its metadata intact.
+		const renamed = await reopened.updateColumn({
+			tableId: table.id,
+			columnId: column.id,
+			changes: { name: "isbn_13" },
+		});
+		const renamedColumn = requireColumn(requireTable(renamed.design?.tables[0]), 1);
+		expect(renamedColumn).toEqual({
+			...editedColumn,
+			name: "isbn_13",
+		});
+		expect(renamed.revision).toBe(5);
+		if (renamed.sql.status !== "current") {
+			throw new Error("Expected current SQL after the column rename.");
+		}
+		expect(renamed.sql.sql).toContain('"isbn_13" text NOT NULL UNIQUE');
+
+		const removed = await reopened.removeColumn({
+			tableId: table.id,
+			columnId: column.id,
+		});
+		expect(requireTable(removed.design?.tables[0]).columns.map((item) => item.name)).toEqual([
+			"id",
+		]);
+		expect(removed.revision).toBe(6);
+		expect(removed.sql.status).toBe("current");
+		expect(removed.sandbox.status).toBe("applied");
+
+		await expect(
+			reopened.removeColumn({ tableId: table.id, columnId: column.id }),
+		).rejects.toThrow("That column could not be found.");
+	}, 30_000);
+
+	test(
+		"supports every registered common PostgreSQL type consistently in SQL and the sandbox",
+		async () => {
+			const { workspace } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Types" });
+			const withTable = await workspace.addTable({ name: "Samples" });
+			const table = requireTable(withTable.design?.tables[0]);
+
+			// Independent knowledge of what PostgreSQL reports for each type.
+			const catalogDataTypes: Record<string, string> = {
+				bigint: "bigint",
+				integer: "integer",
+				smallint: "smallint",
+				text: "text",
+				uuid: "uuid",
+				boolean: "boolean",
+				numeric: "numeric",
+				date: "date",
+				timestamptz: "timestamp with time zone",
+				jsonb: "jsonb",
+			};
+
+			let state = withTable;
+			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+				state = await workspace.addColumn({
+					tableId: table.id,
+					name: `sample_${definition.type}`,
+					type: definition.type,
+				});
+			}
+
+			expect(Object.keys(catalogDataTypes).sort()).toEqual(
+				COLUMN_TYPE_DEFINITIONS.map((definition) => definition.type).sort(),
+			);
+			expect(state.sql.status).toBe("current");
+			if (state.sql.status !== "current") {
+				throw new Error(`Expected current SQL, received ${state.sql.status}.`);
+			}
+			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+				expect(state.sql.sql).toContain(
+					`"sample_${definition.type}" ${definition.type}`,
+				);
+			}
+
+			expect(state.sandbox.status).toBe("applied");
+			if (state.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept every supported type.");
+			}
+			const applied = state.sandbox.tables[0].columns;
+			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+				const appliedColumn = applied.find(
+					(candidate) => candidate.name === `sample_${definition.type}`,
+				);
+				expect(appliedColumn?.dataType).toBe(catalogDataTypes[definition.type]);
+			}
+		},
+		90_000,
+	);
+
+	test("moves the single-column primary key and keeps a cleared key as an incomplete draft", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Keys" });
+		const withTable = await workspace.addTable({ name: "Accounts" });
+		const table = requireTable(withTable.design?.tables[0]);
+		const idColumn = requireColumn(table, 0);
+
+		const withCode = await workspace.addColumn({
+			tableId: table.id,
+			name: "code",
+			type: "text",
+		});
+		const codeColumn = requireColumn(requireTable(withCode.design?.tables[0]), 1);
+
+		const keyed = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: codeColumn.id,
+			changes: { primaryKey: true, nullable: false },
+		});
+		const keyedTable = requireTable(keyed.design?.tables[0]);
+		expect(requireColumn(keyedTable, 0)).toMatchObject({
+			id: idColumn.id,
+			primaryKey: false,
+			identity: true,
+		});
+		expect(requireColumn(keyedTable, 1)).toMatchObject({
+			id: codeColumn.id,
+			primaryKey: true,
+			nullable: false,
+		});
+		expect(keyed.revision).toBe(4);
+		if (keyed.sql.status !== "current") {
+			throw new Error("Expected current SQL after moving the key.");
+		}
+		expect(keyed.sql.sql).toContain('PRIMARY KEY ("code")');
+		expect(keyed.sandbox.status).toBe("applied");
+		if (keyed.sandbox.status !== "applied") {
+			throw new Error("Expected the sandbox to accept the moved key.");
+		}
+		expect(
+			keyed.sandbox.tables[0].columns.map((column) => ({
+				name: column.name,
+				primaryKey: column.primaryKey,
+			})),
+		).toEqual([
+			{ name: "id", primaryKey: false },
+			{ name: "code", primaryKey: true },
+		]);
+
+		const cleared = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: codeColumn.id,
+			changes: { primaryKey: false },
+		});
+		expect(cleared.revision).toBe(5);
+		expect(cleared.save).toMatchObject({ status: "saved", revision: 5 });
+		expect(requireColumn(requireTable(cleared.design?.tables[0]), 1).primaryKey).toBe(false);
+		expect(cleared.sql.status).toBe("stale");
+		if (cleared.sql.status !== "stale") {
+			throw new Error("Expected the SQL preview to be out of date without a key.");
+		}
+		expect(cleared.sql.errors.join(" ")).toContain("exactly one primary key column");
+		expect(cleared.sandbox).toMatchObject({ status: "applied", revision: 4 });
+
+		const contradictory = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: codeColumn.id,
+			changes: { primaryKey: true, nullable: true },
+		});
+		expect(contradictory.save).toMatchObject({ status: "saved", revision: 6 });
+		expect(contradictory.sql.status).toBe("stale");
+		if (contradictory.sql.status !== "stale") {
+			throw new Error("Expected a nullable key to block SQL generation.");
+		}
+		expect(contradictory.sql.errors.join(" ")).toContain("must be required");
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		expect(
+			requireColumn(requireTable(reopened.getState().design?.tables[0]), 1),
+		).toMatchObject({ primaryKey: true, nullable: true });
+		expect(reopened.getState().save).toMatchObject({ status: "saved", revision: 6 });
+		expect(reopened.getState().sql.status).toBe("empty");
+	}, 30_000);
+
+	test("saves column notes without advancing the schema revision or rebuilding the sandbox", async () => {
+		const applies: string[] = [];
+		const { workspace, databasePath } = await openTestWorkspace({
+			createSandbox: () => countingSandbox(applies),
+		});
+
+		await workspace.createProject({ name: "Notes" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = requireTable(withTable.design?.tables[0]);
+		const withColumn = await workspace.addColumn({
+			tableId: table.id,
+			name: "summary",
+		});
+		const column = requireColumn(requireTable(withColumn.design?.tables[0]), 1);
+		const before = workspace.getState();
+		const appliesAfterEdit = applies.length;
+
+		const noted = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: column.id,
+			changes: { notes: "Short description of the book" },
+		});
+		expect(requireColumn(requireTable(noted.design?.tables[0]), 1).notes).toBe(
+			"Short description of the book",
+		);
+		expect(noted.revision).toBe(before.revision);
+		expect(noted.sql).toEqual(before.sql);
+		expect(noted.sandbox).toEqual(before.sandbox);
+		expect(noted.save).toMatchObject({ status: "saved", revision: before.revision });
+		expect(applies).toHaveLength(appliesAfterEdit);
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		const reopenedState = reopened.getState();
+		expect(reopenedState.revision).toBe(before.revision);
+		expect(
+			requireColumn(requireTable(reopenedState.design?.tables[0]), 1).notes,
+		).toBe("Short description of the book");
+	}, 30_000);
+
+	test("clears identity when a column type leaves the integer family", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Keys" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = requireTable(withTable.design?.tables[0]);
+		const idColumn = requireColumn(table, 0);
+
+		const integerKey = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: idColumn.id,
+			changes: { type: "integer" },
+		});
+		expect(requireColumn(requireTable(integerKey.design?.tables[0]), 0)).toMatchObject({
+			type: "integer",
+			identity: true,
+		});
+
+		const uuidKey = await workspace.updateColumn({
+			tableId: table.id,
+			columnId: idColumn.id,
+			changes: { type: "uuid" },
+		});
+		expect(requireColumn(requireTable(uuidKey.design?.tables[0]), 0)).toMatchObject({
+			type: "uuid",
+			identity: false,
+			primaryKey: true,
+			nullable: false,
+		});
+		expect(uuidKey.sql.status).toBe("current");
+		if (uuidKey.sql.status !== "current") {
+			throw new Error("Expected current SQL after changing the key type.");
+		}
+		expect(uuidKey.sql.sql).toContain('"id" uuid NOT NULL');
+		expect(uuidKey.sql.sql).not.toContain("GENERATED ALWAYS AS IDENTITY");
+		expect(uuidKey.sandbox.status).toBe("applied");
+		if (uuidKey.sandbox.status !== "applied") {
+			throw new Error("Expected the sandbox to accept the UUID key.");
+		}
+		expect(uuidKey.sandbox.tables[0].columns[0]).toEqual({
+			name: "id",
+			dataType: "uuid",
+			isIdentity: false,
+			nullable: false,
+			primaryKey: true,
+			unique: false,
+		});
+	}, 30_000);
+
+	test(
+		"generates keys, uniqueness, and nullability that a real sandbox enforces",
+		async () => {
+			const { workspace } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Constraints" });
+			const withTable = await workspace.addTable({ name: "Books" });
+			const table = requireTable(withTable.design?.tables[0]);
+			const withIsbn = await workspace.addColumn({
+				tableId: table.id,
+				name: "isbn",
+				type: "text",
+			});
+			const isbn = requireColumn(requireTable(withIsbn.design?.tables[0]), 1);
+			await workspace.addColumn({ tableId: table.id, name: "subtitle", type: "text" });
+			const state = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: isbn.id,
+				changes: { nullable: false, unique: true },
+			});
+
+			expect(state.sandbox.status).toBe("applied");
+			if (state.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept the schema.");
+			}
+			expect(
+				state.sandbox.tables[0].columns.map((column) => ({
+					name: column.name,
+					nullable: column.nullable,
+					primaryKey: column.primaryKey,
+					unique: column.unique,
+				})),
+			).toEqual([
+				{ name: "id", nullable: false, primaryKey: true, unique: false },
+				{ name: "isbn", nullable: false, primaryKey: false, unique: true },
+				{ name: "subtitle", nullable: true, primaryKey: false, unique: false },
+			]);
+
+			if (state.sql.status !== "current") {
+				throw new Error("Expected current SQL for the constraint check.");
+			}
+			const database = new PGlite();
+			try {
+				await database.exec(state.sql.sql);
+				await database.exec(`INSERT INTO "Books" ("isbn") VALUES ('978-1')`);
+				await database.exec(
+					`INSERT INTO "Books" ("isbn", "subtitle") VALUES ('978-2', 'A subtitle')`,
+				);
+				await expect(
+					database.exec(`INSERT INTO "Books" ("isbn") VALUES ('978-1')`),
+				).rejects.toThrow();
+				await expect(
+					database.exec(`INSERT INTO "Books" ("subtitle") VALUES ('missing isbn')`),
+				).rejects.toThrow();
+				await database.exec(`INSERT INTO "Books" ("isbn") VALUES ('978-3')`);
+				await database.exec(
+					`INSERT INTO "Books" ("id", "isbn") OVERRIDING SYSTEM VALUE VALUES (10, '978-4')`,
+				);
+				await expect(
+					database.exec(
+						`INSERT INTO "Books" ("id", "isbn") OVERRIDING SYSTEM VALUE VALUES (10, '978-5')`,
+					),
+				).rejects.toThrow();
+			} finally {
+				await database.close();
+			}
+		},
+		30_000,
+	);
+
 	test("moves a card without advancing the schema revision or rebuilding the sandbox", async () => {
 		const applies: string[] = [];
 		const { workspace } = await openTestWorkspace({
@@ -566,6 +980,12 @@ describe("design workspace", () => {
 function requireTable(table: DesignTable | undefined): DesignTable {
 	if (!table) throw new Error("Expected the workspace to expose a table.");
 	return table;
+}
+
+function requireColumn(table: DesignTable, index: number): DesignColumn {
+	const column = table.columns[index];
+	if (!column) throw new Error(`Expected column ${index} to exist.`);
+	return column;
 }
 
 /** Wraps the real sandbox to record each rebuild attempt. */

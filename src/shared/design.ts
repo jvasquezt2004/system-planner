@@ -3,22 +3,14 @@
  * See GLOSSARY.md: Project, Design, Sandbox, Table card, SQL preview.
  */
 
+import type { ColumnType } from "./column-types";
+
+export type { ColumnType } from "./column-types";
+
 export type ProjectSummary = {
 	id: string;
 	name: string;
 };
-
-export type ColumnType =
-	| "bigint"
-	| "integer"
-	| "smallint"
-	| "text"
-	| "uuid"
-	| "boolean"
-	| "numeric"
-	| "date"
-	| "timestamptz"
-	| "jsonb";
 
 export type CanvasPoint = {
 	x: number;
@@ -42,7 +34,10 @@ export type DesignColumn = {
 	type: ColumnType;
 	nullable: boolean;
 	primaryKey: boolean;
+	unique: boolean;
 	identity: boolean;
+	/** Design-time intent for the column; never rendered as SQL. */
+	notes: string;
 };
 
 export type DesignTable = {
@@ -73,6 +68,8 @@ export type SandboxAppliedColumn = {
 	dataType: string;
 	isIdentity: boolean;
 	nullable: boolean;
+	primaryKey: boolean;
+	unique: boolean;
 };
 
 export type SandboxAppliedTable = {
@@ -118,3 +115,22 @@ export type RenameTableAction = { tableId: string; name: string };
 export type RemoveTableAction = { tableId: string };
 export type MoveTableAction = { tableId: string; position: CanvasPoint };
 export type SetViewportAction = CanvasViewport;
+
+export type AddColumnAction = {
+	tableId: string;
+	name?: string;
+	type?: ColumnType;
+};
+
+/** Editable column properties. Omitted properties stay as they are. */
+export type ColumnChanges = Partial<
+	Pick<DesignColumn, "name" | "type" | "nullable" | "primaryKey" | "unique" | "notes">
+>;
+
+export type UpdateColumnAction = {
+	tableId: string;
+	columnId: string;
+	changes: ColumnChanges;
+};
+
+export type RemoveColumnAction = { tableId: string; columnId: string };

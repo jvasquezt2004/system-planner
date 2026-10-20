@@ -1,18 +1,24 @@
+import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
 import {
 	CANVAS_MAX_ZOOM,
 	CANVAS_MIN_ZOOM,
+	type AddColumnAction,
 	type AddTableAction,
 	CanvasPoint,
 	CanvasViewport,
+	type ColumnChanges,
 	CreateProjectAction,
 	Design,
+	type DesignColumn,
 	DesignTable,
 	MoveTableAction,
 	OpenProjectAction,
 	ProjectSummary,
+	RemoveColumnAction,
 	RemoveTableAction,
 	RenameTableAction,
 	type SetViewportAction,
+	type UpdateColumnAction,
 	type WorkspaceState,
 } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
@@ -36,9 +42,10 @@ export type WorkspaceListener = (state: WorkspaceState) => void;
  * use these actions and observable state instead of reaching into storage, SQL
  * generation, or sandbox orchestration.
  *
- * Structural actions (adding, renaming, removing tables) advance the schema
- * revision and refresh the SQL preview and sandbox. Layout actions (moving a
- * table card, panning or zooming the canvas) only save the design document.
+ * Structural actions (adding, renaming, removing tables; adding, editing, and
+ * removing columns) advance the schema revision and refresh the SQL preview and
+ * sandbox. Layout actions (moving a table card, panning or zooming the canvas)
+ * and column-note edits only save the design document.
  */
 export interface DesignWorkspace {
 	getState(): WorkspaceState;
@@ -50,6 +57,9 @@ export interface DesignWorkspace {
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
 	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
+	addColumn(action: AddColumnAction): Promise<WorkspaceState>;
+	updateColumn(action: UpdateColumnAction): Promise<WorkspaceState>;
+	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
@@ -227,10 +237,11 @@ export async function createDesignWorkspace(
 	}
 
 	/**
-	 * Applies a layout edit: the schema revision, SQL preview, and applied
+	 * Applies a design edit that does not change the schema: card layout, canvas
+	 * viewport, and column notes. The schema revision, SQL preview, and applied
 	 * sandbox stay exactly as they were; only the stored document changes.
 	 */
-	async function applyLayoutChange(projectId: string, design: Design) {
+	async function applyNonSchemaChange(projectId: string, design: Design) {
 		const revision = state.revision;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -373,7 +384,91 @@ export async function createDesignWorkspace(
 						candidate.id === table.id ? { ...candidate, position } : candidate,
 					),
 				};
-				return applyLayoutChange(projectId, nextDesign);
+				return applyNonSchemaChange(projectId, nextDesign);
+			});
+		},
+		addColumn(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const name =
+					action.name === undefined
+						? nextColumnName(table)
+						: requireName(action.name, "Column name");
+				const type = action.type === undefined ? "text" : requireColumnType(action.type);
+				const column: DesignColumn = {
+					id: createId(),
+					name,
+					type,
+					nullable: true,
+					primaryKey: false,
+					unique: false,
+					identity: false,
+					notes: "",
+				};
+				const nextDesign = replaceTable(design, {
+					...table,
+					columns: [...table.columns, column],
+				});
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		updateColumn(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const column = requireColumn(table, action.columnId);
+				const changes = normalizeColumnChanges(action.changes);
+
+				let updated: DesignColumn = { ...column, ...changes };
+				// Identity generation only exists for integer types, so changing the
+				// type to another family drops it in the same visible edit.
+				if (
+					changes.type !== undefined &&
+					changes.type !== column.type &&
+					column.identity &&
+					!columnTypeInfo(changes.type).identity
+				) {
+					updated = { ...updated, identity: false };
+				}
+
+				const columns = table.columns.map((candidate) => {
+					if (candidate.id === column.id) return updated;
+					// A table has a single-column key, so choosing a new key column
+					// demotes the previous one in the same edit.
+					if (updated.primaryKey && candidate.primaryKey) {
+						return { ...candidate, primaryKey: false };
+					}
+					return candidate;
+				});
+
+				if (
+					columns.length === table.columns.length &&
+					columns.every((candidate, index) =>
+						sameColumn(candidate, table.columns[index]),
+					)
+				) {
+					return state;
+				}
+
+				const nextDesign = replaceTable(design, { ...table, columns });
+				const schemaChanged = Object.keys(changes).some((key) => key !== "notes");
+				return schemaChanged
+					? applyStructuralChange(projectId, nextDesign)
+					: applyNonSchemaChange(projectId, nextDesign);
+			});
+		},
+		removeColumn(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const column = requireColumn(table, action.columnId);
+
+				const nextDesign = replaceTable(design, {
+					...table,
+					columns: table.columns.filter((candidate) => candidate.id !== column.id),
+				});
+				return applyStructuralChange(projectId, nextDesign);
 			});
 		},
 		setViewport(action) {
@@ -390,7 +485,7 @@ export async function createDesignWorkspace(
 				};
 				if (sameViewport(design.viewport, viewport)) return state;
 
-				return applyLayoutChange(projectId, { ...design, viewport });
+				return applyNonSchemaChange(projectId, { ...design, viewport });
 			});
 		},
 		async close() {
@@ -411,7 +506,14 @@ export async function createDesignWorkspace(
 /** Documents saved before the canvas existed have no viewport yet. */
 function normalizeDesign(design: Design): Design {
 	return {
-		tables: design.tables,
+		tables: design.tables.map((table) => ({
+			...table,
+			columns: table.columns.map((column) => ({
+				...column,
+				unique: column.unique ?? false,
+				notes: column.notes ?? "",
+			})),
+		})),
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 	};
 }
@@ -432,7 +534,9 @@ function createDefaultTable(
 				type: "bigint",
 				nullable: false,
 				primaryKey: true,
+				unique: false,
 				identity: true,
+				notes: "",
 			},
 		],
 	};
@@ -450,6 +554,76 @@ function requireTable(design: Design, tableId: string): DesignTable {
 	const table = design.tables.find((candidate) => candidate.id === tableId);
 	if (!table) throw new Error("That table could not be found.");
 	return table;
+}
+
+function requireColumn(table: DesignTable, columnId: string): DesignColumn {
+	const column = table.columns.find((candidate) => candidate.id === columnId);
+	if (!column) throw new Error("That column could not be found.");
+	return column;
+}
+
+function replaceTable(design: Design, table: DesignTable): Design {
+	return {
+		...design,
+		tables: design.tables.map((candidate) =>
+			candidate.id === table.id ? table : candidate,
+		),
+	};
+}
+
+function nextColumnName(table: DesignTable): string {
+	const names = new Set(table.columns.map((column) => column.name));
+	if (!names.has("column")) return "column";
+	let index = 2;
+	while (names.has(`column_${index}`)) index += 1;
+	return `column_${index}`;
+}
+
+function requireName(value: string, label: string): string {
+	if (typeof value !== "string") throw new Error(`${label} must be text.`);
+	const name = value.trim();
+	if (name.length === 0) throw new Error(`${label} is required.`);
+	return name;
+}
+
+function requireColumnType(value: unknown) {
+	if (!isSupportedColumnType(value)) throw new Error("That column type is not supported.");
+	return value;
+}
+
+function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {
+	if (!changes || typeof changes !== "object") {
+		throw new Error("Column changes are required.");
+	}
+	const normalized: ColumnChanges = {};
+	if (changes.name !== undefined) normalized.name = requireName(changes.name, "Column name");
+	if (changes.type !== undefined) normalized.type = requireColumnType(changes.type);
+	for (const key of ["nullable", "primaryKey", "unique"] as const) {
+		const value = changes[key];
+		if (value === undefined) continue;
+		if (typeof value !== "boolean") {
+			throw new Error(`Column ${key} must be true or false.`);
+		}
+		normalized[key] = value;
+	}
+	if (changes.notes !== undefined) {
+		if (typeof changes.notes !== "string") throw new Error("Column notes must be text.");
+		normalized.notes = changes.notes.trim();
+	}
+	return normalized;
+}
+
+function sameColumn(a: DesignColumn, b: DesignColumn): boolean {
+	return (
+		a.id === b.id &&
+		a.name === b.name &&
+		a.type === b.type &&
+		a.nullable === b.nullable &&
+		a.primaryKey === b.primaryKey &&
+		a.unique === b.unique &&
+		a.identity === b.identity &&
+		a.notes === b.notes
+	);
 }
 
 function requirePoint(point: CanvasPoint, label: string): CanvasPoint {

@@ -4,36 +4,17 @@ import {
 	CANVAS_MIN_ZOOM,
 	type CanvasPoint,
 	type CanvasViewport,
-	type ColumnType,
 	type Design,
 	type DesignColumn,
 	type DesignTable,
 } from "../shared/design";
+import { ColumnBadge } from "./column-badge";
+import { ColumnTypeBadge } from "./column-type-badge";
 
 const CARD_WIDTH = 264;
 const GRID_SIZE = 24;
 const MAJOR_GRID_SIZE = 120;
 const VIEWPORT_SAVE_DELAY = 250;
-
-type TypeFamily = {
-	glyph: string;
-	label: string;
-	className: string;
-};
-
-/** Symbols mark type families; the exact PostgreSQL type stays readable. */
-const TYPE_FAMILIES: Record<ColumnType, TypeFamily> = {
-	bigint: { glyph: "#", label: "Integer", className: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-	integer: { glyph: "#", label: "Integer", className: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-	smallint: { glyph: "#", label: "Integer", className: "border-sky-500/40 bg-sky-500/10 text-sky-300" },
-	text: { glyph: "T", label: "Text", className: "border-amber-500/40 bg-amber-500/10 text-amber-300" },
-	uuid: { glyph: "U", label: "UUID", className: "border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-300" },
-	boolean: { glyph: "B", label: "Boolean", className: "border-teal-500/40 bg-teal-500/10 text-teal-300" },
-	numeric: { glyph: "N", label: "Numeric", className: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" },
-	date: { glyph: "D", label: "Date/time", className: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
-	timestamptz: { glyph: "D", label: "Date/time", className: "border-violet-500/40 bg-violet-500/10 text-violet-300" },
-	jsonb: { glyph: "{}", label: "JSON", className: "border-orange-500/40 bg-orange-500/10 text-orange-300" },
-};
 
 type CardDrag = {
 	tableId: string;
@@ -465,56 +446,40 @@ function TableCard({
 }
 
 function ColumnRow({ column, index }: { column: DesignColumn; index: number }) {
-	const family = TYPE_FAMILIES[column.type] ?? {
-		glyph: "?",
-		label: "Unknown",
-		className: "border-slate-600 bg-slate-800 text-slate-300",
-	};
 	return (
 		<div className="flex items-center gap-2 px-3 py-1.5 text-xs">
 			<span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-slate-600">
 				{index + 1}
 			</span>
-			<span
-				title={family.label}
-				aria-label={family.label}
-				className={`flex h-4 w-5 shrink-0 items-center justify-center rounded border text-[10px] font-semibold ${family.className}`}
-			>
-				{family.glyph}
-			</span>
+			<ColumnTypeBadge type={column.type} />
 			<span className="min-w-0 flex-1 truncate font-medium text-slate-200">
 				{column.name}
 			</span>
 			<span className="shrink-0 text-[11px] text-slate-400">{column.type}</span>
-			{column.primaryKey && <KeyBadge label="PK" className="text-amber-300" title="Primary key" />}
+			{column.primaryKey && (
+				<ColumnBadge label="PK" className="text-amber-300" title="Primary key" />
+			)}
+			{column.unique && !column.primaryKey && (
+				<ColumnBadge label="UQ" className="text-emerald-300" title="Unique" />
+			)}
 			{column.identity && (
-				<KeyBadge label="ID" className="text-sky-300" title="Identity generation" />
+				<ColumnBadge label="ID" className="text-sky-300" title="Identity generation" />
 			)}
 			{column.nullable ? (
-				<KeyBadge label="?" className="text-slate-500" title="Nullable" />
+				<ColumnBadge label="?" className="text-slate-500" title="Nullable" />
 			) : (
-				<KeyBadge label="!" className="text-slate-400" title="Required" />
+				<ColumnBadge label="!" className="text-slate-400" title="Required" />
+			)}
+			{column.notes.length > 0 && (
+				<span
+					title={column.notes}
+					aria-label="Column note"
+					className="shrink-0 text-[10px] text-slate-500"
+				>
+					✎
+				</span>
 			)}
 		</div>
-	);
-}
-
-function KeyBadge({
-	label,
-	className,
-	title,
-}: {
-	label: string;
-	className: string;
-	title: string;
-}) {
-	return (
-		<span
-			title={title}
-			className={`shrink-0 rounded border border-slate-700 bg-slate-950 px-1 text-[10px] font-semibold ${className}`}
-		>
-			{label}
-		</span>
 	);
 }
 
