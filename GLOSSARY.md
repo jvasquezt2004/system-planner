@@ -24,6 +24,18 @@ _Avoid_: Data grid, spreadsheet of records
 An association between tables backed by database constraints. A many-to-many relationship is represented through a visible junction table.
 _Avoid_: Decorative connection
 
+**One-to-one relationship**:
+A relationship in which at most one referencing-side record may name each
+referenced-side record, enforced by uniqueness on the referencing column. It
+does not require every referenced-side record to participate.
+_Avoid_: Mandatory pairing on both sides
+
+**Relationship-owned constraints**:
+The foreign key and, for a one-to-one relationship, the uniqueness constraint
+that exist because of a relationship. Removing the relationship removes exactly
+these, never an independently configured column constraint.
+_Avoid_: Column setting
+
 **Required relationship**:
 An association in which each referencing-side record must identify a related record. It does not require every referenced-side record to participate.
 _Avoid_: Mandatory matching on both sides

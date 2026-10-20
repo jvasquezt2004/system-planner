@@ -52,13 +52,23 @@ export type DesignTable = {
 };
 
 /**
- * A one-to-many association backed by a real foreign key. The referencing
- * ("many") side owns a generated foreign-key column, while the referenced
- * ("one") side is targeted through its primary key. Relationship identity and
- * participating columns are tracked by id, so renames never disconnect them.
+ * How many referencing records may name the same referenced record. A
+ * one-to-one association adds relationship-owned uniqueness on the referencing
+ * column; neither cardinality requires the referenced side to participate.
+ */
+export type RelationshipCardinality = "one-to-many" | "one-to-one";
+
+/**
+ * An association backed by a real foreign key. The referencing side owns a
+ * generated foreign-key column and, for a one-to-one association, the
+ * uniqueness constraint on it; the referenced side is targeted through its
+ * primary key. Relationship identity and participating columns are tracked by
+ * id, so renames never disconnect them.
  */
 export type DesignRelationship = {
 	id: string;
+	/** Defaults to one-to-many for documents saved before cardinality existed. */
+	cardinality: RelationshipCardinality;
 	referencingTableId: string;
 	referencingColumnId: string;
 	referencedTableId: string;
@@ -175,17 +185,26 @@ export type RemoveColumnAction = {
 	confirmed?: boolean;
 };
 
-/** Relates two tables: the referencing (many) side receives the foreign key. */
+/**
+ * Relates two tables: the referencing side receives the foreign key and, for a
+ * one-to-one association, its uniqueness. An omitted cardinality means
+ * one-to-many.
+ */
 export type AddRelationshipAction = {
 	referencingTableId: string;
 	referencedTableId: string;
+	cardinality?: RelationshipCardinality;
 };
 
 /** An omitted property keeps its current value. */
 export type UpdateRelationshipAction = {
 	relationshipId: string;
 	required?: boolean;
+	cardinality?: RelationshipCardinality;
 };
+
+/** Constraints a relationship owns and a destructive edit would remove. */
+export type RelationshipConstraint = "foreign-key" | "unique";
 
 export type RemoveRelationshipAction = { relationshipId: string };
 
@@ -196,10 +215,13 @@ export type RemovalTarget =
 /** A relationship a pending removal would also delete. */
 export type AffectedRelationship = {
 	relationshipId: string;
+	cardinality: RelationshipCardinality;
 	referencingTable: string;
 	referencingColumn: string;
 	referencedTable: string;
 	referencedColumn: string | null;
+	/** The relationship-owned constraints, never independent column settings. */
+	constraints: RelationshipConstraint[];
 };
 
 /**

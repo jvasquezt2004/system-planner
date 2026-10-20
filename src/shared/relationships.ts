@@ -11,6 +11,8 @@ import type {
 	DesignColumn,
 	DesignRelationship,
 	DesignTable,
+	RelationshipCardinality,
+	RelationshipConstraint,
 	RemovalPlan,
 	RemovalTarget,
 } from "./design";
@@ -29,7 +31,21 @@ export type RelationshipView = {
 	 * editor and the relationship control can never disagree.
 	 */
 	required: boolean;
+	/** At most one referencing record may name each referenced record. */
+	oneToOne: boolean;
+	/**
+	 * True when this relationship contributes the uniqueness constraint itself,
+	 * rather than relying on an independently configured key or unique column.
+	 * Removal drops only what this flag describes.
+	 */
+	ownsUniqueness: boolean;
 };
+
+export function isRelationshipCardinality(
+	value: unknown,
+): value is RelationshipCardinality {
+	return value === "one-to-many" || value === "one-to-one";
+}
 
 /** Returns the table's primary key only when exactly one column claims it. */
 export function primaryKeyColumn(table: DesignTable): DesignColumn | null {
@@ -62,6 +78,11 @@ export function resolveRelationship(
 		referencedTable,
 		referencedColumn,
 		required: !referencingColumn.nullable,
+		oneToOne: relationship.cardinality === "one-to-one",
+		ownsUniqueness:
+			relationship.cardinality === "one-to-one" &&
+			!referencingColumn.unique &&
+			!referencingColumn.primaryKey,
 	};
 }
 
@@ -108,6 +129,18 @@ export function relationshipConstraintName(view: RelationshipView): string {
 	return `${view.referencingTable.name}_${view.referencingColumn.name}_fkey`;
 }
 
+/** The relationship-owned uniqueness constraint, removed with the relationship. */
+export function relationshipUniqueConstraintName(view: RelationshipView): string {
+	return `${view.referencingTable.name}_${view.referencingColumn.name}_key`;
+}
+
+/** Reports the constraints a removal of this relationship would drop. */
+export function relationshipConstraints(
+	view: RelationshipView,
+): RelationshipConstraint[] {
+	return view.ownsUniqueness ? ["foreign-key", "unique"] : ["foreign-key"];
+}
+
 /** Lists the relationships a removal would delete alongside its target. */
 export function removalPlan(design: Design, target: RemovalTarget): RemovalPlan {
 	return {
@@ -135,10 +168,12 @@ function affectedRelationships(
 		if (!ownsTarget) continue;
 		affected.push({
 			relationshipId: relationship.id,
+			cardinality: relationship.cardinality,
 			referencingTable: view?.referencingTable.name ?? "(missing table)",
 			referencingColumn: view?.referencingColumn.name ?? "(missing column)",
 			referencedTable: view?.referencedTable.name ?? "(missing table)",
 			referencedColumn: view?.referencedColumn?.name ?? null,
+			constraints: view ? relationshipConstraints(view) : ["foreign-key"],
 		});
 	}
 	return affected;

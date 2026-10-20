@@ -18,6 +18,7 @@ import type {
 	ColumnChanges,
 	DesignColumn,
 	DesignTable,
+	RelationshipCardinality,
 	SqlState,
 } from "../shared/design";
 import type { RelationshipView } from "../shared/relationships";
@@ -39,6 +40,10 @@ type TableInspectorProps = {
 	onRemoveColumn: (columnId: string) => void;
 	onSelectRelationship: (relationshipId: string | null) => void;
 	onSetRelationshipRequired: (relationshipId: string, required: boolean) => void;
+	onSetRelationshipCardinality: (
+		relationshipId: string,
+		cardinality: RelationshipCardinality,
+	) => void;
 	onRemoveRelationship: (relationshipId: string) => void;
 };
 
@@ -63,6 +68,7 @@ export function TableInspector({
 	onRemoveColumn,
 	onSelectRelationship,
 	onSetRelationshipRequired,
+	onSetRelationshipCardinality,
 	onRemoveRelationship,
 }: TableInspectorProps) {
 	const [name, setName] = useState(table?.name ?? "");
@@ -295,19 +301,24 @@ export function TableInspector({
 													: `Referenced by ${view.referencingTable.name}`}
 											</span>
 											<span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
-												one-to-many
+												{view.oneToOne ? "one-to-one" : "one-to-many"}
 											</span>
 										</span>
 										<span className="truncate text-[11px] text-slate-400">
 											{view.referencingTable.name}.{view.referencingColumn.name} →{" "}
 											{view.referencedTable.name}.
 											{view.referencedColumn?.name ?? "(no primary key)"}
+											{view.oneToOne ? " · unique" : ""}
 										</span>
 									</button>
 									<div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2">
 										<label
 											className="flex items-center gap-1.5 text-[11px] text-slate-300"
-											title={`Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record. ${view.referencedTable.name} records may have none.`}
+											title={
+												view.oneToOne
+													? `Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record, and at most one ${view.referencingTable.name} record may name it. ${view.referencedTable.name} records may still have none.`
+													: `Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record. ${view.referencedTable.name} records may have none.`
+											}
 										>
 											<input
 												type="checkbox"
@@ -325,13 +336,35 @@ export function TableInspector({
 											/>
 											Required
 										</label>
+										<label
+											className="flex items-center gap-1.5 text-[11px] text-slate-300"
+											title={`One-to-one adds uniqueness on ${view.referencingTable.name}.${view.referencingColumn.name}, so at most one record may name the same ${view.referencedTable.name} record.`}
+										>
+											<input
+												type="checkbox"
+												aria-label={`One-to-one reference from ${view.referencingTable.name} to ${view.referencedTable.name}`}
+												data-testid="relationship-one-to-one"
+												checked={view.oneToOne}
+												disabled={busy}
+												onChange={(event) =>
+													onSetRelationshipCardinality(
+														relationshipId,
+														event.target.checked
+															? "one-to-one"
+															: "one-to-many",
+													)
+												}
+												className="accent-indigo-500"
+											/>
+											One-to-one
+										</label>
 										<button
 											type="button"
 											data-testid="remove-relationship"
 											onPointerDown={(event) => event.stopPropagation()}
 											onClick={() => onRemoveRelationship(relationshipId)}
 											disabled={busy}
-											title="Remove the foreign-key constraint and keep the columns"
+											title="Remove the relationship-owned foreign key and uniqueness, keeping the columns"
 											className="ml-auto rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-red-400 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
 										>
 											Remove link
@@ -344,7 +377,9 @@ export function TableInspector({
 				)}
 				<p className="px-4 pt-1 text-[10px] leading-relaxed text-slate-500">
 					A required reference means every referencing record must name one related
-					record. It never requires the referenced table to have children.
+					record. One-to-one also restricts each referenced record to at most one
+					referencing record. Neither setting requires the referenced table to have
+					children.
 				</p>
 			</section>
 

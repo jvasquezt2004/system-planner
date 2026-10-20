@@ -5,6 +5,7 @@ import type {
 	CanvasViewport,
 	ColumnChanges,
 	ProjectSummary,
+	RelationshipCardinality,
 	RemovalPlan,
 	RemovalTarget,
 	SandboxState,
@@ -113,7 +114,11 @@ function App() {
 	}, []);
 
 	const handleRelateTables = useCallback(
-		(referencingTableId: string, referencedTableId: string) => {
+		(
+			referencingTableId: string,
+			referencedTableId: string,
+			cardinality: RelationshipCardinality,
+		) => {
 			void (async () => {
 				setBusy(true);
 				setError(null);
@@ -121,6 +126,7 @@ function App() {
 					const next = await workspaceClient.addRelationship(
 						referencingTableId,
 						referencedTableId,
+						cardinality,
 					);
 					setState(next);
 					const created =
@@ -140,7 +146,14 @@ function App() {
 
 	const handleSetRelationshipRequired = useCallback(
 		(relationshipId: string, required: boolean) => {
-			void run(() => workspaceClient.updateRelationship(relationshipId, required));
+			void run(() => workspaceClient.updateRelationship(relationshipId, { required }));
+		},
+		[run],
+	);
+
+	const handleSetRelationshipCardinality = useCallback(
+		(relationshipId: string, cardinality: RelationshipCardinality) => {
+			void run(() => workspaceClient.updateRelationship(relationshipId, { cardinality }));
 		},
 		[run],
 	);
@@ -365,6 +378,7 @@ function App() {
 						onRemoveColumn={handleRemoveColumn}
 						onSelectRelationship={handleSelectRelationship}
 						onSetRelationshipRequired={handleSetRelationshipRequired}
+						onSetRelationshipCardinality={handleSetRelationshipCardinality}
 						onRemoveRelationship={handleRemoveRelationship}
 					/>
 					<SqlPanel sql={state.sql} />
@@ -427,12 +441,23 @@ function RemovalDialog({
 							{plan.relationships.map((relationship: AffectedRelationship) => (
 								<li
 									key={relationship.relationshipId}
+									data-testid="affected-relationship"
+									data-cardinality={relationship.cardinality}
 									className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
 								>
 									{relationship.referencingTable}.
 									{relationship.referencingColumn} →{" "}
 									{relationship.referencedTable}.
 									{relationship.referencedColumn ?? "(no primary key)"}
+									<span className="ml-1 text-slate-500">
+										{relationship.constraints
+											.map((constraint) =>
+												constraint === "unique"
+													? "unique"
+													: "foreign key",
+											)
+											.join(" + ")}
+									</span>
 								</li>
 							))}
 						</ul>
@@ -688,6 +713,7 @@ function SandboxPanel({ sandbox }: { sandbox: SandboxState }) {
 													</>
 												)}
 												{column.nullable ? " · null" : " · not null"}
+												{column.unique ? " · unique" : ""}
 											</li>
 										))}
 									</ul>

@@ -5,6 +5,7 @@ import type {
 	CanvasViewport,
 	ColumnChanges,
 	ColumnType,
+	RelationshipCardinality,
 	RemovalPlan,
 	RemovalTarget,
 	WorkspaceState,
@@ -81,14 +82,19 @@ export const workspaceClient = {
 	addRelationship(
 		referencingTableId: string,
 		referencedTableId: string,
+		cardinality?: RelationshipCardinality,
 	): Promise<WorkspaceState> {
-		return rpc.request.addRelationship({ referencingTableId, referencedTableId });
+		return rpc.request.addRelationship({
+			referencingTableId,
+			referencedTableId,
+			cardinality,
+		});
 	},
 	updateRelationship(
 		relationshipId: string,
-		required: boolean,
+		changes: { required?: boolean; cardinality?: RelationshipCardinality },
 	): Promise<WorkspaceState> {
-		return rpc.request.updateRelationship({ relationshipId, required });
+		return rpc.request.updateRelationship({ relationshipId, ...changes });
 	},
 	removeRelationship(relationshipId: string): Promise<WorkspaceState> {
 		return rpc.request.removeRelationship({ relationshipId });
