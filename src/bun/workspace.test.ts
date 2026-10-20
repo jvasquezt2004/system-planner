@@ -2,8 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Design } from "../shared/design";
-import type { SchemaSandbox } from "./sandbox";
+import type { Design, DesignTable } from "../shared/design";
+import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { openDesignStore, type DesignStore } from "./store";
 import {
 	createDesignWorkspace,
@@ -47,14 +47,14 @@ function delay(milliseconds: number) {
 /** Real SQLite, with save completion timing controlled by the test. */
 function createDelayedStore(
 	databasePath: string,
-	delayForRevision: (revision: number) => number,
+	delayForDocumentRevision: (documentRevision: number) => number,
 ): DesignStore {
 	const store = openDesignStore(databasePath);
 	return {
 		...store,
-		async saveDesign(projectId, design, revision, savedAt) {
-			await delay(delayForRevision(revision));
-			store.saveDesign(projectId, design, revision, savedAt);
+		async saveDesign(projectId, design, save) {
+			await delay(delayForDocumentRevision(save.documentRevision));
+			store.saveDesign(projectId, design, save);
 		},
 	};
 }
@@ -74,7 +74,10 @@ describe("design workspace", () => {
 
 		const created = await workspace.createProject({ name: "Library" });
 		expect(created.project?.name).toBe("Library");
-		expect(created.design).toEqual({ tables: [] });
+		expect(created.design).toEqual({
+			tables: [],
+			viewport: { x: 0, y: 0, zoom: 1 },
+		});
 		expect(created.save.status).toBe("saved");
 		expect(created.sql.status).toBe("empty");
 
@@ -276,12 +279,12 @@ describe("design workspace", () => {
 				const store = openDesignStore(path);
 				return {
 					...store,
-					saveDesign(projectId, design, revision, savedAt) {
+					saveDesign(projectId, design, save) {
 						if (failNextSave) {
 							failNextSave = false;
 							throw new Error("disk full");
 						}
-						store.saveDesign(projectId, design, revision, savedAt);
+						store.saveDesign(projectId, design, save);
 					},
 				};
 			},
@@ -314,12 +317,12 @@ describe("design workspace", () => {
 				const realStore = store(path);
 				return {
 					...realStore,
-					async saveDesign(projectId, design, revision, savedAt) {
+					async saveDesign(projectId, design, save) {
 						if (gateNextSave) {
 							gateNextSave = false;
 							await firstSaveGate;
 						}
-						realStore.saveDesign(projectId, design, revision, savedAt);
+						realStore.saveDesign(projectId, design, save);
 					},
 				};
 			},
@@ -328,7 +331,8 @@ describe("design workspace", () => {
 		const alpha = await workspace.createProject({ name: "Alpha" });
 		const alphaSave = workspace.addTable({ name: "Alpha table" });
 
-		await workspace.createProject({ name: "Beta" });		const betaState = await workspace.addTable({ name: "Beta table" });
+		await workspace.createProject({ name: "Beta" });
+		const betaState = await workspace.addTable({ name: "Beta table" });
 		expect(betaState.project?.name).toBe("Beta");
 
 		releaseFirstSave();
@@ -343,4 +347,237 @@ describe("design workspace", () => {
 		const alphaState = await workspace.openProject({ projectId: alpha.project.id });
 		expect(alphaState.design?.tables.map((table) => table.name)).toEqual(["Alpha table"]);
 	});
+
+	test("adds a table at the requested canvas position with the default key", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		const state = await workspace.addTable({
+			name: "Books",
+			position: { x: 320, y: 180 },
+		});
+
+		const table = state.design?.tables[0];
+		if (!table) throw new Error("Expected a table.");
+		expect(table.position).toEqual({ x: 320, y: 180 });
+		expect(table.columns).toHaveLength(1);
+		expect(table.columns[0]).toMatchObject({
+			name: "id",
+			type: "bigint",
+			primaryKey: true,
+			identity: true,
+		});
+	});
+
+	test("renames a table without changing its identity and regenerates the schema", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = requireTable(withTable.design?.tables[0]);
+
+		const state = await workspace.renameTable({ tableId: table.id, name: "Volumes" });
+
+		expect(state.design?.tables).toHaveLength(1);
+		expect(state.design?.tables[0]).toMatchObject({ id: table.id, name: "Volumes" });
+		expect(state.design?.tables[0].position).toEqual(table.position);
+		expect(state.revision).toBe(3);
+		expect(state.save).toMatchObject({ status: "saved", revision: 3 });
+		expect(state.sql.status).toBe("current");
+		if (state.sql.status !== "current") {
+			throw new Error("Expected current SQL after the rename.");
+		}
+		expect(state.sql.sql).toContain('CREATE TABLE "Volumes"');
+		expect(state.sql.sql).not.toContain('CREATE TABLE "Books"');
+		expect(state.sandbox.status).toBe("applied");
+		if (state.sandbox.status !== "applied") {
+			throw new Error("Expected the sandbox to accept the renamed table.");
+		}
+		expect(state.sandbox.tables.map((applied) => applied.name)).toEqual(["Volumes"]);
+	});
+
+	test("saves a rename that makes the draft temporarily invalid without dropping the sandbox", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		await workspace.addTable({ name: "Authors" });
+		const added = await workspace.addTable({ name: "Books" });
+		const books = requireTable(added.design?.tables[1]);
+
+		const state = await workspace.renameTable({ tableId: books.id, name: "Authors" });
+
+		expect(state.save).toMatchObject({ status: "saved", revision: 4 });
+		expect(state.design?.tables.map((table) => table.name)).toEqual(["Authors", "Authors"]);
+		expect(state.sql.status).toBe("stale");
+		if (state.sql.status !== "stale") {
+			throw new Error("Expected the SQL preview to be out of date.");
+		}
+		expect(state.sql.errors.join(" ")).toContain("used more than once");
+		expect(state.sandbox).toMatchObject({ status: "applied", revision: 3 });
+	});
+
+	test(
+		"removes one table without removing unrelated tables",
+		async () => {
+			const { workspace, databasePath } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Library" });
+			await workspace.addTable({ name: "Authors" });
+			const added = await workspace.addTable({ name: "Books" });
+			const authors = requireTable(added.design?.tables[0]);
+			const books = requireTable(added.design?.tables[1]);
+			const withReviews = await workspace.addTable({ name: "Reviews" });
+			const reviews = requireTable(withReviews.design?.tables[2]);
+
+			const state = await workspace.removeTable({ tableId: books.id });
+
+			expect(state.design?.tables.map((table) => table.id)).toEqual([
+				authors.id,
+				reviews.id,
+			]);
+			expect(state.design?.tables.map((table) => table.name)).toEqual(["Authors", "Reviews"]);
+			expect(state.revision).toBe(5);
+			expect(state.save).toMatchObject({ status: "saved", revision: 5 });
+			expect(state.sql.status).toBe("current");
+			if (state.sql.status !== "current") {
+				throw new Error("Expected current SQL after the removal.");
+			}
+			expect(state.sql.sql).toContain('CREATE TABLE "Authors"');
+			expect(state.sql.sql).toContain('CREATE TABLE "Reviews"');
+			expect(state.sql.sql).not.toContain('CREATE TABLE "Books"');
+			expect(state.sandbox.status).toBe("applied");
+			if (state.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept the remaining tables.");
+			}
+			expect(state.sandbox.tables.map((applied) => applied.name)).toEqual([
+				"Authors",
+				"Reviews",
+			]);
+
+			await closeTestWorkspace(workspace);
+			const reopened = await reopenTestWorkspace(databasePath);
+			expect(reopened.getState().design?.tables.map((table) => table.name)).toEqual([
+				"Authors",
+				"Reviews",
+			]);
+			expect(reopened.getState().revision).toBe(5);
+		},
+		20_000,
+	);
+
+	test("reports a removal that targets no table and leaves the design unchanged", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		const state = await workspace.addTable({ name: "Books" });
+
+		await expect(workspace.removeTable({ tableId: "missing" })).rejects.toThrow(
+			"That table could not be found.",
+		);
+		expect(workspace.getState().design).toEqual(state.design);
+		expect(workspace.getState().revision).toBe(2);
+	});
+
+	test("moves a card without advancing the schema revision or rebuilding the sandbox", async () => {
+		const applies: string[] = [];
+		const { workspace } = await openTestWorkspace({
+			createSandbox: () => countingSandbox(applies),
+		});
+
+		await workspace.createProject({ name: "Library" });
+		const before = await workspace.addTable({ name: "Books" });
+		const table = requireTable(before.design?.tables[0]);
+		const appliesAfterAdd = applies.length;
+
+		const moved = await workspace.moveTable({
+			tableId: table.id,
+			position: { x: 640, y: 360 },
+		});
+
+		expect(moved.design?.tables[0]).toMatchObject({
+			id: table.id,
+			position: { x: 640, y: 360 },
+		});
+		expect(moved.revision).toBe(before.revision);
+		expect(moved.sql).toEqual(before.sql);
+		expect(moved.sandbox).toEqual(before.sandbox);
+		expect(moved.save).toMatchObject({ status: "saved", revision: before.revision });
+		expect(applies).toHaveLength(appliesAfterAdd);
+	});
+
+	test("restores card positions and the canvas viewport when reopening a project", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+
+		await workspace.createProject({ name: "Library" });
+		await workspace.addTable({ name: "Authors" });
+		const added = await workspace.addTable({ name: "Books" });
+		const books = requireTable(added.design?.tables[1]);
+
+		const moved = await workspace.moveTable({
+			tableId: books.id,
+			position: { x: 700, y: 420 },
+		});
+		expect(moved.revision).toBe(3);
+
+		const panned = await workspace.setViewport({ x: -160, y: 90, zoom: 1.4 });
+		expect(panned.design?.viewport).toEqual({ x: -160, y: 90, zoom: 1.4 });
+		expect(panned.revision).toBe(3);
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		const state = reopened.getState();
+
+		expect(state.revision).toBe(3);
+		expect(state.design?.viewport).toEqual({ x: -160, y: 90, zoom: 1.4 });
+		expect(state.design?.tables.map((table) => table.name)).toEqual(["Authors", "Books"]);
+		expect(state.design?.tables[1].position).toEqual({ x: 700, y: 420 });
+	});
+
+	test("keeps layout saves newer than delayed structural saves", async () => {
+		const { workspace, databasePath } = await openTestWorkspace({
+			openStore: (path) =>
+				createDelayedStore(path, (documentRevision) =>
+					documentRevision === 2 ? 80 : 0,
+				),
+		});
+
+		await workspace.createProject({ name: "Library" });
+		const pending = workspace.addTable({ name: "Books" });
+		const table = requireTable(workspace.getState().design?.tables[0]);
+
+		// The layout save lands before the older structural save completes.
+		const moved = await workspace.moveTable({
+			tableId: table.id,
+			position: { x: 512, y: 256 },
+		});
+		expect(moved.design?.tables[0].position).toEqual({ x: 512, y: 256 });
+		await pending;
+		await closeTestWorkspace(workspace);
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		expect(reopened.getState().design?.tables[0]).toMatchObject({
+			id: table.id,
+			name: "Books",
+			position: { x: 512, y: 256 },
+		});
+	});
 });
+
+function requireTable(table: DesignTable | undefined): DesignTable {
+	if (!table) throw new Error("Expected the workspace to expose a table.");
+	return table;
+}
+
+/** Wraps the real sandbox to record each rebuild attempt. */
+function countingSandbox(applies: string[]): SchemaSandbox {
+	const sandbox = createPGliteSandbox();
+	return {
+		apply(sql) {
+			applies.push(sql);
+			return sandbox.apply(sql);
+		},
+		dispose() {
+			return sandbox.dispose();
+		},
+	};
+}

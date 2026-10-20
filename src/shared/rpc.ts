@@ -1,5 +1,5 @@
 import type { ElectrobunRPCSchema } from "electrobun/rpc";
-import type { WorkspaceState } from "./design";
+import type { CanvasPoint, CanvasViewport, WorkspaceState } from "./design";
 
 /**
  * Typed Electrobun communication between the Bun main process and the React
@@ -22,7 +22,23 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				response: WorkspaceState;
 			};
 			addTable: {
-				params: { name: string };
+				params: { name: string; position?: CanvasPoint };
+				response: WorkspaceState;
+			};
+			renameTable: {
+				params: { tableId: string; name: string };
+				response: WorkspaceState;
+			};
+			removeTable: {
+				params: { tableId: string };
+				response: WorkspaceState;
+			};
+			moveTable: {
+				params: { tableId: string; position: CanvasPoint };
+				response: WorkspaceState;
+			};
+			setViewport: {
+				params: CanvasViewport;
 				response: WorkspaceState;
 			};
 		};

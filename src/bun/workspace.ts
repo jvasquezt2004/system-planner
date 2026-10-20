@@ -1,10 +1,16 @@
 import type {
 	AddTableAction,
+	CanvasPoint,
+	CanvasViewport,
 	CreateProjectAction,
 	Design,
 	DesignTable,
+	MoveTableAction,
 	OpenProjectAction,
 	ProjectSummary,
+	RemoveTableAction,
+	RenameTableAction,
+	SetViewportAction,
 	WorkspaceState,
 } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
@@ -27,6 +33,10 @@ export type WorkspaceListener = (state: WorkspaceState) => void;
  * The public design workspace interface. The React view and behavioral tests
  * use these actions and observable state instead of reaching into storage, SQL
  * generation, or sandbox orchestration.
+ *
+ * Structural actions (adding, renaming, removing tables) advance the schema
+ * revision and refresh the SQL preview and sandbox. Layout actions (moving a
+ * table card, panning or zooming the canvas) only save the design document.
  */
 export interface DesignWorkspace {
 	getState(): WorkspaceState;
@@ -35,8 +45,16 @@ export interface DesignWorkspace {
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
+	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
+	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
+	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
+	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
+
+const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
+const MIN_ZOOM = 0.3;
+const MAX_ZOOM = 2.5;
 
 export async function createDesignWorkspace(
 	options: DesignWorkspaceOptions,
@@ -58,6 +76,8 @@ export async function createDesignWorkspace(
 		sandbox: { status: "idle" },
 	};
 	let activeProjectId: string | null = null;
+	/** Orders every stored document, including layout-only writes. */
+	let documentRevision = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
 
@@ -156,13 +176,19 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	async function persistAndPreview(projectId: string, revision: number, design: Design) {
-		if (isCurrent(projectId, revision)) {
-			setState({ ...state, save: { status: "saving", revision } });
-		}
+	async function saveDocument(
+		projectId: string,
+		revision: number,
+		documentRevisionToSave: number,
+		design: Design,
+	) {
 		const savedAt = now();
 		try {
-			await store.saveDesign(projectId, design, revision, savedAt);
+			await store.saveDesign(projectId, design, {
+				revision,
+				documentRevision: documentRevisionToSave,
+				savedAt,
+			});
 			if (isCurrent(projectId, revision)) {
 				setState({
 					...state,
@@ -182,7 +208,46 @@ export async function createDesignWorkspace(
 				});
 			}
 		}
+	}
+
+	/** Applies a schema edit: bump the revision, save, then refresh SQL and sandbox. */
+	async function applyStructuralChange(projectId: string, design: Design) {
+		const revision = state.revision + 1;
+		const nextDocumentRevision = documentRevision + 1;
+		documentRevision = nextDocumentRevision;
+		setState({
+			...state,
+			design,
+			revision,
+			save: { status: "saving", revision },
+		});
+		await saveDocument(projectId, revision, nextDocumentRevision, design);
 		await generateAndApply(projectId, revision, design);
+		return state;
+	}
+
+	/**
+	 * Applies a layout edit: the schema revision, SQL preview, and applied
+	 * sandbox stay exactly as they were; only the stored document changes.
+	 */
+	async function applyLayoutChange(projectId: string, design: Design) {
+		const revision = state.revision;
+		const nextDocumentRevision = documentRevision + 1;
+		documentRevision = nextDocumentRevision;
+		setState({
+			...state,
+			design,
+			save: { status: "saving", revision },
+		});
+		await saveDocument(projectId, revision, nextDocumentRevision, design);
+		return state;
+	}
+
+	function requireOpenDesign(): { projectId: string; design: Design } {
+		if (!state.project || !state.design || activeProjectId === null) {
+			throw new Error("Open a project before editing its design.");
+		}
+		return { projectId: activeProjectId, design: state.design };
 	}
 
 	const workspace: DesignWorkspace = {
@@ -202,12 +267,17 @@ export async function createDesignWorkspace(
 				if (name.length === 0) throw new Error("Project name is required.");
 
 				const project: ProjectSummary = { id: createId(), name };
-				const design: Design = { tables: [] };
+				const design: Design = { tables: [], viewport: { ...DEFAULT_VIEWPORT } };
 				const revision = 1;
 				const savedAt = now();
 
-				await store.createProject(project, design, revision, savedAt);
+				await store.createProject(project, design, {
+					revision,
+					documentRevision: revision,
+					savedAt,
+				});
 				activeProjectId = project.id;
+				documentRevision = revision;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -226,45 +296,97 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const record = store.loadProject(action.projectId);
 				if (!record) throw new Error("That project could not be found.");
+				const design = normalizeDesign(record.design);
 
 				activeProjectId = record.project.id;
+				documentRevision = record.documentRevision;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
 					project: record.project,
-					design: record.design,
+					design,
 					revision: record.revision,
 					save: { status: "saved", revision: record.revision, savedAt: record.savedAt },
 					sql: { status: "empty", errors: [] },
 					sandbox: { status: "idle" },
 				});
-				await generateAndApply(record.project.id, record.revision, record.design);
+				await generateAndApply(record.project.id, record.revision, design);
 				return state;
 			});
 		},
 		addTable(action) {
 			return runTask(async () => {
-				const project = state.project;
-				const design = state.design;
-				if (!project || !design || activeProjectId === null) {
-					throw new Error("Open a project before adding a table.");
-				}
+				const { projectId, design } = requireOpenDesign();
 				const name = action.name.trim();
 				if (name.length === 0) throw new Error("Table name is required.");
+				const position = action.position
+					? requirePoint(action.position, "Table position")
+					: defaultTablePosition(design);
 
-				const revision = state.revision + 1;
+				const table = createDefaultTable(name, position, createId);
 				const nextDesign: Design = {
 					...design,
-					tables: [...design.tables, createDefaultTable(name, design, createId)],
+					tables: [...design.tables, table],
 				};
-				setState({
-					...state,
-					design: nextDesign,
-					revision,
-					save: { status: "saving", revision },
-				});
-				await persistAndPreview(project.id, revision, nextDesign);
-				return state;
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		renameTable(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const name = action.name.trim();
+				if (name.length === 0) throw new Error("Table name is required.");
+				const table = requireTable(design, action.tableId);
+				if (table.name === name) return state;
+
+				const nextDesign: Design = {
+					...design,
+					tables: design.tables.map((candidate) =>
+						candidate.id === table.id ? { ...candidate, name } : candidate,
+					),
+				};
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		removeTable(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+
+				const nextDesign: Design = {
+					...design,
+					tables: design.tables.filter((candidate) => candidate.id !== table.id),
+				};
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		moveTable(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const position = requirePoint(action.position, "Table position");
+				if (samePoint(table.position, position)) return state;
+
+				const nextDesign: Design = {
+					...design,
+					tables: design.tables.map((candidate) =>
+						candidate.id === table.id ? { ...candidate, position } : candidate,
+					),
+				};
+				return applyLayoutChange(projectId, nextDesign);
+			});
+		},
+		setViewport(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const viewport: CanvasViewport = {
+					x: requireNumber(action.x, "Canvas position"),
+					y: requireNumber(action.y, "Canvas position"),
+					zoom: clamp(requireNumber(action.zoom, "Canvas zoom"), MIN_ZOOM, MAX_ZOOM),
+				};
+				if (sameViewport(design.viewport, viewport)) return state;
+
+				return applyLayoutChange(projectId, { ...design, viewport });
 			});
 		},
 		async close() {
@@ -282,19 +404,23 @@ export async function createDesignWorkspace(
 	return workspace;
 }
 
+/** Documents saved before the canvas existed have no viewport yet. */
+function normalizeDesign(design: Design): Design {
+	return {
+		tables: design.tables,
+		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
+	};
+}
+
 function createDefaultTable(
 	name: string,
-	design: Design,
+	position: CanvasPoint,
 	createId: () => string,
 ): DesignTable {
-	const index = design.tables.length;
 	return {
 		id: createId(),
 		name,
-		position: {
-			x: 40 + (index % 3) * 300,
-			y: 40 + Math.floor(index / 3) * 240,
-		},
+		position,
 		columns: [
 			{
 				id: createId(),
@@ -306,4 +432,46 @@ function createDefaultTable(
 			},
 		],
 	};
+}
+
+function defaultTablePosition(design: Design): CanvasPoint {
+	const index = design.tables.length;
+	return {
+		x: 40 + (index % 3) * 300,
+		y: 40 + Math.floor(index / 3) * 240,
+	};
+}
+
+function requireTable(design: Design, tableId: string): DesignTable {
+	const table = design.tables.find((candidate) => candidate.id === tableId);
+	if (!table) throw new Error("That table could not be found.");
+	return table;
+}
+
+function requirePoint(point: CanvasPoint, label: string): CanvasPoint {
+	return {
+		x: round(requireNumber(point.x, label)),
+		y: round(requireNumber(point.y, label)),
+	};
+}
+
+function requireNumber(value: number, label: string): number {
+	if (!Number.isFinite(value)) throw new Error(`${label} must be a finite number.`);
+	return value;
+}
+
+function round(value: number): number {
+	return Math.round(value * 100) / 100;
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, value));
+}
+
+function samePoint(a: CanvasPoint, b: CanvasPoint): boolean {
+	return a.x === b.x && a.y === b.y;
+}
+
+function sameViewport(a: CanvasViewport, b: CanvasViewport): boolean {
+	return a.x === b.x && a.y === b.y && a.zoom === b.zoom;
 }
