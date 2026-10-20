@@ -33,6 +33,29 @@ Passed.
   ```
   [workspace] database=...\smoke.sqlite project=Smoke Library sql=current sandbox=applied
   ```
+- The real packaged React view was driven through WebView2 remote debugging.
+  Entering a project and table from the rendered UI produced:
+
+  ```
+  SCHEMA DESIGNER
+  Library
+  Saved
+  TABLES
+  revision 2
+  Books
+  id bigint PK identity required
+  SQL PREVIEW
+  Current
+  CREATE TABLE "Books" (
+    "id" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+    PRIMARY KEY ("id")
+  );
+  SANDBOX CHECK
+  Accepted
+  ```
+- The same run wrote the project and table into the real SQLite database, and
+  closing and relaunching the packaged app restored them with the SQL preview
+  current and the sandbox accepted.
 
 No development server, Docker daemon, or local PostgreSQL installation was
 running during the check.
@@ -66,6 +89,25 @@ DB_PLANNER_DATABASE_PATH="$SMOKE_DB" \
 Expect `Schema Designer started!` followed by a `[workspace]` line whose
 `sandbox` value is `applied`.
 
+To drive the actual view, launch with WebView2 remote debugging enabled:
+
+```bash
+WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS="--remote-debugging-port=9222" \
+DB_PLANNER_DATABASE_PATH="$SMOKE_DB" \
+  "$APP/bin/launcher.exe" &
+
+curl -s http://127.0.0.1:9222/json
+```
+
+Connect to the page's `webSocketDebuggerUrl` and use `Runtime.evaluate` to set
+`input[placeholder="Library"]` and click **Create project**, then set
+`input[placeholder="Books"]` and click **Add table**. React controlled inputs
+need the native value setter followed by an `input` event. Read
+`document.body.innerText` and the `[data-testid="sql-preview"]` text to confirm
+`Saved`, `Current`, and `Accepted`. Inspect the SQLite file after the run to
+confirm the same project/table was persisted, then relaunch and re-read the page
+to confirm restoration.
+
 ## Integration limitations recorded
 
 - PGlite is an embedded, single-connection PostgreSQL build. It is suitable for
@@ -80,3 +122,7 @@ Expect `Schema Designer started!` followed by a `[workspace]` line whose
   main process. Omitting `pglite.wasm`, `pglite.data`, or `initdb.wasm` from
   `electrobun.config.ts` makes the packaged sandbox fail even though development
   works.
+- Autosave plus sandbox validation can exceed Electrobun's 1-second default RPC
+  request timeout. The view sets `maxRequestTime` to 60 seconds; the packaged UI
+  check caught this when the first packaged request reported a timeout after the
+  design had already been saved and applied.

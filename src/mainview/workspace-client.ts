@@ -7,6 +7,8 @@ const listeners = new Set<(state: WorkspaceState) => void>();
 let latestState: WorkspaceState | null = null;
 
 const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
+	// Autosave plus sandbox validation can take longer than the 1s default.
+	maxRequestTime: 60_000,
 	handlers: {
 		messages: {
 			workspaceState(state) {
