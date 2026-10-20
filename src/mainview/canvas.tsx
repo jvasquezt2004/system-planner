@@ -8,6 +8,7 @@ import {
 	type DesignColumn,
 	type DesignTable,
 } from "../shared/design";
+import { describeColumnDefault } from "../shared/column-defaults";
 import { ColumnBadge } from "./column-badge";
 import { ColumnTypeBadge } from "./column-type-badge";
 
@@ -464,6 +465,13 @@ function ColumnRow({ column, index }: { column: DesignColumn; index: number }) {
 			)}
 			{column.identity && (
 				<ColumnBadge label="ID" className="text-sky-300" title="Identity generation" />
+			)}
+			{column.default.kind !== "none" && (
+				<ColumnBadge
+					label="D"
+					className="text-fuchsia-300"
+					title={`Default: ${describeColumnDefault(column.default)}`}
+				/>
 			)}
 			{column.nullable ? (
 				<ColumnBadge label="?" className="text-slate-500" title="Nullable" />

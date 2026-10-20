@@ -1,3 +1,7 @@
+import {
+	columnDefaultProblem,
+	renderDefaultExpression,
+} from "../shared/column-defaults";
 import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
 import type { Design, DesignColumn, DesignTable } from "../shared/design";
 
@@ -65,6 +69,21 @@ function validateColumn(
 		errors.push(`Column ${label} in table ${tableLabel} uses an unsupported type.`);
 	} else if (column.identity && !columnTypeInfo(column.type).identity) {
 		errors.push(`Column ${label} in table ${tableLabel} can only use identity on integer types.`);
+	} else {
+		const problem = columnDefaultProblem(column.type, column.default);
+		if (problem) {
+			errors.push(
+				`Column ${label} in table ${tableLabel} has an invalid default: ${problem}.`,
+			);
+		}
+	}
+
+	// Identity generation and a default both supply a value, so PostgreSQL
+	// cannot accept them together. The draft stays saved until resolved.
+	if (column.identity && column.default.kind !== "none") {
+		errors.push(
+			`Column ${label} in table ${tableLabel} cannot use identity generation and a default; choose one.`,
+		);
 	}
 
 	// A nullable primary key or identity column is contradictory; keep the
@@ -91,6 +110,8 @@ function renderTable(table: DesignTable): string {
 function renderColumn(column: DesignColumn): string {
 	const parts = [`  ${quoteIdentifier(column.name)} ${column.type}`];
 	if (column.identity) parts.push("GENERATED ALWAYS AS IDENTITY");
+	const defaultExpression = renderDefaultExpression(column.default);
+	if (defaultExpression !== null) parts.push(`DEFAULT ${defaultExpression}`);
 	if (column.primaryKey || column.identity || !column.nullable) parts.push("NOT NULL");
 	// A primary key is already unique, so it does not repeat the constraint.
 	if (column.unique && !column.primaryKey) parts.push("UNIQUE");

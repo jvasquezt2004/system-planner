@@ -39,3 +39,15 @@ _Avoid_: Table containment
 **SQL preview**:
 The read-only SQL representation generated from a design.
 _Avoid_: SQL editor
+
+**Structured default**:
+A column's automatic value chosen from the fixed options its type supports:
+none, a typed literal, current timestamp, UUID generation, or identity
+generation. Never a handwritten SQL expression.
+_Avoid_: Default expression, SQL default
+
+**Typed literal**:
+A default value written in the category of its column's type — text, whole
+number, number, boolean, date, timestamp, or JSON — and encoded as a value in
+the generated SQL.
+_Avoid_: Literal SQL

@@ -3,9 +3,11 @@
  * See GLOSSARY.md: Project, Design, Sandbox, Table card, SQL preview.
  */
 
+import type { ColumnDefault } from "./column-defaults";
 import type { ColumnType } from "./column-types";
 
 export type { ColumnType } from "./column-types";
+export type { ColumnDefault } from "./column-defaults";
 
 export type ProjectSummary = {
 	id: string;
@@ -36,6 +38,8 @@ export type DesignColumn = {
 	primaryKey: boolean;
 	unique: boolean;
 	identity: boolean;
+	/** Structured default chosen from the options the column type supports. */
+	default: ColumnDefault;
 	/** Design-time intent for the column; never rendered as SQL. */
 	notes: string;
 };
@@ -67,6 +71,8 @@ export type SandboxAppliedColumn = {
 	name: string;
 	dataType: string;
 	isIdentity: boolean;
+	/** PostgreSQL's own default expression, or null when the column has none. */
+	defaultExpression: string | null;
 	nullable: boolean;
 	primaryKey: boolean;
 	unique: boolean;
@@ -124,7 +130,10 @@ export type AddColumnAction = {
 
 /** Editable column properties. Omitted properties stay as they are. */
 export type ColumnChanges = Partial<
-	Pick<DesignColumn, "name" | "type" | "nullable" | "primaryKey" | "unique" | "notes">
+	Pick<
+		DesignColumn,
+		"name" | "type" | "nullable" | "primaryKey" | "unique" | "notes" | "identity" | "default"
+	>
 >;
 
 export type UpdateColumnAction = {

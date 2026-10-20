@@ -13,6 +13,28 @@ export type ColumnTypeFamilyId =
 	| "temporal"
 	| "json";
 
+/**
+ * How a typed literal default is written and validated. It is deliberately
+ * narrower than the column type: `bigint`, `integer`, and `smallint` all take
+ * an integer literal, while `date` and `timestamptz` take different literals.
+ */
+export type ColumnLiteralType =
+	| "text"
+	| "integer"
+	| "numeric"
+	| "boolean"
+	| "date"
+	| "timestamp"
+	| "json";
+
+/** Which structured defaults a column type accepts. */
+export type ColumnDefaultSupport = {
+	/** Literal category for this type, or null when it takes no literal default. */
+	literal: ColumnLiteralType | null;
+	currentTimestamp: boolean;
+	generateUuid: boolean;
+};
+
 /** A readable grouping used by the type picker and the type-family symbols. */
 export type ColumnTypeFamily = {
 	id: ColumnTypeFamilyId;
@@ -73,24 +95,81 @@ type ColumnTypeDefinition = {
 	family: ColumnTypeFamilyId;
 	/** Identity generation is only meaningful for integer types. */
 	identity: boolean;
+	/** Structured defaults this type accepts beyond none and identity. */
+	defaults: ColumnDefaultSupport;
 };
 
 export const COLUMN_TYPE_DEFINITIONS = [
-	{ type: "bigint", label: "Big integer", family: "integer", identity: true },
-	{ type: "integer", label: "Integer", family: "integer", identity: true },
-	{ type: "smallint", label: "Small integer", family: "integer", identity: true },
-	{ type: "text", label: "Text", family: "text", identity: false },
-	{ type: "uuid", label: "UUID", family: "uuid", identity: false },
-	{ type: "boolean", label: "Boolean", family: "boolean", identity: false },
-	{ type: "numeric", label: "Numeric", family: "numeric", identity: false },
-	{ type: "date", label: "Date", family: "temporal", identity: false },
+	{
+		type: "bigint",
+		label: "Big integer",
+		family: "integer",
+		identity: true,
+		defaults: { literal: "integer", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "integer",
+		label: "Integer",
+		family: "integer",
+		identity: true,
+		defaults: { literal: "integer", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "smallint",
+		label: "Small integer",
+		family: "integer",
+		identity: true,
+		defaults: { literal: "integer", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "text",
+		label: "Text",
+		family: "text",
+		identity: false,
+		defaults: { literal: "text", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "uuid",
+		label: "UUID",
+		family: "uuid",
+		identity: false,
+		defaults: { literal: null, currentTimestamp: false, generateUuid: true },
+	},
+	{
+		type: "boolean",
+		label: "Boolean",
+		family: "boolean",
+		identity: false,
+		defaults: { literal: "boolean", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "numeric",
+		label: "Numeric",
+		family: "numeric",
+		identity: false,
+		defaults: { literal: "numeric", currentTimestamp: false, generateUuid: false },
+	},
+	{
+		type: "date",
+		label: "Date",
+		family: "temporal",
+		identity: false,
+		defaults: { literal: "date", currentTimestamp: false, generateUuid: false },
+	},
 	{
 		type: "timestamptz",
 		label: "Timestamp with time zone",
 		family: "temporal",
 		identity: false,
+		defaults: { literal: "timestamp", currentTimestamp: true, generateUuid: false },
 	},
-	{ type: "jsonb", label: "JSONB", family: "json", identity: false },
+	{
+		type: "jsonb",
+		label: "JSONB",
+		family: "json",
+		identity: false,
+		defaults: { literal: "json", currentTimestamp: false, generateUuid: false },
+	},
 ] as const satisfies readonly ColumnTypeDefinition[];
 
 export type ColumnType = (typeof COLUMN_TYPE_DEFINITIONS)[number]["type"];
@@ -122,6 +201,7 @@ export function findColumnTypeInfo(value: string): ColumnTypeInfo | null {
 		type: definition.type as ColumnType,
 		label: definition.label,
 		identity: definition.identity,
+		defaults: definition.defaults,
 		family,
 	};
 }

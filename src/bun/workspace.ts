@@ -1,3 +1,9 @@
+import {
+	isColumnDefault,
+	noColumnDefault,
+	normalizeColumnDefault,
+	sameColumnDefault,
+} from "../shared/column-defaults";
 import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
 import {
 	CANVAS_MAX_ZOOM,
@@ -404,6 +410,7 @@ export async function createDesignWorkspace(
 					primaryKey: false,
 					unique: false,
 					identity: false,
+					default: noColumnDefault(),
 					notes: "",
 				};
 				const nextDesign = replaceTable(design, {
@@ -511,6 +518,9 @@ function normalizeDesign(design: Design): Design {
 			columns: table.columns.map((column) => ({
 				...column,
 				unique: column.unique ?? false,
+				default: isColumnDefault(column.default)
+					? normalizeColumnDefault(column.default)
+					: noColumnDefault(),
 				notes: column.notes ?? "",
 			})),
 		})),
@@ -536,6 +546,7 @@ function createDefaultTable(
 				primaryKey: true,
 				unique: false,
 				identity: true,
+				default: noColumnDefault(),
 				notes: "",
 			},
 		],
@@ -610,6 +621,18 @@ function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {
 		if (typeof changes.notes !== "string") throw new Error("Column notes must be text.");
 		normalized.notes = changes.notes.trim();
 	}
+	if (changes.identity !== undefined) {
+		if (typeof changes.identity !== "boolean") {
+			throw new Error("Column identity must be true or false.");
+		}
+		normalized.identity = changes.identity;
+	}
+	if (changes.default !== undefined) {
+		if (!isColumnDefault(changes.default)) {
+			throw new Error("That column default is not supported.");
+		}
+		normalized.default = normalizeColumnDefault(changes.default);
+	}
 	return normalized;
 }
 
@@ -622,6 +645,7 @@ function sameColumn(a: DesignColumn, b: DesignColumn): boolean {
 		a.primaryKey === b.primaryKey &&
 		a.unique === b.unique &&
 		a.identity === b.identity &&
+		sameColumnDefault(a.default, b.default) &&
 		a.notes === b.notes
 	);
 }

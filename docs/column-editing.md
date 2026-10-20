@@ -10,11 +10,16 @@ of the table's structure.
   with type `text`, nullable, not unique, not a key, and no notes. The new
   column is selected for editing immediately.
 - **Select a column** — click a row in the Columns list. The editor below shows
-  that column's name, type, key settings, nullability, uniqueness, and notes.
+  that column's name, type, default, key settings, nullability, uniqueness, and
+  notes.
 - **Apply changes** — column edits are a draft until applied. Applying one edit
   updates the card, the SQL preview, and the sandbox together. `Reset` discards
   the draft. Background saves and sandbox results never overwrite a draft in
   progress.
+- **Default** — choose no default, a typed literal, current timestamp for
+  `timestamptz`, UUID generation for `uuid`, or identity generation for integer
+  types. See [column-defaults.md](column-defaults.md) for the compatibility
+  matrix, value formats, and validation rules.
 - **Remove column** — inline confirmation, then removal. The column's stable
   identity disappears with it; other columns keep theirs. Relationship
   dependency warnings arrive with the relationship tickets.
@@ -22,8 +27,8 @@ of the table's structure.
   and do not change the schema revision or rebuild the sandbox.
 
 Renaming a column, changing its type, or toggling its key settings keeps the
-column's stable identity. Associated metadata — notes, uniqueness, and later
-relationships — therefore survives a rename.
+column's stable identity. Associated metadata — notes, uniqueness, defaults, and
+later relationships — therefore survives a rename.
 
 ## Supported types
 
@@ -58,10 +63,12 @@ Type parameters (such as `numeric(10, 2)`) are deliberately outside this slice.
   or nullable identity column is saved but blocks generation with an explicit
   error, both in the inspector and in the SQL panel.
 - `Unique` renders a real `UNIQUE` constraint. A primary key does not repeat it.
-- Identity generation is existing behaviour and has no editor yet; structured
-  defaults arrive with their own ticket. Changing a column's type out of the
-  integer family clears identity in the same visible edit, because identity
-  cannot apply to another family. The editor warns before applying that change.
+- Identity generation is one of the structured default choices. Changing a
+  column's type out of the integer family clears identity in the same visible
+  edit, because identity cannot apply to another family. The editor warns before
+  applying that change. Other incompatible defaults are kept in the draft and
+  reported as validation errors instead of being silently reinterpreted; see
+  [column-defaults.md](column-defaults.md).
 
 ## Incomplete drafts
 
@@ -107,7 +114,10 @@ Coverage added for this work:
   and the sandbox;
 - actual constraint behaviour in a real PGlite instance: duplicate primary keys
   and duplicate unique values rejected, required columns refusing `NULL`, and
-  nullable columns accepting omission.
+  nullable columns accepting omission;
+- structured defaults: safe literal encoding, current timestamp, UUID
+  generation, identity generation, removal, persistence, and incompatible
+  combinations (see [column-defaults.md](column-defaults.md)).
 
 The real Electrobun desktop view was driven through WebView2 remote debugging
 against a temporary database (`hutch run dev`, no Vite server). In one run:

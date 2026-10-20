@@ -3,8 +3,12 @@ import { PGlite } from "@electric-sql/pglite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { COLUMN_TYPE_DEFINITIONS } from "../shared/column-types";
-import type { Design, DesignColumn, DesignTable } from "../shared/design";
+import {
+	COLUMN_TYPE_DEFINITIONS,
+	type ColumnLiteralType,
+	type ColumnType,
+} from "../shared/column-types";
+import type { ColumnChanges, Design, DesignColumn, DesignTable } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { openDesignStore, type DesignStore } from "./store";
 import {
@@ -113,6 +117,7 @@ describe("design workspace", () => {
 						name: "id",
 						dataType: "bigint",
 						isIdentity: true,
+						defaultExpression: null,
 						nullable: false,
 						primaryKey: true,
 						unique: false,
@@ -541,6 +546,7 @@ describe("design workspace", () => {
 			name: "isbn",
 			dataType: "text",
 			isIdentity: false,
+			defaultExpression: null,
 			nullable: false,
 			primaryKey: false,
 			unique: true,
@@ -816,6 +822,7 @@ describe("design workspace", () => {
 			name: "id",
 			dataType: "uuid",
 			isIdentity: false,
+			defaultExpression: null,
 			nullable: false,
 			primaryKey: true,
 			unique: false,
@@ -890,6 +897,552 @@ describe("design workspace", () => {
 			}
 		},
 		30_000,
+	);
+
+	test(
+		"stores a structured text default as a value that survives SQL-looking content",
+		async () => {
+			const { workspace, databasePath } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Defaults" });
+			const withTable = await workspace.addTable({ name: "Books" });
+			const table = requireTable(withTable.design?.tables[0]);
+			const withColumn = await workspace.addColumn({
+				tableId: table.id,
+				name: "title",
+				type: "text",
+			});
+			const column = requireColumn(requireTable(withColumn.design?.tables[0]), 1);
+
+			// Quotes, a statement-shaped payload, and a backslash must all stay data.
+			const literal = `O'Reilly; DROP TABLE "Books"; -- \\ ok`;
+			const state = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: column.id,
+				changes: {
+					default: { kind: "literal", literalType: "text", value: literal },
+				},
+			});
+
+			expect(requireColumn(requireTable(state.design?.tables[0]), 1).default).toEqual({
+				kind: "literal",
+				literalType: "text",
+				value: literal,
+			});
+			expect(state.save).toMatchObject({ status: "saved" });
+			expect(state.sql.status).toBe("current");
+			if (state.sql.status !== "current") {
+				throw new Error(`Expected current SQL, received ${state.sql.status}.`);
+			}
+			expect(state.sql.sql).toContain(
+				`"title" text DEFAULT 'O''Reilly; DROP TABLE "Books"; -- \\ ok'`,
+			);
+			expect(state.sandbox.status).toBe("applied");
+			if (state.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept the text default.");
+			}
+			expect(
+				state.sandbox.tables[0].columns.find((item) => item.name === "title")
+					?.defaultExpression,
+			).toContain("O''Reilly");
+
+			const database = new PGlite();
+			try {
+				await database.exec(state.sql.sql);
+				await database.exec(`INSERT INTO "Books" DEFAULT VALUES`);
+				const inserted = await database.query<{ title: string }>(
+					`SELECT "title" FROM "Books"`,
+				);
+				expect(inserted.rows[0].title).toBe(literal);
+
+				// The payload was never executed as a statement.
+				const tables = await database.query<{ table_name: string }>(
+					`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+				);
+				expect(tables.rows.map((row) => row.table_name)).toEqual(["Books"]);
+			} finally {
+				await database.close();
+			}
+
+			await closeTestWorkspace(workspace);
+			const reopened = await reopenTestWorkspace(databasePath);
+			expect(
+				requireColumn(requireTable(reopened.getState().design?.tables[0]), 1).default,
+			).toEqual({ kind: "literal", literalType: "text", value: literal });
+		},
+		30_000,
+	);
+
+	test(
+		"applies every structured default and demonstrates the resulting PostgreSQL behavior",
+		async () => {
+			const { workspace, databasePath } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Events" });
+			const withTable = await workspace.addTable({ name: "Events" });
+			const table = requireTable(withTable.design?.tables[0]);
+
+			const types = {
+				amount: "numeric",
+				active: "boolean",
+				event_date: "date",
+				recorded_at: "timestamptz",
+				shipped_at: "timestamptz",
+				payload: "jsonb",
+				token: "uuid",
+				sequence: "bigint",
+			} as const;
+
+			const columns = new Map<string, string>();
+			for (const [name, type] of Object.entries(types)) {
+				const added = await workspace.addColumn({ tableId: table.id, name, type });
+				columns.set(name, requireNamedColumn(requireTable(added.design?.tables[0]), name).id);
+			}
+
+			const jsonValue = JSON.stringify({ note: "it's fine", tags: ["a", "b"] });
+			let state = workspace.getState();
+
+			async function applyDefault(
+				name: keyof typeof types,
+				changes: ColumnChanges,
+			) {
+				const columnId = columns.get(name);
+				if (!columnId) throw new Error(`Expected column ${name}.`);
+				state = await workspace.updateColumn({ tableId: table.id, columnId, changes });
+			}
+
+			await applyDefault("amount", {
+				default: { kind: "literal", literalType: "numeric", value: "12.50" },
+			});
+			await applyDefault("active", {
+				default: { kind: "literal", literalType: "boolean", value: "true" },
+			});
+			await applyDefault("event_date", {
+				default: { kind: "literal", literalType: "date", value: "2024-02-29" },
+			});
+			await applyDefault("recorded_at", { default: { kind: "currentTimestamp" } });
+			await applyDefault("shipped_at", {
+				default: {
+					kind: "literal",
+					literalType: "timestamp",
+					value: "2024-03-01T08:30:00Z",
+				},
+			});
+			await applyDefault("payload", {
+				default: { kind: "literal", literalType: "json", value: jsonValue },
+			});
+			await applyDefault("token", { default: { kind: "generateUuid" } });
+			await applyDefault("sequence", { identity: true, nullable: false });
+
+			expect(state.save).toMatchObject({ status: "saved" });
+			expect(state.sql.status).toBe("current");
+			if (state.sql.status !== "current") {
+				throw new Error(`Expected current SQL, received ${state.sql.status}.`);
+			}
+			for (const fragment of [
+				`"amount" numeric DEFAULT 12.50`,
+				`"active" boolean DEFAULT true`,
+				`"event_date" date DEFAULT DATE '2024-02-29'`,
+				`"recorded_at" timestamptz DEFAULT CURRENT_TIMESTAMP`,
+				`"shipped_at" timestamptz DEFAULT TIMESTAMP WITH TIME ZONE '2024-03-01T08:30:00Z'`,
+				`"payload" jsonb DEFAULT JSONB '{"note":"it''s fine","tags":["a","b"]}'`,
+				`"token" uuid DEFAULT gen_random_uuid()`,
+				`"sequence" bigint GENERATED ALWAYS AS IDENTITY NOT NULL`,
+			]) {
+				expect(state.sql.sql).toContain(fragment);
+			}
+
+			// The design distinguishes values the designer typed from values the
+			// database generates.
+			const designed = requireTable(state.design?.tables[0]);
+			expect(requireNamedColumn(designed, "amount").default.kind).toBe("literal");
+			expect(requireNamedColumn(designed, "recorded_at").default.kind).toBe(
+				"currentTimestamp",
+			);
+			expect(requireNamedColumn(designed, "token").default.kind).toBe("generateUuid");
+			expect(requireNamedColumn(designed, "sequence").identity).toBe(true);
+
+			expect(state.sandbox.status).toBe("applied");
+			if (state.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept every structured default.");
+			}
+			const applied = state.sandbox.tables[0].columns;
+			expect(
+				Object.fromEntries(applied.map((column) => [column.name, column.defaultExpression])),
+			).toMatchObject({
+				id: null,
+				sequence: null,
+				recorded_at: "CURRENT_TIMESTAMP",
+				token: "gen_random_uuid()",
+			});
+			for (const name of [
+				"amount",
+				"active",
+				"event_date",
+				"shipped_at",
+				"payload",
+			]) {
+				expect(
+					applied.find((column) => column.name === name)?.defaultExpression,
+				).toBeTruthy();
+			}
+
+			const database = new PGlite();
+			try {
+				await database.exec(state.sql.sql);
+				await database.exec(`INSERT INTO "Events" DEFAULT VALUES`);
+				await database.exec(`INSERT INTO "Events" DEFAULT VALUES`);
+				const result = await database.query<{
+					id: number;
+					sequence: number;
+					amount: string;
+					active: boolean;
+					event_date: string;
+					shipped_at: string;
+					recorded: boolean;
+					note: string;
+					token: string;
+				}>(
+					`SELECT "id", "sequence", "amount"::text AS amount, "active",
+						"event_date"::text AS event_date, "shipped_at"::text AS shipped_at,
+						("recorded_at" IS NOT NULL) AS recorded, "payload"->>'note' AS note,
+						"token"::text AS token
+					FROM "Events" ORDER BY "id"`,
+				);
+				expect(result.rows).toHaveLength(2);
+				const [first, second] = result.rows;
+				expect(first).toMatchObject({
+					id: 1,
+					sequence: 1,
+					amount: "12.50",
+					active: true,
+					event_date: "2024-02-29",
+					recorded: true,
+					note: "it's fine",
+				});
+				expect(first.shipped_at).toContain("2024-03-01");
+				expect(first.token).toMatch(
+					/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+				);
+				expect(second.id).toBe(2);
+				expect(second.sequence).toBe(2);
+				expect(second.token).not.toBe(first.token);
+			} finally {
+				await database.close();
+			}
+
+			// Removing a default returns the column to having none.
+			const removed = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: requireNamedColumn(
+					requireTable(workspace.getState().design?.tables[0]),
+					"active",
+				).id,
+				changes: { default: { kind: "none" } },
+			});
+			expect(removed.sql.status).toBe("current");
+			if (removed.sql.status !== "current") {
+				throw new Error("Expected current SQL after removing a default.");
+			}
+			expect(removed.sql.sql).not.toContain('"active" boolean DEFAULT');
+			expect(removed.sandbox.status).toBe("applied");
+			if (removed.sandbox.status !== "applied") {
+				throw new Error("Expected the sandbox to accept the removed default.");
+			}
+			expect(
+				removed.sandbox.tables[0].columns.find(
+					(column) => column.name === "active",
+				)?.defaultExpression,
+			).toBeNull();
+
+			const withoutDefault = new PGlite();
+			try {
+				await withoutDefault.exec(removed.sql.sql);
+				await withoutDefault.exec(
+					`INSERT INTO "Events" ("active") VALUES (DEFAULT), (NULL)`,
+				);
+				const afterRemoval = await withoutDefault.query<{ active: boolean | null }>(
+					`SELECT "active" FROM "Events" ORDER BY "id"`,
+				);
+				expect(afterRemoval.rows).toEqual([{ active: null }, { active: null }]);
+			} finally {
+				await withoutDefault.close();
+			}
+
+			await closeTestWorkspace(workspace);
+			const reopened = await reopenTestWorkspace(databasePath);
+			const restored = requireTable(reopened.getState().design?.tables[0]);
+			expect(requireNamedColumn(restored, "amount").default).toEqual({
+				kind: "literal",
+				literalType: "numeric",
+				value: "12.50",
+			});
+			expect(requireNamedColumn(restored, "payload").default).toEqual({
+				kind: "literal",
+				literalType: "json",
+				value: jsonValue,
+			});
+			expect(requireNamedColumn(restored, "recorded_at").default).toEqual({
+				kind: "currentTimestamp",
+			});
+			expect(requireNamedColumn(restored, "token").default).toEqual({
+				kind: "generateUuid",
+			});
+			expect(requireNamedColumn(restored, "sequence").identity).toBe(true);
+			expect(requireNamedColumn(restored, "active").default).toEqual({ kind: "none" });
+		},
+		90_000,
+	);
+
+	test(
+		"retypes a column without silently reinterpreting its default",
+		async () => {
+			const { workspace } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Retyping" });
+			const withTable = await workspace.addTable({ name: "Notes" });
+			const table = requireTable(withTable.design?.tables[0]);
+			const withColumn = await workspace.addColumn({
+				tableId: table.id,
+				name: "label",
+				type: "text",
+			});
+			const label = requireNamedColumn(requireTable(withColumn.design?.tables[0]), "label");
+
+			const authored = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: {
+					default: { kind: "literal", literalType: "text", value: "hello" },
+				},
+			});
+			expect(authored.sql.status).toBe("current");
+			expect(authored.sandbox).toMatchObject({ status: "applied" });
+			const appliedRevision = authored.sandbox.status === "applied" ? authored.sandbox.revision : 0;
+
+			const retyped = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: { type: "integer" },
+			});
+			expect(retyped.save).toMatchObject({ status: "saved" });
+			expect(requireNamedColumn(requireTable(retyped.design?.tables[0]), "label").default).toEqual(
+				{ kind: "literal", literalType: "text", value: "hello" },
+			);
+			expect(retyped.sql.status).toBe("stale");
+			if (retyped.sql.status !== "stale") {
+				throw new Error("Expected the retyped default to block SQL generation.");
+			}
+			expect(retyped.sql.errors.join(" ")).toContain(
+				"needs a whole number default, not a text value",
+			);
+			expect(retyped.sandbox).toMatchObject({ status: "applied", revision: appliedRevision });
+
+			// Returning to the authored type makes the same default valid again.
+			const restored = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: { type: "text" },
+			});
+			expect(restored.sql.status).toBe("current");
+			expect(restored.sandbox.status).toBe("applied");
+
+			const timestampOnText = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: { default: { kind: "currentTimestamp" } },
+			});
+			expect(timestampOnText.save).toMatchObject({ status: "saved" });
+			expect(timestampOnText.sql.status).toBe("stale");
+			if (timestampOnText.sql.status !== "stale") {
+				throw new Error("Expected current timestamp to be rejected for text.");
+			}
+			expect(timestampOnText.sql.errors.join(" ")).toContain(
+				"current timestamp only applies to timestamp columns",
+			);
+
+			const uuidOnText = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: { default: { kind: "generateUuid" } },
+			});
+			expect(uuidOnText.sql.status).toBe("stale");
+			if (uuidOnText.sql.status !== "stale") {
+				throw new Error("Expected UUID generation to be rejected for text.");
+			}
+			expect(uuidOnText.sql.errors.join(" ")).toContain(
+				"UUID generation only applies to UUID columns",
+			);
+
+			const cleared = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: label.id,
+				changes: { default: { kind: "none" } },
+			});
+			expect(cleared.sql.status).toBe("current");
+			expect(cleared.sandbox.status).toBe("applied");
+		},
+		60_000,
+	);
+
+	test(
+		"keeps invalid default values in the saved draft as visible validation errors",
+		async () => {
+			const { workspace, databasePath } = await openTestWorkspace();
+
+			await workspace.createProject({ name: "Invalid defaults" });
+			const withTable = await workspace.addTable({ name: "Samples" });
+			const table = requireTable(withTable.design?.tables[0]);
+
+			const literals: Array<{
+				name: string;
+				type: ColumnType;
+				literalType: ColumnLiteralType;
+				value: string;
+				message: string;
+			}> = [
+				{
+					name: "label",
+					type: "text",
+					literalType: "integer",
+					value: "7",
+					message: "needs a text value default",
+				},
+				{
+					name: "quantity",
+					type: "integer",
+					literalType: "integer",
+					value: "not a number",
+					message: "is not a whole number",
+				},
+				{
+					name: "small_count",
+					type: "smallint",
+					literalType: "integer",
+					value: "40000",
+					message: "outside the smallint range",
+				},
+				{
+					name: "price",
+					type: "numeric",
+					literalType: "numeric",
+					value: "12,50",
+					message: "is not a number",
+				},
+				{
+					name: "enabled",
+					type: "boolean",
+					literalType: "boolean",
+					value: "yes",
+					message: "choose true or false",
+				},
+				{
+					name: "due_on",
+					type: "date",
+					literalType: "date",
+					value: "2024-02-30",
+					message: "is not a valid date",
+				},
+				{
+					name: "happened_at",
+					type: "timestamptz",
+					literalType: "timestamp",
+					value: "2024-03-01T08:30:00",
+					message: "include a zone",
+				},
+				{
+					name: "payload",
+					type: "jsonb",
+					literalType: "json",
+					value: "{nope}",
+					message: "is not valid JSON",
+				},
+			];
+
+			const ids = new Map<string, string>();
+			for (const item of literals) {
+				const added = await workspace.addColumn({
+					tableId: table.id,
+					name: item.name,
+					type: item.type,
+				});
+				ids.set(item.name, requireNamedColumn(requireTable(added.design?.tables[0]), item.name).id);
+			}
+
+			let state = workspace.getState();
+			for (const item of literals) {
+				const columnId = ids.get(item.name);
+				if (!columnId) throw new Error(`Expected column ${item.name}.`);
+				state = await workspace.updateColumn({
+					tableId: table.id,
+					columnId,
+					changes: {
+						default: {
+							kind: "literal",
+							literalType: item.literalType,
+							value: item.value,
+						},
+					},
+				});
+				expect(state.save).toMatchObject({ status: "saved" });
+				expect(state.sql.status).toBe("stale");
+				if (state.sql.status !== "stale") {
+					throw new Error(`Expected ${item.name} to block SQL generation.`);
+				}
+				expect(state.sql.errors.join(" ")).toContain(item.message);
+				expect(
+					requireNamedColumn(requireTable(state.design?.tables[0]), item.name).default,
+				).toEqual({ kind: "literal", literalType: item.literalType, value: item.value });
+			}
+
+			// Identity generation and a default both supply a value.
+			const idColumn = requireNamedColumn(requireTable(state.design?.tables[0]), "id");
+			const conflicting = await workspace.updateColumn({
+				tableId: table.id,
+				columnId: idColumn.id,
+				changes: {
+					identity: true,
+					default: { kind: "literal", literalType: "integer", value: "5" },
+				},
+			});
+			expect(conflicting.save).toMatchObject({ status: "saved" });
+			expect(conflicting.sql.status).toBe("stale");
+			if (conflicting.sql.status !== "stale") {
+				throw new Error("Expected identity with a default to block SQL generation.");
+			}
+			expect(conflicting.sql.errors.join(" ")).toContain(
+				"cannot use identity generation and a default",
+			);
+
+			// A malformed action is refused instead of being stored.
+			await expect(
+				workspace.updateColumn({
+					tableId: table.id,
+					columnId: idColumn.id,
+					changes: {
+						default: { kind: "literal", literalType: "text", value: 5 } as never,
+					},
+				}),
+			).rejects.toThrow("That column default is not supported.");
+
+			await closeTestWorkspace(workspace);
+			const reopened = await reopenTestWorkspace(databasePath);
+			const restored = requireTable(reopened.getState().design?.tables[0]);
+			for (const item of literals) {
+				expect(requireNamedColumn(restored, item.name).default).toEqual({
+					kind: "literal",
+					literalType: item.literalType,
+					value: item.value,
+				});
+			}
+			expect(requireNamedColumn(restored, "id").default).toEqual({
+				kind: "literal",
+				literalType: "integer",
+				value: "5",
+			});
+			expect(reopened.getState().sql.status).toBe("empty");
+		},
+		90_000,
 	);
 
 	test("moves a card without advancing the schema revision or rebuilding the sandbox", async () => {
@@ -985,6 +1538,12 @@ function requireTable(table: DesignTable | undefined): DesignTable {
 function requireColumn(table: DesignTable, index: number): DesignColumn {
 	const column = table.columns[index];
 	if (!column) throw new Error(`Expected column ${index} to exist.`);
+	return column;
+}
+
+function requireNamedColumn(table: DesignTable, name: string): DesignColumn {
+	const column = table.columns.find((candidate) => candidate.name === name);
+	if (!column) throw new Error(`Expected column ${name} to exist.`);
 	return column;
 }
 
