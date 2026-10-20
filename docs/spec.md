@@ -106,7 +106,7 @@ Autosave the design and its layout in local SQLite independently of database val
 - Generate PostgreSQL SQL in one direction from the design and expose it read-only, with copy/export. An incomplete draft that cannot generate SQL retains the last generatable SQL with explicit stale status and errors. If no previous SQL exists, show an empty/blocked state. A database rejection shows the attempted SQL and its error rather than presenting the previous success as current.
 - Debounce automatic sandbox rebuilds after structural editing settles. Layout-only changes save layout without rebuilding the database. A failed candidate rebuild leaves the authoritative design and last successful preview intact.
 - The application must not require Docker or a separately installed PostgreSQL server. PGlite is the first candidate because its PostgreSQL WebAssembly runtime supports Bun; it is not yet a verified dependency of this application. Verify its required capabilities and packaged Windows operation before finalizing it, and retain a replaceable sandbox implementation.
-- Windows is the initial verified platform. Keep platform-specific operations localized, but make no macOS/Linux support claim until packaged builds have been tested there.
+- Windows is the initial verification target. Keep platform-specific operations localized, but make no macOS/Linux support claim until packaged builds have been tested there.
 
 ### Proposed module interface and implementation invariants
 
@@ -122,7 +122,7 @@ These are technical proposals synthesized for the spec, not additional product c
 
 ## Testing Decisions
 
-### Proposed primary seam — awaiting confirmation
+### Confirmed primary seam
 
 Use the design workspace module's public application interface as the single primary behavioral test seam. Exercise the same actions and observable state used by the React view, with real temporary SQLite storage and a real disposable PostgreSQL-compatible sandbox. This is a new seam because the starter has no existing schema-design interface to reuse.
 
@@ -177,9 +177,9 @@ A thin packaged-application smoke test should traverse the real React view and E
 ## Further Notes
 
 - The user-facing scope is synthesized from the completed design discussion and uses the established project vocabulary and design-authority architectural decision. No application implementation or compatibility prototype has been completed as part of this spec.
-- The proposed design workspace test seam still needs the user's confirmation. This is a targeted check of the testing approach, not a new product interview.
+- The user confirmed the design workspace's public application interface as the primary behavioral test seam, using real temporary SQLite storage and a real disposable sandbox, supplemented by a thin packaged-Windows application smoke check.
 - Deliver a narrow vertical slice first. Begin with a SQLite/PGlite packaged-Windows compatibility check, then implement persistent editing, real relationships, live SQL/sandbox feedback, and the complete packaged workflow. Keep tests and relevant documentation with each behavioral work unit.
 - PGlite's single-connection embedded model is appropriate to evaluate for a local preview, but does not establish equivalence to a full multi-connection PostgreSQL server or support for every server capability. Do not treat the candidate as validated until the integration checks pass.
 - Exact type variants/parameters, UI styling, test runner, storage normalization, and debounce duration are implementation details within the agreed requirements. They must not silently expand the product scope.
 - Autosave protects against losing successfully saved work; confirmation and session undo protect against accidental edits. Reopening is not a rollback mechanism.
-- Publication is blocked: no project issue tracker has been provided or discovered, and the working directory is not a Git repository. Run `/setup-matt-pocock-skills` to configure the tracker and triage label vocabulary. Once the test seam is confirmed and a destination is configured, publish this spec with the `ready-for-agent` triage label only; do not infer unrelated repository approval or priority labels.
+- The configured issue tracker is GitHub Issues for jvasquezt2004/db-planner, and the canonical triage labels are available. No existing issues were found during the duplicate check. Publish this spec with the `ready-for-agent` triage label only; no additional triage, approval, or priority labels are required.
