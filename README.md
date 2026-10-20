@@ -7,10 +7,12 @@ installed PostgreSQL server is required.
 
 This slice supports named projects that autosave one independent design each,
 including incomplete drafts, with visible save failures and project switching
-that ignores stale work. A project starts empty; add a table with a default `id
-bigint` identity primary key, then inspect the generated SQL and real sandbox
-result. The canvas, column editor, and relationship workflows arrive in later
-tickets.
+that ignores stale work. Tables live as spreadsheet-styled cards on an infinite
+canvas: add, select, rename, remove, drag, pan, and zoom, and the saved layout
+returns on reopening. A new table starts with a default `id bigint` identity
+primary key. Moving cards or changing the viewport saves layout without
+advancing the schema revision or rebuilding the sandbox. The focused column
+editor and relationship workflows arrive in later tickets.
 
 ## Commands
 
@@ -34,7 +36,10 @@ bunx tsc --noEmit      # typecheck
 - `src/bun/sql.ts` — one-way PostgreSQL SQL generation with explicit errors for
   incomplete designs.
 - `src/bun/sandbox.ts` — disposable PGlite preview and catalog inspection.
-- `src/mainview/App.tsx` — minimal React UI.
+- `src/mainview/App.tsx` — project list, selected-table inspector, SQL and
+  sandbox panels.
+- `src/mainview/canvas.tsx` — infinite canvas, table cards, pan/zoom, and card
+  drag previews.
 
 The design is authoritative; the sandbox is a rebuildable preview. Sandbox
 failure never discards a saved design.
@@ -63,6 +68,8 @@ development still works. The verification procedure and recorded result live in
 - [docs/spec.md](docs/spec.md) — product spec for the full application.
 - [docs/projects-and-autosave.md](docs/projects-and-autosave.md) — project
   switching, autosave behavior, save failures, and stale-save isolation.
+- [docs/canvas-and-layout.md](docs/canvas-and-layout.md) — table cards, canvas
+  pan/zoom, layout persistence, and structural-versus-layout edits.
 - [docs/adr](docs/adr) — architecture decisions.
 - [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
   packaged Windows verification.
