@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type {
-	CanvasPoint,
-	CanvasViewport,
-	ColumnType,
-	Design,
-	DesignColumn,
-	DesignTable,
+import {
+	CANVAS_MAX_ZOOM,
+	CANVAS_MIN_ZOOM,
+	type CanvasPoint,
+	type CanvasViewport,
+	type ColumnType,
+	type Design,
+	type DesignColumn,
+	type DesignTable,
 } from "../shared/design";
 
 const CARD_WIDTH = 264;
 const GRID_SIZE = 24;
 const MAJOR_GRID_SIZE = 120;
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 2.5;
 const VIEWPORT_SAVE_DELAY = 250;
 
 type TypeFamily = {
@@ -122,7 +122,7 @@ export function TableCanvas({
 			const rect = element.getBoundingClientRect();
 			const pointerX = event.clientX - rect.left;
 			const pointerY = event.clientY - rect.top;
-			const zoom = clamp(current.zoom * Math.exp(-event.deltaY * 0.0015), MIN_ZOOM, MAX_ZOOM);
+			const zoom = clamp(current.zoom * Math.exp(-event.deltaY * 0.0015), CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
 			if (zoom === current.zoom) return;
 			const worldX = (pointerX - current.x) / current.zoom;
 			const worldY = (pointerY - current.y) / current.zoom;
@@ -226,7 +226,7 @@ export function TableCanvas({
 		if (!element) return;
 		const rect = element.getBoundingClientRect();
 		const current = viewportRef.current;
-		const zoom = clamp(current.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+		const zoom = clamp(current.zoom * factor, CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM);
 		if (zoom === current.zoom) return;
 		const centreX = rect.width / 2;
 		const centreY = rect.height / 2;

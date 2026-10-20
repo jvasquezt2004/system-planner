@@ -32,6 +32,10 @@ export type CanvasViewport = {
 	zoom: number;
 };
 
+/** The view and the workspace both clamp zoom, so they share the limits. */
+export const CANVAS_MIN_ZOOM = 0.3;
+export const CANVAS_MAX_ZOOM = 2.5;
+
 export type DesignColumn = {
 	id: string;
 	name: string;

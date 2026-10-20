@@ -1,5 +1,7 @@
-import type {
-	AddTableAction,
+import {
+	CANVAS_MAX_ZOOM,
+	CANVAS_MIN_ZOOM,
+	type AddTableAction,
 	CanvasPoint,
 	CanvasViewport,
 	CreateProjectAction,
@@ -10,8 +12,8 @@ import type {
 	ProjectSummary,
 	RemoveTableAction,
 	RenameTableAction,
-	SetViewportAction,
-	WorkspaceState,
+	type SetViewportAction,
+	type WorkspaceState,
 } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { generateDesignSql } from "./sql";
@@ -53,8 +55,6 @@ export interface DesignWorkspace {
 }
 
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
-const MIN_ZOOM = 0.3;
-const MAX_ZOOM = 2.5;
 
 export async function createDesignWorkspace(
 	options: DesignWorkspaceOptions,
@@ -382,7 +382,11 @@ export async function createDesignWorkspace(
 				const viewport: CanvasViewport = {
 					x: requireNumber(action.x, "Canvas position"),
 					y: requireNumber(action.y, "Canvas position"),
-					zoom: clamp(requireNumber(action.zoom, "Canvas zoom"), MIN_ZOOM, MAX_ZOOM),
+					zoom: clamp(
+						requireNumber(action.zoom, "Canvas zoom"),
+						CANVAS_MIN_ZOOM,
+						CANVAS_MAX_ZOOM,
+					),
 				};
 				if (sameViewport(design.viewport, viewport)) return state;
 
