@@ -1,4 +1,8 @@
-import { BrowserWindow, Updater } from "electrobun/main";
+import { BrowserWindow, Updater, Utils } from "electrobun/main";
+import { defineElectrobunRPC } from "electrobun/rpc";
+import { join } from "node:path";
+import type { AppRPCSchema } from "../shared/rpc";
+import { createDesignWorkspace } from "./workspace";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -20,18 +24,53 @@ async function getMainViewUrl(): Promise<string> {
 	return "views://mainview/index.html";
 }
 
-// Create the main application window
-const url = await getMainViewUrl();
+const databasePath =
+	process.env.DB_PLANNER_DATABASE_PATH ??
+	join(Utils.paths.userData, "schema-designer.sqlite");
 
-const mainWindow = new BrowserWindow({
-	title: "React + Tailwind + Vite",
-	url,
-	frame: {
-		width: 900,
-		height: 700,
-		x: 200,
-		y: 200,
+// Keep the authoritative design and the disposable sandbox behind one public
+// workspace interface. The view only sees this interface through typed RPC.
+const workspacePromise = createDesignWorkspace({ databasePath });
+
+const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
+	maxRequestTime: 60_000,
+	handlers: {
+		requests: {
+			getWorkspaceState: async () => (await workspacePromise).getState(),
+			createProject: async ({ name }) => (await workspacePromise).createProject({ name }),
+			openProject: async ({ projectId }) =>
+				(await workspacePromise).openProject({ projectId }),
+			addTable: async ({ name }) => (await workspacePromise).addTable({ name }),
+		},
 	},
 });
 
-console.log("React Tailwind Vite app started!");
+const url = await getMainViewUrl();
+
+const mainWindow = new BrowserWindow({
+	title: "Schema Designer",
+	url,
+	frame: {
+		width: 1100,
+		height: 760,
+		x: 160,
+		y: 120,
+	},
+	rpc,
+});
+
+void workspacePromise
+	.then((workspace) => {
+		const state = workspace.getState();
+		console.log(
+			`[workspace] database=${databasePath} project=${state.project?.name ?? "none"} sql=${state.sql.status} sandbox=${state.sandbox.status}`,
+		);
+		workspace.subscribe((next) => {
+			rpc.send.workspaceState(next);
+		});
+	})
+	.catch((error: unknown) => {
+		console.error("[workspace] failed to initialize", error);
+	});
+
+console.log("Schema Designer started!", mainWindow.id);
