@@ -36,6 +36,7 @@ import {
 } from "../shared/design";
 import {
 	foreignKeyColumnName,
+	isRelationshipCardinality,
 	primaryKeyColumn,
 	removalPlan,
 	resolveRelationship,
@@ -512,6 +513,7 @@ export async function createDesignWorkspace(
 				const { projectId, design } = requireOpenDesign();
 				const referencingTable = requireTable(design, action.referencingTableId);
 				const referencedTable = requireTable(design, action.referencedTableId);
+				const cardinality = requireCardinality(action.cardinality);
 				const referencedColumn = primaryKeyColumn(referencedTable);
 				if (!referencedColumn) {
 					throw new Error(
@@ -533,6 +535,7 @@ export async function createDesignWorkspace(
 				};
 				const relationship: DesignRelationship = {
 					id: createId(),
+					cardinality,
 					referencingTableId: referencingTable.id,
 					referencingColumnId: column.id,
 					referencedTableId: referencedTable.id,
@@ -554,25 +557,42 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
 				const relationship = requireRelationship(design, action.relationshipId);
-				if (action.required === undefined) return state;
-				if (typeof action.required !== "boolean") {
+				const required = action.required;
+				if (required !== undefined && typeof required !== "boolean") {
 					throw new Error("Relationship required must be true or false.");
+				}
+				const cardinality =
+					action.cardinality === undefined
+						? relationship.cardinality
+						: requireCardinality(action.cardinality);
+				if (required === undefined && cardinality === relationship.cardinality) {
+					return state;
 				}
 
 				const view = resolveRelationship(design, relationship);
 				if (!view) throw new Error("That relationship could not be found.");
-				if (view.required === action.required) return state;
-
 				// Required and the foreign-key column's nullability are one setting.
+				const nextRequired = required ?? view.required;
 				const columns = view.referencingTable.columns.map((candidate) =>
 					candidate.id === view.referencingColumn.id
-						? { ...candidate, nullable: !action.required }
+						? { ...candidate, nullable: !nextRequired }
 						: candidate,
 				);
-				const nextDesign = replaceTable(design, {
-					...view.referencingTable,
-					columns,
-				});
+				const nextDesign: Design = {
+					...replaceTable(design, { ...view.referencingTable, columns }),
+					relationships: design.relationships.map((candidate) =>
+						candidate.id === relationship.id
+							? { ...candidate, cardinality }
+							: candidate,
+					),
+				};
+
+				if (
+					cardinality === relationship.cardinality &&
+					nextRequired === view.required
+				) {
+					return state;
+				}
 				return applyStructuralChange(projectId, nextDesign);
 			});
 		},
@@ -643,7 +663,13 @@ function normalizeDesign(design: Design): Design {
 			})),
 		})),
 		// Documents saved before relationships existed have none yet.
-		relationships: (design.relationships ?? []).map((relationship) => ({ ...relationship })),
+		relationships: (design.relationships ?? []).map((relationship) => ({
+			...relationship,
+			// Documents saved before one-to-one existed mean one-to-many.
+			cardinality: isRelationshipCardinality(relationship.cardinality)
+				? relationship.cardinality
+				: "one-to-many",
+		})),
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 	};
 }
@@ -803,6 +829,15 @@ function requireName(value: string, label: string): string {
 
 function requireColumnType(value: unknown) {
 	if (!isSupportedColumnType(value)) throw new Error("That column type is not supported.");
+	return value;
+}
+
+/** An omitted cardinality means the ordinary required one-to-many reference. */
+function requireCardinality(value: unknown) {
+	if (value === undefined) return "one-to-many" as const;
+	if (!isRelationshipCardinality(value)) {
+		throw new Error("That relationship cardinality is not supported.");
+	}
 	return value;
 }
 

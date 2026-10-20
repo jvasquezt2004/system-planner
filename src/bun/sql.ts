@@ -11,6 +11,7 @@ import type {
 } from "../shared/design";
 import {
 	relationshipConstraintName,
+	relationshipUniqueConstraintName,
 	resolveRelationship,
 	type RelationshipView,
 } from "../shared/relationships";
@@ -177,10 +178,18 @@ function renderRelationship(view: RelationshipView): string {
 	if (!referencedColumn) {
 		throw new Error("A rendered relationship needs a referenced primary key.");
 	}
-	return [
-		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}`,
-		`  ADD CONSTRAINT ${quoteIdentifier(relationshipConstraintName(view))} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
-	].join("\n");
+	const statements = [
+		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(relationshipConstraintName(view))} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
+	];
+	// A one-to-one association owns uniqueness on its referencing column. An
+	// independent key or unique setting already supplies uniqueness, so the
+	// relationship does not repeat it.
+	if (view.ownsUniqueness) {
+		statements.push(
+			`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(relationshipUniqueConstraintName(view))} UNIQUE (${quoteIdentifier(view.referencingColumn.name)});`,
+		);
+	}
+	return statements.join("\n");
 }
 
 /** Quotes an identifier so a name can never become an unintended SQL statement. */

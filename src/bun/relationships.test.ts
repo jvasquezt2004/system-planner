@@ -500,10 +500,12 @@ describe("one-to-many relationships", () => {
 		expect(plan.relationships).toEqual([
 			{
 				relationshipId: relationship.id,
+				cardinality: "one-to-many",
 				referencingTable: "Books",
 				referencingColumn: "author_id",
 				referencedTable: "Authors",
 				referencedColumn: "id",
+				constraints: ["foreign-key"],
 			},
 		]);
 
