@@ -19,13 +19,15 @@ type CatalogRow = {
 	column_name: string;
 	data_type: string;
 	is_identity: string;
+	column_default: string | null;
 	is_nullable: string;
 	is_primary_key: boolean;
 	is_unique: boolean;
 };
 
 const CATALOG_QUERY = `
-	SELECT c.table_name, c.column_name, c.data_type, c.is_identity, c.is_nullable,
+	SELECT c.table_name, c.column_name, c.data_type, c.is_identity, c.column_default,
+		c.is_nullable,
 		COALESCE(constraints.is_primary_key, false) AS is_primary_key,
 		COALESCE(constraints.is_unique, false) AS is_unique
 	FROM information_schema.columns c
@@ -90,6 +92,7 @@ function groupCatalogRows(rows: CatalogRow[]): SandboxAppliedTable[] {
 			name: row.column_name,
 			dataType: row.data_type,
 			isIdentity: row.is_identity === "YES",
+			defaultExpression: row.column_default,
 			nullable: row.is_nullable === "YES",
 			primaryKey: Boolean(row.is_primary_key),
 			unique: Boolean(row.is_unique),

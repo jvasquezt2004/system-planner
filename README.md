@@ -12,10 +12,12 @@ canvas: add, select, rename, remove, drag, pan, and zoom, and the saved layout
 returns on reopening. Selecting a table opens a focused column editor in the
 side panel: add, rename, retype, and remove columns, then edit the single-column
 primary key, nullability, uniqueness, and notes for the supported common
-PostgreSQL types. A new table starts with a default `id bigint` identity primary
-key. Moving cards or changing the viewport saves layout without advancing the
-schema revision or rebuilding the sandbox, and notes-only edits do the same.
-Relationship workflows arrive in later tickets.
+PostgreSQL types, plus structured defaults: no default, typed literals, current
+timestamp, UUID generation, or integer identity. A new table starts with a
+default `id bigint` identity primary key. Moving cards or changing the viewport
+saves layout without advancing the schema revision or rebuilding the sandbox,
+and notes-only edits do the same. Relationship workflows arrive in later
+tickets.
 
 ## Commands
 
@@ -33,6 +35,8 @@ bunx tsc --noEmit      # typecheck
 - `src/shared/design.ts` — domain vocabulary and observable workspace state.
 - `src/shared/column-types.ts` — the shared registry of supported PostgreSQL
   types and type families used by the picker, validation, SQL, and sandbox.
+- `src/shared/column-defaults.ts` — the structured default vocabulary, literal
+  validation, safe encoding, and display used by the editor and SQL generation.
 - `src/shared/rpc.ts` — typed Electrobun RPC schema between Bun and the view.
 - `src/bun/workspace.ts` — the public design workspace interface used by the
   React view and behavioral tests. Autosave, SQL generation, and sandbox
@@ -79,6 +83,8 @@ development still works. The verification procedure and recorded result live in
   pan/zoom, layout persistence, and structural-versus-layout edits.
 - [docs/column-editing.md](docs/column-editing.md) — the focused column editor,
   supported types, keys, nullability, uniqueness, notes, and incomplete drafts.
+- [docs/column-defaults.md](docs/column-defaults.md) — structured defaults,
+  typed literals, database-generated values, validation, and safe encoding.
 - [docs/adr](docs/adr) — architecture decisions.
 - [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
   packaged Windows verification.

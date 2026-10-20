@@ -459,6 +459,17 @@ function SandboxPanel({ sandbox }: { sandbox: SandboxState }) {
 											<li key={column.name}>
 												{column.name} · {column.dataType}
 												{column.isIdentity ? " · identity" : ""}
+												{column.defaultExpression && (
+													<>
+														{" · "}
+														<span
+															className="break-all text-slate-500"
+															title={`Default: ${column.defaultExpression}`}
+														>
+															default {column.defaultExpression}
+														</span>
+													</>
+												)}
 												{column.nullable ? " · null" : " · not null"}
 											</li>
 										))}
