@@ -1,9 +1,14 @@
 import type { ElectrobunRPCSchema } from "electrobun/rpc";
 import type {
+	AddRelationshipAction,
 	CanvasPoint,
 	CanvasViewport,
 	ColumnChanges,
 	ColumnType,
+	RemovalPlan,
+	RemovalTarget,
+	RemoveRelationshipAction,
+	UpdateRelationshipAction,
 	WorkspaceState,
 } from "./design";
 
@@ -36,7 +41,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				response: WorkspaceState;
 			};
 			removeTable: {
-				params: { tableId: string };
+				params: { tableId: string; confirmed?: boolean };
 				response: WorkspaceState;
 			};
 			moveTable: {
@@ -52,8 +57,24 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				response: WorkspaceState;
 			};
 			removeColumn: {
-				params: { tableId: string; columnId: string };
+				params: { tableId: string; columnId: string; confirmed?: boolean };
 				response: WorkspaceState;
+			};
+			addRelationship: {
+				params: AddRelationshipAction;
+				response: WorkspaceState;
+			};
+			updateRelationship: {
+				params: UpdateRelationshipAction;
+				response: WorkspaceState;
+			};
+			removeRelationship: {
+				params: RemoveRelationshipAction;
+				response: WorkspaceState;
+			};
+			describeRemoval: {
+				params: RemovalTarget;
+				response: RemovalPlan;
 			};
 			setViewport: {
 				params: CanvasViewport;

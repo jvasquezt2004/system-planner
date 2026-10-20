@@ -20,12 +20,15 @@ import type {
 	DesignTable,
 	SqlState,
 } from "../shared/design";
+import type { RelationshipView } from "../shared/relationships";
 import { ColumnBadge } from "./column-badge";
 import { ColumnTypeBadge } from "./column-type-badge";
 
 type TableInspectorProps = {
 	table: DesignTable | null;
 	selectedColumnId: string | null;
+	relationships: RelationshipView[];
+	selectedRelationshipId: string | null;
 	sql: SqlState;
 	busy: boolean;
 	onRename: (name: string) => void;
@@ -34,6 +37,9 @@ type TableInspectorProps = {
 	onAddColumn: () => void;
 	onApplyColumn: (columnId: string, changes: ColumnChanges) => void;
 	onRemoveColumn: (columnId: string) => void;
+	onSelectRelationship: (relationshipId: string | null) => void;
+	onSetRelationshipRequired: (relationshipId: string, required: boolean) => void;
+	onRemoveRelationship: (relationshipId: string) => void;
 };
 
 /**
@@ -45,6 +51,8 @@ type TableInspectorProps = {
 export function TableInspector({
 	table,
 	selectedColumnId,
+	relationships,
+	selectedRelationshipId,
 	sql,
 	busy,
 	onRename,
@@ -53,13 +61,14 @@ export function TableInspector({
 	onAddColumn,
 	onApplyColumn,
 	onRemoveColumn,
+	onSelectRelationship,
+	onSetRelationshipRequired,
+	onRemoveRelationship,
 }: TableInspectorProps) {
 	const [name, setName] = useState(table?.name ?? "");
-	const [confirmingRemoval, setConfirmingRemoval] = useState(false);
 
 	useEffect(() => {
 		setName(table?.name ?? "");
-		setConfirmingRemoval(false);
 	}, [table?.id, table?.name]);
 
 	if (!table) {
@@ -227,6 +236,118 @@ export function TableInspector({
 				</ul>
 			</section>
 
+			<section aria-labelledby="relationships-heading" className="mt-3">
+				<header className="flex items-center justify-between px-4">
+					<h3
+						id="relationships-heading"
+						className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+					>
+						Relationships
+					</h3>
+					<span className="text-[10px] text-slate-500">
+						{relationships.length === 0
+							? "none"
+							: `${relationships.length} ${relationships.length === 1 ? "link" : "links"}`}
+					</span>
+				</header>
+
+				{relationships.length === 0 ? (
+					<p className="px-4 pt-1 text-[11px] leading-relaxed text-slate-500">
+						Use the <span className="text-slate-300">relate</span> button on a table
+						card header, then click the table it references. The foreign-key column is
+						created for you.
+					</p>
+				) : (
+					<ul
+						data-testid="table-relationships"
+						className="mt-2 divide-y divide-slate-800 border-y border-slate-800"
+					>
+						{relationships.map((view) => {
+							const relationshipId = view.relationship.id;
+							const selected = relationshipId === selectedRelationshipId;
+							const outgoing = view.referencingTable.id === table.id;
+							return (
+								<li
+									key={relationshipId}
+									data-testid="table-relationship"
+									data-relationship-id={relationshipId}
+									data-selected={selected ? "true" : undefined}
+									className={selected ? "bg-indigo-500/10" : undefined}
+								>
+									<button
+										type="button"
+										onClick={() => onSelectRelationship(selected ? null : relationshipId)}
+										aria-pressed={selected}
+										className="flex w-full flex-col gap-0.5 px-4 py-2 text-left text-xs outline-none hover:bg-slate-800/40 focus-visible:ring-1 focus-visible:ring-indigo-400"
+									>
+										<span className="flex items-center gap-1.5">
+											<span
+												className={
+													outgoing ? "text-indigo-300" : "text-amber-300"
+												}
+												aria-hidden="true"
+											>
+												{outgoing ? "→" : "←"}
+											</span>
+											<span className="min-w-0 flex-1 truncate font-medium text-slate-200">
+												{outgoing
+													? `References ${view.referencedTable.name}`
+													: `Referenced by ${view.referencingTable.name}`}
+											</span>
+											<span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
+												one-to-many
+											</span>
+										</span>
+										<span className="truncate text-[11px] text-slate-400">
+											{view.referencingTable.name}.{view.referencingColumn.name} →{" "}
+											{view.referencedTable.name}.
+											{view.referencedColumn?.name ?? "(no primary key)"}
+										</span>
+									</button>
+									<div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2">
+										<label
+											className="flex items-center gap-1.5 text-[11px] text-slate-300"
+											title={`Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record. ${view.referencedTable.name} records may have none.`}
+										>
+											<input
+												type="checkbox"
+												aria-label={`Required reference from ${view.referencingTable.name} to ${view.referencedTable.name}`}
+												data-testid="relationship-required"
+												checked={view.required}
+												disabled={busy}
+												onChange={(event) =>
+													onSetRelationshipRequired(
+														relationshipId,
+														event.target.checked,
+													)
+												}
+												className="accent-indigo-500"
+											/>
+											Required
+										</label>
+										<button
+											type="button"
+											data-testid="remove-relationship"
+											onPointerDown={(event) => event.stopPropagation()}
+											onClick={() => onRemoveRelationship(relationshipId)}
+											disabled={busy}
+											title="Remove the foreign-key constraint and keep the columns"
+											className="ml-auto rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-red-400 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
+										>
+											Remove link
+										</button>
+									</div>
+								</li>
+							);
+						})}
+					</ul>
+				)}
+				<p className="px-4 pt-1 text-[10px] leading-relaxed text-slate-500">
+					A required reference means every referencing record must name one related
+					record. It never requires the referenced table to have children.
+				</p>
+			</section>
+
 			<div className="px-4 py-3">
 				{selectedColumn ? (
 					<ColumnEditor
@@ -261,37 +382,15 @@ export function TableInspector({
 			)}
 
 			<div className="flex flex-col gap-2 border-t border-slate-800 px-4 py-3">
-				{confirmingRemoval ? (
-					<div className="flex flex-wrap items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-2">
-						<span className="text-xs text-red-200">Remove “{table.name}”?</span>
-						<button
-							type="button"
-							data-testid="confirm-remove-table"
-							onClick={onRemove}
-							disabled={busy}
-							className="rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
-						>
-							Remove
-						</button>
-						<button
-							type="button"
-							onClick={() => setConfirmingRemoval(false)}
-							className="rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:border-slate-500"
-						>
-							Cancel
-						</button>
-					</div>
-				) : (
-					<button
-						type="button"
-						data-testid="remove-table"
-						onClick={() => setConfirmingRemoval(true)}
-						disabled={busy}
-						className="self-start rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Remove table
-					</button>
-				)}
+				<button
+					type="button"
+					data-testid="remove-table"
+					onClick={onRemove}
+					disabled={busy}
+					className="self-start rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					Remove table
+				</button>
 			</div>
 		</section>
 	);
@@ -381,13 +480,11 @@ function ColumnEditor({
 	onRemove: () => void;
 }) {
 	const [draft, setDraft] = useState<ColumnDraft>(() => draftFrom(column));
-	const [confirmingRemoval, setConfirmingRemoval] = useState(false);
 
 	// Reset only when the stored column changes, so a background save or
 	// sandbox result never overwrites what is being typed.
 	useEffect(() => {
 		setDraft(draftFrom(column));
-		setConfirmingRemoval(false);
 	}, [
 		column.id,
 		column.name,
@@ -736,37 +833,15 @@ function ColumnEditor({
 			</div>
 
 			<div className="mt-3 border-t border-slate-800 pt-2">
-				{confirmingRemoval ? (
-					<div className="flex flex-wrap items-center gap-2">
-						<span className="text-xs text-red-200">Remove “{column.name}”?</span>
-						<button
-							type="button"
-							data-testid="confirm-remove-column"
-							onClick={onRemove}
-							disabled={busy}
-							className="rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
-						>
-							Remove
-						</button>
-						<button
-							type="button"
-							onClick={() => setConfirmingRemoval(false)}
-							className="rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:border-slate-500"
-						>
-							Cancel
-						</button>
-					</div>
-				) : (
-					<button
-						type="button"
-						data-testid="remove-column"
-						onClick={() => setConfirmingRemoval(true)}
-						disabled={busy}
-						className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Remove column
-					</button>
-				)}
+				<button
+					type="button"
+					data-testid="remove-column"
+					onClick={onRemove}
+					disabled={busy}
+					className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+				>
+					Remove column
+				</button>
 			</div>
 		</form>
 	);
