@@ -9,24 +9,37 @@ import {
 	CANVAS_MAX_ZOOM,
 	CANVAS_MIN_ZOOM,
 	type AddColumnAction,
+	type AddRelationshipAction,
 	type AddTableAction,
+	type AffectedRelationship,
 	CanvasPoint,
 	CanvasViewport,
 	type ColumnChanges,
 	CreateProjectAction,
 	Design,
 	type DesignColumn,
+	type DesignRelationship,
 	DesignTable,
 	MoveTableAction,
 	OpenProjectAction,
 	ProjectSummary,
+	type RemovalPlan,
+	type RemovalTarget,
 	RemoveColumnAction,
-	RemoveTableAction,
+	RemoveRelationshipAction,
+	type RemoveTableAction,
 	RenameTableAction,
 	type SetViewportAction,
 	type UpdateColumnAction,
+	type UpdateRelationshipAction,
 	type WorkspaceState,
 } from "../shared/design";
+import {
+	foreignKeyColumnName,
+	primaryKeyColumn,
+	removalPlan,
+	resolveRelationship,
+} from "../shared/relationships";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { generateDesignSql } from "./sql";
 import { openDesignStore, type DesignStore } from "./store";
@@ -66,6 +79,13 @@ export interface DesignWorkspace {
 	addColumn(action: AddColumnAction): Promise<WorkspaceState>;
 	updateColumn(action: UpdateColumnAction): Promise<WorkspaceState>;
 	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
+	/** Creates the relationship and the foreign-key column it owns. */
+	addRelationship(action: AddRelationshipAction): Promise<WorkspaceState>;
+	updateRelationship(action: UpdateRelationshipAction): Promise<WorkspaceState>;
+	/** Removes the relationship-owned constraint while keeping its columns. */
+	removeRelationship(action: RemoveRelationshipAction): Promise<WorkspaceState>;
+	/** Lists what a removal would also delete, before anything is removed. */
+	describeRemoval(target: RemovalTarget): RemovalPlan;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
@@ -163,6 +183,7 @@ export async function createDesignWorkspace(
 							status: "applied",
 							revision,
 							tables: result.tables,
+							relationships: result.relationships,
 							sql: generation.sql,
 						}
 					: {
@@ -284,7 +305,11 @@ export async function createDesignWorkspace(
 				if (name.length === 0) throw new Error("Project name is required.");
 
 				const project: ProjectSummary = { id: createId(), name };
-				const design: Design = { tables: [], viewport: { ...DEFAULT_VIEWPORT } };
+				const design: Design = {
+					tables: [],
+					relationships: [],
+					viewport: { ...DEFAULT_VIEWPORT },
+				};
 				const revision = 1;
 				const savedAt = now();
 
@@ -369,12 +394,13 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
 				const table = requireTable(design, action.tableId);
+				const target: RemovalTarget = { kind: "table", tableId: table.id };
+				requireConfirmedRemoval(design, target, action.confirmed);
 
-				const nextDesign: Design = {
-					...design,
-					tables: design.tables.filter((candidate) => candidate.id !== table.id),
-				};
-				return applyStructuralChange(projectId, nextDesign);
+				return applyStructuralChange(
+					projectId,
+					removeTableAndItsRelationships(design, table),
+				);
 			});
 		},
 		moveTable(action) {
@@ -470,13 +496,105 @@ export async function createDesignWorkspace(
 				const { projectId, design } = requireOpenDesign();
 				const table = requireTable(design, action.tableId);
 				const column = requireColumn(table, action.columnId);
+				const target: RemovalTarget = {
+					kind: "column",
+					tableId: table.id,
+					columnId: column.id,
+				};
+				requireConfirmedRemoval(design, target, action.confirmed);
 
+				const nextDesign = removeColumnAndItsRelationships(design, table, column);
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		addRelationship(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const referencingTable = requireTable(design, action.referencingTableId);
+				const referencedTable = requireTable(design, action.referencedTableId);
+				const referencedColumn = primaryKeyColumn(referencedTable);
+				if (!referencedColumn) {
+					throw new Error(
+						`Table "${referencedTable.name}" needs exactly one primary key column before another table can reference it.`,
+					);
+				}
+
+				const column: DesignColumn = {
+					id: createId(),
+					name: foreignKeyColumnName(referencingTable, referencedTable, referencedColumn),
+					// Only the key's type transfers; identity and defaults stay behind.
+					type: referencedColumn.type,
+					nullable: false,
+					primaryKey: false,
+					unique: false,
+					identity: false,
+					default: noColumnDefault(),
+					notes: "",
+				};
+				const relationship: DesignRelationship = {
+					id: createId(),
+					referencingTableId: referencingTable.id,
+					referencingColumnId: column.id,
+					referencedTableId: referencedTable.id,
+				};
+
+				const nextDesign: Design = {
+					...design,
+					tables: design.tables.map((candidate) =>
+						candidate.id === referencingTable.id
+							? { ...candidate, columns: [...candidate.columns, column] }
+							: candidate,
+					),
+					relationships: [...design.relationships, relationship],
+				};
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		updateRelationship(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const relationship = requireRelationship(design, action.relationshipId);
+				if (action.required === undefined) return state;
+				if (typeof action.required !== "boolean") {
+					throw new Error("Relationship required must be true or false.");
+				}
+
+				const view = resolveRelationship(design, relationship);
+				if (!view) throw new Error("That relationship could not be found.");
+				if (view.required === action.required) return state;
+
+				// Required and the foreign-key column's nullability are one setting.
+				const columns = view.referencingTable.columns.map((candidate) =>
+					candidate.id === view.referencingColumn.id
+						? { ...candidate, nullable: !action.required }
+						: candidate,
+				);
 				const nextDesign = replaceTable(design, {
-					...table,
-					columns: table.columns.filter((candidate) => candidate.id !== column.id),
+					...view.referencingTable,
+					columns,
 				});
 				return applyStructuralChange(projectId, nextDesign);
 			});
+		},
+		removeRelationship(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const relationship = requireRelationship(design, action.relationshipId);
+
+				// Only the constraint goes; the columns it participated in stay.
+				const nextDesign: Design = {
+					...design,
+					relationships: design.relationships.filter(
+						(candidate) => candidate.id !== relationship.id,
+					),
+				};
+				return applyStructuralChange(projectId, nextDesign);
+			});
+		},
+		describeRemoval(target) {
+			const { design } = requireOpenDesign();
+			requireRemovalTarget(design, target);
+			return removalPlan(design, target);
 		},
 		setViewport(action) {
 			return runTask(async () => {
@@ -524,6 +642,8 @@ function normalizeDesign(design: Design): Design {
 				notes: column.notes ?? "",
 			})),
 		})),
+		// Documents saved before relationships existed have none yet.
+		relationships: (design.relationships ?? []).map((relationship) => ({ ...relationship })),
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 	};
 }
@@ -571,6 +691,90 @@ function requireColumn(table: DesignTable, columnId: string): DesignColumn {
 	const column = table.columns.find((candidate) => candidate.id === columnId);
 	if (!column) throw new Error("That column could not be found.");
 	return column;
+}
+
+function requireRelationship(design: Design, relationshipId: string): DesignRelationship {
+	const relationship = design.relationships.find(
+		(candidate) => candidate.id === relationshipId,
+	);
+	if (!relationship) throw new Error("That relationship could not be found.");
+	return relationship;
+}
+
+function requireRemovalTarget(design: Design, target: RemovalTarget) {
+	const table = requireTable(design, target.tableId);
+	if (target.kind === "column") requireColumn(table, target.columnId);
+}
+
+/** A destructive edit that affects relationships needs explicit confirmation. */
+function requireConfirmedRemoval(
+	design: Design,
+	target: RemovalTarget,
+	confirmed: boolean | undefined,
+) {
+	if (confirmed) return;
+	const plan = removalPlan(design, target);
+	if (plan.relationships.length === 0) return;
+	const label = target.kind === "table" ? `table "${plan.target}"` : `column "${plan.target}"`;
+	const count = plan.relationships.length;
+	const summary = plan.relationships.map(describeAffectedRelationship).join(", ");
+	throw new Error(
+		`Removing ${label} also removes ${count} ${count === 1 ? "relationship" : "relationships"} (${summary}). Confirm the removal to continue.`,
+	);
+}
+
+function describeAffectedRelationship(affected: AffectedRelationship): string {
+	return `${affected.referencingTable}.${affected.referencingColumn} → ${affected.referencedTable}.${affected.referencedColumn ?? "(no primary key)"}`;
+}
+
+/** Removes the table together with the relationships that participate in it. */
+function removeTableAndItsRelationships(design: Design, table: DesignTable): Design {
+	const affected = affectedRelationshipIds(design, { kind: "table", tableId: table.id });
+	return {
+		...design,
+		tables: design.tables.filter((candidate) => candidate.id !== table.id),
+		relationships: design.relationships.filter(
+			(relationship) => !affected.has(relationship.id),
+		),
+	};
+}
+
+/** Removes the column together with the relationships that participate in it. */
+function removeColumnAndItsRelationships(
+	design: Design,
+	table: DesignTable,
+	column: DesignColumn,
+): Design {
+	const affected = affectedRelationshipIds(design, {
+		kind: "column",
+		tableId: table.id,
+		columnId: column.id,
+	});
+	return {
+		...design,
+		tables: design.tables.map((candidate) =>
+			candidate.id === table.id
+				? {
+						...candidate,
+						columns: candidate.columns.filter(
+							(columnCandidate) => columnCandidate.id !== column.id,
+						),
+					}
+				: candidate,
+		),
+		relationships: design.relationships.filter(
+			(relationship) => !affected.has(relationship.id),
+		),
+	};
+}
+
+/** The cascade set is exactly what the confirmation listed, never a second rule. */
+function affectedRelationshipIds(design: Design, target: RemovalTarget): Set<string> {
+	return new Set(
+		removalPlan(design, target).relationships.map(
+			(relationship) => relationship.relationshipId,
+		),
+	);
 }
 
 function replaceTable(design: Design, table: DesignTable): Design {

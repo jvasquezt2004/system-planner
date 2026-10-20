@@ -51,8 +51,22 @@ export type DesignTable = {
 	columns: DesignColumn[];
 };
 
+/**
+ * A one-to-many association backed by a real foreign key. The referencing
+ * ("many") side owns a generated foreign-key column, while the referenced
+ * ("one") side is targeted through its primary key. Relationship identity and
+ * participating columns are tracked by id, so renames never disconnect them.
+ */
+export type DesignRelationship = {
+	id: string;
+	referencingTableId: string;
+	referencingColumnId: string;
+	referencedTableId: string;
+};
+
 export type Design = {
 	tables: DesignTable[];
+	relationships: DesignRelationship[];
 	viewport: CanvasViewport;
 };
 
@@ -83,6 +97,17 @@ export type SandboxAppliedTable = {
 	columns: SandboxAppliedColumn[];
 };
 
+/** A foreign key reported by the applied sandbox, not by the draft. */
+export type SandboxAppliedRelationship = {
+	name: string;
+	referencingTable: string;
+	referencingColumn: string;
+	referencedTable: string;
+	referencedColumn: string;
+	updateRule: string;
+	deleteRule: string;
+};
+
 export type SandboxState =
 	| { status: "idle" }
 	| { status: "applying"; revision: number }
@@ -90,6 +115,7 @@ export type SandboxState =
 			status: "applied";
 			revision: number;
 			tables: SandboxAppliedTable[];
+			relationships: SandboxAppliedRelationship[];
 			sql: string;
 	  }
 	| {
@@ -118,7 +144,8 @@ export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
 export type AddTableAction = { name: string; position?: CanvasPoint };
 export type RenameTableAction = { tableId: string; name: string };
-export type RemoveTableAction = { tableId: string };
+/** Removing a table that relationships depend on requires explicit confirmation. */
+export type RemoveTableAction = { tableId: string; confirmed?: boolean };
 export type MoveTableAction = { tableId: string; position: CanvasPoint };
 export type SetViewportAction = CanvasViewport;
 
@@ -142,4 +169,44 @@ export type UpdateColumnAction = {
 	changes: ColumnChanges;
 };
 
-export type RemoveColumnAction = { tableId: string; columnId: string };
+export type RemoveColumnAction = {
+	tableId: string;
+	columnId: string;
+	confirmed?: boolean;
+};
+
+/** Relates two tables: the referencing (many) side receives the foreign key. */
+export type AddRelationshipAction = {
+	referencingTableId: string;
+	referencedTableId: string;
+};
+
+/** An omitted property keeps its current value. */
+export type UpdateRelationshipAction = {
+	relationshipId: string;
+	required?: boolean;
+};
+
+export type RemoveRelationshipAction = { relationshipId: string };
+
+export type RemovalTarget =
+	| { kind: "table"; tableId: string }
+	| { kind: "column"; tableId: string; columnId: string };
+
+/** A relationship a pending removal would also delete. */
+export type AffectedRelationship = {
+	relationshipId: string;
+	referencingTable: string;
+	referencingColumn: string;
+	referencedTable: string;
+	referencedColumn: string | null;
+};
+
+/**
+ * What a destructive edit would remove, so the designer can inspect it before
+ * confirming. Cancelling leaves the design exactly as it was.
+ */
+export type RemovalPlan = {
+	target: string;
+	relationships: AffectedRelationship[];
+};

@@ -3,7 +3,17 @@ import {
 	renderDefaultExpression,
 } from "../shared/column-defaults";
 import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
-import type { Design, DesignColumn, DesignTable } from "../shared/design";
+import type {
+	Design,
+	DesignColumn,
+	DesignRelationship,
+	DesignTable,
+} from "../shared/design";
+import {
+	relationshipConstraintName,
+	resolveRelationship,
+	type RelationshipView,
+} from "../shared/relationships";
 
 export type SqlGeneration =
 	| { ok: true; sql: string }
@@ -24,8 +34,47 @@ export function generateDesignSql(design: Design): SqlGeneration {
 		validateTable(table, tableNames, errors);
 	}
 
+	// A relationship that cannot be resolved stays in the saved draft and is
+	// reported here, so an incompatible edit never silently drops the link.
+	const relationships: RelationshipView[] = [];
+	for (const relationship of design.relationships) {
+		const view = validateRelationship(design, relationship, errors);
+		if (view) relationships.push(view);
+	}
+
 	if (errors.length > 0) return { ok: false, errors };
-	return { ok: true, sql: `${design.tables.map(renderTable).join("\n\n")}\n` };
+	const statements = [
+		...design.tables.map(renderTable),
+		...relationships.map(renderRelationship),
+	];
+	return { ok: true, sql: `${statements.join("\n\n")}\n` };
+}
+
+function validateRelationship(
+	design: Design,
+	relationship: DesignRelationship,
+	errors: string[],
+): RelationshipView | null {
+	const view = resolveRelationship(design, relationship);
+	if (!view) {
+		errors.push("A relationship refers to a table or column that no longer exists.");
+		return null;
+	}
+
+	const label = `Relationship from "${view.referencingTable.name}" to "${view.referencedTable.name}"`;
+	if (!view.referencedColumn) {
+		errors.push(
+			`${label} needs "${view.referencedTable.name}" to have exactly one primary key column.`,
+		);
+		return null;
+	}
+	if (view.referencedColumn.type !== view.referencingColumn.type) {
+		errors.push(
+			`${label} needs matching types; "${view.referencingColumn.name}" is ${view.referencingColumn.type} but "${view.referencedTable.name}"."${view.referencedColumn.name}" is ${view.referencedColumn.type}.`,
+		);
+		return null;
+	}
+	return view;
 }
 
 function validateTable(table: DesignTable, tableNames: Set<string>, errors: string[]) {
@@ -116,6 +165,22 @@ function renderColumn(column: DesignColumn): string {
 	// A primary key is already unique, so it does not repeat the constraint.
 	if (column.unique && !column.primaryKey) parts.push("UNIQUE");
 	return parts.join(" ");
+}
+
+/**
+ * Foreign keys are added after every table exists, so the order of table cards
+ * never has to satisfy a dependency. NO ACTION keeps relationships from
+ * changing or deleting referencing rows without the designer's intent.
+ */
+function renderRelationship(view: RelationshipView): string {
+	const referencedColumn = view.referencedColumn;
+	if (!referencedColumn) {
+		throw new Error("A rendered relationship needs a referenced primary key.");
+	}
+	return [
+		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}`,
+		`  ADD CONSTRAINT ${quoteIdentifier(relationshipConstraintName(view))} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
+	].join("\n");
 }
 
 /** Quotes an identifier so a name can never become an unintended SQL statement. */

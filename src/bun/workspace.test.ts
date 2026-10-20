@@ -82,6 +82,7 @@ describe("design workspace", () => {
 		expect(created.project?.name).toBe("Library");
 		expect(created.design).toEqual({
 			tables: [],
+			relationships: [],
 			viewport: { x: 0, y: 0, zoom: 1 },
 		});
 		expect(created.save.status).toBe("saved");

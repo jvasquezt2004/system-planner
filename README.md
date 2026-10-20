@@ -16,8 +16,13 @@ PostgreSQL types, plus structured defaults: no default, typed literals, current
 timestamp, UUID generation, or integer identity. A new table starts with a
 default `id bigint` identity primary key. Moving cards or changing the viewport
 saves layout without advancing the schema revision or rebuilding the sandbox,
-and notes-only edits do the same. Relationship workflows arrive in later
-tickets.
+and notes-only edits do the same. Relating two table cards creates a
+one-to-many relationship: the referencing table gets a generated foreign-key
+column with the referenced primary key's type, required by default with a
+Required toggle, shown as a subtle connector with stacked cardinality marks and
+column highlighting, and enforced with `NO ACTION` on updates and deletes.
+Deleting a referenced table or column first lists the affected relationships and
+asks for confirmation; removing a relationship keeps its columns.
 
 ## Commands
 
@@ -37,6 +42,8 @@ bunx tsc --noEmit      # typecheck
   types and type families used by the picker, validation, SQL, and sandbox.
 - `src/shared/column-defaults.ts` — the structured default vocabulary, literal
   validation, safe encoding, and display used by the editor and SQL generation.
+- `src/shared/relationships.ts` — resolving relationship participants, naming
+  generated foreign-key columns, and describing affected dependencies.
 - `src/shared/rpc.ts` — typed Electrobun RPC schema between Bun and the view.
 - `src/bun/workspace.ts` — the public design workspace interface used by the
   React view and behavioral tests. Autosave, SQL generation, and sandbox
@@ -49,8 +56,8 @@ bunx tsc --noEmit      # typecheck
 - `src/mainview/table-inspector.tsx` — selected table, column list, and the
   focused column editor.
 - `src/mainview/column-type-badge.tsx` — shared type-family symbol.
-- `src/mainview/canvas.tsx` — infinite canvas, table cards, pan/zoom, and card
-  drag previews.
+- `src/mainview/canvas.tsx` — infinite canvas, table cards, pan/zoom, card drag
+  previews, relationship connectors, and relating one card to another.
 
 The design is authoritative; the sandbox is a rebuildable preview. Sandbox
 failure never discards a saved design.
@@ -85,6 +92,9 @@ development still works. The verification procedure and recorded result live in
   supported types, keys, nullability, uniqueness, notes, and incomplete drafts.
 - [docs/column-defaults.md](docs/column-defaults.md) — structured defaults,
   typed literals, database-generated values, validation, and safe encoding.
+- [docs/relationships.md](docs/relationships.md) — one-to-many relationships,
+  generated foreign-key columns, required/optional references, indicators, and
+  deletion safeguards.
 - [docs/adr](docs/adr) — architecture decisions.
 - [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
   packaged Windows verification.
