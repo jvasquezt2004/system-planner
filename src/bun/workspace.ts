@@ -9,10 +9,12 @@ import type {
 } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { generateDesignSql } from "./sql";
-import { openDesignStore } from "./store";
+import { openDesignStore, type DesignStore } from "./store";
 
 export type DesignWorkspaceOptions = {
 	databasePath: string;
+	/** Narrowly controlled test overrides for storage timing and failures. */
+	openStore?: (databasePath: string) => DesignStore;
 	/** Narrowly controlled test override for sandbox I/O failures. */
 	createSandbox?: () => SchemaSandbox;
 	now?: () => number;
@@ -39,7 +41,8 @@ export interface DesignWorkspace {
 export async function createDesignWorkspace(
 	options: DesignWorkspaceOptions,
 ): Promise<DesignWorkspace> {
-	const store = openDesignStore(options.databasePath);
+	const store =
+		options.openStore?.(options.databasePath) ?? openDesignStore(options.databasePath);
 	const createSandbox = options.createSandbox ?? createPGliteSandbox;
 	const now = options.now ?? (() => Date.now());
 	const createId = options.createId ?? (() => crypto.randomUUID());
@@ -56,17 +59,30 @@ export async function createDesignWorkspace(
 	};
 	let activeProjectId: string | null = null;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
-	let pending: Promise<unknown> = Promise.resolve();
+	const inFlight = new Set<Promise<unknown>>();
 
 	function setState(next: WorkspaceState) {
 		state = next;
 		for (const listener of listeners) listener(state);
 	}
 
-	function enqueue<T>(task: () => Promise<T>): Promise<T> {
-		const run = pending.then(task, task);
-		pending = run.catch(() => undefined);
-		return run;
+	/**
+	 * Tracks work so close() can wait for saves that were still writing. The
+	 * call itself is not queued: each edit applies to the draft immediately and
+	 * its save completes independently.
+	 */
+	function runTask<T>(task: () => Promise<T>): Promise<T> {
+		const promise = task();
+		inFlight.add(promise);
+		const done = () => inFlight.delete(promise);
+		promise.then(done, done);
+		return promise;
+	}
+
+	async function settle() {
+		while (inFlight.size > 0) {
+			await Promise.allSettled([...inFlight]);
+		}
 	}
 
 	function isCurrent(projectId: string, revision: number) {
@@ -74,6 +90,8 @@ export async function createDesignWorkspace(
 	}
 
 	async function generateAndApply(projectId: string, revision: number, design: Design) {
+		if (!isCurrent(projectId, revision)) return;
+
 		const generation = generateDesignSql(design);
 		if (!generation.ok) {
 			setState({
@@ -139,10 +157,12 @@ export async function createDesignWorkspace(
 	}
 
 	async function persistAndPreview(projectId: string, revision: number, design: Design) {
-		setState({ ...state, save: { status: "saving", revision } });
+		if (isCurrent(projectId, revision)) {
+			setState({ ...state, save: { status: "saving", revision } });
+		}
 		const savedAt = now();
 		try {
-			store.saveDesign(projectId, design, revision, savedAt);
+			await store.saveDesign(projectId, design, revision, savedAt);
 			if (isCurrent(projectId, revision)) {
 				setState({
 					...state,
@@ -177,7 +197,7 @@ export async function createDesignWorkspace(
 			return store.listProjects();
 		},
 		createProject(action) {
-			return enqueue(async () => {
+			return runTask(async () => {
 				const name = action.name.trim();
 				if (name.length === 0) throw new Error("Project name is required.");
 
@@ -186,7 +206,7 @@ export async function createDesignWorkspace(
 				const revision = 1;
 				const savedAt = now();
 
-				store.createProject(project, design, revision, savedAt);
+				await store.createProject(project, design, revision, savedAt);
 				activeProjectId = project.id;
 				lastGeneratableSql = null;
 				setState({
@@ -203,7 +223,7 @@ export async function createDesignWorkspace(
 			});
 		},
 		openProject(action) {
-			return enqueue(async () => {
+			return runTask(async () => {
 				const record = store.loadProject(action.projectId);
 				if (!record) throw new Error("That project could not be found.");
 
@@ -223,7 +243,7 @@ export async function createDesignWorkspace(
 			});
 		},
 		addTable(action) {
-			return enqueue(async () => {
+			return runTask(async () => {
 				const project = state.project;
 				const design = state.design;
 				if (!project || !design || activeProjectId === null) {
@@ -237,13 +257,18 @@ export async function createDesignWorkspace(
 					...design,
 					tables: [...design.tables, createDefaultTable(name, design, createId)],
 				};
-				setState({ ...state, design: nextDesign, revision });
+				setState({
+					...state,
+					design: nextDesign,
+					revision,
+					save: { status: "saving", revision },
+				});
 				await persistAndPreview(project.id, revision, nextDesign);
 				return state;
 			});
 		},
 		async close() {
-			await pending.catch(() => undefined);
+			await settle();
 			listeners.clear();
 			store.close();
 		},

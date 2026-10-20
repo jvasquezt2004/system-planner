@@ -17,8 +17,18 @@ export interface ProjectRecord {
  */
 export interface DesignStore {
 	listProjects(): ProjectSummary[];
-	createProject(project: ProjectSummary, design: Design, revision: number, savedAt: number): void;
-	saveDesign(projectId: string, design: Design, revision: number, savedAt: number): void;
+	createProject(
+		project: ProjectSummary,
+		design: Design,
+		revision: number,
+		savedAt: number,
+	): void | Promise<void>;
+	saveDesign(
+		projectId: string,
+		design: Design,
+		revision: number,
+		savedAt: number,
+	): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	close(): void;
 }
@@ -71,7 +81,7 @@ export function openDesignStore(databasePath: string): DesignStore {
 		`INSERT INTO designs (project_id, revision, document, updated_at) VALUES (?, ?, ?, ?)`,
 	);
 	const updateDesign = database.query(
-		`UPDATE designs SET revision = ?, document = ?, updated_at = ? WHERE project_id = ?`,
+		`UPDATE designs SET revision = ?, document = ?, updated_at = ? WHERE project_id = ? AND revision < ?`,
 	);
 	const touchProject = database.query(`UPDATE projects SET updated_at = ? WHERE id = ?`);
 
@@ -84,8 +94,15 @@ export function openDesignStore(databasePath: string): DesignStore {
 
 	const saveDesignTransaction = database.transaction(
 		(projectId: string, design: Design, revision: number, savedAt: number) => {
-			updateDesign.run(revision, JSON.stringify(design), savedAt, projectId);
-			touchProject.run(savedAt, projectId);
+			// A delayed save must never overwrite a newer design that already landed.
+			const result = updateDesign.run(
+				revision,
+				JSON.stringify(design),
+				savedAt,
+				projectId,
+				revision,
+			);
+			if (result.changes > 0) touchProject.run(savedAt, projectId);
 		},
 	);
 

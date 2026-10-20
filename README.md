@@ -5,10 +5,12 @@ authoritative design saved in local SQLite, with a read-only SQL preview and a
 disposable PGlite sandbox that validates the generated schema. No Docker or
 installed PostgreSQL server is required.
 
-This is the first vertical slice: create a project, add a table with a default
-`id bigint` identity primary key, autosave, reopen, and inspect the generated
-SQL and real sandbox result. The canvas, column editor, and relationship
-workflows arrive in later tickets.
+This slice supports named projects that autosave one independent design each,
+including incomplete drafts, with visible save failures and project switching
+that ignores stale work. A project starts empty; add a table with a default `id
+bigint` identity primary key, then inspect the generated SQL and real sandbox
+result. The canvas, column editor, and relationship workflows arrive in later
+tickets.
 
 ## Commands
 
@@ -59,6 +61,8 @@ development still works. The verification procedure and recorded result live in
 
 - [GLOSSARY.md](GLOSSARY.md) — canonical domain terms.
 - [docs/spec.md](docs/spec.md) — product spec for the full application.
+- [docs/projects-and-autosave.md](docs/projects-and-autosave.md) — project
+  switching, autosave behavior, save failures, and stale-save isolation.
 - [docs/adr](docs/adr) — architecture decisions.
 - [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
   packaged Windows verification.
