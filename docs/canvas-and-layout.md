@@ -31,10 +31,35 @@ side panel described in [column-editing.md](column-editing.md).
 
 | Edit | Schema revision | SQL preview / sandbox | Saved |
 | --- | --- | --- | --- |
-| Add, rename, remove a table | advances | regenerated and rebuilt | yes |
-| Add, edit, or remove a column | advances | regenerated and rebuilt | yes |
+| Add, rename, remove a table | advances | regenerated and rebuilt after editing settles | yes |
+| Add, edit, or remove a column | advances | regenerated and rebuilt after editing settles | yes |
 | Edit column notes | unchanged | unchanged and **not** rebuilt | yes |
 | Move a card, pan, zoom | unchanged | unchanged and **not** rebuilt | yes |
+
+### SQL preview and sandbox feedback
+
+Structural edits are saved immediately. SQL generation and the disposable
+sandbox rebuild are debounced until editing settles; no Apply action is
+required. While validation is pending, the SQL preview identifies the current
+draft revision and, when one exists, the earlier SQL revision still shown.
+
+When a draft cannot generate SQL, the last generatable SQL remains visible as
+out of date with its own revision and the current actionable validation errors.
+If no SQL has been generated, the preview is empty and blocked instead of
+implying that a valid preview exists. Layout-only edits do not advance the
+schema revision or restart sandbox work.
+
+Generated SQL and sandbox acceptance are separate outcomes. A PostgreSQL
+rejection shows the attempted SQL and database error while retaining the design
+and the last successful sandbox revision. A failed first build has no prior
+successful sandbox to display. Sandbox data is disposable and is not migrated
+between revisions.
+A sandbox startup or catalog-inspection failure is reported as a sandbox error,
+not as PostgreSQL rejecting the SQL.
+
+Preview work is scoped to project identity and schema revision. A completion
+from an older revision or a project that is no longer open cannot replace the
+active preview state.
 
 Column editing keeps the same distinction: structure and notes are saved with
 the design document, but notes describe intent rather than schema, so they
@@ -77,7 +102,18 @@ Coverage added for this work:
 - reopening a project restoring card positions and the viewport while keeping
   the structural revision;
 - a layout save landing while an older structural save is still delayed,
-  proving the newer document wins.
+  proving the newer document wins;
+- bursts of rapid structural edits retain the previous SQL and applied sandbox
+  while waiting, then automatically apply only the settled design;
+- a draft with no prior SQL shows an empty blocked state, while a later invalid
+  draft identifies the available SQL revision, current draft revision, and
+  validation errors separately;
+- a real PGlite syntax rejection exposes the attempted generated SQL and error
+  without replacing the last successful sandbox;
+- a sandbox runtime failure has a distinct observable category and is not
+  reported as PostgreSQL rejecting SQL;
+- delayed PGlite completions from an older schema revision or another project
+  cannot replace the current preview.
 
 The real Electrobun view was driven through WebView2 remote debugging against a
 temporary database (`hutch run dev`, no Vite dev server). Verified in one run:
@@ -100,6 +136,21 @@ temporary database (`hutch run dev`, no Vite dev server). Verified in one run:
 6. Removing `Books` through the inspector's confirmation left `Novelists`
    alone, advanced the schema revision to `5`, regenerated the SQL, and applied
    revision `5` in the sandbox; reopening kept the removal and the layout.
+
+### Ticket #10 native preview smoke
+
+A separate WebView2 run used `hutch run dev`, a temporary SQLite database, a
+temporary `WEBVIEW2_USER_DATA_FOLDER`, and remote debugging port `9310`. The
+launcher logged that the Vite server was not running and loaded
+`views://mainview/index.html`; no page from port `5173` was used.
+
+| Design state | SQL preview | Sandbox |
+| --- | --- | --- |
+| Valid `Books`, revision 2 | Current, generated from revision 2 | Accepted, revision 2 |
+| Duplicate `Books`, revision 3 | Out of date, revision 2 SQL retained with the duplicate-name error | Out of date, last success revision 2 |
+| Rename duplicate to `Volumes`, revision 4 | Current, generated from revision 4 | Accepted, revision 4 |
+| Duplicate `Books` again, revision 5 | Out of date, revision 4 SQL retained with the error | Out of date, last success revision 4 |
+| Rename back to `Volumes`, revision 6 | Current, generated from revision 6 | Accepted, revision 6 |
 
 A packaged Windows build was produced with `hutch run build`
 (`build/stable-win-x64/Schema Designer-Setup.exe`). Its main bundle shipped the

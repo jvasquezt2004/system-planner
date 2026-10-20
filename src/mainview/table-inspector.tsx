@@ -14,12 +14,13 @@ import {
 	type ColumnLiteralType,
 	type ColumnType,
 } from "../shared/column-types";
-import type {
-	ColumnChanges,
-	DesignColumn,
-	DesignTable,
-	RelationshipCardinality,
-	SqlState,
+import {
+	getSqlValidationErrors,
+	type ColumnChanges,
+	type DesignColumn,
+	type DesignTable,
+	type RelationshipCardinality,
+	type SqlState,
 } from "../shared/design";
 import type { RelationshipView } from "../shared/relationships";
 import { ColumnBadge } from "./column-badge";
@@ -99,7 +100,7 @@ export function TableInspector({
 
 	const selectedColumn =
 		table.columns.find((column) => column.id === selectedColumnId) ?? null;
-	const validationErrors = sql.status === "current" ? [] : sql.errors;
+	const validationErrors = getSqlValidationErrors(sql);
 
 	function requestTableRename(nextName: string) {
 		if (nextName.trim().length === 0 || nextName.trim() === table?.name) return;

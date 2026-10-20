@@ -2,11 +2,12 @@ import { PGlite } from "@electric-sql/pglite";
 import type {
 	SandboxAppliedRelationship,
 	SandboxAppliedTable,
+	SandboxFailure,
 } from "../shared/design";
 
 export type SandboxApplyResult =
 	| { ok: true; tables: SandboxAppliedTable[]; relationships: SandboxAppliedRelationship[] }
-	| { ok: false; error: string };
+	| { ok: false; failure: SandboxFailure; error: string };
 
 /**
  * A disposable PostgreSQL preview. Applying always builds a fresh database, so
@@ -106,8 +107,12 @@ export function createPGliteSandbox(): SchemaSandbox {
 		async apply(sql) {
 			const instance = new PGlite();
 			database = instance;
+			let failure: SandboxFailure = "sandbox-error";
 			try {
+				await instance.waitReady;
+				failure = "sql-rejected";
 				await instance.exec(sql);
+				failure = "sandbox-error";
 				const result = await instance.query<CatalogRow>(CATALOG_QUERY);
 				const relationships = await instance.query<RelationshipRow>(
 					RELATIONSHIP_QUERY,
@@ -120,6 +125,7 @@ export function createPGliteSandbox(): SchemaSandbox {
 			} catch (error) {
 				return {
 					ok: false,
+					failure,
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}

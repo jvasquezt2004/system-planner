@@ -8,6 +8,7 @@ import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
 import {
 	CANVAS_MAX_ZOOM,
 	CANVAS_MIN_ZOOM,
+	getLastAppliedSandbox,
 	type AddColumnAction,
 	type AddRelationshipAction,
 	type AddTableAction,
@@ -109,7 +110,7 @@ export async function createDesignWorkspace(
 		design: null,
 		revision: 0,
 		save: { status: "idle" },
-		sql: { status: "empty", errors: [] },
+		sql: { status: "empty", draftRevision: 0, errors: [] },
 		sandbox: { status: "idle" },
 	};
 	let activeProjectId: string | null = null;
@@ -117,6 +118,12 @@ export async function createDesignWorkspace(
 	let documentRevision = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
+	let previewRequestId = 0;
+	let scheduledPreview: {
+		requestId: number;
+		cancel: () => void;
+		resolve: () => void;
+	} | null = null;
 
 	function setState(next: WorkspaceState) {
 		state = next;
@@ -145,38 +152,99 @@ export async function createDesignWorkspace(
 	function isCurrent(projectId: string, revision: number) {
 		return activeProjectId === projectId && state.revision === revision;
 	}
+	function isCurrentPreview(projectId: string, revision: number, requestId: number) {
+		return (
+			previewRequestId === requestId &&
+			activeProjectId === projectId &&
+			state.revision === revision
+		);
+	}
 
-	async function generateAndApply(projectId: string, revision: number, design: Design) {
-		if (!isCurrent(projectId, revision)) return;
+
+	function cancelScheduledPreview() {
+		if (!scheduledPreview) return;
+		const pending = scheduledPreview;
+		scheduledPreview = null;
+		pending.cancel();
+		pending.resolve();
+	}
+
+	function invalidatePreviewWork() {
+		previewRequestId += 1;
+		cancelScheduledPreview();
+	}
+
+	function schedulePreview(projectId: string, revision: number, design: Design) {
+		cancelScheduledPreview();
+		const requestId = ++previewRequestId;
+
+		const { promise, resolve, reject } = Promise.withResolvers<void>();
+		const timer = setTimeout(() => {
+			if (scheduledPreview?.requestId === requestId) scheduledPreview = null;
+			const task = runTask(() =>
+				generateAndApply(projectId, revision, design, requestId),
+			);
+			void task.then(resolve, reject);
+		}, 180);
+
+		scheduledPreview = {
+			requestId,
+			cancel: () => clearTimeout(timer),
+			resolve,
+		};
+		return promise;
+	}
+
+	async function generateAndApply(
+		projectId: string,
+		revision: number,
+		design: Design,
+		requestId: number,
+	) {
+		if (!isCurrentPreview(projectId, revision, requestId)) return;
 
 		const generation = generateDesignSql(design);
 		if (!generation.ok) {
+			const available = lastGeneratableSql;
+			const lastApplied = getLastAppliedSandbox(state.sandbox);
 			setState({
 				...state,
 				sql:
-					lastGeneratableSql === null
-						? { status: "empty", errors: generation.errors }
+					available === null
+						? { status: "empty", draftRevision: revision, errors: generation.errors }
 						: {
 								status: "stale",
-								revision,
-								sql: lastGeneratableSql.sql,
+								revision: available.revision,
+								draftRevision: revision,
+								sql: available.sql,
 								errors: generation.errors,
 							},
+				sandbox:
+					lastApplied === null
+						? { status: "idle" }
+						: { status: "applied", ...lastApplied },
 			});
 			return;
 		}
 
 		lastGeneratableSql = { revision, sql: generation.sql };
+		const lastApplied = getLastAppliedSandbox(state.sandbox);
 		setState({
 			...state,
 			sql: { status: "current", revision, sql: generation.sql },
-			sandbox: { status: "applying", revision },
+			sandbox: {
+				status: "applying",
+				revision,
+				attemptedSql: generation.sql,
+				lastApplied,
+			},
 		});
 
-		const sandbox = createSandbox();
+		let sandbox: SchemaSandbox | null = null;
 		try {
+			sandbox = createSandbox();
 			const result = await sandbox.apply(generation.sql);
-			if (!isCurrent(projectId, revision)) return;
+			if (!isCurrentPreview(projectId, revision, requestId)) return;
 			setState({
 				...state,
 				sandbox: result.ok
@@ -187,32 +255,46 @@ export async function createDesignWorkspace(
 							relationships: result.relationships,
 							sql: generation.sql,
 						}
-					: {
-							status: "failed",
-							revision,
-							attemptedSql: generation.sql,
-							error: result.error,
-						},
+					: result.failure === "sql-rejected"
+						? {
+								status: "failed",
+								failure: "sql-rejected",
+								revision,
+								attemptedSql: generation.sql,
+								error: result.error,
+								lastApplied,
+							}
+						: {
+								status: "failed",
+								failure: "sandbox-error",
+								revision,
+								error: result.error,
+								lastApplied,
+							},
 			});
 		} catch (error) {
-			if (!isCurrent(projectId, revision)) return;
+			if (!isCurrentPreview(projectId, revision, requestId)) return;
 			setState({
 				...state,
 				sandbox: {
 					status: "failed",
+					failure: "sandbox-error",
 					revision,
-					attemptedSql: generation.sql,
 					error: error instanceof Error ? error.message : String(error),
+					lastApplied,
 				},
 			});
 		} finally {
-			try {
-				await sandbox.dispose();
-			} catch (error) {
-				console.error("[sandbox] failed to dispose preview", error);
+			if (sandbox) {
+				try {
+					await sandbox.dispose();
+				} catch (error) {
+					console.error("[sandbox] failed to dispose preview", error);
+				}
 			}
 		}
 	}
+
 
 	async function saveDocument(
 		projectId: string,
@@ -247,20 +329,31 @@ export async function createDesignWorkspace(
 			}
 		}
 	}
-
-	/** Applies a schema edit: bump the revision, save, then refresh SQL and sandbox. */
+	/** Saves the draft immediately and debounces its disposable preview rebuild. */
 	async function applyStructuralChange(projectId: string, design: Design) {
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
+		const lastApplied = getLastAppliedSandbox(state.sandbox);
 		setState({
 			...state,
 			design,
 			revision,
 			save: { status: "saving", revision },
+			sql: {
+				status: "checking",
+				draftRevision: revision,
+				availableRevision: lastGeneratableSql?.revision ?? null,
+				sql: lastGeneratableSql?.sql ?? null,
+			},
+			sandbox:
+				lastApplied === null
+					? { status: "idle" }
+					: { status: "applied", ...lastApplied },
 		});
+		const preview = schedulePreview(projectId, revision, design);
 		await saveDocument(projectId, revision, nextDocumentRevision, design);
-		await generateAndApply(projectId, revision, design);
+		await preview;
 		return state;
 	}
 
@@ -319,6 +412,7 @@ export async function createDesignWorkspace(
 					documentRevision: revision,
 					savedAt,
 				});
+				invalidatePreviewWork();
 				activeProjectId = project.id;
 				documentRevision = revision;
 				lastGeneratableSql = null;
@@ -328,10 +422,9 @@ export async function createDesignWorkspace(
 					design,
 					revision,
 					save: { status: "saved", revision, savedAt },
-					sql: { status: "empty", errors: [] },
+					sql: { status: "empty", draftRevision: revision, errors: [] },
 					sandbox: { status: "idle" },
 				});
-				await generateAndApply(project.id, revision, design);
 				return state;
 			});
 		},
@@ -341,6 +434,7 @@ export async function createDesignWorkspace(
 				if (!record) throw new Error("That project could not be found.");
 				const design = normalizeDesign(record.design);
 
+				invalidatePreviewWork();
 				activeProjectId = record.project.id;
 				documentRevision = record.documentRevision;
 				lastGeneratableSql = null;
@@ -350,10 +444,17 @@ export async function createDesignWorkspace(
 					design,
 					revision: record.revision,
 					save: { status: "saved", revision: record.revision, savedAt: record.savedAt },
-					sql: { status: "empty", errors: [] },
+					sql: {
+						status: "empty",
+						draftRevision: record.revision,
+						errors: [],
+					},
 					sandbox: { status: "idle" },
 				});
-				await generateAndApply(record.project.id, record.revision, design);
+				if (design.tables.length > 0) {
+					const requestId = ++previewRequestId;
+					await generateAndApply(record.project.id, record.revision, design, requestId);
+				}
 				return state;
 			});
 		},
@@ -634,6 +735,7 @@ export async function createDesignWorkspace(
 			});
 		},
 		async close() {
+			invalidatePreviewWork();
 			await settle();
 			listeners.clear();
 			store.close();

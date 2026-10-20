@@ -1,17 +1,20 @@
 import { useCallback, useEffect, useState } from "react";
-import type {
-	AffectedRelationship,
-	CanvasPoint,
-	CanvasViewport,
-	ColumnChanges,
-	ProjectSummary,
-	RelationshipCardinality,
-	RemovalPlan,
-	RemovalTarget,
-	SandboxState,
-	SaveState,
-	SqlState,
-	WorkspaceState,
+import {
+	getLastAppliedSandbox,
+	getSqlValidationErrors,
+	type AffectedRelationship,
+	type CanvasPoint,
+	type CanvasViewport,
+	type ColumnChanges,
+	type ProjectSummary,
+	type RelationshipCardinality,
+	type RemovalPlan,
+	type RemovalTarget,
+	type SandboxState,
+	type SaveState,
+	type SqlState,
+	type SandboxSnapshot,
+	type WorkspaceState,
 } from "../shared/design";
 import { relationshipsForTable } from "../shared/relationships";
 import { TableCanvas } from "./canvas";
@@ -382,7 +385,7 @@ function App() {
 						onRemoveRelationship={handleRemoveRelationship}
 					/>
 					<SqlPanel sql={state.sql} />
-					<SandboxPanel sandbox={state.sandbox} />
+					<SandboxPanel sandbox={state.sandbox} draftRevision={state.revision} />
 				</aside>
 			</div>
 		</main>
@@ -592,38 +595,62 @@ function ProjectsPanel({
 }
 
 function SqlPanel({ sql }: { sql: SqlState }) {
+	const errors = getSqlValidationErrors(sql);
+	const sqlText = sql.status === "empty" ? null : sql.sql;
+	const label =
+		sql.status === "current"
+			? "Current"
+			: sql.status === "checking"
+				? "Checking…"
+				: sql.status === "stale"
+					? "Out of date"
+					: errors.length > 0
+						? "Blocked"
+						: "Not available";
+	const tone =
+		sql.status === "current"
+			? "ok"
+			: sql.status === "empty" && errors.length > 0
+				? "bad"
+				: sql.status === "checking" || sql.status === "stale"
+					? "warn"
+					: "muted";
+
 	return (
 		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
 			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
 				<h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
 					SQL preview
 				</h2>
-				<StatusPill
-					tone={sql.status === "current" ? "ok" : sql.status === "stale" ? "warn" : "muted"}
-				>
-					{sql.status === "current"
-						? "Current"
-						: sql.status === "stale"
-							? "Out of date"
-							: "Not available"}
-				</StatusPill>
+				<StatusPill tone={tone}>{label}</StatusPill>
 			</header>
 			<div className="px-4 py-3">
-				{sql.status === "empty" ? (
-					<p className="text-sm text-slate-500">
-						No SQL has been generated yet. Complete the design to produce PostgreSQL.
-					</p>
+				<p className="mb-2 text-xs text-slate-400">
+					{sql.status === "current"
+						? `Generated from design revision ${sql.revision}.`
+						: sql.status === "checking"
+							? sql.availableRevision === null
+								? `Checking draft revision ${sql.draftRevision}; no SQL is available yet.`
+								: `Checking draft revision ${sql.draftRevision}; showing SQL from revision ${sql.availableRevision}.`
+							: sql.status === "stale"
+								? `Showing SQL from revision ${sql.revision}; current draft revision ${sql.draftRevision} is blocked.`
+								: errors.length > 0
+									? `No SQL is available for draft revision ${sql.draftRevision}.`
+									: "No SQL has been generated yet. Complete the design to produce PostgreSQL."}
+				</p>
+				{sqlText === null ? (
+					<p className="text-sm text-slate-500">SQL will appear here when the design can generate it.</p>
 				) : (
 					<pre
 						data-testid="sql-preview"
 						className="max-h-56 overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-relaxed text-emerald-200"
 					>
-						<code>{sql.sql}</code>
+						<code>{sqlText}</code>
 					</pre>
 				)}
-				{sql.status !== "current" && sql.errors.length > 0 && (
+				{errors.length > 0 && (
 					<ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-amber-300">
-						{sql.errors.map((message) => (
+						{errors.map((message) => (
 							<li key={message}>{message}</li>
 						))}
 					</ul>
@@ -633,118 +660,162 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 	);
 }
 
-function SandboxPanel({ sandbox }: { sandbox: SandboxState }) {
+function SandboxPanel({
+	sandbox,
+	draftRevision,
+}: {
+	sandbox: SandboxState;
+	draftRevision: number;
+}) {
+	const lastApplied = getLastAppliedSandbox(sandbox);
+	const label =
+		sandbox.status === "applied"
+			? sandbox.revision === draftRevision
+				? "Accepted"
+				: "Out of date"
+			: sandbox.status === "failed"
+				? sandbox.failure === "sql-rejected"
+					? "Rejected"
+					: "Sandbox error"
+				: sandbox.status === "applying"
+					? "Rebuilding…"
+					: "Not run";
+	const tone =
+		sandbox.status === "failed"
+			? "bad"
+			: sandbox.status === "applied" && sandbox.revision === draftRevision
+				? "ok"
+				: sandbox.status === "idle"
+					? "muted"
+					: "warn";
+
 	return (
 		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
 			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
 				<h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
 					Sandbox check
 				</h2>
-				<StatusPill
-					tone={
-						sandbox.status === "applied"
-							? "ok"
-							: sandbox.status === "failed"
-								? "bad"
-								: sandbox.status === "applying"
-									? "warn"
-									: "muted"
-					}
-				>
-					{sandbox.status === "applied"
-						? "Accepted"
-						: sandbox.status === "failed"
-							? "Rejected"
-							: sandbox.status === "applying"
-								? "Applying…"
-								: "Not run"}
-				</StatusPill>
+				<StatusPill tone={tone}>{label}</StatusPill>
 			</header>
-			<div className="px-4 py-3 text-sm">
-				{sandbox.status === "applied" && (
-					<div className="space-y-2">
-						<p className="text-xs text-slate-400">
-							PGlite applied schema revision {sandbox.revision}.
-						</p>
-						{sandbox.relationships.length > 0 && (
-							<div>
-								<p className="text-[10px] uppercase tracking-wide text-slate-500">
-									Foreign keys
-								</p>
-								<ul className="mt-1 space-y-1" data-testid="sandbox-relationships">
-									{sandbox.relationships.map((relationship) => (
-										<li
-											key={relationship.name}
-											className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
-										>
-											{relationship.referencingTable}.
-											{relationship.referencingColumn} →{" "}
-											{relationship.referencedTable}.
-											{relationship.referencedColumn}
-											<span className="ml-1 text-slate-500">
-												{relationship.updateRule} / {relationship.deleteRule}
-											</span>
-										</li>
-									))}
-								</ul>
-							</div>
-						)}
-						<ul className="space-y-1.5">
-							{sandbox.tables.map((table) => (
-								<li
-									key={table.name}
-									className="rounded border border-slate-800 bg-slate-950 p-2"
-								>
-									<p className="text-xs font-medium text-slate-200">{table.name}</p>
-									<ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
-										{table.columns.map((column) => (
-											<li key={column.name}>
-												{column.name} · {column.dataType}
-												{column.isIdentity ? " · identity" : ""}
-												{column.defaultExpression && (
-													<>
-														{" · "}
-														<span
-															className="break-all text-slate-500"
-															title={`Default: ${column.defaultExpression}`}
-														>
-															default {column.defaultExpression}
-														</span>
-													</>
-												)}
-												{column.nullable ? " · null" : " · not null"}
-												{column.unique ? " · unique" : ""}
-											</li>
-										))}
-									</ul>
-								</li>
-							))}
-						</ul>
-					</div>
-				)}
+			<div className="space-y-3 px-4 py-3 text-sm">
 				{sandbox.status === "applying" && (
-					<p className="text-xs text-slate-400">Rebuilding the disposable preview…</p>
+					<p className="text-xs text-slate-400">
+						Rebuilding the disposable sandbox for draft revision {sandbox.revision}.
+					</p>
 				)}
 				{sandbox.status === "failed" && (
-					<div className="space-y-2">
+					<>
+						<p className="text-xs text-slate-400">
+							{sandbox.failure === "sql-rejected"
+								? `PostgreSQL rejected the generated SQL for draft revision ${sandbox.revision}.`
+								: `Sandbox could not complete validation for draft revision ${sandbox.revision}.`}
+						</p>
 						<p className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-200">
 							{sandbox.error}
 						</p>
-						<details className="text-[11px] text-slate-400">
-							<summary className="cursor-pointer text-slate-300">Attempted SQL</summary>
-							<pre className="mt-1 max-h-40 overflow-auto rounded bg-slate-950 p-2 text-emerald-200">
-								<code>{sandbox.attemptedSql}</code>
-							</pre>
-						</details>
-					</div>
+						{sandbox.failure === "sql-rejected" && (
+							<details className="text-[11px] text-slate-400">
+								<summary className="cursor-pointer text-slate-300">
+									Attempted SQL
+								</summary>
+								<pre className="mt-1 max-h-40 overflow-auto rounded bg-slate-950 p-2 text-emerald-200">
+									<code>{sandbox.attemptedSql}</code>
+								</pre>
+							</details>
+						)}
+					</>
 				)}
 				{sandbox.status === "idle" && (
 					<p className="text-xs text-slate-500">
-						The sandbox has not applied this design yet.
+						No successful sandbox preview exists for this project yet.
 					</p>
 				)}
+				{lastApplied && (
+					<div className="space-y-2 border-t border-slate-800 pt-3">
+						<p className="text-xs text-slate-400">
+							{sandbox.status === "applied" && sandbox.revision === draftRevision
+								? `PGlite accepted design revision ${lastApplied.revision}.`
+								: `Last successful sandbox: revision ${lastApplied.revision}; current draft: revision ${draftRevision}.`}
+						</p>
+						{sandbox.status === "applied" ? (
+							<SandboxContents snapshot={lastApplied} />
+						) : (
+							<details className="text-[11px] text-slate-400">
+								<summary className="cursor-pointer text-slate-300">
+									Inspect last successful sandbox
+								</summary>
+								<div className="mt-2">
+									<SandboxContents snapshot={lastApplied} />
+								</div>
+							</details>
+						)}
+					</div>
+				)}
+				{(sandbox.status === "applying" || sandbox.status === "failed") &&
+					lastApplied === null && (
+						<p className="text-xs text-slate-500">
+							No previous successful sandbox is available.
+						</p>
+					)}
 			</div>
 		</section>
+	);
+}
+
+function SandboxContents({ snapshot }: { snapshot: SandboxSnapshot }) {
+	return (
+		<div className="space-y-2">
+			{snapshot.relationships.length > 0 && (
+				<div>
+					<p className="text-[10px] uppercase tracking-wide text-slate-500">Foreign keys</p>
+					<ul className="mt-1 space-y-1" data-testid="sandbox-relationships">
+						{snapshot.relationships.map((relationship) => (
+							<li
+								key={relationship.name}
+								className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
+							>
+								{relationship.referencingTable}.{relationship.referencingColumn} →{" "}
+								{relationship.referencedTable}.{relationship.referencedColumn}
+								<span className="ml-1 text-slate-500">
+									{relationship.updateRule} / {relationship.deleteRule}
+								</span>
+							</li>
+						))}
+					</ul>
+				</div>
+			)}
+			<ul className="space-y-1.5">
+				{snapshot.tables.map((table) => (
+					<li
+						key={table.name}
+						className="rounded border border-slate-800 bg-slate-950 p-2"
+					>
+						<p className="text-xs font-medium text-slate-200">{table.name}</p>
+						<ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
+							{table.columns.map((column) => (
+								<li key={column.name}>
+									{column.name} · {column.dataType}
+									{column.isIdentity ? " · identity" : ""}
+									{column.defaultExpression && (
+										<>
+											{" · "}
+											<span
+												className="break-all text-slate-500"
+												title={`Default: ${column.defaultExpression}`}
+											>
+												default {column.defaultExpression}
+											</span>
+										</>
+									)}
+									{column.nullable ? " · null" : " · not null"}
+									{column.unique ? " · unique" : ""}
+								</li>
+							))}
+						</ul>
+					</li>
+				))}
+			</ul>
+		</div>
 	);
 }
 

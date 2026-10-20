@@ -87,9 +87,21 @@ export type SaveState =
 	| { status: "failed"; revision: number; error: string };
 
 export type SqlState =
-	| { status: "empty"; errors: string[] }
+	| { status: "empty"; draftRevision: number; errors: string[] }
+	| {
+			status: "checking";
+			draftRevision: number;
+			availableRevision: number | null;
+			sql: string | null;
+	  }
 	| { status: "current"; revision: number; sql: string }
-	| { status: "stale"; revision: number; sql: string; errors: string[] };
+	| {
+			status: "stale";
+			revision: number;
+			draftRevision: number;
+			sql: string;
+			errors: string[];
+	  };
 
 export type SandboxAppliedColumn = {
 	name: string;
@@ -118,27 +130,57 @@ export type SandboxAppliedRelationship = {
 	deleteRule: string;
 };
 
+/** One successful, disposable sandbox build for a specific design revision. */
+export type SandboxSnapshot = {
+	revision: number;
+	tables: SandboxAppliedTable[];
+	relationships: SandboxAppliedRelationship[];
+	sql: string;
+};
+
+export type SandboxFailure = "sql-rejected" | "sandbox-error";
+
 export type SandboxState =
 	| { status: "idle" }
-	| { status: "applying"; revision: number }
 	| {
-			status: "applied";
+			status: "applying";
 			revision: number;
-			tables: SandboxAppliedTable[];
-			relationships: SandboxAppliedRelationship[];
-			sql: string;
+			attemptedSql: string;
+			lastApplied: SandboxSnapshot | null;
 	  }
+	| ({ status: "applied" } & SandboxSnapshot)
 	| {
 			status: "failed";
+			failure: "sql-rejected";
 			revision: number;
 			attemptedSql: string;
 			error: string;
+			lastApplied: SandboxSnapshot | null;
+	  }
+	| {
+			status: "failed";
+			failure: "sandbox-error";
+			revision: number;
+			error: string;
+			lastApplied: SandboxSnapshot | null;
 	  };
 
+export function getSqlValidationErrors(sql: SqlState): string[] {
+	return sql.status === "empty" || sql.status === "stale" ? sql.errors : [];
+}
+
+export function getLastAppliedSandbox(
+	sandbox: SandboxState,
+): SandboxSnapshot | null {
+	if (sandbox.status === "applied") return sandbox;
+	if (sandbox.status === "idle") return null;
+	return sandbox.lastApplied;
+}
+
 /**
- * Observable state of the design workspace. It distinguishes the current
- * project/design revision, save outcome, SQL availability, and sandbox outcome
- * so that unfinished, stale, failed, and applied states never blur together.
+ * Observable workspace state. `revision` identifies the current draft,
+ * `sql.revision` identifies available SQL, and an applied sandbox's revision
+ * or a non-null `sandbox.lastApplied.revision` identifies the last success.
  */
 export type WorkspaceState = {
 	projects: ProjectSummary[];
