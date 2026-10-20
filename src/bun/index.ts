@@ -44,16 +44,27 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).addTable({ name, position }),
 			renameTable: async ({ tableId, name }) =>
 				(await workspacePromise).renameTable({ tableId, name }),
-			removeTable: async ({ tableId }) =>
-				(await workspacePromise).removeTable({ tableId }),
+			removeTable: async ({ tableId, confirmed }) =>
+				(await workspacePromise).removeTable({ tableId, confirmed }),
 			moveTable: async ({ tableId, position }) =>
 				(await workspacePromise).moveTable({ tableId, position }),
 			addColumn: async ({ tableId, name, type }) =>
 				(await workspacePromise).addColumn({ tableId, name, type }),
 			updateColumn: async ({ tableId, columnId, changes }) =>
 				(await workspacePromise).updateColumn({ tableId, columnId, changes }),
-			removeColumn: async ({ tableId, columnId }) =>
-				(await workspacePromise).removeColumn({ tableId, columnId }),
+			removeColumn: async ({ tableId, columnId, confirmed }) =>
+				(await workspacePromise).removeColumn({ tableId, columnId, confirmed }),
+			addRelationship: async ({ referencingTableId, referencedTableId }) =>
+				(await workspacePromise).addRelationship({
+					referencingTableId,
+					referencedTableId,
+				}),
+			updateRelationship: async ({ relationshipId, required }) =>
+				(await workspacePromise).updateRelationship({ relationshipId, required }),
+			removeRelationship: async ({ relationshipId }) =>
+				(await workspacePromise).removeRelationship({ relationshipId }),
+			describeRemoval: async (target) =>
+				(await workspacePromise).describeRemoval(target),
 			setViewport: async (viewport) => (await workspacePromise).setViewport(viewport),
 		},
 	},

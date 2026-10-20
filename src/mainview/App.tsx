@@ -1,14 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import type {
+	AffectedRelationship,
 	CanvasPoint,
 	CanvasViewport,
 	ColumnChanges,
 	ProjectSummary,
+	RemovalPlan,
+	RemovalTarget,
 	SandboxState,
 	SaveState,
 	SqlState,
 	WorkspaceState,
 } from "../shared/design";
+import { relationshipsForTable } from "../shared/relationships";
 import { TableCanvas } from "./canvas";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
@@ -19,6 +23,11 @@ function App() {
 	const [error, setError] = useState<string | null>(null);
 	const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
+	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
+	const [pendingRemoval, setPendingRemoval] = useState<{
+		target: RemovalTarget;
+		plan: RemovalPlan;
+	} | null>(null);
 
 	useEffect(() => {
 		let active = true;
@@ -67,6 +76,7 @@ function App() {
 	useEffect(() => {
 		setSelectedTableId(null);
 		setSelectedColumnId(null);
+		setSelectedRelationshipId(null);
 	}, [projectId]);
 
 	useEffect(() => {
@@ -85,10 +95,90 @@ function App() {
 		if (!stillExists) setSelectedColumnId(null);
 	}, [state, selectedTableId, selectedColumnId]);
 
+	useEffect(() => {
+		if (!selectedRelationshipId) return;
+		const stillExists = state?.design?.relationships.some(
+			(relationship) => relationship.id === selectedRelationshipId,
+		);
+		if (!stillExists) setSelectedRelationshipId(null);
+	}, [state, selectedRelationshipId]);
+
 	const handleSelectTable = useCallback((tableId: string | null) => {
 		setSelectedTableId(tableId);
 		setSelectedColumnId(null);
 	}, []);
+
+	const handleSelectRelationship = useCallback((relationshipId: string | null) => {
+		setSelectedRelationshipId(relationshipId);
+	}, []);
+
+	const handleRelateTables = useCallback(
+		(referencingTableId: string, referencedTableId: string) => {
+			void (async () => {
+				setBusy(true);
+				setError(null);
+				try {
+					const next = await workspaceClient.addRelationship(
+						referencingTableId,
+						referencedTableId,
+					);
+					setState(next);
+					const created =
+						next.design?.relationships[next.design.relationships.length - 1];
+					if (created) setSelectedRelationshipId(created.id);
+					setSelectedTableId(referencingTableId);
+					setSelectedColumnId(null);
+				} catch (cause) {
+					setError(errorMessage(cause));
+				} finally {
+					setBusy(false);
+				}
+			})();
+		},
+		[],
+	);
+
+	const handleSetRelationshipRequired = useCallback(
+		(relationshipId: string, required: boolean) => {
+			void run(() => workspaceClient.updateRelationship(relationshipId, required));
+		},
+		[run],
+	);
+
+	const handleRemoveRelationship = useCallback(
+		(relationshipId: string) => {
+			setSelectedRelationshipId(null);
+			void run(() => workspaceClient.removeRelationship(relationshipId));
+		},
+		[run],
+	);
+
+	/** Deletion first asks the workspace what it would take with it. */
+	const requestRemoval = useCallback(async (target: RemovalTarget) => {
+		setError(null);
+		try {
+			const plan = await workspaceClient.describeRemoval(target);
+			setPendingRemoval({ target, plan });
+		} catch (cause) {
+			setError(errorMessage(cause));
+		}
+	}, []);
+
+	const confirmRemoval = useCallback(() => {
+		if (!pendingRemoval) return;
+		const target = pendingRemoval.target;
+		const tableId = target.tableId;
+		const columnId = target.kind === "column" ? target.columnId : null;
+		setPendingRemoval(null);
+		setSelectedRelationshipId(null);
+		setSelectedColumnId(null);
+		if (columnId === null) {
+			setSelectedTableId(null);
+			void run(() => workspaceClient.removeTable(tableId, true));
+		} else {
+			void run(() => workspaceClient.removeColumn(tableId, columnId, true));
+		}
+	}, [pendingRemoval, run]);
 
 	const handleAddTable = useCallback((name: string, position: CanvasPoint) => {
 		void (async () => {
@@ -142,10 +232,9 @@ function App() {
 	const handleRemoveColumn = useCallback(
 		(columnId: string) => {
 			if (!selectedTableId) return;
-			setSelectedColumnId(null);
-			void run(() => workspaceClient.removeColumn(selectedTableId, columnId));
+			void requestRemoval({ kind: "column", tableId: selectedTableId, columnId });
 		},
-		[run, selectedTableId],
+		[requestRemoval, selectedTableId],
 	);
 
 	const handleMoveTable = useCallback(
@@ -164,6 +253,10 @@ function App() {
 
 	const selectedTable =
 		state?.design?.tables.find((table) => table.id === selectedTableId) ?? null;
+	const inspectorRelationships =
+		state?.design && selectedTable
+			? relationshipsForTable(state.design, selectedTable.id)
+			: [];
 
 	if (!state) {
 		return (
@@ -205,6 +298,15 @@ function App() {
 				</div>
 			)}
 
+			{pendingRemoval && (
+				<RemovalDialog
+					plan={pendingRemoval.plan}
+					busy={busy}
+					onConfirm={confirmRemoval}
+					onCancel={() => setPendingRemoval(null)}
+				/>
+			)}
+
 			<div className="flex min-h-0 flex-1">
 				<ProjectsPanel
 					projects={state.projects}
@@ -220,7 +322,10 @@ function App() {
 							key={state.project.id}
 							design={state.design}
 							selectedTableId={selectedTableId}
+							selectedRelationshipId={selectedRelationshipId}
 							onSelectTable={handleSelectTable}
+							onSelectRelationship={handleSelectRelationship}
+							onRelateTables={handleRelateTables}
 							onMoveTable={handleMoveTable}
 							onViewportChange={handleViewportChange}
 							onAddTable={handleAddTable}
@@ -242,6 +347,8 @@ function App() {
 					<TableInspector
 						table={selectedTable}
 						selectedColumnId={selectedColumnId}
+						relationships={inspectorRelationships}
+						selectedRelationshipId={selectedRelationshipId}
 						sql={state.sql}
 						busy={busy}
 						onRename={(name) => {
@@ -250,21 +357,108 @@ function App() {
 						}}
 						onRemove={() => {
 							if (!selectedTable) return;
-							const tableId = selectedTable.id;
-							setSelectedTableId(null);
-							setSelectedColumnId(null);
-							void run(() => workspaceClient.removeTable(tableId));
+							void requestRemoval({ kind: "table", tableId: selectedTable.id });
 						}}
 						onSelectColumn={setSelectedColumnId}
 						onAddColumn={handleAddColumn}
 						onApplyColumn={handleApplyColumn}
 						onRemoveColumn={handleRemoveColumn}
+						onSelectRelationship={handleSelectRelationship}
+						onSetRelationshipRequired={handleSetRelationshipRequired}
+						onRemoveRelationship={handleRemoveRelationship}
 					/>
 					<SqlPanel sql={state.sql} />
 					<SandboxPanel sandbox={state.sandbox} />
 				</aside>
 			</div>
 		</main>
+	);
+}
+
+/**
+ * Shows what a destructive edit would take with it. Cancelling changes nothing;
+ * confirming removes only the target and the relationships listed here.
+ */
+function RemovalDialog({
+	plan,
+	busy,
+	onConfirm,
+	onCancel,
+}: {
+	plan: RemovalPlan;
+	busy: boolean;
+	onConfirm: () => void;
+	onCancel: () => void;
+}) {
+	useEffect(() => {
+		const cancelOnEscape = (event: KeyboardEvent) => {
+			if (event.key === "Escape") onCancel();
+		};
+		window.addEventListener("keydown", cancelOnEscape);
+		return () => window.removeEventListener("keydown", cancelOnEscape);
+	}, [onCancel]);
+
+	return (
+		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
+			<div
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="removal-heading"
+				data-testid="removal-confirmation"
+				className="w-full max-w-md rounded-xl border border-red-500/40 bg-slate-900 p-4 shadow-2xl"
+			>
+				<h2 id="removal-heading" className="text-sm font-semibold text-red-200">
+					Remove {plan.target}?
+				</h2>
+				{plan.relationships.length === 0 ? (
+					<p className="mt-2 text-xs text-slate-400">
+						No relationships depend on it.
+					</p>
+				) : (
+					<>
+						<p className="mt-2 text-xs text-slate-300">
+							These relationships are affected and will be removed too. Their
+							columns stay, and other tables and columns are untouched.
+						</p>
+						<ul
+							data-testid="affected-relationships"
+							className="mt-2 space-y-1"
+						>
+							{plan.relationships.map((relationship: AffectedRelationship) => (
+								<li
+									key={relationship.relationshipId}
+									className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
+								>
+									{relationship.referencingTable}.
+									{relationship.referencingColumn} →{" "}
+									{relationship.referencedTable}.
+									{relationship.referencedColumn ?? "(no primary key)"}
+								</li>
+							))}
+						</ul>
+					</>
+				)}
+				<div className="mt-4 flex justify-end gap-2">
+					<button
+						type="button"
+						data-testid="cancel-removal"
+						onClick={onCancel}
+						className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						data-testid="confirm-removal"
+						onClick={onConfirm}
+						disabled={busy}
+						className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						Remove
+					</button>
+				</div>
+			</div>
+		</div>
 	);
 }
 
@@ -447,6 +641,29 @@ function SandboxPanel({ sandbox }: { sandbox: SandboxState }) {
 						<p className="text-xs text-slate-400">
 							PGlite applied schema revision {sandbox.revision}.
 						</p>
+						{sandbox.relationships.length > 0 && (
+							<div>
+								<p className="text-[10px] uppercase tracking-wide text-slate-500">
+									Foreign keys
+								</p>
+								<ul className="mt-1 space-y-1" data-testid="sandbox-relationships">
+									{sandbox.relationships.map((relationship) => (
+										<li
+											key={relationship.name}
+											className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
+										>
+											{relationship.referencingTable}.
+											{relationship.referencingColumn} →{" "}
+											{relationship.referencedTable}.
+											{relationship.referencedColumn}
+											<span className="ml-1 text-slate-500">
+												{relationship.updateRule} / {relationship.deleteRule}
+											</span>
+										</li>
+									))}
+								</ul>
+							</div>
+						)}
 						<ul className="space-y-1.5">
 							{sandbox.tables.map((table) => (
 								<li

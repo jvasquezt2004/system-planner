@@ -5,6 +5,8 @@ import type {
 	CanvasViewport,
 	ColumnChanges,
 	ColumnType,
+	RemovalPlan,
+	RemovalTarget,
 	WorkspaceState,
 } from "../shared/design";
 import type { AppRPCSchema } from "../shared/rpc";
@@ -49,8 +51,8 @@ export const workspaceClient = {
 	renameTable(tableId: string, name: string): Promise<WorkspaceState> {
 		return rpc.request.renameTable({ tableId, name });
 	},
-	removeTable(tableId: string): Promise<WorkspaceState> {
-		return rpc.request.removeTable({ tableId });
+	removeTable(tableId: string, confirmed?: boolean): Promise<WorkspaceState> {
+		return rpc.request.removeTable({ tableId, confirmed });
 	},
 	moveTable(tableId: string, position: CanvasPoint): Promise<WorkspaceState> {
 		return rpc.request.moveTable({ tableId, position });
@@ -69,8 +71,30 @@ export const workspaceClient = {
 	): Promise<WorkspaceState> {
 		return rpc.request.updateColumn({ tableId, columnId, changes });
 	},
-	removeColumn(tableId: string, columnId: string): Promise<WorkspaceState> {
-		return rpc.request.removeColumn({ tableId, columnId });
+	removeColumn(
+		tableId: string,
+		columnId: string,
+		confirmed?: boolean,
+	): Promise<WorkspaceState> {
+		return rpc.request.removeColumn({ tableId, columnId, confirmed });
+	},
+	addRelationship(
+		referencingTableId: string,
+		referencedTableId: string,
+	): Promise<WorkspaceState> {
+		return rpc.request.addRelationship({ referencingTableId, referencedTableId });
+	},
+	updateRelationship(
+		relationshipId: string,
+		required: boolean,
+	): Promise<WorkspaceState> {
+		return rpc.request.updateRelationship({ relationshipId, required });
+	},
+	removeRelationship(relationshipId: string): Promise<WorkspaceState> {
+		return rpc.request.removeRelationship({ relationshipId });
+	},
+	describeRemoval(target: RemovalTarget): Promise<RemovalPlan> {
+		return rpc.request.describeRemoval(target);
 	},
 	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport(viewport);
