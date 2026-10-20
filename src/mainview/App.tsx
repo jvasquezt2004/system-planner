@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type {
 	CanvasPoint,
 	CanvasViewport,
-	DesignTable,
+	ColumnChanges,
 	ProjectSummary,
 	SandboxState,
 	SaveState,
@@ -10,6 +10,7 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import { TableCanvas } from "./canvas";
+import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
 
 function App() {
@@ -17,6 +18,7 @@ function App() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
+	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 
 	useEffect(() => {
 		let active = true;
@@ -64,13 +66,29 @@ function App() {
 	// Selection belongs to the open project, never to a previously open one.
 	useEffect(() => {
 		setSelectedTableId(null);
+		setSelectedColumnId(null);
 	}, [projectId]);
 
 	useEffect(() => {
 		if (!selectedTableId) return;
 		const stillExists = state?.design?.tables.some((table) => table.id === selectedTableId);
-		if (!stillExists) setSelectedTableId(null);
+		if (!stillExists) {
+			setSelectedTableId(null);
+			setSelectedColumnId(null);
+		}
 	}, [state, selectedTableId]);
+
+	useEffect(() => {
+		if (!selectedColumnId) return;
+		const table = state?.design?.tables.find((candidate) => candidate.id === selectedTableId);
+		const stillExists = table?.columns.some((column) => column.id === selectedColumnId);
+		if (!stillExists) setSelectedColumnId(null);
+	}, [state, selectedTableId, selectedColumnId]);
+
+	const handleSelectTable = useCallback((tableId: string | null) => {
+		setSelectedTableId(tableId);
+		setSelectedColumnId(null);
+	}, []);
 
 	const handleAddTable = useCallback((name: string, position: CanvasPoint) => {
 		void (async () => {
@@ -80,7 +98,10 @@ function App() {
 				const next = await workspaceClient.addTable(name, position);
 				setState(next);
 				const created = next.design?.tables[next.design.tables.length - 1];
-				if (created) setSelectedTableId(created.id);
+				if (created) {
+					setSelectedTableId(created.id);
+					setSelectedColumnId(null);
+				}
 			} catch (cause) {
 				setError(errorMessage(cause));
 			} finally {
@@ -88,6 +109,44 @@ function App() {
 			}
 		})();
 	}, []);
+
+	const handleAddColumn = useCallback(() => {
+		if (!selectedTableId) return;
+		void (async () => {
+			setBusy(true);
+			setError(null);
+			try {
+				const next = await workspaceClient.addColumn(selectedTableId);
+				setState(next);
+				const table = next.design?.tables.find(
+					(candidate) => candidate.id === selectedTableId,
+				);
+				const created = table?.columns[table.columns.length - 1];
+				if (created) setSelectedColumnId(created.id);
+			} catch (cause) {
+				setError(errorMessage(cause));
+			} finally {
+				setBusy(false);
+			}
+		})();
+	}, [selectedTableId]);
+
+	const handleApplyColumn = useCallback(
+		(columnId: string, changes: ColumnChanges) => {
+			if (!selectedTableId) return;
+			void run(() => workspaceClient.updateColumn(selectedTableId, columnId, changes));
+		},
+		[run, selectedTableId],
+	);
+
+	const handleRemoveColumn = useCallback(
+		(columnId: string) => {
+			if (!selectedTableId) return;
+			setSelectedColumnId(null);
+			void run(() => workspaceClient.removeColumn(selectedTableId, columnId));
+		},
+		[run, selectedTableId],
+	);
 
 	const handleMoveTable = useCallback(
 		(tableId: string, position: CanvasPoint) => {
@@ -161,7 +220,7 @@ function App() {
 							key={state.project.id}
 							design={state.design}
 							selectedTableId={selectedTableId}
-							onSelectTable={setSelectedTableId}
+							onSelectTable={handleSelectTable}
 							onMoveTable={handleMoveTable}
 							onViewportChange={handleViewportChange}
 							onAddTable={handleAddTable}
@@ -182,19 +241,24 @@ function App() {
 				<aside className="flex w-[23rem] shrink-0 flex-col gap-3 overflow-y-auto border-l border-slate-800 bg-slate-900/40 p-3">
 					<TableInspector
 						table={selectedTable}
+						selectedColumnId={selectedColumnId}
+						sql={state.sql}
 						busy={busy}
 						onRename={(name) => {
 							if (!selectedTable) return;
-							void run(() =>
-								workspaceClient.renameTable(selectedTable.id, name),
-							);
+							void run(() => workspaceClient.renameTable(selectedTable.id, name));
 						}}
 						onRemove={() => {
 							if (!selectedTable) return;
 							const tableId = selectedTable.id;
 							setSelectedTableId(null);
+							setSelectedColumnId(null);
 							void run(() => workspaceClient.removeTable(tableId));
 						}}
+						onSelectColumn={setSelectedColumnId}
+						onAddColumn={handleAddColumn}
+						onApplyColumn={handleApplyColumn}
+						onRemoveColumn={handleRemoveColumn}
 					/>
 					<SqlPanel sql={state.sql} />
 					<SandboxPanel sandbox={state.sandbox} />
@@ -305,161 +369,6 @@ function ProjectsPanel({
 				and never changes the schema.
 			</p>
 		</aside>
-	);
-}
-
-function TableInspector({
-	table,
-	busy,
-	onRename,
-	onRemove,
-}: {
-	table: DesignTable | null;
-	busy: boolean;
-	onRename: (name: string) => void;
-	onRemove: () => void;
-}) {
-	const [name, setName] = useState(table?.name ?? "");
-	const [confirmingRemoval, setConfirmingRemoval] = useState(false);
-
-	useEffect(() => {
-		setName(table?.name ?? "");
-		setConfirmingRemoval(false);
-	}, [table?.id, table?.name]);
-
-	if (!table) {
-		return (
-			<section
-				aria-labelledby="selection-heading"
-				className="rounded-xl border border-slate-800 bg-slate-900/60 p-4"
-			>
-				<h2
-					id="selection-heading"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-				>
-					Selected table
-				</h2>
-				<p className="mt-2 text-sm text-slate-500">
-					Select a table card to inspect its columns here. Column editing opens in this
-					panel in a later step.
-				</p>
-			</section>
-		);
-	}
-
-	return (
-		<section
-			aria-labelledby="selection-heading"
-			data-testid="table-selection"
-			className="rounded-xl border border-slate-800 bg-slate-900/60"
-		>
-			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-				<h2
-					id="selection-heading"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-				>
-					Selected table
-				</h2>
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">
-					{table.columns.length} {table.columns.length === 1 ? "column" : "columns"}
-				</span>
-			</header>
-
-			<form
-				className="flex gap-2 px-4 pt-3"
-				onSubmit={(event) => {
-					event.preventDefault();
-					if (name.trim().length === 0 || name.trim() === table.name) return;
-					onRename(name.trim());
-				}}
-			>
-				<input
-					value={name}
-					onChange={(event) => setName(event.target.value)}
-					aria-label="Selected table name"
-					data-testid="table-name-input"
-					className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-500"
-				/>
-				<button
-					type="submit"
-					data-testid="rename-table"
-					disabled={busy || name.trim().length === 0 || name.trim() === table.name}
-					className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					Rename
-				</button>
-			</form>
-
-			<ul className="mt-3 divide-y divide-slate-800 border-y border-slate-800">
-				{table.columns.map((column, index) => (
-					<li
-						key={column.id}
-						className="flex items-center gap-2 px-4 py-2 text-xs"
-						data-testid="table-column"
-					>
-						<span className="w-4 text-right text-[10px] tabular-nums text-slate-600">
-							{index + 1}
-						</span>
-						<span className="min-w-0 flex-1 truncate font-medium text-slate-200">
-							{column.name}
-						</span>
-						<span className="text-slate-400">{column.type}</span>
-						{column.primaryKey && (
-							<span className="rounded border border-amber-500/40 bg-amber-500/10 px-1 text-[10px] font-semibold text-amber-300">
-								PK
-							</span>
-						)}
-						{column.identity && (
-							<span className="rounded border border-sky-500/40 bg-sky-500/10 px-1 text-[10px] font-semibold text-sky-300">
-								identity
-							</span>
-						)}
-						<span className="text-[10px] text-slate-500">
-							{column.nullable ? "null" : "required"}
-						</span>
-					</li>
-				))}
-			</ul>
-
-			<div className="flex flex-col gap-2 px-4 py-3">
-				<p className="text-[11px] text-slate-500">
-					This is the entry point for the focused column editor added in a later step.
-				</p>
-				{confirmingRemoval ? (
-					<div className="flex flex-wrap items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-2 py-2">
-						<span className="text-xs text-red-200">
-							Remove “{table.name}”?
-						</span>
-						<button
-							type="button"
-							data-testid="confirm-remove-table"
-							onClick={onRemove}
-							disabled={busy}
-							className="rounded-md bg-red-500 px-2.5 py-1 text-xs font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
-						>
-							Remove
-						</button>
-						<button
-							type="button"
-							onClick={() => setConfirmingRemoval(false)}
-							className="rounded-md border border-slate-700 px-2.5 py-1 text-xs text-slate-300 hover:border-slate-500"
-						>
-							Cancel
-						</button>
-					</div>
-				) : (
-					<button
-						type="button"
-						data-testid="remove-table"
-						onClick={() => setConfirmingRemoval(true)}
-						disabled={busy}
-						className="self-start rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Remove table
-					</button>
-				)}
-			</div>
-		</section>
 	);
 }
 
