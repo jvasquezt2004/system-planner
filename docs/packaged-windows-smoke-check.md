@@ -100,13 +100,20 @@ curl -s http://127.0.0.1:9222/json
 ```
 
 Connect to the page's `webSocketDebuggerUrl` and use `Runtime.evaluate` to set
-`input[placeholder="Library"]` and click **Create project**, then set
-`input[placeholder="Books"]` and click **Add table**. React controlled inputs
-need the native value setter followed by an `input` event. Read
-`document.body.innerText` and the `[data-testid="sql-preview"]` text to confirm
-`Saved`, `Current`, and `Accepted`. Inspect the SQLite file after the run to
-confirm the same project/table was persisted, then relaunch and re-read the page
-to confirm restoration.
+`input[aria-label="New project name"]` and click **New project**, then set
+`input[aria-label="Table name"]` and click **Add table**. React controlled
+inputs need the native value setter followed by an `input` event, and the click
+must wait until the save and sandbox request has settled. Read
+`document.body.innerText`, `[data-testid="save-status"]`, and the
+`[data-testid="sql-preview"]` text to confirm `Saved`, `Current`, and
+`Accepted`.
+
+Then create a second project, add a different table, and click the first
+project in `[data-testid="project-list"]`. Confirm the header, table list, and
+save badge belong to the selected project and that no table from the other
+project is visible. Inspect the SQLite file after the run to confirm both
+projects and their independent designs were persisted, then relaunch and
+re-read the page to confirm the most recently updated project is restored.
 
 ## Integration limitations recorded
 
