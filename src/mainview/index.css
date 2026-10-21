@@ -1,3 +1,174 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import "tailwindcss";
+@import "tw-animate-css";
+@import "@fontsource-variable/newsreader/opsz.css";
+@import "@fontsource-variable/newsreader/opsz-italic.css";
+@import "@fontsource-variable/ibm-plex-sans/index.css";
+@import "@fontsource/ibm-plex-mono/400.css";
+@import "@fontsource/ibm-plex-mono/500.css";
+
+/*
+ * Editorial tokens. The design is set like a printed page: newsprint stock,
+ * carbon ink, hairline rules, and one editor's blue pencil for whatever the
+ * designer is working on. Proof red, press green, and ochre are reserved for
+ * status — rejected, accepted, out of date — never for decoration.
+ */
+:root {
+	/* Stock — the same warm hue, shifting only in lightness. */
+	--paper: #f2eee5;
+	--paper-raised: #faf8f3;
+	--paper-sunk: #e9e4d8;
+	--paper-tint: rgba(27, 26, 23, 0.035);
+
+	/* Ink — four levels: text, supporting, metadata, muted. */
+	--ink: #1b1a17;
+	--ink-2: #47433c;
+	--ink-3: #777166;
+	--ink-4: #a49d90;
+
+	/* Rules — hairlines that disappear until you look for structure. */
+	--rule-soft: rgba(27, 26, 23, 0.08);
+	--rule: rgba(27, 26, 23, 0.15);
+	--rule-strong: rgba(27, 26, 23, 0.3);
+	--rule-heavy: #1b1a17;
+
+	/* The editor's blue pencil: selection, relating, focus. */
+	--pencil: #2c4a96;
+	--pencil-wash: rgba(44, 74, 150, 0.09);
+	--pencil-rule: rgba(44, 74, 150, 0.45);
+
+	/* Status marks. */
+	--proof-red: #b0301d;
+	--proof-red-wash: rgba(176, 48, 29, 0.08);
+	--press-green: #39654a;
+	--press-green-wash: rgba(57, 101, 74, 0.09);
+	--ochre: #98620f;
+	--ochre-wash: rgba(152, 98, 15, 0.1);
+
+	/* Controls are inset: a shade darker than the stock they sit on. */
+	--control: #f0ece3;
+	--control-rule: rgba(27, 26, 23, 0.22);
+
+	--masthead-height: 64px;
+	--lift: 0 1px 0 rgba(27, 26, 23, 0.04), 0 12px 32px -12px rgba(27, 26, 23, 0.22);
+
+	/* shadcn/ui semantic slots, mapped onto the editorial primitives. */
+	--radius: 0.1875rem;
+	--background: var(--paper);
+	--foreground: var(--ink);
+	--card: var(--paper-raised);
+	--card-foreground: var(--ink);
+	--popover: var(--paper-raised);
+	--popover-foreground: var(--ink);
+	--primary: var(--ink);
+	--primary-foreground: var(--paper-raised);
+	--secondary: var(--paper-sunk);
+	--secondary-foreground: var(--ink);
+	--muted: var(--paper-sunk);
+	--muted-foreground: var(--ink-3);
+	--accent: var(--pencil-wash);
+	--accent-foreground: var(--ink);
+	--destructive: var(--proof-red);
+	--border: var(--rule);
+	--input: var(--control-rule);
+	--ring: var(--pencil);
+}
+
+@theme inline {
+	--font-display: "Newsreader Variable", "Iowan Old Style", Georgia, serif;
+	--font-sans: "IBM Plex Sans Variable", "Segoe UI", system-ui, sans-serif;
+	--font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+	--color-paper: var(--paper);
+	--color-paper-raised: var(--paper-raised);
+	--color-paper-sunk: var(--paper-sunk);
+	--color-paper-tint: var(--paper-tint);
+	--color-ink: var(--ink);
+	--color-ink-2: var(--ink-2);
+	--color-ink-3: var(--ink-3);
+	--color-ink-4: var(--ink-4);
+	--color-rule-soft: var(--rule-soft);
+	--color-rule: var(--rule);
+	--color-rule-strong: var(--rule-strong);
+	--color-rule-heavy: var(--rule-heavy);
+	--color-pencil: var(--pencil);
+	--color-pencil-wash: var(--pencil-wash);
+	--color-pencil-rule: var(--pencil-rule);
+	--color-proof-red: var(--proof-red);
+	--color-proof-red-wash: var(--proof-red-wash);
+	--color-press-green: var(--press-green);
+	--color-press-green-wash: var(--press-green-wash);
+	--color-ochre: var(--ochre);
+	--color-ochre-wash: var(--ochre-wash);
+	--color-control: var(--control);
+	--color-control-rule: var(--control-rule);
+
+	--shadow-lift: var(--lift);
+
+	--radius-sm: calc(var(--radius) - 1px);
+	--radius-md: var(--radius);
+	--radius-lg: calc(var(--radius) + 1px);
+	--radius-xl: calc(var(--radius) + 3px);
+
+	--color-background: var(--background);
+	--color-foreground: var(--foreground);
+	--color-card: var(--card);
+	--color-card-foreground: var(--card-foreground);
+	--color-popover: var(--popover);
+	--color-popover-foreground: var(--popover-foreground);
+	--color-primary: var(--primary);
+	--color-primary-foreground: var(--primary-foreground);
+	--color-secondary: var(--secondary);
+	--color-secondary-foreground: var(--secondary-foreground);
+	--color-muted: var(--muted);
+	--color-muted-foreground: var(--muted-foreground);
+	--color-accent: var(--accent);
+	--color-accent-foreground: var(--accent-foreground);
+	--color-destructive: var(--destructive);
+	--color-border: var(--border);
+	--color-input: var(--input);
+	--color-ring: var(--ring);
+}
+
+@layer base {
+	* {
+		@apply border-border outline-ring/50;
+	}
+	html,
+	body,
+	#root {
+		height: 100%;
+	}
+	body {
+		@apply bg-background font-sans text-foreground antialiased;
+		font-size: 13px;
+		font-feature-settings: "kern", "liga";
+	}
+	::selection {
+		background: var(--pencil-wash);
+	}
+	/* Thin hairline scrollbars instead of the platform's grey troughs. */
+	* {
+		scrollbar-width: thin;
+		scrollbar-color: var(--rule-strong) transparent;
+	}
+}
+
+/* A kicker: the small capitalised line set above a headline. */
+@utility kicker {
+	font-family: var(--font-sans);
+	font-size: 10.5px;
+	font-weight: 600;
+	letter-spacing: 0.14em;
+	text-transform: uppercase;
+	color: var(--ink-3);
+}
+
+/* Figures that line up in columns, like an almanac's tables. */
+@utility figures {
+	font-variant-numeric: tabular-nums lining-nums;
+}
+
+/* The masthead's closing rule: a heavy line over a hairline. */
+@utility double-rule {
+	border-bottom: 3px double var(--rule-heavy);
+}

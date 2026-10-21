@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { Cable, Minus, Plus } from "lucide-react";
 import {
 	CANVAS_MAX_ZOOM,
 	CANVAS_MIN_ZOOM,
@@ -14,19 +15,35 @@ import {
 	resolveRelationships,
 	type RelationshipView,
 } from "../shared/relationships";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 import { ColumnBadge } from "./column-badge";
 import { ColumnTypeBadge } from "./column-type-badge";
 
-const CARD_WIDTH = 264;
+const CARD_WIDTH = 272;
 /**
- * Card geometry is fixed and applied to the card markup, so connector anchors
- * and the rows they point at can never drift apart.
+ * Card geometry is fixed and applied to the card markup, so connector anchors,
+ * enclosures, and the rows they point at can never drift apart. The card's
+ * outline is drawn with a box-shadow ring, which takes no layout space.
  */
-const CARD_HEADER_HEIGHT = 37;
-const CARD_ROW_HEIGHT = 29;
+const CARD_TOP_RULE = 2;
+const CARD_HEADER_HEIGHT = 38;
+const CARD_ROW_HEIGHT = 28;
+/** Space between a card and its first enclosure, and between nested ones. */
+const ENCLOSURE_INSET = 14;
+const ENCLOSURE_STEP = 14;
+/** Extra headroom per ring so each enclosure's label clears the one inside. */
+const ENCLOSURE_LABEL_BAND = 10;
 const GRID_SIZE = 24;
 const MAJOR_GRID_SIZE = 120;
 const VIEWPORT_SAVE_DELAY = 250;
+
+/** Registration marks at major grid intersections, drawn as a repeating tile. */
+const REGISTRATION_TILE = `url("data:image/svg+xml,${encodeURIComponent(
+	`<svg xmlns='http://www.w3.org/2000/svg' width='${MAJOR_GRID_SIZE}' height='${MAJOR_GRID_SIZE}'><path d='M0 -5V5M-5 0H5M${MAJOR_GRID_SIZE} -5V5M${MAJOR_GRID_SIZE - 5} 0H${MAJOR_GRID_SIZE + 5}M0 ${MAJOR_GRID_SIZE - 5}V${MAJOR_GRID_SIZE + 5}M-5 ${MAJOR_GRID_SIZE}H5M${MAJOR_GRID_SIZE} ${MAJOR_GRID_SIZE - 5}V${MAJOR_GRID_SIZE + 5}M${MAJOR_GRID_SIZE - 5} ${MAJOR_GRID_SIZE}H${MAJOR_GRID_SIZE + 5}' stroke='#1b1a17' stroke-opacity='0.24' stroke-width='1' fill='none'/></svg>`,
+)}")`;
 
 type CardDrag = {
 	tableId: string;
@@ -46,17 +63,21 @@ type PanDrag = {
 	origin: CanvasViewport;
 };
 
+type Rect = { x: number; y: number; width: number; height: number };
+
 export type TableCanvasProps = {
 	design: Design;
 	selectedTableId: string | null;
 	selectedRelationshipId: string | null;
 	onSelectTable: (tableId: string | null) => void;
-	onSelectRelationship: (relationshipId: string | null) => void;
+	/** Selecting a relationship on the canvas also opens its referencing table. */
+	onSelectRelationship: (relationshipId: string, referencingTableId: string) => void;
 	onRelateTables: (
 		referencingTableId: string,
 		referencedTableId: string,
 		cardinality: RelationshipCardinality,
 	) => void;
+	onRelatingChange: (relating: boolean) => void;
 	onMoveTable: (tableId: string, position: CanvasPoint) => void;
 	onViewportChange: (viewport: CanvasViewport) => void;
 	onAddTable: (name: string, position: CanvasPoint) => void;
@@ -74,6 +95,7 @@ export function TableCanvas({
 	onSelectTable,
 	onSelectRelationship,
 	onRelateTables,
+	onRelatingChange,
 	onMoveTable,
 	onViewportChange,
 	onAddTable,
@@ -92,6 +114,10 @@ export function TableCanvas({
 	relatingFromRef.current = relatingFrom;
 	const relatingCardinalityRef = useRef(relatingCardinality);
 	relatingCardinalityRef.current = relatingCardinality;
+
+	useEffect(() => {
+		onRelatingChange(relatingFrom !== null);
+	}, [relatingFrom, onRelatingChange]);
 
 	useEffect(() => {
 		if (!relatingFrom) return;
@@ -297,8 +323,8 @@ export function TableCanvas({
 
 	const minor = GRID_SIZE * viewport.zoom;
 	const major = MAJOR_GRID_SIZE * viewport.zoom;
-	const minorLine = "rgba(148, 163, 184, 0.10)";
-	const majorLine = "rgba(148, 163, 184, 0.20)";
+	// Dots fade as the page zooms out, so a distant view never turns grey.
+	const dotAlpha = viewport.zoom < 0.55 ? 0.07 : 0.14;
 	const relationships = resolveRelationships(design);
 	const foreignKeyColumnIds = new Set(
 		design.relationships.map((relationship) => relationship.referencingColumnId),
@@ -316,6 +342,10 @@ export function TableCanvas({
 	// Positions during a drag come from the drag preview, so connectors follow.
 	const positionOf = (table: DesignTable): CanvasPoint =>
 		cardDrag?.tableId === table.id ? cardDrag.current : table.position;
+	const enclosures = layoutEnclosures(relationships, positionOf);
+	const enclosureByRelationship = new Map(
+		enclosures.map((enclosure) => [enclosure.view.relationship.id, enclosure]),
+	);
 	const relatingTable = design.tables.find((table) => table.id === relatingFrom);
 
 	function highlightedColumns(tableId: string): Set<string> {
@@ -342,18 +372,17 @@ export function TableCanvas({
 			onPointerMove={handleCanvasPointerMove}
 			onPointerUp={handleCanvasPointerUp}
 			onPointerCancel={handleCanvasPointerUp}
-			className={`relative h-full w-full touch-none overflow-hidden bg-slate-950 ${
-				panning ? "cursor-grabbing" : "cursor-grab"
-			}`}
+			className={cn(
+				"relative h-full w-full touch-none overflow-hidden bg-paper",
+				relatingFrom ? "cursor-crosshair" : panning ? "cursor-grabbing" : "cursor-grab",
+			)}
 			style={{
 				backgroundImage: [
-					`linear-gradient(to right, ${minorLine} 1px, transparent 1px)`,
-					`linear-gradient(to bottom, ${minorLine} 1px, transparent 1px)`,
-					`linear-gradient(to right, ${majorLine} 1px, transparent 1px)`,
-					`linear-gradient(to bottom, ${majorLine} 1px, transparent 1px)`,
+					REGISTRATION_TILE,
+					`radial-gradient(circle, rgba(27, 26, 23, ${dotAlpha}) 0.9px, transparent 1.3px)`,
 				].join(", "),
-				backgroundSize: `${minor}px ${minor}px, ${minor}px ${minor}px, ${major}px ${major}px, ${major}px ${major}px`,
-				backgroundPosition: `${viewport.x}px ${viewport.y}px, ${viewport.x}px ${viewport.y}px, ${viewport.x}px ${viewport.y}px, ${viewport.x}px ${viewport.y}px`,
+				backgroundSize: `${major}px ${major}px, ${minor}px ${minor}px`,
+				backgroundPosition: `${viewport.x}px ${viewport.y}px, ${viewport.x - minor / 2}px ${viewport.y - minor / 2}px`,
 			}}
 		>
 			<div
@@ -362,7 +391,7 @@ export function TableCanvas({
 					transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
 				}}
 			>
-				{/* Connectors sit behind the cards and carry the cardinality marks. */}
+				{/* Connectors sit behind the enclosures and cards. */}
 				<svg
 					data-testid="relationship-layer"
 					aria-hidden="true"
@@ -373,14 +402,29 @@ export function TableCanvas({
 						<RelationshipConnector
 							key={view.relationship.id}
 							view={view}
+							enclosure={enclosureByRelationship.get(view.relationship.id) ?? null}
 							positionOf={positionOf}
-							selected={
-								view.relationship.id === selectedRelationshipId
+							selected={view.relationship.id === selectedRelationshipId}
+							onSelect={() =>
+								onSelectRelationship(view.relationship.id, view.referencingTable.id)
 							}
-							onSelect={() => onSelectRelationship(view.relationship.id)}
 						/>
 					))}
 				</svg>
+
+				{enclosures.map((enclosure) => (
+					<EnclosureFrame
+						key={enclosure.view.relationship.id}
+						enclosure={enclosure}
+						selected={enclosure.view.relationship.id === selectedRelationshipId}
+						onSelect={() =>
+							onSelectRelationship(
+								enclosure.view.relationship.id,
+								enclosure.view.referencingTable.id,
+							)
+						}
+					/>
+				))}
 
 				{design.tables.map((table) => (
 					<TableCard
@@ -388,7 +432,8 @@ export function TableCanvas({
 						table={table}
 						selected={table.id === selectedTableId}
 						dragging={cardDrag?.tableId === table.id}
-						relating={table.id === relatingFrom}
+						relatingSource={table.id === relatingFrom}
+						relatingTarget={relatingFrom !== null && table.id !== relatingFrom}
 						position={positionOf(table)}
 						highlightedColumnIds={highlightedColumns(table.id)}
 						foreignKeyColumnIds={foreignKeyColumnIds}
@@ -409,46 +454,47 @@ export function TableCanvas({
 					data-cardinality={relatingCardinality}
 					onPointerDown={(event) => event.stopPropagation()}
 					role="status"
-					className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-lg border border-indigo-500/60 bg-indigo-500/15 px-4 py-2 text-xs text-indigo-100 shadow-lg backdrop-blur"
+					className="absolute left-1/2 top-5 flex max-w-[calc(100%-2rem)] -translate-x-1/2 cursor-default items-center gap-4 rounded-sm border border-pencil-rule border-l-[3px] border-l-pencil bg-paper-raised py-2 pl-3 pr-2 shadow-lift"
 				>
-					<span>
-						Relating from <strong>“{relatingTable.name}”</strong>, which will store
-						the reference. Click the table it references.
-					</span>
-					<span
-						role="group"
+					<div className="min-w-0">
+						<p className="kicker text-pencil!">Relating</p>
+						<p className="mt-0.5 text-[12.5px] text-ink-2">
+							<span className="font-display text-[14px] font-semibold text-ink">
+								{relatingTable.name}
+							</span>{" "}
+							will store the reference. Click the table it references.
+						</p>
+					</div>
+					<ToggleGroup
+						type="single"
+						variant="outline"
+						size="sm"
+						spacing={0}
 						aria-label="Relationship cardinality"
-						className="flex items-center gap-1 rounded-md border border-indigo-400/60 p-0.5"
+						value={relatingCardinality}
+						onValueChange={(value) => {
+							if (value === "one-to-many" || value === "one-to-one") {
+								setRelatingCardinality(value);
+							}
+						}}
 					>
-						{(
-							[
-								["one-to-many", "many"],
-								["one-to-one", "one-to-one"],
-							] as const
-						).map(([value, label]) => (
-							<button
-								key={value}
-								type="button"
-								data-testid={`relate-cardinality-${value}`}
-								aria-pressed={relatingCardinality === value}
-								onClick={() => setRelatingCardinality(value)}
-								className={`rounded px-2 py-0.5 text-[11px] ${
-									relatingCardinality === value
-										? "bg-indigo-500 text-white"
-										: "text-indigo-100 hover:bg-indigo-500/20"
-								}`}
-							>
-								{label}
-							</button>
-						))}
-					</span>
-					<button
-						type="button"
-						onClick={() => setRelatingFrom(null)}
-						className="rounded border border-indigo-400/60 px-2 py-0.5 text-[11px] text-indigo-100 hover:bg-indigo-500/20"
-					>
+						<ToggleGroupItem
+							value="one-to-many"
+							data-testid="relate-cardinality-one-to-many"
+						>
+							many
+						</ToggleGroupItem>
+						<ToggleGroupItem
+							value="one-to-one"
+							data-testid="relate-cardinality-one-to-one"
+						>
+							one-to-one
+						</ToggleGroupItem>
+					</ToggleGroup>
+					<Button variant="ghost" size="xs" onClick={() => setRelatingFrom(null)}>
 						Cancel
-					</button>
+						<kbd className="font-mono text-[10px] text-ink-4">Esc</kbd>
+					</Button>
 				</div>
 			)}
 
@@ -456,22 +502,25 @@ export function TableCanvas({
 				<div className="pointer-events-none absolute inset-0 flex items-center justify-center">
 					<div
 						onPointerDown={(event) => event.stopPropagation()}
-						className="pointer-events-auto rounded-xl border border-dashed border-slate-700 bg-slate-900/80 px-8 py-6 text-center shadow-xl"
+						className="pointer-events-auto max-w-sm cursor-default text-center"
 					>
-						<p className="text-sm font-medium text-slate-200">Your canvas is empty</p>
-						<p className="mt-1 max-w-xs text-xs text-slate-400">
-							Name a table in the toolbar below to place its first card. Drag the background
-							to pan; use the wheel to zoom.
+						<p className="kicker">An empty page</p>
+						<p className="mt-2 font-display text-[28px] leading-tight font-normal italic text-ink">
+							Every schema starts with a single table.
 						</p>
-						<button
-							type="button"
+						<p className="mx-auto mt-2 max-w-xs text-[12.5px] leading-relaxed text-ink-3">
+							Name one in the bar below, or place a first card now. Drag the page to
+							pan; use the wheel to zoom.
+						</p>
+						<Button
+							className="mt-5"
 							onClick={() =>
 								onAddTable(`Table ${design.tables.length + 1}`, centrePosition())
 							}
-							className="mt-4 rounded-md bg-indigo-500 px-4 py-2 text-sm font-medium text-white hover:bg-indigo-400"
 						>
+							<Plus />
 							Add a table
-						</button>
+						</Button>
 					</div>
 				</div>
 			)}
@@ -479,10 +528,10 @@ export function TableCanvas({
 			<div
 				data-testid="canvas-toolbar"
 				onPointerDown={(event) => event.stopPropagation()}
-				className="absolute bottom-4 left-4 flex flex-wrap items-center gap-2 rounded-lg border border-slate-700 bg-slate-900/95 px-2 py-1.5 text-slate-300 shadow-lg backdrop-blur"
+				className="absolute bottom-4 left-4 flex cursor-default flex-wrap items-center gap-1.5 rounded-sm border border-rule-strong bg-paper-raised p-1.5"
 			>
 				<form
-					className="flex items-center gap-2"
+					className="flex items-center gap-1.5"
 					onSubmit={(event) => {
 						event.preventDefault();
 						if (draftName.trim().length === 0) return;
@@ -490,58 +539,54 @@ export function TableCanvas({
 						setDraftName("");
 					}}
 				>
-					<input
+					<Input
 						value={draftName}
 						onChange={(event) => setDraftName(event.target.value)}
 						aria-label="Table name"
 						placeholder="Table name"
-						className="w-32 rounded border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 outline-none placeholder:text-slate-600 focus:border-indigo-500"
+						className="h-7 w-36"
 					/>
-					<button
+					<Button
 						type="submit"
+						size="sm"
 						data-testid="add-table"
 						disabled={draftName.trim().length === 0}
-						className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
 					>
+						<Plus />
 						Add table
-					</button>
+					</Button>
 				</form>
-				<span className="mx-1 h-5 w-px bg-slate-700" aria-hidden="true" />
-				<button
-					type="button"
+				<span className="mx-1 h-5 w-px bg-rule" aria-hidden="true" />
+				<Button
+					variant="ghost"
+					size="icon-sm"
 					aria-label="Zoom out"
 					data-testid="zoom-out"
 					onClick={() => zoomAroundCentre(1 / 1.2)}
-					className="rounded px-2 py-1 text-sm hover:bg-slate-800"
 				>
-					−
-				</button>
-				<span
-					data-testid="zoom-level"
-					className="w-12 text-center text-xs tabular-nums text-slate-400"
-				>
-					{Math.round(viewport.zoom * 100)}%
-				</span>
-				<button
-					type="button"
-					aria-label="Zoom in"
-					data-testid="zoom-in"
-					onClick={() => zoomAroundCentre(1.2)}
-					className="rounded px-2 py-1 text-sm hover:bg-slate-800"
-				>
-					+
-				</button>
+					<Minus />
+				</Button>
 				<button
 					type="button"
 					aria-label="Reset zoom"
 					data-testid="zoom-reset"
+					title="Reset zoom to 100%"
 					onClick={() => zoomAroundCentre(1 / viewportRef.current.zoom)}
-					className="rounded px-2 py-1 text-[11px] uppercase tracking-wide text-slate-400 hover:bg-slate-800"
+					className="figures h-7 w-12 rounded-sm text-center font-mono text-[11px] text-ink-2 hover:bg-paper-tint"
 				>
-					100%
+					<span data-testid="zoom-level">{Math.round(viewport.zoom * 100)}%</span>
 				</button>
-				<span className="mx-1 h-5 w-px bg-slate-700" aria-hidden="true" />
-				<span className="px-1 text-[11px] text-slate-500">
+				<Button
+					variant="ghost"
+					size="icon-sm"
+					aria-label="Zoom in"
+					data-testid="zoom-in"
+					onClick={() => zoomAroundCentre(1.2)}
+				>
+					<Plus />
+				</Button>
+				<span className="mx-1 h-5 w-px bg-rule" aria-hidden="true" />
+				<span className="figures px-1.5 font-mono text-[11px] text-ink-3">
 					{design.tables.length} {design.tables.length === 1 ? "table" : "tables"}
 				</span>
 			</div>
@@ -549,89 +594,223 @@ export function TableCanvas({
 	);
 }
 
+/**
+ * A one-to-many relationship drawn as a frame around the "many" table, headed
+ * with the "one" table's name: a Campus has many Students, so Students sits
+ * inside a frame headed CAMPUS. It is an indicator, not containment — the
+ * frame is derived from the relationship and follows the card wherever it is
+ * placed. A table with several parents gets one concentric ring per parent.
+ */
+type Enclosure = {
+	view: RelationshipView;
+	ring: number;
+	rect: Rect;
+	/** The same parent frames this table more than once (author and editor). */
+	repeatedParent: boolean;
+};
+
+function cardHeight(table: DesignTable): number {
+	return CARD_TOP_RULE + CARD_HEADER_HEIGHT + table.columns.length * CARD_ROW_HEIGHT;
+}
+
+function cardRect(table: DesignTable, position: CanvasPoint): Rect {
+	return { x: position.x, y: position.y, width: CARD_WIDTH, height: cardHeight(table) };
+}
+
+function layoutEnclosures(
+	relationships: RelationshipView[],
+	positionOf: (table: DesignTable) => CanvasPoint,
+): Enclosure[] {
+	const byChild = new Map<string, RelationshipView[]>();
+	for (const view of relationships) {
+		if (view.oneToOne) continue;
+		const list = byChild.get(view.referencingTable.id) ?? [];
+		list.push(view);
+		byChild.set(view.referencingTable.id, list);
+	}
+	const enclosures: Enclosure[] = [];
+	for (const views of byChild.values()) {
+		views.forEach((view, ring) => {
+			const card = cardRect(view.referencingTable, positionOf(view.referencingTable));
+			const side = ENCLOSURE_INSET + ring * ENCLOSURE_STEP;
+			const top = side + ENCLOSURE_LABEL_BAND * (ring + 1);
+			enclosures.push({
+				view,
+				ring,
+				rect: {
+					x: card.x - side,
+					y: card.y - top,
+					width: card.width + side * 2,
+					height: card.height + top + side,
+				},
+				repeatedParent:
+					views.filter((other) => other.referencedTable.id === view.referencedTable.id)
+						.length > 1,
+			});
+		});
+	}
+	return enclosures;
+}
+
+function EnclosureFrame({
+	enclosure,
+	selected,
+	onSelect,
+}: {
+	enclosure: Enclosure;
+	selected: boolean;
+	onSelect: () => void;
+}) {
+	const { view, rect } = enclosure;
+	return (
+		<div
+			data-testid="enclosure"
+			data-relationship-id={view.relationship.id}
+			data-selected={selected ? "true" : undefined}
+			aria-hidden="true"
+			className={cn(
+				"pointer-events-none absolute rounded-[3px] border",
+				selected ? "border-pencil border-[1.5px]" : "border-rule-strong",
+			)}
+			style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height, zIndex: 0 }}
+		>
+			<button
+				type="button"
+				tabIndex={-1}
+				title={`Each ${view.referencedTable.name} record may have many ${view.referencingTable.name} records through ${view.referencingTable.name}.${view.referencingColumn.name}`}
+				onPointerDown={(event) => {
+					event.stopPropagation();
+					onSelect();
+				}}
+				className={cn(
+					"pointer-events-auto absolute -top-[8px] left-2.5 flex h-[15px] max-w-[calc(100%-20px)] cursor-pointer items-baseline gap-1.5 bg-paper px-1.5 leading-none whitespace-nowrap",
+					selected ? "text-pencil" : "text-ink-2 hover:text-ink",
+				)}
+			>
+				<span className="truncate text-[10px] font-semibold tracking-[0.14em] uppercase">
+					{view.referencedTable.name}
+				</span>
+				<span
+					className={cn(
+						"font-display text-[11.5px] italic",
+						selected ? "text-pencil" : "text-ink-3",
+					)}
+				>
+					has many
+				</span>
+				{enclosure.repeatedParent && (
+					<span className="truncate font-mono text-[10px] text-ink-3">
+						via {view.referencingColumn.name}
+					</span>
+				)}
+			</button>
+		</div>
+	);
+}
+
 type ConnectorGeometry = {
 	path: string;
-	/** The referencing (many) end, where the foreign-key column sits. */
+	/** The referencing end: the enclosure edge, or the card edge for one-to-one. */
 	start: CanvasPoint;
 	/** The referenced (one) end, where the primary key sits. */
 	end: CanvasPoint;
-	fromSide: "left" | "right";
+	/** +1 when the referencing end faces right, -1 when it faces left. */
+	startDirection: 1 | -1;
+	endDirection: 1 | -1;
+	/** A short dotted lead from the enclosure edge into the foreign-key row. */
+	leader: string | null;
 };
 
-function columnAnchor(
-	table: DesignTable,
-	columnId: string | null,
-	position: CanvasPoint,
-): CanvasPoint {
-	const index = columnId
-		? table.columns.findIndex((column) => column.id === columnId)
-		: 0;
+function rowCentreY(table: DesignTable, columnId: string, position: CanvasPoint): number {
+	const index = table.columns.findIndex((column) => column.id === columnId);
 	const row = index < 0 ? 0 : index;
-	return {
-		x: position.x,
-		y: position.y + CARD_HEADER_HEIGHT + row * CARD_ROW_HEIGHT + CARD_ROW_HEIGHT / 2,
-	};
+	return (
+		position.y + CARD_TOP_RULE + CARD_HEADER_HEIGHT + row * CARD_ROW_HEIGHT + CARD_ROW_HEIGHT / 2
+	);
 }
 
 /**
- * A short horizontal curve between the two participating column rows. The
- * connector leaves and enters on facing card edges, so it stays subtle however
- * the cards are arranged.
+ * A curve between the referenced key row and the referencing side. Facing
+ * edges get an S-curve; when the two overlap horizontally (stacked, or a table
+ * referencing itself) both ends leave on the right and the curve bows outward,
+ * so it never cuts across a card.
  */
 function connectorGeometry(
 	view: RelationshipView,
+	enclosure: Enclosure | null,
 	positionOf: (table: DesignTable) => CanvasPoint,
 ): ConnectorGeometry | null {
 	const referencedColumn = view.referencedColumn;
 	if (!referencedColumn) return null;
-	const fromPosition = positionOf(view.referencingTable);
 	const toPosition = positionOf(view.referencedTable);
-	const rightwards =
-		toPosition.x + CARD_WIDTH / 2 >= fromPosition.x + CARD_WIDTH / 2;
+	const fromPosition = positionOf(view.referencingTable);
+	const target = cardRect(view.referencedTable, toPosition);
+	const source = enclosure?.rect ?? cardRect(view.referencingTable, fromPosition);
+	const rowY = rowCentreY(view.referencingTable, view.referencingColumn.id, fromPosition);
+	const keyY = rowCentreY(view.referencedTable, referencedColumn.id, toPosition);
+
+	const overlapping =
+		target.x < source.x + source.width && target.x + target.width > source.x;
+	let startDirection: 1 | -1;
+	let endDirection: 1 | -1;
+	if (overlapping) {
+		startDirection = 1;
+		endDirection = 1;
+	} else if (target.x + target.width / 2 >= source.x + source.width / 2) {
+		startDirection = 1;
+		endDirection = -1;
+	} else {
+		startDirection = -1;
+		endDirection = 1;
+	}
 	const start = {
-		x: fromPosition.x + (rightwards ? CARD_WIDTH : 0),
-		y: columnAnchor(view.referencingTable, view.referencingColumn.id, fromPosition).y,
+		x: startDirection === 1 ? source.x + source.width : source.x,
+		y: rowY,
 	};
 	const end = {
-		x: toPosition.x + (rightwards ? 0 : CARD_WIDTH),
-		y: columnAnchor(view.referencedTable, referencedColumn.id, toPosition).y,
+		x: endDirection === 1 ? target.x + target.width : target.x,
+		y: keyY,
 	};
-	const bend = Math.max(40, Math.min(180, Math.abs(end.x - start.x) / 2));
-	const fromDirection = rightwards ? 1 : -1;
-	const toDirection = rightwards ? -1 : 1;
+	const bend = overlapping
+		? Math.max(48, Math.abs(end.x - start.x) / 2 + 36)
+		: Math.max(40, Math.min(180, Math.abs(end.x - start.x) / 2));
+	const leader = enclosure
+		? `M ${start.x} ${rowY} L ${startDirection === 1 ? fromPosition.x + CARD_WIDTH : fromPosition.x} ${rowY}`
+		: null;
 	return {
-		path: `M ${start.x} ${start.y} C ${start.x + bend * fromDirection} ${start.y}, ${end.x + bend * toDirection} ${end.y}, ${end.x} ${end.y}`,
+		path: `M ${start.x} ${start.y} C ${start.x + bend * startDirection} ${start.y}, ${end.x + bend * endDirection} ${end.y}, ${end.x} ${end.y}`,
 		start,
 		end,
-		fromSide: rightwards ? "right" : "left",
+		startDirection,
+		endDirection,
+		leader,
 	};
 }
 
 function RelationshipConnector({
 	view,
+	enclosure,
 	positionOf,
 	selected,
 	onSelect,
 }: {
 	view: RelationshipView;
+	enclosure: Enclosure | null;
 	positionOf: (table: DesignTable) => CanvasPoint;
 	selected: boolean;
 	onSelect: () => void;
 }) {
-	const geometry = connectorGeometry(view, positionOf);
+	const geometry = connectorGeometry(view, enclosure, positionOf);
 	if (!geometry) return null;
-	const stroke = selected ? "#818cf8" : "rgba(148, 163, 184, 0.5)";
-	const width = selected ? 2 : 1.25;
-	// One mark at an end expresses one; three stacked marks express many.
-	const direction = geometry.fromSide === "right" ? 1 : -1;
-	const startOffsets = view.oneToOne ? [5] : [4, 10, 16];
-	const marks = startOffsets.map((offset) => {
-		const x = geometry.start.x + direction * offset;
-		return `M ${x} ${geometry.start.y - 6} L ${x} ${geometry.start.y + 6}`;
-	});
-	marks.push(
-		`M ${geometry.end.x - direction * 5} ${geometry.end.y - 6} L ${geometry.end.x - direction * 5} ${geometry.end.y + 6}`,
-	);
+	const stroke = selected ? "var(--pencil)" : "var(--rule-strong)";
+	const width = selected ? 1.75 : 1;
+	// One bar at the referenced end expresses one. A one-to-one reference also
+	// carries one bar at its referencing end; a one-to-many reference instead
+	// meets its enclosure with a small square port.
+	const bar = (point: CanvasPoint, direction: 1 | -1) => {
+		const x = point.x + direction * 6;
+		return `M ${x} ${point.y - 5} L ${x} ${point.y + 5}`;
+	};
 	return (
 		<g
 			data-testid="relationship"
@@ -640,9 +819,37 @@ function RelationshipConnector({
 			data-selected={selected ? "true" : undefined}
 		>
 			<path d={geometry.path} fill="none" stroke={stroke} strokeWidth={width} />
-			{marks.map((d) => (
-				<path key={d} d={d} fill="none" stroke={stroke} strokeWidth={width} />
-			))}
+			{geometry.leader && (
+				<path
+					d={geometry.leader}
+					fill="none"
+					stroke={stroke}
+					strokeWidth={width}
+					strokeDasharray="1.5 2.5"
+				/>
+			)}
+			<path
+				d={bar(geometry.end, geometry.endDirection)}
+				fill="none"
+				stroke={stroke}
+				strokeWidth={width + 0.25}
+			/>
+			{view.oneToOne ? (
+				<path
+					d={bar(geometry.start, geometry.startDirection)}
+					fill="none"
+					stroke={stroke}
+					strokeWidth={width + 0.25}
+				/>
+			) : (
+				<rect
+					x={geometry.start.x - 2.5}
+					y={geometry.start.y - 2.5}
+					width={5}
+					height={5}
+					fill={selected ? "var(--pencil)" : "var(--ink-2)"}
+				/>
+			)}
 			<path
 				d={geometry.path}
 				fill="none"
@@ -662,7 +869,8 @@ function TableCard({
 	table,
 	selected,
 	dragging,
-	relating,
+	relatingSource,
+	relatingTarget,
 	position,
 	highlightedColumnIds,
 	foreignKeyColumnIds,
@@ -673,7 +881,8 @@ function TableCard({
 	table: DesignTable;
 	selected: boolean;
 	dragging: boolean;
-	relating: boolean;
+	relatingSource: boolean;
+	relatingTarget: boolean;
 	position: CanvasPoint;
 	highlightedColumnIds: Set<string>;
 	foreignKeyColumnIds: Set<string>;
@@ -699,13 +908,16 @@ function TableCard({
 					onSelect();
 				}
 			}}
-			className={`absolute select-none overflow-hidden rounded-lg border bg-slate-900 text-left shadow-xl shadow-black/40 outline-none ${
-				dragging ? "cursor-grabbing" : "cursor-grab"
-			} ${
-				relating || selected || dragging
-					? "border-indigo-400 ring-2 ring-indigo-400/60"
-					: "border-slate-700 hover:border-slate-500"
-			}`}
+			className={cn(
+				"group/card absolute bg-paper-raised text-left outline-none select-none",
+				dragging
+					? "cursor-grabbing shadow-lift ring-1 ring-ink-3"
+					: relatingTarget
+						? "cursor-crosshair ring-1 ring-rule-strong hover:ring-2 hover:ring-pencil"
+						: "cursor-grab ring-1 ring-rule-strong hover:ring-ink-4",
+				(selected || relatingSource) && !dragging && "ring-2 ring-pencil hover:ring-pencil",
+				"focus-visible:ring-2 focus-visible:ring-pencil",
+			)}
 			style={{
 				width: CARD_WIDTH,
 				left: position.x,
@@ -714,11 +926,24 @@ function TableCard({
 			}}
 		>
 			<div
-				className="flex items-center justify-between gap-2 border-b border-slate-700 bg-slate-800/90 px-3"
+				aria-hidden="true"
+				className={selected || relatingSource ? "bg-pencil" : "bg-ink"}
+				style={{ height: CARD_TOP_RULE }}
+			/>
+			<div
+				className="flex items-center justify-between gap-2 border-b border-rule-strong pl-3 pr-1.5"
 				style={{ height: CARD_HEADER_HEIGHT }}
 			>
-				<span className="truncate text-sm font-semibold text-slate-100">{table.name}</span>
+				<span className="truncate font-display text-[16px] leading-none font-semibold tracking-[-0.005em] text-ink">
+					{table.name}
+				</span>
 				<div className="flex shrink-0 items-center gap-1">
+					<span
+						className="figures font-mono text-[10px] text-ink-4"
+						title={`${table.columns.length} ${table.columns.length === 1 ? "column" : "columns"}`}
+					>
+						{table.columns.length} col
+					</span>
 					<button
 						type="button"
 						data-testid="relate-table"
@@ -726,16 +951,19 @@ function TableCard({
 						title="Relate this table to the table it references"
 						onPointerDown={(event) => event.stopPropagation()}
 						onClick={onStartRelate}
-						className="rounded border border-slate-600 px-1.5 py-0.5 text-[10px] text-slate-300 hover:border-indigo-400 hover:text-indigo-200"
+						className={cn(
+							"flex h-6 items-center gap-1 rounded-sm px-1.5 text-[10.5px] font-medium tracking-[0.06em] uppercase transition-colors",
+							relatingSource
+								? "bg-pencil text-paper-raised"
+								: "text-ink-3 hover:bg-pencil-wash hover:text-pencil",
+						)}
 					>
+						<Cable className="size-3" />
 						relate
 					</button>
-					<span className="rounded bg-slate-950/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
-						{table.columns.length} {table.columns.length === 1 ? "col" : "cols"}
-					</span>
 				</div>
 			</div>
-			<div className="divide-y divide-slate-800">
+			<div>
 				{table.columns.map((column, index) => (
 					<ColumnRow
 						key={column.id}
@@ -769,63 +997,69 @@ function ColumnRow({
 			data-testid="table-column-row"
 			data-column-id={column.id}
 			data-highlighted={highlighted ? "true" : undefined}
-			className={`flex items-center gap-2 px-3 text-xs ${
-				highlighted ? "bg-indigo-500/20 ring-1 ring-inset ring-indigo-400/50" : ""
-			}`}
+			className={cn(
+				"flex items-center gap-2 pr-2.5 pl-1.5 text-[12px]",
+				index > 0 && "border-t border-rule-soft",
+				highlighted && "bg-pencil-wash",
+			)}
 			style={{ height: CARD_ROW_HEIGHT }}
 		>
-			<span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-slate-600">
+			<span
+				className={cn(
+					"figures w-4 shrink-0 text-right font-mono text-[9.5px]",
+					highlighted ? "text-pencil" : "text-ink-4",
+				)}
+			>
 				{index + 1}
 			</span>
 			<ColumnTypeBadge type={column.type} />
 			<span
-				className={`min-w-0 flex-1 truncate font-medium ${
-					highlighted ? "text-indigo-100" : "text-slate-200"
-				}`}
+				className={cn(
+					"min-w-0 flex-1 truncate font-medium",
+					highlighted ? "text-pencil" : "text-ink",
+				)}
 			>
 				{column.name}
 			</span>
-			<span className="shrink-0 text-[11px] text-slate-400">{column.type}</span>
-			{foreignKey && (
-				<ColumnBadge label="FK" className="text-cyan-300" title="Foreign key" />
-			)}
-			{column.primaryKey && (
-				<ColumnBadge label="PK" className="text-amber-300" title="Primary key" />
-			)}
-			{column.unique && !column.primaryKey && (
-				<ColumnBadge label="UQ" className="text-emerald-300" title="Unique" />
-			)}
-			{relationshipUnique && (
-				<ColumnBadge
-					label="UQ"
-					className="text-emerald-300"
-					title="Unique — at most one record may name the same one"
-				/>
-			)}
-			{column.identity && (
-				<ColumnBadge label="ID" className="text-sky-300" title="Identity generation" />
-			)}
-			{column.default.kind !== "none" && (
-				<ColumnBadge
-					label="D"
-					className="text-fuchsia-300"
-					title={`Default: ${describeColumnDefault(column.default)}`}
-				/>
-			)}
-			{column.nullable ? (
-				<ColumnBadge label="?" className="text-slate-500" title="Nullable" />
-			) : (
-				<ColumnBadge label="!" className="text-slate-400" title="Required" />
-			)}
-			{column.notes.length > 0 && (
-				<span
-					title={column.notes}
-					aria-label="Column note"
-					className="shrink-0 text-[10px] text-slate-500"
-				>
-					✎
-				</span>
-			)}
+			<span className="shrink-0 font-mono text-[10.5px] text-ink-3">{column.type}</span>
+			<span className="flex shrink-0 items-center gap-1">
+				{foreignKey && <ColumnBadge label="FK" tone="strong" title="Foreign key" />}
+				{column.primaryKey && <ColumnBadge label="PK" tone="key" title="Primary key" />}
+				{column.unique && !column.primaryKey && (
+					<ColumnBadge label="UQ" tone="strong" title="Unique" />
+				)}
+				{relationshipUnique && (
+					<ColumnBadge
+						label="UQ"
+						tone="strong"
+						title="Unique — at most one record may name the same one"
+					/>
+				)}
+				{column.identity && (
+					<ColumnBadge label="ID" tone="quiet" title="Identity generation" />
+				)}
+				{column.default.kind !== "none" && (
+					<ColumnBadge
+						label="D"
+						tone="quiet"
+						title={`Default: ${describeColumnDefault(column.default)}`}
+					/>
+				)}
+				{column.nullable ? (
+					<ColumnBadge label="?" tone="quiet" title="Nullable" />
+				) : (
+					<ColumnBadge label="!" tone="faint" title="Required" />
+				)}
+				{column.notes.length > 0 && (
+					<span
+						title={column.notes}
+						aria-label="Column note"
+						className="font-display text-[12px] leading-none text-ink-3 italic"
+					>
+						†
+					</span>
+				)}
+			</span>
 		</div>
 	);
 }

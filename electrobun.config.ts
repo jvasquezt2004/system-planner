@@ -14,6 +14,7 @@ export default {
 		// Vite builds to dist/, we copy from there
 		copy: {
 			"dist/index.html": "views/mainview/index.html",
+			"dist/sql.html": "views/mainview/sql.html",
 			"dist/assets": "views/mainview/assets",
 			// PGlite resolves its WebAssembly runtime relative to the bundled
 			// main process, so the assets ship beside it in the packaged app.

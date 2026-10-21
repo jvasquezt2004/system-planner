@@ -229,6 +229,25 @@ describe("one-to-many relationships", () => {
 		expect(sql).toContain('"author_id" text');
 	}, 60_000);
 
+	test("names the generated column after a referenced table that is already singular", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "University" });
+		const withCampus = await workspace.addTable({ name: "Campus" });
+		const campusTable = requireTable(requireDesign(withCampus), "Campus");
+		const withStudents = await workspace.addTable({ name: "Students" });
+		const studentsTable = requireTable(requireDesign(withStudents), "Students");
+
+		const related = await workspace.addRelationship({
+			referencingTableId: studentsTable.id,
+			referencedTableId: campusTable.id,
+		});
+
+		requireColumn(requireTable(requireDesign(related), "Students"), "campus_id");
+		expect(requireCurrentSql(related)).toContain(
+			'FOREIGN KEY ("campus_id") REFERENCES "Campus" ("id")',
+		);
+	}, 60_000);
+
 	test("keeps references required by default and lets the designer make one optional", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Offices" });

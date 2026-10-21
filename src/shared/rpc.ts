@@ -80,6 +80,32 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: CanvasViewport;
 				response: WorkspaceState;
 			};
+			openSqlWindow: {
+				params: Record<string, never>;
+				response: void;
+			};
+		};
+		messages: Record<string, never>;
+	};
+	webview: {
+		requests: Record<string, never>;
+		messages: {
+			workspaceState: WorkspaceState;
+		};
+	};
+}
+
+export interface SqlWindowRPCSchema extends ElectrobunRPCSchema {
+	bun: {
+		requests: {
+			getWorkspaceState: {
+				params: Record<string, never>;
+				response: WorkspaceState;
+			};
+			copyText: {
+				params: { text: string };
+				response: void;
+			};
 		};
 		messages: Record<string, never>;
 	};

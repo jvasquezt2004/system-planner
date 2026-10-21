@@ -48,8 +48,16 @@ _Avoid_: Hidden link table
 A visual representation of a relationship: a subtle connector identifies the association, and surrounding or stacked endpoint marks express cardinality.
 _Avoid_: Table containment
 
+**Enclosure**:
+The relationship indicator for one-to-many: a frame around the referencing
+table card, headed with the referenced table's name ("Campus has many"
+Students). It is derived from the relationship and follows its card; it never
+means that position or placement defines structure.
+_Avoid_: Group, container, nesting
+
 **SQL preview**:
-The read-only SQL representation generated from a design.
+The read-only SQL representation generated from a design, shown in its own
+window together with the sandbox's result.
 _Avoid_: SQL editor
 
 **Structured default**:

@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { ArrowLeft, ArrowRight, Plus, Trash2, Unlink } from "lucide-react";
 import {
 	COLUMN_LITERAL_LABELS,
 	columnDefaultProblem,
@@ -22,11 +23,26 @@ import type {
 	SqlState,
 } from "../shared/design";
 import type { RelationshipView } from "../shared/relationships";
+import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectLabel,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
+import { cn } from "@/lib/utils";
 import { ColumnBadge } from "./column-badge";
 import { ColumnTypeBadge } from "./column-type-badge";
 
 type TableInspectorProps = {
-	table: DesignTable | null;
+	table: DesignTable;
 	selectedColumnId: string | null;
 	relationships: RelationshipView[];
 	selectedRelationshipId: string | null;
@@ -48,10 +64,10 @@ type TableInspectorProps = {
 };
 
 /**
- * The focused side panel for the selected table: table identity, its column
- * list, and the column editor. Column edits are drafts until applied; the
- * table card and the SQL/sandbox panels only change once the workspace accepts
- * them.
+ * The focused editor for the selected table, shown in the side sheet: table
+ * identity, its column list, the column editor, and its relationships. Column
+ * edits are drafts until applied; the table card and the SQL preview only
+ * change once the workspace accepts them.
  */
 export function TableInspector({
 	table,
@@ -71,344 +87,215 @@ export function TableInspector({
 	onSetRelationshipCardinality,
 	onRemoveRelationship,
 }: TableInspectorProps) {
-	const [name, setName] = useState(table?.name ?? "");
+	const [name, setName] = useState(table.name);
 
 	useEffect(() => {
-		setName(table?.name ?? "");
-	}, [table?.id, table?.name]);
-
-	if (!table) {
-		return (
-			<section
-				aria-labelledby="selection-heading"
-				className="rounded-xl border border-slate-800 bg-slate-900/60 p-4"
-			>
-				<h2
-					id="selection-heading"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-				>
-					Selected table
-				</h2>
-				<p className="mt-2 text-sm text-slate-500">
-					Select a table card to inspect its columns here. Adding, renaming, and removing
-					columns happens in this focused panel.
-				</p>
-			</section>
-		);
-	}
+		setName(table.name);
+	}, [table.id, table.name]);
 
 	const selectedColumn =
 		table.columns.find((column) => column.id === selectedColumnId) ?? null;
 	const validationErrors = sql.status === "current" ? [] : sql.errors;
-
-	function requestTableRename(nextName: string) {
-		if (nextName.trim().length === 0 || nextName.trim() === table?.name) return;
-		onRename(nextName.trim());
-	}
+	const renamed = name.trim().length > 0 && name.trim() !== table.name;
 
 	return (
 		<section
 			aria-labelledby="selection-heading"
 			data-testid="table-selection"
-			className="rounded-xl border border-slate-800 bg-slate-900/60"
+			className="flex flex-col"
 		>
-			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-				<h2
-					id="selection-heading"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
+			<header className="px-6 pt-5 pb-1">
+				<p id="selection-heading" className="kicker">
+					Table
+					<span className="figures ml-2 font-mono font-normal tracking-normal normal-case text-ink-4">
+						{table.columns.length} {table.columns.length === 1 ? "column" : "columns"}
+						{" · "}
+						{relationships.length}{" "}
+						{relationships.length === 1 ? "relationship" : "relationships"}
+					</span>
+				</p>
+				<form
+					className="mt-1.5 flex items-end gap-2"
+					onSubmit={(event) => {
+						event.preventDefault();
+						if (renamed) onRename(name.trim());
+					}}
 				>
-					Selected table
-				</h2>
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">
-					{table.columns.length} {table.columns.length === 1 ? "column" : "columns"}
-				</span>
+					<input
+						value={name}
+						onChange={(event) => setName(event.target.value)}
+						aria-label="Selected table name"
+						data-testid="table-name-input"
+						className="min-w-0 flex-1 border-b border-transparent bg-transparent pb-0.5 font-display text-[28px] leading-tight font-medium tracking-[-0.015em] text-ink outline-none hover:border-rule focus:border-pencil"
+					/>
+					<Button
+						type="submit"
+						size="sm"
+						variant={renamed ? "default" : "ghost"}
+						data-testid="rename-table"
+						disabled={busy || !renamed}
+						className={cn(!renamed && "invisible")}
+					>
+						Rename
+					</Button>
+				</form>
 			</header>
 
-			<form
-				className="flex gap-2 px-4 pt-3"
-				onSubmit={(event) => {
-					event.preventDefault();
-					requestTableRename(name);
-				}}
-			>
-				<input
-					value={name}
-					onChange={(event) => setName(event.target.value)}
-					aria-label="Selected table name"
-					data-testid="table-name-input"
-					className="min-w-0 flex-1 rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-500"
-				/>
-				<button
-					type="submit"
-					data-testid="rename-table"
-					disabled={busy || name.trim().length === 0 || name.trim() === table.name}
-					className="rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 text-xs font-medium text-slate-200 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					Rename
-				</button>
-			</form>
-
-			<section aria-labelledby="columns-heading" className="mt-3">
-				<header className="flex items-center justify-between px-4">
-					<h3
-						id="columns-heading"
-						className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-					>
-						Columns
-					</h3>
-					<button
-						type="button"
+			<Section
+				id="columns-heading"
+				title="Columns"
+				action={
+					<Button
+						variant="ghost"
+						size="xs"
 						data-testid="add-column"
 						onClick={onAddColumn}
 						disabled={busy}
-						className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1 text-[11px] font-medium text-slate-200 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
 					>
+						<Plus />
 						Add column
-					</button>
-				</header>
-
-				<ul
-					data-testid="table-columns"
-					className="mt-2 divide-y divide-slate-800 border-y border-slate-800"
-				>
+					</Button>
+				}
+			>
+				<ul data-testid="table-columns" className="border-y border-rule">
 					{table.columns.map((column, index) => {
 						const selected = column.id === selectedColumnId;
 						return (
-							<li key={column.id}>
+							<li key={column.id} className={cn(index > 0 && "border-t border-rule-soft")}>
 								<button
 									type="button"
 									data-testid="table-column"
 									data-column-id={column.id}
 									aria-pressed={selected}
-									onClick={() => onSelectColumn(column.id)}
-									className={`flex w-full items-center gap-2 px-4 py-2 text-left text-xs outline-none focus-visible:ring-1 focus-visible:ring-indigo-400 ${
+									onClick={() => onSelectColumn(selected ? null : column.id)}
+									className={cn(
+										"flex h-8 w-full items-center gap-2 border-l-2 pr-6 pl-[22px] text-left text-[12.5px] outline-none focus-visible:bg-pencil-wash",
 										selected
-											? "bg-indigo-500/10 text-indigo-100"
-											: "text-slate-300 hover:bg-slate-800/40"
-									}`}
+											? "border-l-pencil bg-pencil-wash"
+											: "border-l-transparent hover:bg-paper-tint",
+									)}
 								>
-									<span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-slate-600">
+									<span className="figures w-4 shrink-0 text-right font-mono text-[9.5px] text-ink-4">
 										{index + 1}
 									</span>
 									<ColumnTypeBadge type={column.type} />
-									<span className="min-w-0 flex-1 truncate font-medium">
+									<span
+										className={cn(
+											"min-w-0 flex-1 truncate font-medium",
+											selected ? "text-pencil" : "text-ink",
+										)}
+									>
 										{column.name}
 									</span>
-									<span className="shrink-0 text-[11px] text-slate-400">
+									<span className="shrink-0 font-mono text-[10.5px] text-ink-3">
 										{column.type}
 									</span>
-									{column.primaryKey && (
-										<ColumnBadge label="PK" className="text-amber-300" title="Primary key" />
-									)}
-									{column.unique && !column.primaryKey && (
-										<ColumnBadge
-											label="UQ"
-											className="text-emerald-300"
-											title="Unique"
-										/>
-									)}
-									{column.identity && (
-										<ColumnBadge
-											label="ID"
-											className="text-sky-300"
-											title="Identity generation"
-										/>
-									)}
-									{column.default.kind !== "none" && (
-										<ColumnBadge
-											label="D"
-											className="text-fuchsia-300"
-											title={`Default: ${describeColumnDefault(column.default)}`}
-										/>
-									)}
-									{column.nullable ? (
-										<ColumnBadge label="?" className="text-slate-500" title="Nullable" />
-									) : (
-										<ColumnBadge label="!" className="text-slate-400" title="Required" />
-									)}
-									{column.notes.length > 0 && (
-										<span
-											title={column.notes}
-											aria-label="Column note"
-											className="shrink-0 text-[10px] text-slate-500"
-										>
-											✎
-										</span>
-									)}
+									<span className="flex w-[74px] shrink-0 items-center justify-end gap-1">
+										{column.primaryKey && (
+											<ColumnBadge label="PK" tone="key" title="Primary key" />
+										)}
+										{column.unique && !column.primaryKey && (
+											<ColumnBadge label="UQ" tone="strong" title="Unique" />
+										)}
+										{column.identity && (
+											<ColumnBadge label="ID" tone="quiet" title="Identity generation" />
+										)}
+										{column.default.kind !== "none" && (
+											<ColumnBadge
+												label="D"
+												tone="quiet"
+												title={`Default: ${describeColumnDefault(column.default)}`}
+											/>
+										)}
+										{column.nullable ? (
+											<ColumnBadge label="?" tone="quiet" title="Nullable" />
+										) : (
+											<ColumnBadge label="!" tone="faint" title="Required" />
+										)}
+										{column.notes.length > 0 && (
+											<span
+												title={column.notes}
+												aria-label="Column note"
+												className="font-display text-[12px] leading-none text-ink-3 italic"
+											>
+												†
+											</span>
+										)}
+									</span>
 								</button>
 							</li>
 						);
 					})}
 				</ul>
-			</section>
 
-			<section aria-labelledby="relationships-heading" className="mt-3">
-				<header className="flex items-center justify-between px-4">
-					<h3
-						id="relationships-heading"
-						className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-					>
-						Relationships
-					</h3>
-					<span className="text-[10px] text-slate-500">
+				<div className="px-6 pt-3">
+					{selectedColumn ? (
+						<ColumnEditor
+							tableName={table.name}
+							column={selectedColumn}
+							busy={busy}
+							onApply={(changes) => onApplyColumn(selectedColumn.id, changes)}
+							onRemove={() => onRemoveColumn(selectedColumn.id)}
+						/>
+					) : (
+						<p className="text-[12px] leading-relaxed text-ink-3">
+							Select a column to edit its name, type, default, key settings,
+							nullability, uniqueness, and notes.
+						</p>
+					)}
+				</div>
+			</Section>
+
+			<Section
+				id="relationships-heading"
+				title="Relationships"
+				action={
+					<span className="figures font-mono text-[10.5px] text-ink-4">
 						{relationships.length === 0
 							? "none"
 							: `${relationships.length} ${relationships.length === 1 ? "link" : "links"}`}
 					</span>
-				</header>
-
+				}
+			>
 				{relationships.length === 0 ? (
-					<p className="px-4 pt-1 text-[11px] leading-relaxed text-slate-500">
-						Use the <span className="text-slate-300">relate</span> button on a table
-						card header, then click the table it references. The foreign-key column is
+					<p className="px-6 text-[12px] leading-relaxed text-ink-3">
+						Press <span className="font-medium text-ink-2 uppercase tracking-[0.06em] text-[10.5px]">relate</span> on a
+						table card, then click the table it references. The foreign-key column is
 						created for you.
 					</p>
 				) : (
-					<ul
-						data-testid="table-relationships"
-						className="mt-2 divide-y divide-slate-800 border-y border-slate-800"
-					>
-						{relationships.map((view) => {
-							const relationshipId = view.relationship.id;
-							const selected = relationshipId === selectedRelationshipId;
-							const outgoing = view.referencingTable.id === table.id;
-							return (
-								<li
-									key={relationshipId}
-									data-testid="table-relationship"
-									data-relationship-id={relationshipId}
-									data-selected={selected ? "true" : undefined}
-									className={selected ? "bg-indigo-500/10" : undefined}
-								>
-									<button
-										type="button"
-										onClick={() => onSelectRelationship(selected ? null : relationshipId)}
-										aria-pressed={selected}
-										className="flex w-full flex-col gap-0.5 px-4 py-2 text-left text-xs outline-none hover:bg-slate-800/40 focus-visible:ring-1 focus-visible:ring-indigo-400"
-									>
-										<span className="flex items-center gap-1.5">
-											<span
-												className={
-													outgoing ? "text-indigo-300" : "text-amber-300"
-												}
-												aria-hidden="true"
-											>
-												{outgoing ? "→" : "←"}
-											</span>
-											<span className="min-w-0 flex-1 truncate font-medium text-slate-200">
-												{outgoing
-													? `References ${view.referencedTable.name}`
-													: `Referenced by ${view.referencingTable.name}`}
-											</span>
-											<span className="shrink-0 text-[10px] uppercase tracking-wide text-slate-500">
-												{view.oneToOne ? "one-to-one" : "one-to-many"}
-											</span>
-										</span>
-										<span className="truncate text-[11px] text-slate-400">
-											{view.referencingTable.name}.{view.referencingColumn.name} →{" "}
-											{view.referencedTable.name}.
-											{view.referencedColumn?.name ?? "(no primary key)"}
-											{view.oneToOne ? " · unique" : ""}
-										</span>
-									</button>
-									<div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-4 pb-2">
-										<label
-											className="flex items-center gap-1.5 text-[11px] text-slate-300"
-											title={
-												view.oneToOne
-													? `Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record, and at most one ${view.referencingTable.name} record may name it. ${view.referencedTable.name} records may still have none.`
-													: `Every ${view.referencingTable.name} record must name one ${view.referencedTable.name} record. ${view.referencedTable.name} records may have none.`
-											}
-										>
-											<input
-												type="checkbox"
-												aria-label={`Required reference from ${view.referencingTable.name} to ${view.referencedTable.name}`}
-												data-testid="relationship-required"
-												checked={view.required}
-												disabled={busy}
-												onChange={(event) =>
-													onSetRelationshipRequired(
-														relationshipId,
-														event.target.checked,
-													)
-												}
-												className="accent-indigo-500"
-											/>
-											Required
-										</label>
-										<label
-											className="flex items-center gap-1.5 text-[11px] text-slate-300"
-											title={`One-to-one adds uniqueness on ${view.referencingTable.name}.${view.referencingColumn.name}, so at most one record may name the same ${view.referencedTable.name} record.`}
-										>
-											<input
-												type="checkbox"
-												aria-label={`One-to-one reference from ${view.referencingTable.name} to ${view.referencedTable.name}`}
-												data-testid="relationship-one-to-one"
-												checked={view.oneToOne}
-												disabled={busy}
-												onChange={(event) =>
-													onSetRelationshipCardinality(
-														relationshipId,
-														event.target.checked
-															? "one-to-one"
-															: "one-to-many",
-													)
-												}
-												className="accent-indigo-500"
-											/>
-											One-to-one
-										</label>
-										<button
-											type="button"
-											data-testid="remove-relationship"
-											onPointerDown={(event) => event.stopPropagation()}
-											onClick={() => onRemoveRelationship(relationshipId)}
-											disabled={busy}
-											title="Remove the relationship-owned foreign key and uniqueness, keeping the columns"
-											className="ml-auto rounded border border-slate-700 px-2 py-0.5 text-[10px] text-slate-300 hover:border-red-400 hover:text-red-200 disabled:cursor-not-allowed disabled:opacity-40"
-										>
-											Remove link
-										</button>
-									</div>
-								</li>
-							);
-						})}
+					<ul data-testid="table-relationships" className="border-y border-rule">
+						{relationships.map((view, index) => (
+							<RelationshipRow
+								key={view.relationship.id}
+								view={view}
+								table={table}
+								first={index === 0}
+								selected={view.relationship.id === selectedRelationshipId}
+								busy={busy}
+								onSelect={onSelectRelationship}
+								onSetRequired={onSetRelationshipRequired}
+								onSetCardinality={onSetRelationshipCardinality}
+								onRemove={onRemoveRelationship}
+							/>
+						))}
 					</ul>
 				)}
-				<p className="px-4 pt-1 text-[10px] leading-relaxed text-slate-500">
+				<p className="px-6 pt-2.5 text-[11.5px] leading-relaxed text-ink-3">
 					A required reference means every referencing record must name one related
 					record. One-to-one also restricts each referenced record to at most one
 					referencing record. Neither setting requires the referenced table to have
 					children.
 				</p>
-			</section>
-
-			<div className="px-4 py-3">
-				{selectedColumn ? (
-					<ColumnEditor
-						tableName={table.name}
-						column={selectedColumn}
-						busy={busy}
-						onApply={(changes) => onApplyColumn(selectedColumn.id, changes)}
-						onRemove={() => onRemoveColumn(selectedColumn.id)}
-					/>
-				) : (
-					<p className="text-[11px] text-slate-500">
-						Select a column above to edit its name, type, key settings, nullability,
-						uniqueness, and notes.
-					</p>
-				)}
-			</div>
+			</Section>
 
 			{validationErrors.length > 0 && (
 				<div
 					data-testid="validation-errors"
-					className="mx-4 mb-3 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2"
+					className="mx-6 mt-6 border-l-2 border-ochre bg-ochre-wash px-3 py-2.5"
 				>
-					<p className="text-[11px] font-semibold uppercase tracking-wide text-amber-300">
-						Blocked by validation
-					</p>
-					<ul className="mt-1 list-disc space-y-1 pl-4 text-[11px] text-amber-200">
+					<p className="kicker text-ochre!">Blocked by validation</p>
+					<ul className="mt-1.5 space-y-1 text-[12px] leading-snug text-ink-2">
 						{validationErrors.map((message) => (
 							<li key={message}>{message}</li>
 						))}
@@ -416,18 +303,175 @@ export function TableInspector({
 				</div>
 			)}
 
-			<div className="flex flex-col gap-2 border-t border-slate-800 px-4 py-3">
-				<button
-					type="button"
+			<footer className="mt-8 border-t border-rule px-6 py-4">
+				<Button
+					variant="strike"
+					size="sm"
 					data-testid="remove-table"
 					onClick={onRemove}
 					disabled={busy}
-					className="self-start rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+					className="-ml-2.5"
 				>
+					<Trash2 />
 					Remove table
-				</button>
-			</div>
+				</Button>
+			</footer>
 		</section>
+	);
+}
+
+/** A titled run of content under a kicker and hairline, like a page section. */
+function Section({
+	id,
+	title,
+	action,
+	children,
+}: {
+	id: string;
+	title: string;
+	action?: React.ReactNode;
+	children: React.ReactNode;
+}) {
+	return (
+		<section aria-labelledby={id} className="mt-5">
+			<header className="flex h-7 items-center justify-between pr-4 pl-6">
+				<h3 id={id} className="kicker">
+					{title}
+				</h3>
+				{action}
+			</header>
+			{children}
+		</section>
+	);
+}
+
+function RelationshipRow({
+	view,
+	table,
+	first,
+	selected,
+	busy,
+	onSelect,
+	onSetRequired,
+	onSetCardinality,
+	onRemove,
+}: {
+	view: RelationshipView;
+	table: DesignTable;
+	first: boolean;
+	selected: boolean;
+	busy: boolean;
+	onSelect: (relationshipId: string | null) => void;
+	onSetRequired: (relationshipId: string, required: boolean) => void;
+	onSetCardinality: (relationshipId: string, cardinality: RelationshipCardinality) => void;
+	onRemove: (relationshipId: string) => void;
+}) {
+	const relationshipId = view.relationship.id;
+	const outgoing = view.referencingTable.id === table.id;
+	const referencing = view.referencingTable.name;
+	const referenced = view.referencedTable.name;
+	return (
+		<li
+			data-testid="table-relationship"
+			data-relationship-id={relationshipId}
+			data-selected={selected ? "true" : undefined}
+			className={cn(
+				"border-l-2",
+				!first && "border-t border-t-rule-soft",
+				selected ? "border-l-pencil bg-pencil-wash" : "border-l-transparent",
+			)}
+		>
+			<button
+				type="button"
+				onClick={() => onSelect(selected ? null : relationshipId)}
+				aria-pressed={selected}
+				className="flex w-full flex-col gap-1 pt-2.5 pr-6 pb-1.5 pl-[22px] text-left outline-none hover:bg-paper-tint focus-visible:bg-pencil-wash"
+			>
+				<span className="flex items-baseline gap-2">
+					{outgoing ? (
+						<ArrowRight className="size-3 shrink-0 self-center text-ink-3" aria-hidden="true" />
+					) : (
+						<ArrowLeft className="size-3 shrink-0 self-center text-ink-3" aria-hidden="true" />
+					)}
+					<span
+						className={cn(
+							"min-w-0 flex-1 truncate font-display text-[15px] font-medium",
+							selected ? "text-pencil" : "text-ink",
+						)}
+					>
+						{outgoing ? `References ${referenced}` : `Referenced by ${referencing}`}
+					</span>
+					<span className="kicker shrink-0">
+						{view.oneToOne ? "one-to-one" : "one-to-many"}
+					</span>
+				</span>
+				<span className="truncate pl-5 font-mono text-[10.5px] text-ink-3">
+					{referencing}.{view.referencingColumn.name} → {referenced}.
+					{view.referencedColumn?.name ?? "(no primary key)"}
+					{view.oneToOne ? " · unique" : ""}
+				</span>
+			</button>
+			<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pr-4 pb-2.5 pl-[42px]">
+				<label
+					className="flex items-center gap-1.5 text-[12px] text-ink-2"
+					title={
+						view.oneToOne
+							? `Every ${referencing} record must name one ${referenced} record, and at most one ${referencing} record may name it. ${referenced} records may still have none.`
+							: `Every ${referencing} record must name one ${referenced} record. ${referenced} records may have none.`
+					}
+				>
+					<Checkbox
+						aria-label={`Required reference from ${referencing} to ${referenced}`}
+						data-testid="relationship-required"
+						checked={view.required}
+						disabled={busy}
+						onCheckedChange={(checked) => onSetRequired(relationshipId, checked === true)}
+					/>
+					Required
+				</label>
+				<ToggleGroup
+					type="single"
+					variant="outline"
+					size="sm"
+					spacing={0}
+					aria-label={`Cardinality of the reference from ${referencing} to ${referenced}`}
+					value={view.relationship.cardinality}
+					disabled={busy}
+					onValueChange={(value) => {
+						if (
+							(value === "one-to-many" || value === "one-to-one") &&
+							value !== view.relationship.cardinality
+						) {
+							onSetCardinality(relationshipId, value);
+						}
+					}}
+				>
+					<ToggleGroupItem value="one-to-many" data-testid="relationship-one-to-many">
+						many
+					</ToggleGroupItem>
+					<ToggleGroupItem
+						value="one-to-one"
+						data-testid="relationship-one-to-one"
+						title={`One-to-one adds uniqueness on ${referencing}.${view.referencingColumn.name}, so at most one record may name the same ${referenced} record.`}
+					>
+						one-to-one
+					</ToggleGroupItem>
+				</ToggleGroup>
+				<Button
+					variant="strike"
+					size="xs"
+					data-testid="remove-relationship"
+					onPointerDown={(event) => event.stopPropagation()}
+					onClick={() => onRemove(relationshipId)}
+					disabled={busy}
+					title="Remove the relationship-owned foreign key and uniqueness, keeping the columns"
+					className="ml-auto"
+				>
+					<Unlink />
+					Remove link
+				</Button>
+			</div>
+		</li>
 	);
 }
 
@@ -599,11 +643,19 @@ function ColumnEditor({
 		});
 	}
 
+	const showGenerated =
+		support.currentTimestamp ||
+		support.generateUuid ||
+		draftType?.identity ||
+		choice === "currentTimestamp" ||
+		choice === "generateUuid" ||
+		choice === "identity";
+
 	return (
 		<form
 			aria-labelledby="column-editor-heading"
 			data-testid="column-editor"
-			className="rounded-lg border border-slate-700 bg-slate-950/70 p-3"
+			className="rounded-[3px] border border-rule bg-paper px-4 pt-3 pb-4"
 			onSubmit={(event) => {
 				event.preventDefault();
 				if (!dirty || invalid || busy) return;
@@ -611,132 +663,134 @@ function ColumnEditor({
 			}}
 		>
 			<header className="flex items-baseline justify-between gap-2">
-				<h3
-					id="column-editor-heading"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-				>
-					Column editor
+				<h3 id="column-editor-heading" className="kicker">
+					Column
 				</h3>
-				<span className="truncate text-[10px] text-slate-500">{tableName}</span>
+				<span className="truncate font-mono text-[10.5px] text-ink-4">
+					{tableName}.{column.name}
+				</span>
 			</header>
 
-			<label className="mt-2 flex flex-col gap-1">
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">Name</span>
-				<input
+			<Field label="Name" htmlFor="column-name">
+				<Input
+					id="column-name"
 					value={draft.name}
 					onChange={(event) => setDraft({ ...draft, name: event.target.value })}
 					aria-label="Column name"
+					aria-invalid={invalid || undefined}
 					data-testid="column-name-input"
-					className="rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-500"
+					className="font-mono text-[12.5px]"
 				/>
-			</label>
-			{invalid && (
-				<p className="mt-1 text-[11px] text-amber-300">A column needs a name.</p>
-			)}
+			</Field>
+			{invalid && <Hint tone="warn">A column needs a name.</Hint>}
 
-			<label className="mt-2 flex flex-col gap-1">
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">Type</span>
-				<select
+			<Field label="Type">
+				<Select
 					value={draft.type}
-					onChange={(event) =>
-						setDraft({ ...draft, type: event.target.value as ColumnType })
-					}
-					aria-label="Column type"
-					data-testid="column-type-picker"
-					className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm outline-none focus:border-indigo-500"
+					onValueChange={(value) => setDraft({ ...draft, type: value as ColumnType })}
 				>
-					{COLUMN_TYPE_FAMILIES.map((family) => (
-						<optgroup key={family.id} label={`${family.glyph} ${family.label}`}>
-							{COLUMN_TYPE_DEFINITIONS.filter(
-								(definition) => definition.family === family.id,
-							).map((definition) => (
-								<option key={definition.type} value={definition.type}>
-									{definition.type} — {definition.label}
-								</option>
-							))}
-						</optgroup>
-					))}
-				</select>
-			</label>
+					<SelectTrigger
+						aria-label="Column type"
+						data-testid="column-type-picker"
+						className="w-full"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent position="popper" className="max-h-80">
+						{COLUMN_TYPE_FAMILIES.map((family) => (
+							<SelectGroup key={family.id}>
+								<SelectLabel>{family.label}</SelectLabel>
+								{COLUMN_TYPE_DEFINITIONS.filter(
+									(definition) => definition.family === family.id,
+								).map((definition) => (
+									<SelectItem key={definition.type} value={definition.type}>
+										<ColumnTypeBadge type={definition.type} />
+										<span className="font-mono text-[12px]">{definition.type}</span>
+										<span className="text-ink-3">{definition.label}</span>
+									</SelectItem>
+								))}
+							</SelectGroup>
+						))}
+					</SelectContent>
+				</Select>
+			</Field>
 			{dropsIdentity && (
-				<p className="mt-1 text-[11px] text-sky-300">
-					Identity generation will be cleared because it only applies to integer types.
-				</p>
+				<Hint>Identity generation will be cleared because it only applies to integer types.</Hint>
 			)}
 
-			<label className="mt-2 flex flex-col gap-1">
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">
-					Default
-				</span>
-				<select
-					value={choice}
-					onChange={(event) => chooseDefault(event.target.value as DefaultChoice)}
-					aria-label="Column default"
-					data-testid="column-default-picker"
-					className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm outline-none focus:border-indigo-500"
-				>
-					<option value="none">No default</option>
-					{(support.literal !== null || choice === "literal") && (
-						<optgroup label="Typed literal">
-							<option value="literal">
-								{literalType
-									? `A ${COLUMN_LITERAL_LABELS[literalType]}`
-									: "A typed value"}
-							</option>
-						</optgroup>
-					)}
-					{(support.currentTimestamp ||
-						support.generateUuid ||
-						draftType?.identity ||
-						choice === "currentTimestamp" ||
-						choice === "generateUuid" ||
-						choice === "identity") && (
-						<optgroup label="Database-generated">
-							{(support.currentTimestamp || choice === "currentTimestamp") && (
-								<option value="currentTimestamp">Current timestamp</option>
-							)}
-							{(support.generateUuid || choice === "generateUuid") && (
-								<option value="generateUuid">Generate a UUID</option>
-							)}
-							{(draftType?.identity || choice === "identity") && (
-								<option value="identity">Identity generation</option>
-							)}
-						</optgroup>
-					)}
-				</select>
-			</label>
+			<Field label="Default">
+				<Select value={choice} onValueChange={(value) => chooseDefault(value as DefaultChoice)}>
+					<SelectTrigger
+						aria-label="Column default"
+						data-testid="column-default-picker"
+						className="w-full"
+					>
+						<SelectValue />
+					</SelectTrigger>
+					<SelectContent position="popper">
+						<SelectItem value="none">No default</SelectItem>
+						{(support.literal !== null || choice === "literal") && (
+							<SelectGroup>
+								<SelectLabel>Typed literal</SelectLabel>
+								<SelectItem value="literal">
+									{literalType
+										? `A ${COLUMN_LITERAL_LABELS[literalType]}`
+										: "A typed value"}
+								</SelectItem>
+							</SelectGroup>
+						)}
+						{showGenerated && (
+							<SelectGroup>
+								<SelectLabel>Database-generated</SelectLabel>
+								{(support.currentTimestamp || choice === "currentTimestamp") && (
+									<SelectItem value="currentTimestamp">Current timestamp</SelectItem>
+								)}
+								{(support.generateUuid || choice === "generateUuid") && (
+									<SelectItem value="generateUuid">Generate a UUID</SelectItem>
+								)}
+								{(draftType?.identity || choice === "identity") && (
+									<SelectItem value="identity">Identity generation</SelectItem>
+								)}
+							</SelectGroup>
+						)}
+					</SelectContent>
+				</Select>
+			</Field>
 
 			{choice === "literal" && literalType !== null && (
-				<label className="mt-2 flex flex-col gap-1">
-					<span className="text-[10px] uppercase tracking-wide text-slate-500">
-						{COLUMN_LITERAL_LABELS[literalType]}
-					</span>
+				<Field label={COLUMN_LITERAL_LABELS[literalType]}>
 					{literalType === "boolean" ? (
-						<select
-							value={literalValue}
-							onChange={(event) => updateLiteralValue(event.target.value)}
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							spacing={0}
 							aria-label="Default value"
 							data-testid="column-default-literal"
-							className="rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-sm outline-none focus:border-indigo-500"
+							value={literalValue === "true" || literalValue === "false" ? literalValue : ""}
+							onValueChange={(value) => {
+								if (value) updateLiteralValue(value);
+							}}
 						>
-							{literalValue !== "true" && literalValue !== "false" && (
-								<option value={literalValue}>“{literalValue}” (invalid)</option>
-							)}
-							<option value="true">true</option>
-							<option value="false">false</option>
-						</select>
+							<ToggleGroupItem value="true" className="font-mono">
+								true
+							</ToggleGroupItem>
+							<ToggleGroupItem value="false" className="font-mono">
+								false
+							</ToggleGroupItem>
+						</ToggleGroup>
 					) : literalType === "json" ? (
-						<textarea
+						<Textarea
 							value={literalValue}
 							onChange={(event) => updateLiteralValue(event.target.value)}
 							aria-label="Default value"
 							data-testid="column-default-literal"
 							rows={2}
-							placeholder={'{"key": "value"}'}
-							className="resize-y rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 font-mono text-xs outline-none placeholder:text-slate-600 focus:border-indigo-500"
+							placeholder={LITERAL_PLACEHOLDERS.json}
+							className="font-mono text-[12px]"
 						/>
 					) : (
-						<input
+						<Input
 							value={literalValue}
 							onChange={(event) => updateLiteralValue(event.target.value)}
 							aria-label="Default value"
@@ -747,72 +801,61 @@ function ColumnEditor({
 									: undefined
 							}
 							placeholder={LITERAL_PLACEHOLDERS[literalType]}
-							className="rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-sm outline-none placeholder:text-slate-600 focus:border-indigo-500"
+							className="font-mono text-[12.5px]"
 						/>
 					)}
-				</label>
+				</Field>
 			)}
+			{literalType === "boolean" &&
+				choice === "literal" &&
+				literalValue !== "true" &&
+				literalValue !== "false" && (
+					<Hint tone="warn">“{literalValue}” is not a boolean. Choose true or false.</Hint>
+				)}
 			{defaultProblem !== null && (
-				<p data-testid="default-warning" className="mt-1 text-[11px] text-amber-300">
+				<Hint tone="warn" testId="default-warning">
 					{capitalize(defaultProblem)}. Applying keeps this default in the saved draft,
 					but SQL generation stays blocked until it is resolved.
-				</p>
+				</Hint>
 			)}
 			{draft.identity && draft.defaultValue.kind !== "none" && (
-				<p className="mt-1 text-[11px] text-amber-300">
+				<Hint tone="warn">
 					This column has both identity generation and a default. Choose one.
-				</p>
+				</Hint>
 			)}
 
-			<fieldset className="mt-2 flex flex-wrap gap-x-3 gap-y-1">
-				<legend className="text-[10px] uppercase tracking-wide text-slate-500">
-					Settings
-				</legend>
-				<label
-					className="flex items-center gap-1.5 text-xs text-slate-300"
-					title={
-						draft.primaryKey
-							? "A primary key is always required"
-							: draft.identity
-								? "Identity columns are always required"
-								: undefined
-					}
-				>
-					<input
-						type="checkbox"
-						aria-label="Nullable"
-						data-testid="column-nullable"
+			<fieldset className="mt-3.5">
+				<legend className="kicker mb-2">Settings</legend>
+				<div className="flex flex-wrap gap-x-5 gap-y-2">
+					<Setting
+						label="Nullable"
+						testId="column-nullable"
 						checked={draft.nullable}
 						disabled={draft.primaryKey || draft.identity}
-						onChange={(event) => setDraft({ ...draft, nullable: event.target.checked })}
-						className="accent-indigo-500"
+						title={
+							draft.primaryKey
+								? "A primary key is always required"
+								: draft.identity
+									? "Identity columns are always required"
+									: undefined
+						}
+						onChange={(checked) => setDraft({ ...draft, nullable: checked })}
 					/>
-					Nullable
-				</label>
-				<label
-					className="flex items-center gap-1.5 text-xs text-slate-300"
-					title={draft.primaryKey ? "A primary key is already unique" : undefined}
-				>
-					<input
-						type="checkbox"
-						aria-label="Unique"
-						data-testid="column-unique"
+					<Setting
+						label="Unique"
+						testId="column-unique"
 						checked={draft.unique && !draft.primaryKey}
 						disabled={draft.primaryKey}
-						onChange={(event) => setDraft({ ...draft, unique: event.target.checked })}
-						className="accent-indigo-500"
+						title={draft.primaryKey ? "A primary key is already unique" : undefined}
+						onChange={(checked) => setDraft({ ...draft, unique: checked })}
 					/>
-					Unique
-				</label>
-				<label className="flex items-center gap-1.5 text-xs text-slate-300">
-					<input
-						type="checkbox"
-						aria-label="Primary key"
-						data-testid="column-primary-key"
+					<Setting
+						label="Primary key"
+						testId="column-primary-key"
 						checked={draft.primaryKey}
-						onChange={(event) =>
+						onChange={(checked) =>
 							setDraft(
-								event.target.checked
+								checked
 									? {
 											...draft,
 											primaryKey: true,
@@ -823,61 +866,129 @@ function ColumnEditor({
 									: { ...draft, primaryKey: false },
 							)
 						}
-						className="accent-indigo-500"
 					/>
-					Primary key
-				</label>
+				</div>
 			</fieldset>
 			{column.identity && (
-				<p className="mt-1 text-[11px] text-slate-500">
-					This column currently uses identity generation. Choosing a default replaces it.
-				</p>
+				<Hint>This column currently uses identity generation. Choosing a default replaces it.</Hint>
 			)}
 
-			<label className="mt-2 flex flex-col gap-1">
-				<span className="text-[10px] uppercase tracking-wide text-slate-500">Notes</span>
-				<textarea
+			<Field label="Notes" htmlFor="column-notes">
+				<Textarea
+					id="column-notes"
 					value={draft.notes}
 					onChange={(event) => setDraft({ ...draft, notes: event.target.value })}
 					aria-label="Column notes"
 					data-testid="column-notes"
 					rows={2}
 					placeholder="Why this column exists"
-					className="resize-y rounded-md border border-slate-700 bg-slate-900 px-2.5 py-1.5 text-xs outline-none placeholder:text-slate-600 focus:border-indigo-500"
+					className="font-display text-[14px] italic placeholder:not-italic"
 				/>
-			</label>
+			</Field>
 
-			<div className="mt-3 flex flex-wrap items-center gap-2">
-				<button
-					type="submit"
-					data-testid="apply-column"
-					disabled={busy || !dirty || invalid}
-					className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
-				>
+			<div className="mt-4 flex flex-wrap items-center gap-2">
+				<Button type="submit" size="sm" data-testid="apply-column" disabled={busy || !dirty || invalid}>
 					Apply changes
-				</button>
-				<button
+				</Button>
+				<Button
 					type="button"
+					variant="ghost"
+					size="sm"
 					data-testid="reset-column"
 					onClick={() => setDraft(draftFrom(column))}
 					disabled={busy || !dirty}
-					className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
 				>
 					Reset
-				</button>
-			</div>
-
-			<div className="mt-3 border-t border-slate-800 pt-2">
-				<button
+				</Button>
+				<Button
 					type="button"
+					variant="strike"
+					size="sm"
 					data-testid="remove-column"
 					onClick={onRemove}
 					disabled={busy}
-					className="rounded-md border border-red-500/40 bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+					className="ml-auto"
 				>
+					<Trash2 />
 					Remove column
-				</button>
+				</Button>
 			</div>
 		</form>
+	);
+}
+
+function Field({
+	label,
+	htmlFor,
+	children,
+}: {
+	label: string;
+	htmlFor?: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<div className="mt-3 flex flex-col gap-1">
+			<label htmlFor={htmlFor} className="text-[11px] font-medium text-ink-3">
+				{label}
+			</label>
+			{children}
+		</div>
+	);
+}
+
+function Hint({
+	tone = "note",
+	testId,
+	children,
+}: {
+	tone?: "note" | "warn";
+	testId?: string;
+	children: React.ReactNode;
+}) {
+	return (
+		<p
+			data-testid={testId}
+			className={cn(
+				"mt-1.5 text-[11.5px] leading-snug",
+				tone === "warn" ? "text-ochre" : "text-ink-3",
+			)}
+		>
+			{children}
+		</p>
+	);
+}
+
+function Setting({
+	label,
+	testId,
+	checked,
+	disabled,
+	title,
+	onChange,
+}: {
+	label: string;
+	testId: string;
+	checked: boolean;
+	disabled?: boolean;
+	title?: string;
+	onChange: (checked: boolean) => void;
+}) {
+	return (
+		<label
+			title={title}
+			className={cn(
+				"flex items-center gap-1.5 text-[12.5px] text-ink-2",
+				disabled && "text-ink-4",
+			)}
+		>
+			<Checkbox
+				aria-label={label}
+				data-testid={testId}
+				checked={checked}
+				disabled={disabled}
+				onCheckedChange={(next) => onChange(next === true)}
+			/>
+			{label}
+		</label>
 	);
 }

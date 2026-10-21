@@ -1,8 +1,9 @@
 # Column editing in the focused side panel
 
-Selecting a **table card** opens that table's inspector in the right-hand panel.
-The inspector is the only place columns are edited; cards stay a read-only view
-of the table's structure.
+Selecting a **table card** opens that table's inspector in a sheet on the right.
+The sheet appears only while a table is selected. The inspector is the only
+place columns are edited; cards stay a read-only view of the table's
+structure.
 
 ## Using the column editor
 

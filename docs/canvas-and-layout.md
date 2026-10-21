@@ -4,8 +4,8 @@ The design canvas arranges **table cards** that describe schema structure. A
 card lists column definitions — names, exact PostgreSQL type names, a
 type-family symbol, key/identity/uniqueness markers, a note marker, and
 nullability — never stored records. Card position, canvas pan, and zoom are
-layout, not database structure. All column editing happens in the focused
-side panel described in [column-editing.md](column-editing.md).
+layout, not database structure. All column editing happens in the inspector
+sheet described in [column-editing.md](column-editing.md).
 
 ## Using the canvas
 
@@ -13,14 +13,15 @@ side panel described in [column-editing.md](column-editing.md).
   starts with the default `id bigint` identity primary key and lands near the
   centre of the current view, cascaded so repeated additions do not stack.
 - **Select** — press a card (or focus it and press Enter/Space). The inspector
-  panel shows that table's details. Selecting is view-only state; it is not
-  saved and does not create a schema revision.
+  sheet slides in from the right with that table's details; pressing empty
+  canvas, the sheet's close button, or `Esc` closes it. The sheet is
+  non-modal, so the canvas stays live beside it. Selecting is view-only state;
+  it is not saved and does not create a schema revision.
 - **Rename** — edit the name in the inspector and submit. Renaming keeps the
   table's stable internal identity, so positions and (in later tickets)
   relationships stay attached to the same table.
-- **Remove** — the inspector removes the table after an inline confirmation.
-  Unrelated tables are untouched. Dependency warnings for referenced tables
-  arrive with the relationship tickets.
+- **Remove** — the inspector removes the table after a confirmation dialog
+  that lists any affected relationships. Unrelated tables are untouched.
 - **Pan** — drag empty canvas. **Zoom** — mouse wheel over the canvas (around
   the pointer), or the `−`, `+`, and `100%` controls (around the view centre).
   The grid moves and scales with the canvas.

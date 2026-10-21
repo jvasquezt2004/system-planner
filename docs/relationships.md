@@ -108,17 +108,28 @@ and the design always describe the same constraints.
 
 ## Visual indicators
 
-A subtle connector joins the two participating column rows. Cardinality uses
-endpoint marks:
+A subtle connector leaves the referenced table's key row. Cardinality is read
+from what it reaches:
 
-- one-to-many: three stacked marks at the referencing end and one mark at the
-  referenced end;
-- one-to-one: one mark at each end.
+- one-to-many: an **enclosure** — a frame drawn around the referencing ("many")
+  card, headed with the referenced table's name, as in `CAMPUS has many`
+  around `Students`. The connector meets the frame with a small square port,
+  and a dotted lead continues to the foreign-key row. A table with several
+  parents gets one concentric frame per relationship; when the same parent
+  frames a table twice (author and editor), each heading adds `via <column>`.
+- one-to-one: no frame; one mark at each end of the connector.
 
-Selecting a relationship — by clicking the connector or its row in the side
-panel — highlights exactly the columns that participate. Moving cards changes
-only the connector's path, never the association. Foreign-key columns carry an
-`FK` badge, and relationship-owned uniqueness adds a `UQ` badge.
+An enclosure is an indicator, not containment. It is derived from the
+relationship, follows its card wherever it is dragged, and never means that a
+card placed inside it belongs to the parent: position still never defines
+structure.
+
+Selecting a relationship — by clicking the connector, an enclosure's heading,
+or its row in the inspector — highlights exactly the columns that participate.
+Selecting it on the canvas also opens the referencing table in the inspector.
+Moving cards changes only the connector's path, never the association.
+Foreign-key columns carry an `FK` badge, and relationship-owned uniqueness adds
+a `UQ` badge.
 
 ## Editing and validation
 

@@ -9,8 +9,8 @@ This slice supports named projects that autosave one independent design each,
 including incomplete drafts, with visible save failures and project switching
 that ignores stale work. Tables live as spreadsheet-styled cards on an infinite
 canvas: add, select, rename, remove, drag, pan, and zoom, and the saved layout
-returns on reopening. Selecting a table opens a focused column editor in the
-side panel: add, rename, retype, and remove columns, then edit the single-column
+returns on reopening. Selecting a table opens a focused column editor in an
+inspector sheet: add, rename, retype, and remove columns, then edit the single-column
 primary key, nullability, uniqueness, and notes for the supported common
 PostgreSQL types, plus structured defaults: no default, typed literals, current
 timestamp, UUID generation, or integer identity. A new table starts with a
@@ -19,14 +19,17 @@ saves layout without advancing the schema revision or rebuilding the sandbox,
 and notes-only edits do the same. Relating two table cards creates a
 one-to-many or one-to-one relationship: the referencing table gets a generated
 foreign-key column with the referenced primary key's type, required by default
-with a Required toggle, shown as a subtle connector with endpoint marks and
-column highlighting, and enforced with `NO ACTION` on updates and deletes. A
+with a Required toggle, shown as a subtle connector with column highlighting —
+a one-to-many relationship frames the "many" card in an enclosure headed with
+the "one" table's name — and enforced with `NO ACTION` on updates and deletes. A
 one-to-one relationship also owns uniqueness on that column, so at most one
 referencing record may name the same referenced record, and the referencing
 card shows `UQ` for it. Deleting a referenced table or column first lists the
 affected relationships, including whether their uniqueness is affected, and
 asks for confirmation; removing a relationship keeps its columns and drops only
-its own foreign key and uniqueness.
+its own foreign key and uniqueness. The generated SQL and the sandbox result
+live in a separate SQL preview window, opened from the masthead, that follows
+the design live and copies the SQL.
 
 ## Commands
 
@@ -56,12 +59,21 @@ bunx tsc --noEmit      # typecheck
 - `src/bun/sql.ts` — one-way PostgreSQL SQL generation with explicit errors for
   incomplete designs.
 - `src/bun/sandbox.ts` — disposable PGlite preview and catalog inspection.
-- `src/mainview/App.tsx` — project list, panels, and workspace actions.
-- `src/mainview/table-inspector.tsx` — selected table, column list, and the
-  focused column editor.
+- `src/mainview/App.tsx` — masthead, project switching, the inspector sheet,
+  confirmation dialogs, and workspace actions.
+- `src/mainview/table-inspector.tsx` — selected table, column list, the
+  focused column editor, and relationship controls.
+- `src/mainview/sql-window.tsx` — the separate SQL preview window: generated
+  SQL with copy, plus the sandbox result. `src/bun/index.ts` opens one window
+  at a time and pushes workspace state to it while it is open.
+- `src/mainview/index.css` — the editorial design tokens (paper, ink, rules,
+  the blue-pencil accent, status colours) mapped onto shadcn/ui's slots.
+- `src/mainview/components/ui/` — shadcn/ui components (Radix-based),
+  restyled with those tokens. Add more with `bunx shadcn@latest add <name>`.
 - `src/mainview/column-type-badge.tsx` — shared type-family symbol.
 - `src/mainview/canvas.tsx` — infinite canvas, table cards, pan/zoom, card drag
-  previews, relationship connectors, and relating one card to another.
+  previews, relationship connectors and enclosures, and relating one card to
+  another.
 
 The design is authoritative; the sandbox is a rebuildable preview. Sandbox
 failure never discards a saved design.

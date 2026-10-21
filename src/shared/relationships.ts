@@ -195,10 +195,13 @@ function toSnakeCase(value: string): string {
 		.toLowerCase();
 }
 
-/** Just enough English plural handling for table names such as Authors. */
+/**
+ * Just enough English plural handling for table names such as Authors. Words
+ * that already end in -us or -is (Campus, Status, Analysis) are left whole.
+ */
 function singularize(word: string): string {
 	if (/ies$/.test(word)) return `${word.slice(0, -3)}y`;
-	if (/(ss|x|ch|sh)$/.test(word)) return word;
+	if (/(ss|us|is|x|ch|sh)$/.test(word)) return word;
 	if (/s$/.test(word)) return word.slice(0, -1);
 	return word;
 }

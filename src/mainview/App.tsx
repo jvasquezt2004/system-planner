@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChevronDown, FileCode2, Plus, X } from "lucide-react";
 import type {
 	AffectedRelationship,
 	CanvasPoint,
@@ -14,6 +15,32 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import { relationshipsForTable } from "../shared/relationships";
+import { Button } from "@/components/ui/button";
+import {
+	Dialog,
+	DialogContent,
+	DialogDescription,
+	DialogFooter,
+	DialogHeader,
+	DialogTitle,
+} from "@/components/ui/dialog";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+	Sheet,
+	SheetContent,
+	SheetDescription,
+	SheetTitle,
+} from "@/components/ui/sheet";
+import { cn } from "@/lib/utils";
 import { TableCanvas } from "./canvas";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
@@ -25,6 +52,8 @@ function App() {
 	const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
+	const [relating, setRelating] = useState(false);
+	const [creatingProject, setCreatingProject] = useState(false);
 	const [pendingRemoval, setPendingRemoval] = useState<{
 		target: RemovalTarget;
 		plan: RemovalPlan;
@@ -104,14 +133,38 @@ function App() {
 		if (!stillExists) setSelectedRelationshipId(null);
 	}, [state, selectedRelationshipId]);
 
+	const designRef = useRef(state?.design ?? null);
+	designRef.current = state?.design ?? null;
+
 	const handleSelectTable = useCallback((tableId: string | null) => {
 		setSelectedTableId(tableId);
 		setSelectedColumnId(null);
+		// A relationship stays selected only while one of its tables is open.
+		setSelectedRelationshipId((current) => {
+			if (!current || !tableId) return null;
+			const relationship = designRef.current?.relationships.find(
+				(candidate) => candidate.id === current,
+			);
+			return relationship?.referencingTableId === tableId ||
+				relationship?.referencedTableId === tableId
+				? current
+				: null;
+		});
 	}, []);
 
 	const handleSelectRelationship = useCallback((relationshipId: string | null) => {
 		setSelectedRelationshipId(relationshipId);
 	}, []);
+
+	/** A relationship picked on the canvas opens the table that stores it. */
+	const handleCanvasSelectRelationship = useCallback(
+		(relationshipId: string, referencingTableId: string) => {
+			setSelectedTableId(referencingTableId);
+			setSelectedColumnId(null);
+			setSelectedRelationshipId(relationshipId);
+		},
+		[],
+	);
 
 	const handleRelateTables = useCallback(
 		(
@@ -131,9 +184,9 @@ function App() {
 					setState(next);
 					const created =
 						next.design?.relationships[next.design.relationships.length - 1];
-					if (created) setSelectedRelationshipId(created.id);
 					setSelectedTableId(referencingTableId);
 					setSelectedColumnId(null);
+					if (created) setSelectedRelationshipId(created.id);
 				} catch (cause) {
 					setError(errorMessage(cause));
 				} finally {
@@ -204,6 +257,7 @@ function App() {
 				if (created) {
 					setSelectedTableId(created.id);
 					setSelectedColumnId(null);
+					setSelectedRelationshipId(null);
 				}
 			} catch (cause) {
 				setError(errorMessage(cause));
@@ -264,6 +318,20 @@ function App() {
 		[applyLayout],
 	);
 
+	const openSqlPreview = useCallback(() => {
+		workspaceClient.openSqlWindow().catch((cause: unknown) => {
+			setError(errorMessage(cause));
+		});
+	}, []);
+
+	const createProject = useCallback(
+		(name: string) => {
+			setCreatingProject(false);
+			void run(() => workspaceClient.createProject(name));
+		},
+		[run],
+	);
+
 	const selectedTable =
 		state?.design?.tables.find((table) => table.id === selectedTableId) ?? null;
 	const inspectorRelationships =
@@ -273,119 +341,515 @@ function App() {
 
 	if (!state) {
 		return (
-			<main className="flex min-h-screen items-center justify-center bg-slate-950 text-slate-200">
-				<p className="animate-pulse text-sm tracking-wide text-slate-400">
-					Opening design workspace…
+			<main className="flex h-screen items-center justify-center bg-paper">
+				<p className="font-display text-[18px] text-ink-3 italic">
+					Opening the design workspace…
 				</p>
 			</main>
 		);
 	}
 
 	return (
-		<main className="flex h-screen flex-col overflow-hidden bg-slate-950 text-slate-100">
-			<header className="flex shrink-0 flex-wrap items-end justify-between gap-4 border-b border-slate-800 px-5 py-3">
-				<div>
-					<p className="text-[11px] font-semibold uppercase tracking-[0.2em] text-indigo-400">
-						Schema Designer
-					</p>
-					<div className="mt-0.5 flex items-baseline gap-3">
-						<h1 className="text-xl font-semibold">
-							{state.project?.name ?? "No project open"}
-						</h1>
-						{state.project && (
-							<span className="text-xs text-slate-500" data-testid="schema-revision">
-								schema revision {state.revision}
-							</span>
-						)}
-					</div>
-				</div>
-				<SaveBadge save={state.save} />
-			</header>
+		<main className="flex h-screen flex-col overflow-hidden bg-paper text-ink">
+			<Masthead
+				state={state}
+				busy={busy}
+				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
+				onNewProject={() => setCreatingProject(true)}
+				onOpenSqlPreview={openSqlPreview}
+			/>
 
 			{error && (
 				<div
 					role="alert"
-					className="mx-5 mt-3 shrink-0 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-2 text-sm text-red-200"
+					className="flex shrink-0 items-start gap-3 border-b border-proof-red/25 bg-proof-red-wash px-6 py-2 text-[12.5px] text-proof-red"
 				>
-					{error}
+					<span className="kicker text-proof-red! pt-px">Error</span>
+					<p className="min-w-0 flex-1">{error}</p>
+					<button
+						type="button"
+						aria-label="Dismiss error"
+						onClick={() => setError(null)}
+						className="rounded-sm p-0.5 hover:bg-proof-red-wash"
+					>
+						<X className="size-3.5" />
+					</button>
 				</div>
 			)}
 
-			{pendingRemoval && (
-				<RemovalDialog
-					plan={pendingRemoval.plan}
-					busy={busy}
-					onConfirm={confirmRemoval}
-					onCancel={() => setPendingRemoval(null)}
-				/>
-			)}
+			<section className="relative min-h-0 flex-1">
+				{state.project && state.design ? (
+					<TableCanvas
+						key={state.project.id}
+						design={state.design}
+						selectedTableId={selectedTableId}
+						selectedRelationshipId={selectedRelationshipId}
+						onSelectTable={handleSelectTable}
+						onSelectRelationship={handleCanvasSelectRelationship}
+						onRelateTables={handleRelateTables}
+						onRelatingChange={setRelating}
+						onMoveTable={handleMoveTable}
+						onViewportChange={handleViewportChange}
+						onAddTable={handleAddTable}
+					/>
+				) : (
+					<ProjectIndex
+						projects={state.projects}
+						busy={busy}
+						onOpen={(id) => run(() => workspaceClient.openProject(id))}
+						onCreate={createProject}
+					/>
+				)}
+			</section>
 
-			<div className="flex min-h-0 flex-1">
-				<ProjectsPanel
-					projects={state.projects}
-					activeProjectId={projectId}
-					busy={busy}
-					onOpen={(id) => run(() => workspaceClient.openProject(id))}
-					onCreate={(name) => run(() => workspaceClient.createProject(name))}
-				/>
-
-				<section className="relative min-w-0 flex-1">
-					{state.project && state.design ? (
-						<TableCanvas
-							key={state.project.id}
-							design={state.design}
-							selectedTableId={selectedTableId}
-							selectedRelationshipId={selectedRelationshipId}
-							onSelectTable={handleSelectTable}
-							onSelectRelationship={handleSelectRelationship}
-							onRelateTables={handleRelateTables}
-							onMoveTable={handleMoveTable}
-							onViewportChange={handleViewportChange}
-							onAddTable={handleAddTable}
-						/>
-					) : (
-						<div className="flex h-full items-center justify-center bg-slate-950">
-							<div className="max-w-sm rounded-xl border border-slate-800 bg-slate-900/60 p-6 text-center">
-								<h2 className="text-lg font-semibold">Start a design</h2>
-								<p className="mt-1 text-sm text-slate-400">
-									Create a project to open its design. Every project owns exactly one
-									design, saved automatically in local SQLite.
-								</p>
-							</div>
-						</div>
+			{/*
+			 * The inspector appears only while a table is selected. It is non-modal,
+			 * so the canvas stays live beside it: clicking another card switches the
+			 * table, and clicking empty canvas closes it. It steps aside while
+			 * relating, so every card on the canvas can be picked as the target.
+			 */}
+			<Sheet
+				open={selectedTable !== null && !relating}
+				modal={false}
+				onOpenChange={(open) => {
+					if (!open) handleSelectTable(null);
+				}}
+			>
+				<SheetContent
+					side="right"
+					data-testid="inspector-sheet"
+					className="top-[var(--masthead-height)] bottom-0 h-auto w-[440px] gap-0 sm:max-w-[440px]"
+					onOpenAutoFocus={(event) => event.preventDefault()}
+					onInteractOutside={(event) => event.preventDefault()}
+				>
+					{selectedTable && (
+						<>
+							<SheetTitle className="sr-only">{selectedTable.name}</SheetTitle>
+							<SheetDescription className="sr-only">
+								Columns and relationships of the selected table.
+							</SheetDescription>
+							<ScrollArea className="min-h-0 flex-1">
+								<TableInspector
+									table={selectedTable}
+									selectedColumnId={selectedColumnId}
+									relationships={inspectorRelationships}
+									selectedRelationshipId={selectedRelationshipId}
+									sql={state.sql}
+									busy={busy}
+									onRename={(name) =>
+										void run(() => workspaceClient.renameTable(selectedTable.id, name))
+									}
+									onRemove={() =>
+										void requestRemoval({ kind: "table", tableId: selectedTable.id })
+									}
+									onSelectColumn={setSelectedColumnId}
+									onAddColumn={handleAddColumn}
+									onApplyColumn={handleApplyColumn}
+									onRemoveColumn={handleRemoveColumn}
+									onSelectRelationship={handleSelectRelationship}
+									onSetRelationshipRequired={handleSetRelationshipRequired}
+									onSetRelationshipCardinality={handleSetRelationshipCardinality}
+									onRemoveRelationship={handleRemoveRelationship}
+								/>
+							</ScrollArea>
+						</>
 					)}
+				</SheetContent>
+			</Sheet>
+
+			<RemovalDialog
+				plan={pendingRemoval?.plan ?? null}
+				busy={busy}
+				onConfirm={confirmRemoval}
+				onCancel={() => setPendingRemoval(null)}
+			/>
+
+			<NewProjectDialog
+				open={creatingProject}
+				busy={busy}
+				onCreate={createProject}
+				onCancel={() => setCreatingProject(false)}
+			/>
+		</main>
+	);
+}
+
+/**
+ * The page head: which design is open, how its saved and validated state
+ * stands, and the way into the SQL preview window. A double rule closes it.
+ */
+function Masthead({
+	state,
+	busy,
+	onOpenProject,
+	onNewProject,
+	onOpenSqlPreview,
+}: {
+	state: WorkspaceState;
+	busy: boolean;
+	onOpenProject: (projectId: string) => void;
+	onNewProject: () => void;
+	onOpenSqlPreview: () => void;
+}) {
+	const project = state.project;
+	return (
+		<header
+			className="double-rule flex shrink-0 items-center justify-between gap-6 bg-paper px-6"
+			style={{ height: "var(--masthead-height)" }}
+		>
+			<div className="flex min-w-0 items-center gap-5">
+				<p className="kicker hidden shrink-0 leading-tight text-ink-2! sm:block">
+					Schema
+					<br />
+					Designer
+				</p>
+				<span className="hidden h-8 w-px bg-rule sm:block" aria-hidden="true" />
+				<DropdownMenu>
+					<h1 className="min-w-0">
+						<DropdownMenuTrigger
+							disabled={busy}
+							className="group flex max-w-full min-w-0 items-baseline gap-2 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
+						>
+							<span
+								className={cn(
+									"truncate font-display text-[26px] leading-none font-medium tracking-[-0.015em]",
+									project ? "text-ink" : "text-ink-3 italic",
+								)}
+							>
+								{project?.name ?? "No project open"}
+							</span>
+							<ChevronDown className="size-4 shrink-0 self-center text-ink-3 group-hover:text-ink" />
+						</DropdownMenuTrigger>
+					</h1>
+					<DropdownMenuContent align="start" className="w-64">
+						<DropdownMenuLabel className="flex items-center justify-between">
+							<span className="kicker">Projects</span>
+							<span className="figures font-mono text-[10px] text-ink-4" data-testid="project-count">
+								{state.projects.length === 0 ? "none saved" : `${state.projects.length} saved`}
+							</span>
+						</DropdownMenuLabel>
+						<div data-testid="project-list">
+							{state.projects.map((candidate) => {
+								const active = candidate.id === project?.id;
+								return (
+									<DropdownMenuItem
+										key={candidate.id}
+										data-testid="project-option"
+										aria-current={active ? "true" : undefined}
+										disabled={active}
+										onSelect={() => onOpenProject(candidate.id)}
+										className="justify-between font-display text-[15px] data-[disabled]:opacity-100"
+									>
+										<span className="truncate">{candidate.name}</span>
+										{active && <span className="kicker text-pencil!">open</span>}
+									</DropdownMenuItem>
+								);
+							})}
+						</div>
+						<DropdownMenuSeparator />
+						<DropdownMenuItem onSelect={onNewProject}>
+							<Plus />
+							New project…
+						</DropdownMenuItem>
+					</DropdownMenuContent>
+				</DropdownMenu>
+				{project && (
+					<span className="figures hidden shrink-0 font-mono text-[11px] text-ink-3 md:inline" data-testid="schema-revision">
+						rev. {state.revision}
+					</span>
+				)}
+			</div>
+
+			<div className="flex shrink-0 items-center gap-5">
+				{project && (
+					<dl className="hidden items-center gap-5 lg:flex">
+						<StatusLine label="Saved">
+							<SaveStatus save={state.save} />
+						</StatusLine>
+						<StatusLine label="Sandbox">
+							<SandboxStatus sandbox={state.sandbox} />
+						</StatusLine>
+						<StatusLine label="SQL">
+							<SqlStatus sql={state.sql} />
+						</StatusLine>
+					</dl>
+				)}
+				<Button
+					variant="outline"
+					size="sm"
+					data-testid="open-sql-preview"
+					onClick={onOpenSqlPreview}
+					disabled={!project}
+				>
+					<FileCode2 />
+					SQL preview
+				</Button>
+			</div>
+		</header>
+	);
+}
+
+function StatusLine({ label, children }: { label: string; children: React.ReactNode }) {
+	return (
+		<div className="flex flex-col gap-0.5">
+			<dt className="kicker text-[9.5px]! text-ink-4!">{label}</dt>
+			<dd className="flex items-center gap-1.5 text-[12px] leading-none">{children}</dd>
+		</div>
+	);
+}
+
+/** A small square of ink: the only colour a status line carries. */
+function Mark({ tone }: { tone: "ok" | "warn" | "bad" | "muted" }) {
+	return (
+		<span
+			aria-hidden="true"
+			className={cn(
+				"size-1.5 shrink-0",
+				tone === "ok" && "bg-press-green",
+				tone === "warn" && "bg-ochre",
+				tone === "bad" && "bg-proof-red",
+				tone === "muted" && "bg-ink-4",
+			)}
+		/>
+	);
+}
+
+function SaveStatus({ save }: { save: SaveState }) {
+	return (
+		<span className="flex items-center gap-1.5" data-testid="save-status">
+			<Mark tone={save.status === "failed" ? "bad" : save.status === "saved" ? "ok" : "muted"} />
+			{save.status === "saved" && (
+				<span className="figures font-mono text-[11px] text-ink-2">
+					{new Date(save.savedAt).toLocaleTimeString()}
+				</span>
+			)}
+			{save.status === "saving" && <span className="text-ink-3 italic">Saving…</span>}
+			{save.status === "idle" && <span className="text-ink-3">Not saved</span>}
+			{save.status === "failed" && (
+				<span className="max-w-56 truncate text-proof-red" data-testid="save-error" title={save.error}>
+					Failed — {save.error}
+				</span>
+			)}
+		</span>
+	);
+}
+
+function SandboxStatus({ sandbox }: { sandbox: SandboxState }) {
+	if (sandbox.status === "applied") {
+		return (
+			<>
+				<Mark tone="ok" />
+				<span className="text-ink-2">
+					Accepted <span className="figures font-mono text-[11px] text-ink-3">rev. {sandbox.revision}</span>
+				</span>
+			</>
+		);
+	}
+	if (sandbox.status === "failed") {
+		return (
+			<>
+				<Mark tone="bad" />
+				<span className="text-proof-red">
+					Rejected <span className="figures font-mono text-[11px]">rev. {sandbox.revision}</span>
+				</span>
+			</>
+		);
+	}
+	if (sandbox.status === "applying") {
+		return (
+			<>
+				<Mark tone="warn" />
+				<span className="text-ink-3 italic">Applying…</span>
+			</>
+		);
+	}
+	return (
+		<>
+			<Mark tone="muted" />
+			<span className="text-ink-3">Not run</span>
+		</>
+	);
+}
+
+function SqlStatus({ sql }: { sql: SqlState }) {
+	if (sql.status === "current") {
+		return (
+			<>
+				<Mark tone="ok" />
+				<span className="text-ink-2">Current</span>
+			</>
+		);
+	}
+	if (sql.status === "stale") {
+		return (
+			<>
+				<Mark tone="warn" />
+				<span className="text-ochre" title={sql.errors.join("\n")}>
+					Out of date
+				</span>
+			</>
+		);
+	}
+	return (
+		<>
+			<Mark tone="muted" />
+			<span className="text-ink-3">Not available</span>
+		</>
+	);
+}
+
+/**
+ * The opening page when no project is open: a table of contents of saved
+ * projects with dotted leaders, and a line to start a new one.
+ */
+function ProjectIndex({
+	projects,
+	busy,
+	onOpen,
+	onCreate,
+}: {
+	projects: ProjectSummary[];
+	busy: boolean;
+	onOpen: (projectId: string) => void;
+	onCreate: (name: string) => void;
+}) {
+	const [name, setName] = useState("");
+	return (
+		<ScrollArea className="h-full">
+			<div className="mx-auto max-w-xl px-6 pt-16 pb-24">
+				<p className="kicker">Contents</p>
+				<h2 className="mt-2 font-display text-[44px] leading-[1.05] font-normal tracking-[-0.02em] text-ink">
+					Plan a database the way you would set a page.
+				</h2>
+				<p className="mt-4 max-w-md text-[13.5px] leading-relaxed text-ink-2">
+					Every project owns exactly one design, saved automatically on this machine.
+					Open one to continue, or start a new one below.
+				</p>
+
+				<section aria-labelledby="projects-heading" className="mt-12">
+					<header className="flex items-baseline justify-between border-b border-ink pb-1.5">
+						<h3 id="projects-heading" className="kicker text-ink!">
+							Projects
+						</h3>
+						<span className="figures font-mono text-[10.5px] text-ink-3" data-testid="project-count">
+							{projects.length === 0 ? "none saved" : `${projects.length} saved`}
+						</span>
+					</header>
+					<ol data-testid="project-list">
+						{projects.length === 0 ? (
+							<li className="border-b border-rule py-4 font-display text-[16px] text-ink-3 italic">
+								No saved projects yet.
+							</li>
+						) : (
+							projects.map((project, index) => (
+								<li key={project.id} className="border-b border-rule-soft">
+									<button
+										type="button"
+										onClick={() => onOpen(project.id)}
+										disabled={busy}
+										data-testid="project-option"
+										className="group flex w-full items-baseline gap-3 py-3 text-left outline-none disabled:opacity-40"
+									>
+										<span className="figures w-6 shrink-0 font-mono text-[11px] text-ink-4">
+											{String(index + 1).padStart(2, "0")}
+										</span>
+										<span className="font-display text-[19px] text-ink group-hover:text-pencil group-focus-visible:text-pencil">
+											{project.name}
+										</span>
+										<span
+											aria-hidden="true"
+											className="mb-1 min-w-6 flex-1 border-b border-dotted border-ink-4"
+										/>
+										<span className="kicker group-hover:text-pencil!">Open</span>
+									</button>
+								</li>
+							))
+						)}
+					</ol>
 				</section>
 
-				<aside className="flex w-[23rem] shrink-0 flex-col gap-3 overflow-y-auto border-l border-slate-800 bg-slate-900/40 p-3">
-					<TableInspector
-						table={selectedTable}
-						selectedColumnId={selectedColumnId}
-						relationships={inspectorRelationships}
-						selectedRelationshipId={selectedRelationshipId}
-						sql={state.sql}
-						busy={busy}
-						onRename={(name) => {
-							if (!selectedTable) return;
-							void run(() => workspaceClient.renameTable(selectedTable.id, name));
-						}}
-						onRemove={() => {
-							if (!selectedTable) return;
-							void requestRemoval({ kind: "table", tableId: selectedTable.id });
-						}}
-						onSelectColumn={setSelectedColumnId}
-						onAddColumn={handleAddColumn}
-						onApplyColumn={handleApplyColumn}
-						onRemoveColumn={handleRemoveColumn}
-						onSelectRelationship={handleSelectRelationship}
-						onSetRelationshipRequired={handleSetRelationshipRequired}
-						onSetRelationshipCardinality={handleSetRelationshipCardinality}
-						onRemoveRelationship={handleRemoveRelationship}
-					/>
-					<SqlPanel sql={state.sql} />
-					<SandboxPanel sandbox={state.sandbox} />
-				</aside>
+				<form
+					className="mt-10 flex items-end gap-2"
+					onSubmit={(event) => {
+						event.preventDefault();
+						if (name.trim().length === 0) return;
+						onCreate(name.trim());
+						setName("");
+					}}
+				>
+					<div className="flex min-w-0 flex-1 flex-col gap-1">
+						<label htmlFor="new-project-name" className="kicker">
+							New project
+						</label>
+						<Input
+							id="new-project-name"
+							value={name}
+							onChange={(event) => setName(event.target.value)}
+							aria-label="New project name"
+							placeholder="Library"
+						/>
+					</div>
+					<Button type="submit" disabled={busy || name.trim().length === 0}>
+						<Plus />
+						New project
+					</Button>
+				</form>
 			</div>
-		</main>
+		</ScrollArea>
+	);
+}
+
+function NewProjectDialog({
+	open,
+	busy,
+	onCreate,
+	onCancel,
+}: {
+	open: boolean;
+	busy: boolean;
+	onCreate: (name: string) => void;
+	onCancel: () => void;
+}) {
+	const [name, setName] = useState("");
+	useEffect(() => {
+		if (open) setName("");
+	}, [open]);
+	return (
+		<Dialog open={open} onOpenChange={(next) => !next && onCancel()}>
+			<DialogContent className="sm:max-w-sm">
+				<form
+					onSubmit={(event) => {
+						event.preventDefault();
+						if (name.trim().length === 0) return;
+						onCreate(name.trim());
+					}}
+					className="flex flex-col gap-4"
+				>
+					<DialogHeader>
+						<p className="kicker">New project</p>
+						<DialogTitle>Name the design</DialogTitle>
+						<DialogDescription>
+							A project owns exactly one design, saved automatically.
+						</DialogDescription>
+					</DialogHeader>
+					<Input
+						autoFocus
+						value={name}
+						onChange={(event) => setName(event.target.value)}
+						aria-label="New project name"
+						placeholder="Library"
+					/>
+					<DialogFooter>
+						<Button type="button" variant="ghost" onClick={onCancel}>
+							Cancel
+						</Button>
+						<Button type="submit" disabled={busy || name.trim().length === 0}>
+							Create project
+						</Button>
+					</DialogFooter>
+				</form>
+			</DialogContent>
+		</Dialog>
 	);
 }
 
@@ -399,395 +863,76 @@ function RemovalDialog({
 	onConfirm,
 	onCancel,
 }: {
-	plan: RemovalPlan;
+	plan: RemovalPlan | null;
 	busy: boolean;
 	onConfirm: () => void;
 	onCancel: () => void;
 }) {
-	useEffect(() => {
-		const cancelOnEscape = (event: KeyboardEvent) => {
-			if (event.key === "Escape") onCancel();
-		};
-		window.addEventListener("keydown", cancelOnEscape);
-		return () => window.removeEventListener("keydown", cancelOnEscape);
-	}, [onCancel]);
-
 	return (
-		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-			<div
-				role="dialog"
-				aria-modal="true"
-				aria-labelledby="removal-heading"
+		<Dialog open={plan !== null} onOpenChange={(open) => !open && onCancel()}>
+			<DialogContent
 				data-testid="removal-confirmation"
-				className="w-full max-w-md rounded-xl border border-red-500/40 bg-slate-900 p-4 shadow-2xl"
+				showCloseButton={false}
+				className="border-t-[3px] border-t-proof-red sm:max-w-md"
 			>
-				<h2 id="removal-heading" className="text-sm font-semibold text-red-200">
-					Remove {plan.target}?
-				</h2>
-				{plan.relationships.length === 0 ? (
-					<p className="mt-2 text-xs text-slate-400">
-						No relationships depend on it.
-					</p>
-				) : (
+				{plan && (
 					<>
-						<p className="mt-2 text-xs text-slate-300">
-							These relationships are affected and will be removed too. Their
-							columns stay, and other tables and columns are untouched.
-						</p>
-						<ul
-							data-testid="affected-relationships"
-							className="mt-2 space-y-1"
-						>
-							{plan.relationships.map((relationship: AffectedRelationship) => (
-								<li
-									key={relationship.relationshipId}
-									data-testid="affected-relationship"
-									data-cardinality={relationship.cardinality}
-									className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
-								>
-									{relationship.referencingTable}.
-									{relationship.referencingColumn} →{" "}
-									{relationship.referencedTable}.
-									{relationship.referencedColumn ?? "(no primary key)"}
-									<span className="ml-1 text-slate-500">
-										{relationship.constraints
-											.map((constraint) =>
-												constraint === "unique"
-													? "unique"
-													: "foreign key",
-											)
-											.join(" + ")}
-									</span>
-								</li>
-							))}
-						</ul>
+						<DialogHeader>
+							<p className="kicker text-proof-red!">Remove</p>
+							<DialogTitle>
+								Remove <span className="font-mono text-[18px]">{plan.target}</span>?
+							</DialogTitle>
+							<DialogDescription>
+								{plan.relationships.length === 0
+									? "No relationships depend on it."
+									: "These relationships are affected and will be removed too. Their columns stay, and other tables and columns are untouched."}
+							</DialogDescription>
+						</DialogHeader>
+						{plan.relationships.length > 0 && (
+							<ul data-testid="affected-relationships" className="border-y border-rule">
+								{plan.relationships.map((relationship: AffectedRelationship, index) => (
+									<li
+										key={relationship.relationshipId}
+										data-testid="affected-relationship"
+										data-cardinality={relationship.cardinality}
+										className={cn(
+											"flex items-baseline justify-between gap-3 py-2 font-mono text-[11.5px] text-ink-2",
+											index > 0 && "border-t border-rule-soft",
+										)}
+									>
+										<span className="min-w-0 truncate">
+											{relationship.referencingTable}.{relationship.referencingColumn} →{" "}
+											{relationship.referencedTable}.
+											{relationship.referencedColumn ?? "(no primary key)"}
+										</span>
+										<span className="kicker shrink-0">
+											{relationship.constraints
+												.map((constraint) =>
+													constraint === "unique" ? "unique" : "foreign key",
+												)
+												.join(" + ")}
+										</span>
+									</li>
+								))}
+							</ul>
+						)}
+						<DialogFooter>
+							<Button variant="ghost" data-testid="cancel-removal" onClick={onCancel}>
+								Cancel
+							</Button>
+							<Button
+								variant="destructive"
+								data-testid="confirm-removal"
+								onClick={onConfirm}
+								disabled={busy}
+							>
+								Remove
+							</Button>
+						</DialogFooter>
 					</>
 				)}
-				<div className="mt-4 flex justify-end gap-2">
-					<button
-						type="button"
-						data-testid="cancel-removal"
-						onClick={onCancel}
-						className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-300 hover:border-slate-500"
-					>
-						Cancel
-					</button>
-					<button
-						type="button"
-						data-testid="confirm-removal"
-						onClick={onConfirm}
-						disabled={busy}
-						className="rounded-md bg-red-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-400 disabled:cursor-not-allowed disabled:opacity-40"
-					>
-						Remove
-					</button>
-				</div>
-			</div>
-		</div>
-	);
-}
-
-function ProjectsPanel({
-	projects,
-	activeProjectId,
-	busy,
-	onOpen,
-	onCreate,
-}: {
-	projects: ProjectSummary[];
-	activeProjectId: string | null;
-	busy: boolean;
-	onOpen: (projectId: string) => void;
-	onCreate: (name: string) => void;
-}) {
-	const [name, setName] = useState("");
-	return (
-		<aside className="flex w-56 shrink-0 flex-col gap-4 overflow-y-auto border-r border-slate-800 bg-slate-900/40 p-3">
-			<section aria-labelledby="projects-heading">
-				<header className="flex items-center justify-between">
-					<h2
-						id="projects-heading"
-						className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-					>
-						Projects
-					</h2>
-					<span className="text-[10px] text-slate-500" data-testid="project-count">
-						{projects.length === 0 ? "none saved" : `${projects.length} saved`}
-					</span>
-				</header>
-				<ul className="mt-2 flex flex-col gap-1" data-testid="project-list">
-					{projects.length === 0 ? (
-						<li className="rounded border border-dashed border-slate-800 px-2 py-3 text-xs text-slate-500">
-							No saved projects yet.
-						</li>
-					) : (
-						projects.map((project) => {
-							const active = project.id === activeProjectId;
-							return (
-								<li key={project.id}>
-									<button
-										type="button"
-										onClick={() => onOpen(project.id)}
-										disabled={busy || active}
-										aria-current={active ? "true" : undefined}
-										data-testid="project-option"
-										className={
-											active
-												? "flex w-full items-center justify-between rounded-md border border-indigo-500/60 bg-indigo-500/15 px-2.5 py-1.5 text-left text-sm text-indigo-200"
-												: "flex w-full items-center justify-between rounded-md border border-slate-800 bg-slate-950 px-2.5 py-1.5 text-left text-sm text-slate-300 hover:border-slate-600 disabled:cursor-not-allowed disabled:opacity-40"
-										}
-									>
-										<span className="truncate">{project.name}</span>
-										{active && (
-											<span className="ml-2 shrink-0 text-[9px] uppercase tracking-wide text-indigo-300">
-												open
-											</span>
-										)}
-									</button>
-								</li>
-							);
-						})
-					)}
-				</ul>
-			</section>
-
-			<form
-				className="flex flex-col gap-2 border-t border-slate-800 pt-3"
-				onSubmit={(event) => {
-					event.preventDefault();
-					if (name.trim().length === 0) return;
-					onCreate(name);
-					setName("");
-				}}
-			>
-				<label
-					htmlFor="new-project-name"
-					className="text-[11px] font-semibold uppercase tracking-wide text-slate-400"
-				>
-					New project
-				</label>
-				<input
-					id="new-project-name"
-					value={name}
-					onChange={(event) => setName(event.target.value)}
-					aria-label="New project name"
-					placeholder="Library"
-					className="rounded-md border border-slate-700 bg-slate-950 px-2.5 py-1.5 text-sm outline-none focus:border-indigo-500"
-				/>
-				<button
-					type="submit"
-					disabled={busy || name.trim().length === 0}
-					className="rounded-md bg-indigo-500 px-3 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
-				>
-					New project
-				</button>
-			</form>
-
-			<p className="mt-auto text-[11px] leading-relaxed text-slate-500">
-				Table cards describe structure, not stored records. Layout is saved with the design
-				and never changes the schema.
-			</p>
-		</aside>
-	);
-}
-
-function SqlPanel({ sql }: { sql: SqlState }) {
-	return (
-		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
-			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-				<h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-					SQL preview
-				</h2>
-				<StatusPill
-					tone={sql.status === "current" ? "ok" : sql.status === "stale" ? "warn" : "muted"}
-				>
-					{sql.status === "current"
-						? "Current"
-						: sql.status === "stale"
-							? "Out of date"
-							: "Not available"}
-				</StatusPill>
-			</header>
-			<div className="px-4 py-3">
-				{sql.status === "empty" ? (
-					<p className="text-sm text-slate-500">
-						No SQL has been generated yet. Complete the design to produce PostgreSQL.
-					</p>
-				) : (
-					<pre
-						data-testid="sql-preview"
-						className="max-h-56 overflow-auto rounded-lg bg-slate-950 p-3 text-[11px] leading-relaxed text-emerald-200"
-					>
-						<code>{sql.sql}</code>
-					</pre>
-				)}
-				{sql.status !== "current" && sql.errors.length > 0 && (
-					<ul className="mt-2 list-disc space-y-1 pl-5 text-[11px] text-amber-300">
-						{sql.errors.map((message) => (
-							<li key={message}>{message}</li>
-						))}
-					</ul>
-				)}
-			</div>
-		</section>
-	);
-}
-
-function SandboxPanel({ sandbox }: { sandbox: SandboxState }) {
-	return (
-		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
-			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
-				<h2 className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
-					Sandbox check
-				</h2>
-				<StatusPill
-					tone={
-						sandbox.status === "applied"
-							? "ok"
-							: sandbox.status === "failed"
-								? "bad"
-								: sandbox.status === "applying"
-									? "warn"
-									: "muted"
-					}
-				>
-					{sandbox.status === "applied"
-						? "Accepted"
-						: sandbox.status === "failed"
-							? "Rejected"
-							: sandbox.status === "applying"
-								? "Applying…"
-								: "Not run"}
-				</StatusPill>
-			</header>
-			<div className="px-4 py-3 text-sm">
-				{sandbox.status === "applied" && (
-					<div className="space-y-2">
-						<p className="text-xs text-slate-400">
-							PGlite applied schema revision {sandbox.revision}.
-						</p>
-						{sandbox.relationships.length > 0 && (
-							<div>
-								<p className="text-[10px] uppercase tracking-wide text-slate-500">
-									Foreign keys
-								</p>
-								<ul className="mt-1 space-y-1" data-testid="sandbox-relationships">
-									{sandbox.relationships.map((relationship) => (
-										<li
-											key={relationship.name}
-											className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
-										>
-											{relationship.referencingTable}.
-											{relationship.referencingColumn} →{" "}
-											{relationship.referencedTable}.
-											{relationship.referencedColumn}
-											<span className="ml-1 text-slate-500">
-												{relationship.updateRule} / {relationship.deleteRule}
-											</span>
-										</li>
-									))}
-								</ul>
-							</div>
-						)}
-						<ul className="space-y-1.5">
-							{sandbox.tables.map((table) => (
-								<li
-									key={table.name}
-									className="rounded border border-slate-800 bg-slate-950 p-2"
-								>
-									<p className="text-xs font-medium text-slate-200">{table.name}</p>
-									<ul className="mt-1 space-y-0.5 text-[11px] text-slate-400">
-										{table.columns.map((column) => (
-											<li key={column.name}>
-												{column.name} · {column.dataType}
-												{column.isIdentity ? " · identity" : ""}
-												{column.defaultExpression && (
-													<>
-														{" · "}
-														<span
-															className="break-all text-slate-500"
-															title={`Default: ${column.defaultExpression}`}
-														>
-															default {column.defaultExpression}
-														</span>
-													</>
-												)}
-												{column.nullable ? " · null" : " · not null"}
-												{column.unique ? " · unique" : ""}
-											</li>
-										))}
-									</ul>
-								</li>
-							))}
-						</ul>
-					</div>
-				)}
-				{sandbox.status === "applying" && (
-					<p className="text-xs text-slate-400">Rebuilding the disposable preview…</p>
-				)}
-				{sandbox.status === "failed" && (
-					<div className="space-y-2">
-						<p className="rounded border border-red-500/40 bg-red-500/10 px-2 py-1.5 text-xs text-red-200">
-							{sandbox.error}
-						</p>
-						<details className="text-[11px] text-slate-400">
-							<summary className="cursor-pointer text-slate-300">Attempted SQL</summary>
-							<pre className="mt-1 max-h-40 overflow-auto rounded bg-slate-950 p-2 text-emerald-200">
-								<code>{sandbox.attemptedSql}</code>
-							</pre>
-						</details>
-					</div>
-				)}
-				{sandbox.status === "idle" && (
-					<p className="text-xs text-slate-500">
-						The sandbox has not applied this design yet.
-					</p>
-				)}
-			</div>
-		</section>
-	);
-}
-
-function SaveBadge({ save }: { save: SaveState }) {
-	const tone = save.status === "failed" ? "bad" : save.status === "saved" ? "ok" : "muted";
-	const label =
-		save.status === "failed"
-			? "Save failed"
-			: save.status === "saved"
-				? "Saved"
-				: save.status === "saving"
-					? "Saving…"
-					: "Not saved";
-	return (
-		<div className="flex items-center gap-2 text-xs text-slate-400" data-testid="save-status">
-			<StatusPill tone={tone}>{label}</StatusPill>
-			{save.status === "saved" && <span>{new Date(save.savedAt).toLocaleTimeString()}</span>}
-			{save.status === "failed" && (
-				<span className="text-red-300" data-testid="save-error">
-					{save.error}
-				</span>
-			)}
-		</div>
-	);
-}
-
-function StatusPill({
-	children,
-	tone,
-}: {
-	children: React.ReactNode;
-	tone: "ok" | "warn" | "bad" | "muted";
-}) {
-	const toneClass = {
-		ok: "border-emerald-500/40 bg-emerald-500/10 text-emerald-300",
-		warn: "border-amber-500/40 bg-amber-500/10 text-amber-300",
-		bad: "border-red-500/40 bg-red-500/10 text-red-300",
-		muted: "border-slate-700 bg-slate-800/60 text-slate-400",
-	}[tone];
-	return (
-		<span className={`rounded-full border px-2 py-0.5 text-[10px] font-medium ${toneClass}`}>
-			{children}
-		</span>
+			</DialogContent>
+		</Dialog>
 	);
 }
 

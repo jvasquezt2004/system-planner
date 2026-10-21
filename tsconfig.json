@@ -15,7 +15,17 @@
 		"strict": true,
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
-		"noFallthroughCasesInSwitch": true
+		"noFallthroughCasesInSwitch": true,
+		// `paths` replaces the devkit's mapping rather than merging with it, so
+		// the Electrobun entries this app imports are repeated beside the view's
+		// `@/` alias (also declared in vite.config.ts and components.json).
+		"baseUrl": ".",
+		"paths": {
+			"@/*": ["./src/mainview/*"],
+			"electrobun/main": ["./.hutch/devkit/api/sdks/main/index.ts"],
+			"electrobun/rpc": ["./.hutch/devkit/api/sdks/main/entries/rpc.ts"],
+			"electrobun/view": ["./.hutch/devkit/api/browser/index.ts"]
+		}
 	},
 	"include": ["src", "scripts"],
 	"exclude": ["node_modules", "dist", "build", "../../package/dist"]
