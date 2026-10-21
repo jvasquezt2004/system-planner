@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
+import { errorMessage } from "../shared/error-message";
 import {
+	getDisplayedSqlPreview,
 	getLastAppliedSandbox,
+	getSqlPreviewValidationStatus,
 	getSqlValidationErrors,
 	type AffectedRelationship,
 	type CanvasPoint,
@@ -13,6 +16,7 @@ import {
 	type RemovalTarget,
 	type SandboxState,
 	type SaveState,
+	type SqlPreviewValidationStatus,
 	type SqlState,
 	type SandboxSnapshot,
 	type WorkspaceState,
@@ -420,7 +424,11 @@ function App() {
 						onSetRelationshipCardinality={handleSetRelationshipCardinality}
 						onRemoveRelationship={handleRemoveRelationship}
 					/>
-					<SqlPanel sql={state.sql} />
+					<SqlPanel
+						key={state.project?.id ?? "no-project"}
+						sql={state.sql}
+						validationStatus={getSqlPreviewValidationStatus(state)}
+					/>
 					<SandboxPanel sandbox={state.sandbox} draftRevision={state.revision} />
 				</aside>
 			</div>
@@ -629,11 +637,20 @@ function ProjectsPanel({
 	);
 }
 
-function SqlPanel({ sql }: { sql: SqlState }) {
+function SqlPanel({
+	sql,
+	validationStatus,
+}: {
+	sql: SqlState;
+	validationStatus: SqlPreviewValidationStatus | null;
+}) {
 	const errors = getSqlValidationErrors(sql);
-	const sqlText = sql.status === "empty" ? null : sql.sql;
-	const label =
-		sql.status === "current"
+	const preview = getDisplayedSqlPreview(sql);
+	const sqlText = preview?.sql ?? null;
+	const isRejected = validationStatus?.status === "rejected";
+	const label = isRejected
+		? "Rejected"
+		: sql.status === "current"
 			? "Current"
 			: sql.status === "checking"
 				? "Checking…"
@@ -642,15 +659,119 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 					: errors.length > 0
 						? "Blocked"
 						: "Not available";
-	const tone =
-		sql.status === "current"
+	const tone = isRejected
+		? "bad"
+		: sql.status === "current"
 			? "ok"
 			: sql.status === "empty" && errors.length > 0
 				? "bad"
 				: sql.status === "checking" || sql.status === "stale"
 					? "warn"
 					: "muted";
+	const [fileName, setFileName] = useState("schema.sql");
+	const [action, setAction] = useState<"copy" | "export" | null>(null);
+	const [feedback, setFeedback] = useState<{
+		tone: "success" | "info" | "error";
+		message: string;
+	} | null>(null);
 
+	async function runSqlAction(
+		kind: "copy" | "export",
+		operation: () => Promise<void>,
+	) {
+		if (action) return;
+		setAction(kind);
+		setFeedback(null);
+		try {
+			await operation();
+		} catch (cause) {
+			const label = kind === "copy" ? "Copy" : "Export";
+			setFeedback({ tone: "error", message: `${label} failed: ${errorMessage(cause)}` });
+		} finally {
+			setAction(null);
+		}
+	}
+
+	function transferFeedback(
+		kind: "copy" | "export",
+		revision: number,
+		destination?: string,
+	): { tone: "success" | "info" | "error"; message: string } {
+		const subject =
+			kind === "copy"
+				? `Copied SQL from revision ${revision}`
+				: `Exported SQL from revision ${revision} to ${destination ?? fileName}`;
+		const status = validationStatus;
+		if (!status) {
+			return {
+				tone: "info",
+				message: `${subject}; not yet validated by the sandbox.`,
+			};
+		}
+		if (status.status === "accepted") {
+			return status.revision === revision
+				? { tone: "success", message: `${subject}; accepted by the sandbox.` }
+				: {
+						tone: "info",
+						message: `${subject}; not yet validated by the sandbox.`,
+					};
+		}
+		switch (status.status) {
+			case "out-of-date":
+				return {
+					tone: "info",
+					message: `${subject}; out of date because draft revision ${status.draftRevision} is blocked.`,
+				};
+			case "not-yet-validated": {
+				const reason =
+					status.reason === "checking"
+						? "still being checked"
+						: status.reason === "rebuilding"
+							? "the sandbox is rebuilding"
+							: "sandbox validation has not started";
+				return {
+					tone: status.tone,
+					message: `${subject}; not yet validated for draft revision ${status.draftRevision} (${reason}).`,
+				};
+			}
+			case "sandbox-error":
+				return {
+					tone: status.tone,
+					message: `${subject}; could not be validated by the sandbox: ${status.error}`,
+				};
+			case "rejected":
+				return {
+					tone: status.tone,
+					message: `${subject}; rejected by PostgreSQL: ${status.error}`,
+				};
+		}
+	}
+
+	async function copyPreview() {
+		if (!preview) return;
+		await runSqlAction("copy", async () => {
+			const result = await workspaceClient.copySqlPreview(preview);
+			setFeedback(
+				result.status === "copied"
+					? transferFeedback("copy", result.revision)
+					: { tone: "error", message: `Copy failed: ${result.error}` },
+			);
+		});
+	}
+
+	async function exportPreview() {
+		if (!preview) return;
+		await runSqlAction("export", async () => {
+			const result = await workspaceClient.exportSqlPreview({ preview, fileName });
+			setFeedback(
+				result.status === "saved"
+					? transferFeedback("export", result.revision, fileName)
+					: result.status === "cancelled"
+						? { tone: "info", message: "Export cancelled." }
+						: { tone: "error", message: `Export failed: ${result.error}` },
+			);
+		});
+	}
 	return (
 		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
 			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">
@@ -689,6 +810,54 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 							<li key={message}>{message}</li>
 						))}
 					</ul>
+				)}
+				<div className="mt-3 flex items-end gap-2">
+					<label className="min-w-0 flex-1 text-[11px] text-slate-400">
+						<span>SQL file name</span>
+						<input
+							aria-label="SQL file name"
+							value={fileName}
+							onChange={(event) => setFileName(event.target.value)}
+							disabled={!preview || action !== null}
+							className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-500 disabled:opacity-40"
+						/>
+					</label>
+					<div className="flex gap-1.5">
+						<button
+							type="button"
+							onClick={() => void copyPreview()}
+							disabled={!preview || action !== null}
+							className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							{action === "copy" ? "Copying…" : "Copy SQL"}
+						</button>
+						<button
+							type="button"
+							onClick={() => void exportPreview()}
+							disabled={!preview || action !== null}
+							className="rounded-md bg-indigo-500 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							{action === "export" ? "Exporting…" : "Export SQL"}
+						</button>
+					</div>
+				</div>
+				<p className="mt-1 text-[10px] text-slate-500">
+					Choose a folder for the export. Existing files are not overwritten.
+				</p>
+				{feedback && (
+					<p
+						role={feedback.tone === "error" ? "alert" : "status"}
+						data-testid="sql-action-status"
+						className={`mt-2 text-xs ${
+							feedback.tone === "error"
+								? "text-red-300"
+								: feedback.tone === "success"
+									? "text-emerald-300"
+									: "text-slate-400"
+						}`}
+					>
+						{feedback.message}
+					</p>
 				)}
 			</div>
 		</section>
@@ -895,10 +1064,6 @@ function StatusPill({
 			{children}
 		</span>
 	);
-}
-
-function errorMessage(cause: unknown): string {
-	return cause instanceof Error ? cause.message : String(cause);
 }
 
 export default App;

@@ -74,6 +74,24 @@ Preview work is scoped to project identity and schema revision. A completion
 from an older revision or a project that is no longer open cannot replace the
 active preview state.
 
+#### Copying and exporting SQL
+
+Copy and export use the immutable SQL snapshot displayed when the action
+starts; they do not regenerate SQL from a newer draft or synchronize SQL back
+to the design. Feedback identifies validation for that snapshot: only SQL
+accepted by the sandbox for the current draft uses a success tone. Stale,
+checking, rebuilding, sandbox-error, and PostgreSQL-rejected results use
+non-success tones. For a PostgreSQL rejection, the SQL preview pill says
+`Rejected`; all other #10 SQL preview labels/states and the sandbox panel's
+states remain unchanged. When no SQL is available, the filename field
+and both actions are disabled. Copy/export failures and file-dialog cancellation
+are reported without changing the design.
+
+Electrobun 2.0.4 exposes a native file/folder chooser but no save dialog. The
+SQL panel therefore supplies the `.sql` filename, then the native chooser
+selects a destination folder. The main process creates a new file and does not
+overwrite an existing file with the same name.
+
 Column editing keeps the same distinction: structure and notes are saved with
 the design document, but notes describe intent rather than schema, so they
 do not rebuild the database preview. See
@@ -175,3 +193,38 @@ packaged `views://` page, driven through WebView2 debugging, showed the restored
 current SQL, and an accepted sandbox. `electrobun.config.ts` and the PGlite
 asset wiring were unchanged by this work; the full packaged procedure remains in
 [packaged-windows-smoke-check.md](packaged-windows-smoke-check.md).
+
+### Ticket #11 native SQL transfer smoke
+
+The real Electrobun development app ran from `hutch run dev` with a temporary
+SQLite database, a temporary `WEBVIEW2_USER_DATA_FOLDER`, and WebView2 remote
+debugging on port `9311`. The launcher reported that Vite was not running and
+loaded `views://mainview/index.html`.
+
+Behavioral coverage is `bun test src/bun/sql-preview.test.ts`. It uses the
+public workspace with temporary SQLite and PGlite, writes actual files, and
+checks current, stale, rejected, empty, cancellation, error, and in-flight
+snapshot behavior.
+
+- With `Library` revision 2 and `Books` current/accepted, **Copy SQL** wrote the
+  displayed SQL to the Windows system clipboard; `Get-Clipboard -Raw` matched
+  the preview text.
+- **Export SQL** opened Electrobun's native folder chooser and saved
+  `schema.sql` in the selected temporary folder. Reading the file matched the
+  displayed preview exactly.
+- Adding a duplicate `Books` produced an out-of-date preview at revision 2 and
+  a blocked draft at revision 3. Copy reported that the revision 2 SQL was out
+  of date, using a non-success tone. Export reported the same validation status;
+  the exported file matched the displayed SQL byte-for-byte and was removed
+  after the smoke check. A separate folder-picker cancellation reported
+  `Export cancelled.` and created no file.
+
+The packaged stable build was produced by `hutch run build`. Its
+`SchemaDesigner/Resources/<hash>.tar.zst` app archive was extracted to a
+temporary runtime folder (without installing over the existing stable app) and
+launched with a temporary SQLite database, a separate WebView2 user-data folder,
+and debugging port `9311`. No dev server or port `5173` was used. In the real
+packaged view, `Ticket11 Packaged` / `Events` reached revision 2 with SQL
+`Current` and sandbox `Accepted`; **Copy SQL** matched `Get-Clipboard -Raw`,
+and **Export SQL** created `packaged.sql` whose contents exactly matched the
+displayed preview.

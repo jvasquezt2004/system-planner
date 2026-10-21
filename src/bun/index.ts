@@ -1,7 +1,8 @@
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { join } from "node:path";
-import type { AppRPCSchema } from "../shared/rpc";
+import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
+import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
 
 const DEV_SERVER_PORT = 5173;
@@ -31,6 +32,22 @@ const databasePath =
 // Keep the authoritative design and the disposable sandbox behind one public
 // workspace interface. The view only sees this interface through typed RPC.
 const workspacePromise = createDesignWorkspace({ databasePath });
+
+const pendingSqlExports = new Map<string, SqlPreviewExportRequest>();
+const sqlPreviewActions = createSqlPreviewActions({
+	writeClipboardText: Utils.clipboardWriteText,
+	// Electrobun has a native folder picker but no native save dialog.
+	chooseExportDirectory: async () => {
+		const [directory] = await Utils.openFileDialog({
+			startingFolder: Utils.paths.documents,
+			allowedFileTypes: "*",
+			canChooseFiles: false,
+			canChooseDirectory: true,
+			allowsMultipleSelection: false,
+		});
+		return directory ?? null;
+	},
+});
 
 const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 	maxRequestTime: 60_000,
@@ -79,6 +96,25 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			describeRemoval: async (target) =>
 				(await workspacePromise).describeRemoval(target),
 			setViewport: async (viewport) => (await workspacePromise).setViewport(viewport),
+			copySqlPreview: ({ preview }) => sqlPreviewActions.copy(preview),
+			beginSqlPreviewExport: (request) => {
+				const requestId = crypto.randomUUID();
+				pendingSqlExports.set(requestId, request);
+				return { requestId };
+			},
+		},
+		messages: {
+			// Start the native picker from a message, not an awaited RPC request.
+			chooseSqlPreviewExportDirectory: ({ requestId }) => {
+				const pending = pendingSqlExports.get(requestId);
+				if (!pending) return;
+				pendingSqlExports.delete(requestId);
+				void sqlPreviewActions
+					.export(pending.preview, pending.fileName)
+					.then((result) => {
+						rpc.send.sqlPreviewExportCompleted({ requestId, result });
+					});
+			},
 		},
 	},
 });
