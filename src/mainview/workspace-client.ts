@@ -102,8 +102,8 @@ export const workspaceClient = {
 	describeRemoval(target: RemovalTarget): Promise<RemovalPlan> {
 		return rpc.request.describeRemoval(target);
 	},
-	openSqlWindow(): Promise<void> {
-		return rpc.request.openSqlWindow({});
+	copyText(text: string): Promise<void> {
+		return rpc.request.copyText({ text });
 	},
 	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport(viewport);

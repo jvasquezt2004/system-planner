@@ -28,8 +28,9 @@ card shows `UQ` for it. Deleting a referenced table or column first lists the
 affected relationships, including whether their uniqueness is affected, and
 asks for confirmation; removing a relationship keeps its columns and drops only
 its own foreign key and uniqueness. The generated SQL and the sandbox result
-live in a separate SQL preview window, opened from the masthead, that follows
-the design live and copies the SQL.
+live in the SQL preview view: the masthead's Canvas / SQL preview switch swaps
+it in place of the canvas, in the same window. It follows the design live and
+copies the SQL.
 
 ## Commands
 
@@ -63,9 +64,8 @@ bunx tsc --noEmit      # typecheck
   confirmation dialogs, and workspace actions.
 - `src/mainview/table-inspector.tsx` — selected table, column list, the
   focused column editor, and relationship controls.
-- `src/mainview/sql-window.tsx` — the separate SQL preview window: generated
-  SQL with copy, plus the sandbox result. `src/bun/index.ts` opens one window
-  at a time and pushes workspace state to it while it is open.
+- `src/mainview/sql-preview.tsx` — the SQL preview view shown in place of the
+  canvas: generated SQL with copy, plus the sandbox result.
 - `src/mainview/index.css` — the editorial design tokens (paper, ink, rules,
   the blue-pencil accent, status colours) mapped onto shadcn/ui's slots.
 - `src/mainview/components/ui/` — shadcn/ui components (Radix-based),

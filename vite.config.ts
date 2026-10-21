@@ -16,12 +16,6 @@ export default defineConfig({
 	build: {
 		outDir: "../../dist",
 		emptyOutDir: true,
-		rollupOptions: {
-			input: {
-				main: resolve(__dirname, "src/mainview/index.html"),
-				sql: resolve(__dirname, "src/mainview/sql.html"),
-			},
-		},
 	},
 	server: {
 		port: 5173,

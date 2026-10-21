@@ -1,22 +1,20 @@
 import { Fragment, useEffect, useRef, useState } from "react";
 import { Check, Copy } from "lucide-react";
-import type { SandboxState, SqlState, WorkspaceState } from "../shared/design";
+import type { SandboxState, SqlState } from "../shared/design";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { sqlWindowClient } from "./sql-window-client";
-
-type SqlWindowProps = { state: WorkspaceState };
+import { workspaceClient } from "./workspace-client";
 
 /**
- * The SQL preview window, set like a galley proof: the generated PostgreSQL
- * with numbered lines, then the sandbox's verdict on it. It is read-only and
- * follows the open design live.
+ * The SQL preview view, set like a galley proof: the generated PostgreSQL with
+ * numbered lines, then the sandbox's verdict on it. It replaces the canvas in
+ * the main window, is read-only, and follows the open design live.
  */
-export function SqlWindow({ state }: SqlWindowProps) {
+export function SqlPreviewView({ sql, sandbox }: { sql: SqlState; sandbox: SandboxState }) {
 	const [copied, setCopied] = useState(false);
 	const [copyError, setCopyError] = useState<string | null>(null);
 	const copiedTimer = useRef<number | undefined>(undefined);
-	const sqlText = state.sql.status === "empty" ? "" : state.sql.sql;
+	const sqlText = sql.status === "empty" ? "" : sql.sql;
 
 	useEffect(
 		() => () => {
@@ -32,7 +30,7 @@ export function SqlWindow({ state }: SqlWindowProps) {
 				if (!navigator.clipboard?.writeText) throw new Error("Clipboard API unavailable");
 				await navigator.clipboard.writeText(sqlText);
 			} catch {
-				await sqlWindowClient.copyText(sqlText);
+				await workspaceClient.copyText(sqlText);
 			}
 			setCopied(true);
 			window.clearTimeout(copiedTimer.current);
@@ -44,57 +42,46 @@ export function SqlWindow({ state }: SqlWindowProps) {
 	}
 
 	return (
-		<main className="flex h-screen flex-col overflow-hidden bg-paper text-ink">
-			<header className="double-rule flex shrink-0 items-end justify-between gap-6 px-7 pt-5 pb-3.5">
-				<div className="min-w-0">
-					<p className="kicker">SQL preview</p>
-					<h1
-						className={cn(
-							"mt-1 truncate font-display text-[28px] leading-none font-medium tracking-[-0.015em]",
-							state.project ? "text-ink" : "text-ink-3 italic",
-						)}
-					>
-						{state.project?.name ?? "No project open"}
-					</h1>
-				</div>
-				<div className="flex shrink-0 items-center gap-3">
-					{state.project && (
-						<span className="figures font-mono text-[11px] text-ink-3">
-							rev. {state.revision}
-						</span>
-					)}
+		<div data-testid="sql-preview-view" className="h-full overflow-y-auto bg-paper">
+			<div className="mx-auto max-w-4xl px-8">
+				<header className="flex items-end justify-between gap-6 pt-8">
+					<div className="min-w-0">
+						<p className="kicker">SQL preview</p>
+						<p className="mt-1.5 max-w-xl font-display text-[19px] leading-snug text-ink-2 italic">
+							The read-only PostgreSQL generated from this design, and what the
+							sandbox made of it.
+						</p>
+					</div>
 					<Button
 						variant="outline"
 						size="sm"
 						data-testid="copy-sql"
-						disabled={state.sql.status === "empty"}
+						disabled={sql.status === "empty"}
 						onClick={copySql}
+						className="shrink-0"
 					>
 						{copied ? <Check /> : <Copy />}
 						{copied ? "Copied" : "Copy SQL"}
 					</Button>
-				</div>
-			</header>
-
-			<div className="min-h-0 flex-1 overflow-y-auto">
+				</header>
 				{copyError && (
 					<p
 						role="alert"
-						className="border-b border-proof-red/25 bg-proof-red-wash px-7 py-2 text-[12.5px] text-proof-red"
+						className="mt-4 border-l-2 border-proof-red bg-proof-red-wash px-3 py-2 text-[12.5px] text-proof-red"
 					>
 						{copyError}
 					</p>
 				)}
-				<SqlPreview sql={state.sql} />
-				<SandboxReport sandbox={state.sandbox} />
+				<SqlPreview sql={sql} />
+				<SandboxReport sandbox={sandbox} />
 			</div>
-		</main>
+		</div>
 	);
 }
 
 function SqlPreview({ sql }: { sql: SqlState }) {
 	return (
-		<section aria-labelledby="sql-heading" className="px-7 pt-6">
+		<section aria-labelledby="sql-heading" className="pt-8">
 			<SectionHead id="sql-heading" title="Generated PostgreSQL">
 				<Verdict
 					tone={sql.status === "current" ? "ok" : sql.status === "stale" ? "warn" : "muted"}
@@ -141,7 +128,7 @@ function SqlPreview({ sql }: { sql: SqlState }) {
 
 function SandboxReport({ sandbox }: { sandbox: SandboxState }) {
 	return (
-		<section aria-labelledby="sandbox-heading" className="px-7 pt-9 pb-10">
+		<section aria-labelledby="sandbox-heading" className="pt-10 pb-16">
 			<SectionHead id="sandbox-heading" title="Sandbox check">
 				<Verdict
 					tone={

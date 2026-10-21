@@ -66,6 +66,8 @@ type PanDrag = {
 type Rect = { x: number; y: number; width: number; height: number };
 
 export type TableCanvasProps = {
+	/** False while another view covers the canvas; any relating is cancelled. */
+	active: boolean;
 	design: Design;
 	selectedTableId: string | null;
 	selectedRelationshipId: string | null;
@@ -89,6 +91,7 @@ export type TableCanvasProps = {
  * viewport are layout, never database structure.
  */
 export function TableCanvas({
+	active,
 	design,
 	selectedTableId,
 	selectedRelationshipId,
@@ -118,6 +121,10 @@ export function TableCanvas({
 	useEffect(() => {
 		onRelatingChange(relatingFrom !== null);
 	}, [relatingFrom, onRelatingChange]);
+
+	useEffect(() => {
+		if (!active) setRelatingFrom(null);
+	}, [active]);
 
 	useEffect(() => {
 		if (!relatingFrom) return;

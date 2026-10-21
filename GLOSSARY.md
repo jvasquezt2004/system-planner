@@ -57,7 +57,7 @@ _Avoid_: Group, container, nesting
 
 **SQL preview**:
 The read-only SQL representation generated from a design, shown in its own
-window together with the sandbox's result.
+view in place of the canvas, together with the sandbox's result.
 _Avoid_: SQL editor
 
 **Structured default**:

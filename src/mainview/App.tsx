@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, FileCode2, Plus, X } from "lucide-react";
+import { ChevronDown, FileCode2, PenTool, Plus, X } from "lucide-react";
 import type {
 	AffectedRelationship,
 	CanvasPoint,
@@ -40,10 +40,15 @@ import {
 	SheetDescription,
 	SheetTitle,
 } from "@/components/ui/sheet";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { TableCanvas } from "./canvas";
+import { SqlPreviewView } from "./sql-preview";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
+
+/** The main window shows either the design canvas or its SQL preview. */
+type WorkspaceView = "canvas" | "sql";
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -53,6 +58,7 @@ function App() {
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
 	const [relating, setRelating] = useState(false);
+	const [view, setView] = useState<WorkspaceView>("canvas");
 	const [creatingProject, setCreatingProject] = useState(false);
 	const [pendingRemoval, setPendingRemoval] = useState<{
 		target: RemovalTarget;
@@ -318,12 +324,6 @@ function App() {
 		[applyLayout],
 	);
 
-	const openSqlPreview = useCallback(() => {
-		workspaceClient.openSqlWindow().catch((cause: unknown) => {
-			setError(errorMessage(cause));
-		});
-	}, []);
-
 	const createProject = useCallback(
 		(name: string) => {
 			setCreatingProject(false);
@@ -356,7 +356,8 @@ function App() {
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
-				onOpenSqlPreview={openSqlPreview}
+				view={view}
+				onViewChange={setView}
 			/>
 
 			{error && (
@@ -379,19 +380,29 @@ function App() {
 
 			<section className="relative min-h-0 flex-1">
 				{state.project && state.design ? (
-					<TableCanvas
-						key={state.project.id}
-						design={state.design}
-						selectedTableId={selectedTableId}
-						selectedRelationshipId={selectedRelationshipId}
-						onSelectTable={handleSelectTable}
-						onSelectRelationship={handleCanvasSelectRelationship}
-						onRelateTables={handleRelateTables}
-						onRelatingChange={setRelating}
-						onMoveTable={handleMoveTable}
-						onViewportChange={handleViewportChange}
-						onAddTable={handleAddTable}
-					/>
+					<>
+						{/*
+						 * The canvas stays mounted behind the SQL preview, so its pan, zoom,
+						 * and pending layout save survive switching views.
+						 */}
+						<div className={cn("h-full", view !== "canvas" && "hidden")}>
+							<TableCanvas
+								key={state.project.id}
+								active={view === "canvas"}
+								design={state.design}
+								selectedTableId={selectedTableId}
+								selectedRelationshipId={selectedRelationshipId}
+								onSelectTable={handleSelectTable}
+								onSelectRelationship={handleCanvasSelectRelationship}
+								onRelateTables={handleRelateTables}
+								onRelatingChange={setRelating}
+								onMoveTable={handleMoveTable}
+								onViewportChange={handleViewportChange}
+								onAddTable={handleAddTable}
+							/>
+						</div>
+						{view === "sql" && <SqlPreviewView sql={state.sql} sandbox={state.sandbox} />}
+					</>
 				) : (
 					<ProjectIndex
 						projects={state.projects}
@@ -409,7 +420,7 @@ function App() {
 			 * relating, so every card on the canvas can be picked as the target.
 			 */}
 			<Sheet
-				open={selectedTable !== null && !relating}
+				open={selectedTable !== null && !relating && view === "canvas"}
 				modal={false}
 				onOpenChange={(open) => {
 					if (!open) handleSelectTable(null);
@@ -476,20 +487,23 @@ function App() {
 
 /**
  * The page head: which design is open, how its saved and validated state
- * stands, and the way into the SQL preview window. A double rule closes it.
+ * stands, and the switch between the canvas and the SQL preview. A double rule
+ * closes it.
  */
 function Masthead({
 	state,
 	busy,
 	onOpenProject,
 	onNewProject,
-	onOpenSqlPreview,
+	view,
+	onViewChange,
 }: {
 	state: WorkspaceState;
 	busy: boolean;
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
-	onOpenSqlPreview: () => void;
+	view: WorkspaceView;
+	onViewChange: (view: WorkspaceView) => void;
 }) {
 	const project = state.project;
 	return (
@@ -574,16 +588,28 @@ function Masthead({
 						</StatusLine>
 					</dl>
 				)}
-				<Button
+				<ToggleGroup
+					type="single"
 					variant="outline"
 					size="sm"
-					data-testid="open-sql-preview"
-					onClick={onOpenSqlPreview}
+					spacing={0}
+					aria-label="View"
+					data-testid="view-switch"
+					value={project ? view : ""}
 					disabled={!project}
+					onValueChange={(next) => {
+						if (next === "canvas" || next === "sql") onViewChange(next);
+					}}
 				>
-					<FileCode2 />
-					SQL preview
-				</Button>
+					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
+						<PenTool />
+						Canvas
+					</ToggleGroupItem>
+					<ToggleGroupItem value="sql" data-testid="view-sql" className="h-7 px-3">
+						<FileCode2 />
+						SQL preview
+					</ToggleGroupItem>
+				</ToggleGroup>
 			</div>
 		</header>
 	);
