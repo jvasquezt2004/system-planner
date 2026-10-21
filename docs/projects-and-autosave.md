@@ -41,6 +41,11 @@ never advance the schema revision or rebuild the sandbox. They carry their own
 monotonic document revision so a delayed structural save cannot roll back a
 newer layout. See [canvas-and-layout.md](canvas-and-layout.md).
 
+SQL generation and sandbox acceptance are separate from autosave: preview
+validation never blocks saving or discards the authoritative design. Revisioned
+SQL and sandbox feedback states are documented in
+[canvas-and-layout.md](canvas-and-layout.md).
+
 ## Verification
 
 Behavioral tests use the public workspace interface with real temporary SQLite:
@@ -52,7 +57,10 @@ bun test src/bun/workspace.test.ts
 They cover project listing/opening/switching, an incomplete invalid draft
 restored by a fresh workspace, rapid edits with inverted save completion order,
 a storage failure that keeps the draft and clears on the next edit, and an
-in-flight save from the previous project being ignored after a switch.
+in-flight save from the previous project being ignored after a switch. Preview
+cases use real SQLite and PGlite to cover debounced edits, empty and stale SQL,
+database rejection with the last successful sandbox retained, and older results
+ignored after a newer revision or project switch.
 
 The real Electrobun view/main path was also exercised in the dev build through
 WebView2 remote debugging with a temporary database. Creating `Alpha` and
