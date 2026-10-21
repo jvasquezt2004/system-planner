@@ -242,6 +242,109 @@ export type WorkspaceState = {
 	sandbox: SandboxState;
 };
 
+/** How the displayed SQL relates to sandbox validation for the current draft. */
+export type SqlPreviewValidationStatus =
+	| { status: "accepted"; tone: "success"; revision: number }
+	| {
+			status: "out-of-date";
+			tone: "info";
+			sqlRevision: number;
+			draftRevision: number;
+	  }
+	| {
+			status: "not-yet-validated";
+			tone: "info";
+			sqlRevision: number;
+			draftRevision: number;
+			reason: "checking" | "rebuilding" | "not-started";
+	  }
+	| {
+			status: "sandbox-error";
+			tone: "error";
+			revision: number;
+			error: string;
+	  }
+	| {
+			status: "rejected";
+			tone: "error";
+			revision: number;
+			error: string;
+	  };
+
+/** Derives validation feedback for the exact SQL preview visible in the workspace. */
+export function getSqlPreviewValidationStatus(
+	state: WorkspaceState,
+): SqlPreviewValidationStatus | null {
+	const preview = getDisplayedSqlPreview(state.sql);
+	if (!preview) return null;
+
+	if (state.sql.status === "stale") {
+		return {
+			status: "out-of-date",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+		};
+	}
+
+	if (state.sql.status === "checking") {
+		return {
+			status: "not-yet-validated",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+			reason: "checking",
+		};
+	}
+
+	const { sandbox } = state;
+	if (sandbox.status === "failed" && sandbox.revision === preview.revision) {
+		return sandbox.failure === "sql-rejected"
+			? {
+					status: "rejected",
+					tone: "error",
+					revision: preview.revision,
+					error: sandbox.error,
+				}
+			: {
+					status: "sandbox-error",
+					tone: "error",
+					revision: preview.revision,
+					error: sandbox.error,
+				};
+	}
+
+	if (sandbox.status === "applying" && sandbox.revision === preview.revision) {
+		return {
+			status: "not-yet-validated",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+			reason: "rebuilding",
+		};
+	}
+
+	if (
+		sandbox.status === "applied" &&
+		sandbox.revision === preview.revision &&
+		state.revision === preview.revision
+	) {
+		return {
+			status: "accepted",
+			tone: "success",
+			revision: preview.revision,
+		};
+	}
+
+	return {
+		status: "not-yet-validated",
+		tone: "info",
+		sqlRevision: preview.revision,
+		draftRevision: state.revision,
+		reason: "not-started",
+	};
+}
+
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
 export type AddTableAction = { name: string; position?: CanvasPoint };

@@ -3,6 +3,7 @@ import { errorMessage } from "../shared/error-message";
 import {
 	getDisplayedSqlPreview,
 	getLastAppliedSandbox,
+	getSqlPreviewValidationStatus,
 	getSqlValidationErrors,
 	type AffectedRelationship,
 	type CanvasPoint,
@@ -14,6 +15,7 @@ import {
 	type RemovalTarget,
 	type SandboxState,
 	type SaveState,
+	type SqlPreviewValidationStatus,
 	type SqlState,
 	type SandboxSnapshot,
 	type WorkspaceState,
@@ -386,7 +388,11 @@ function App() {
 						onSetRelationshipCardinality={handleSetRelationshipCardinality}
 						onRemoveRelationship={handleRemoveRelationship}
 					/>
-					<SqlPanel key={state.project?.id ?? "no-project"} sql={state.sql} />
+					<SqlPanel
+						key={state.project?.id ?? "no-project"}
+						sql={state.sql}
+						validationStatus={getSqlPreviewValidationStatus(state)}
+					/>
 					<SandboxPanel sandbox={state.sandbox} draftRevision={state.revision} />
 				</aside>
 			</div>
@@ -596,12 +602,20 @@ function ProjectsPanel({
 	);
 }
 
-function SqlPanel({ sql }: { sql: SqlState }) {
+function SqlPanel({
+	sql,
+	validationStatus,
+}: {
+	sql: SqlState;
+	validationStatus: SqlPreviewValidationStatus | null;
+}) {
 	const errors = getSqlValidationErrors(sql);
 	const preview = getDisplayedSqlPreview(sql);
 	const sqlText = preview?.sql ?? null;
-	const label =
-		sql.status === "current"
+	const isRejected = validationStatus?.status === "rejected";
+	const label = isRejected
+		? "Rejected"
+		: sql.status === "current"
 			? "Current"
 			: sql.status === "checking"
 				? "Checking…"
@@ -610,8 +624,9 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 					: errors.length > 0
 						? "Blocked"
 						: "Not available";
-	const tone =
-		sql.status === "current"
+	const tone = isRejected
+		? "bad"
+		: sql.status === "current"
 			? "ok"
 			: sql.status === "empty" && errors.length > 0
 				? "bad"
@@ -642,16 +657,68 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 		}
 	}
 
+	function transferFeedback(
+		kind: "copy" | "export",
+		revision: number,
+		destination?: string,
+	): { tone: "success" | "info" | "error"; message: string } {
+		const subject =
+			kind === "copy"
+				? `Copied SQL from revision ${revision}`
+				: `Exported SQL from revision ${revision} to ${destination ?? fileName}`;
+		const status = validationStatus;
+		if (!status) {
+			return {
+				tone: "info",
+				message: `${subject}; not yet validated by the sandbox.`,
+			};
+		}
+		if (status.status === "accepted") {
+			return status.revision === revision
+				? { tone: "success", message: `${subject}; accepted by the sandbox.` }
+				: {
+						tone: "info",
+						message: `${subject}; not yet validated by the sandbox.`,
+					};
+		}
+		switch (status.status) {
+			case "out-of-date":
+				return {
+					tone: "info",
+					message: `${subject}; out of date because draft revision ${status.draftRevision} is blocked.`,
+				};
+			case "not-yet-validated": {
+				const reason =
+					status.reason === "checking"
+						? "still being checked"
+						: status.reason === "rebuilding"
+							? "the sandbox is rebuilding"
+							: "sandbox validation has not started";
+				return {
+					tone: status.tone,
+					message: `${subject}; not yet validated for draft revision ${status.draftRevision} (${reason}).`,
+				};
+			}
+			case "sandbox-error":
+				return {
+					tone: status.tone,
+					message: `${subject}; could not be validated by the sandbox: ${status.error}`,
+				};
+			case "rejected":
+				return {
+					tone: status.tone,
+					message: `${subject}; rejected by PostgreSQL: ${status.error}`,
+				};
+		}
+	}
+
 	async function copyPreview() {
 		if (!preview) return;
 		await runSqlAction("copy", async () => {
 			const result = await workspaceClient.copySqlPreview(preview);
 			setFeedback(
 				result.status === "copied"
-					? {
-							tone: "success",
-							message: `Copied displayed SQL from revision ${result.revision}.`,
-						}
+					? transferFeedback("copy", result.revision)
 					: { tone: "error", message: `Copy failed: ${result.error}` },
 			);
 		});
@@ -663,17 +730,13 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 			const result = await workspaceClient.exportSqlPreview({ preview, fileName });
 			setFeedback(
 				result.status === "saved"
-					? {
-							tone: "success",
-							message: `Exported displayed SQL from revision ${result.revision} to ${fileName}.`,
-						}
+					? transferFeedback("export", result.revision, fileName)
 					: result.status === "cancelled"
 						? { tone: "info", message: "Export cancelled." }
 						: { tone: "error", message: `Export failed: ${result.error}` },
 			);
 		});
 	}
-
 	return (
 		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
 			<header className="flex items-center justify-between border-b border-slate-800 px-4 py-2.5">

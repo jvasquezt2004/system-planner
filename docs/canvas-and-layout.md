@@ -65,8 +65,12 @@ active preview state.
 
 Copy and export use the immutable SQL snapshot displayed when the action
 starts; they do not regenerate SQL from a newer draft or synchronize SQL back
-to the design. The current, checking, stale, and rejected sandbox statuses
-remain unchanged in their panels. When no SQL is available, the filename field
+to the design. Feedback identifies validation for that snapshot: only SQL
+accepted by the sandbox for the current draft uses a success tone. Stale,
+checking, rebuilding, sandbox-error, and PostgreSQL-rejected results use
+non-success tones. For a PostgreSQL rejection, the SQL preview pill says
+`Rejected`; all other #10 SQL preview labels/states and the sandbox panel's
+states remain unchanged. When no SQL is available, the filename field
 and both actions are disabled. Copy/export failures and file-dialog cancellation
 are reported without changing the design.
 
@@ -196,8 +200,10 @@ snapshot behavior.
   `schema.sql` in the selected temporary folder. Reading the file matched the
   displayed preview exactly.
 - Adding a duplicate `Books` produced an out-of-date preview at revision 2 and
-  a blocked draft at revision 3. Copy retained the revision 2 SQL and its
-  out-of-date status. Cancelling the native folder chooser reported
+  a blocked draft at revision 3. Copy reported that the revision 2 SQL was out
+  of date, using a non-success tone. Export reported the same validation status;
+  the exported file matched the displayed SQL byte-for-byte and was removed
+  after the smoke check. A separate folder-picker cancellation reported
   `Export cancelled.` and created no file.
 
 The packaged stable build was produced by `hutch run build`. Its

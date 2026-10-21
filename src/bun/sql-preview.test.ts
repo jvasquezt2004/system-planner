@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
 	getDisplayedSqlPreview,
+	getSqlPreviewValidationStatus,
 	type DisplayedSqlPreview,
 } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
@@ -52,6 +53,11 @@ describe("SQL preview transfer", () => {
 		const current = await workspace.addTable({ name: "Books" });
 		expect(current.sql.status).toBe("current");
 		const currentPreview = requirePreview(getDisplayedSqlPreview(current.sql));
+		expect(getSqlPreviewValidationStatus(current)).toMatchObject({
+			status: "accepted",
+			tone: "success",
+			revision: currentPreview.revision,
+		});
 		const copied: string[] = [];
 		const actions = createSqlPreviewActions({
 			writeClipboardText: (sql) => copied.push(sql),
@@ -80,6 +86,12 @@ describe("SQL preview transfer", () => {
 			revision: currentPreview.revision,
 			draftRevision: invalidDraft.revision,
 			sql: currentPreview.sql,
+		});
+		expect(getSqlPreviewValidationStatus(invalidDraft)).toMatchObject({
+			status: "out-of-date",
+			tone: "info",
+			sqlRevision: stalePreview.revision,
+			draftRevision: invalidDraft.revision,
 		});
 		expect(getDisplayedSqlPreview({
 			status: "checking",
@@ -110,6 +122,113 @@ describe("SQL preview transfer", () => {
 		expect(workspace.getState().sandbox).toMatchObject({
 			status: "applied",
 			revision: currentPreview.revision,
+		});
+	}, 30_000);
+
+	test("reports checking and rebuilding previews as not yet validated", async () => {
+		let attempts = 0;
+		const { promise: applyStartedPromise, resolve: applyStarted } =
+			Promise.withResolvers<void>();
+		const { promise: continueApply, resolve: releaseApply } =
+			Promise.withResolvers<void>();
+		const { workspace } = await openWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					async apply(sql) {
+						attempts += 1;
+						if (attempts === 2) {
+							applyStarted();
+							await continueApply;
+						}
+						return sandbox.apply(sql);
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+		await workspace.createProject({ name: "Validation status" });
+		const accepted = await workspace.addTable({ name: "Books" });
+		expect(getSqlPreviewValidationStatus(accepted)).toMatchObject({
+			status: "accepted",
+		});
+		const table = accepted.design?.tables[0];
+		if (!table) throw new Error("Expected Books table.");
+
+		const rename = workspace.renameTable({
+			tableId: table.id,
+			name: "Volumes",
+		});
+		try {
+			const checking = workspace.getState();
+			expect(checking.sql.status).toBe("checking");
+			expect(getSqlPreviewValidationStatus(checking)).toMatchObject({
+				status: "not-yet-validated",
+				reason: "checking",
+				tone: "info",
+				sqlRevision: accepted.revision,
+				draftRevision: checking.revision,
+			});
+
+			await applyStartedPromise;
+			const rebuilding = workspace.getState();
+			expect(rebuilding.sql.status).toBe("current");
+			expect(rebuilding.sandbox.status).toBe("applying");
+			expect(getSqlPreviewValidationStatus(rebuilding)).toMatchObject({
+				status: "not-yet-validated",
+				reason: "rebuilding",
+				tone: "info",
+				sqlRevision: rebuilding.revision,
+				draftRevision: rebuilding.revision,
+			});
+		} finally {
+			releaseApply();
+		}
+
+		const renamed = await rename;
+		expect(getSqlPreviewValidationStatus(renamed)).toMatchObject({
+			status: "accepted",
+			tone: "success",
+			revision: renamed.revision,
+		});
+	}, 30_000);
+
+	test("reports sandbox failures as unable to validate the current preview", async () => {
+		let attempts = 0;
+		const { workspace } = await openWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					apply(sql) {
+						attempts += 1;
+						if (attempts === 2) {
+							throw new Error("Sandbox I/O failure.");
+						}
+						return sandbox.apply(sql);
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+		await workspace.createProject({ name: "Sandbox error" });
+		const accepted = await workspace.addTable({ name: "Books" });
+		const table = accepted.design?.tables[0];
+		if (!table) throw new Error("Expected Books table.");
+		const failed = await workspace.renameTable({
+			tableId: table.id,
+			name: "Volumes",
+		});
+
+		expect(failed.sandbox).toMatchObject({
+			status: "failed",
+			failure: "sandbox-error",
+			error: "Sandbox I/O failure.",
+		});
+		expect(getSqlPreviewValidationStatus(failed)).toMatchObject({
+			status: "sandbox-error",
+			tone: "error",
+			revision: failed.revision,
+			error: "Sandbox I/O failure.",
 		});
 	}, 30_000);
 
@@ -183,6 +302,12 @@ describe("SQL preview transfer", () => {
 		if (rejected.sandbox.status !== "failed" || rejected.sandbox.failure !== "sql-rejected") {
 			throw new Error("Expected PostgreSQL to reject the generated candidate.");
 		}
+		expect(getSqlPreviewValidationStatus(rejected)).toMatchObject({
+			status: "rejected",
+			tone: "error",
+			revision: rejected.revision,
+			error: rejected.sandbox.error,
+		});
 		const preview = requirePreview(getDisplayedSqlPreview(rejected.sql));
 		const copied: string[] = [];
 		const actions = createSqlPreviewActions({
