@@ -447,7 +447,7 @@ export async function createDesignWorkspace(
 	}
 
 	async function applyHistoryChange(direction: "undo" | "redo") {
-		const { projectId } = requireOpenDesign();
+		const { projectId, design: currentDesign } = requireOpenDesign();
 		const history = histories.get(projectId);
 		if (!history) return state;
 
@@ -457,7 +457,8 @@ export async function createDesignWorkspace(
 
 		history.cursor += undoing ? -1 : 1;
 		try {
-			const design = undoing ? entry.before : entry.after;
+			const snapshot = undoing ? entry.before : entry.after;
+			const design = { ...snapshot, viewport: currentDesign.viewport };
 			return entry.structural
 				? await applyStructuralChange(projectId, design, false)
 				: await applyNonSchemaChange(projectId, design, false);
@@ -951,7 +952,11 @@ export async function createDesignWorkspace(
 				};
 				if (sameViewport(design.viewport, viewport)) return state;
 
-				return applyNonSchemaChange(projectId, { ...design, viewport });
+				return applyNonSchemaChange(
+					projectId,
+					{ ...design, viewport },
+					false,
+				);
 			});
 		},
 		async close() {

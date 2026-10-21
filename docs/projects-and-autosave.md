@@ -55,8 +55,10 @@ an empty stack.
 
 Undo and redo apply a complete saved design change and autosave the result.
 Structural reversals receive a new schema revision and use the regular SQL and
-sandbox preview pipeline. Layout-only reversals save the document without
-advancing the schema revision or rebuilding the sandbox.
+sandbox preview pipeline. Non-schema design reversals, including card positions
+and column notes, save without advancing the schema revision or rebuilding the
+sandbox. Pan and zoom autosave but do not create history entries or clear redo;
+they remain at the current viewport when an edit is undone or redone.
 
 Closing the application discards undo/redo availability. Reopening restores the
 latest autosaved design with no session undo history. Autosave is not rollback

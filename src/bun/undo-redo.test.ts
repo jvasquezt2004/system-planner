@@ -141,6 +141,85 @@ describe("session undo and redo", () => {
 		expect(redone.sql).toEqual(created.sql);
 		expect(redone.sandbox).toEqual(originalSandbox);
 	}, 60_000);
+	test("undoes a design edit without restoring an earlier viewport", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "Undo with navigation" });
+		const authors = requireTable(
+			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			"Authors",
+		);
+		const addedColumn = await workspace.addColumn({
+			tableId: authors.id,
+			name: "pen_name",
+			type: "text",
+		});
+		const column = requireColumn(
+			requireTable(addedColumn.design?.tables, "Authors"),
+			"pen_name",
+		);
+		const edited = await workspace.updateColumn({
+			tableId: authors.id,
+			columnId: column.id,
+			changes: {
+				default: { kind: "literal", literalType: "text", value: "Writer" },
+			},
+		});
+		const viewport = { x: 180, y: 120, zoom: 1.25 };
+
+		const navigated = await workspace.setViewport(viewport);
+		expect(navigated.design?.viewport).toEqual(viewport);
+		expect(navigated.undoRedo).toEqual(edited.undoRedo);
+
+		const undone = await workspace.undo();
+		expect(
+			requireColumn(requireTable(undone.design?.tables, "Authors"), "pen_name").default,
+		).toEqual({ kind: "none" });
+		expect(undone.design?.viewport).toEqual(viewport);
+		expect(undone.undoRedo).toEqual({ canUndo: true, canRedo: true });
+		expect(undone.sandbox.status).toBe("applied");
+	}, 120_000);
+	test("keeps redo available when navigating after undo", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "Redo with navigation" });
+		const authors = requireTable(
+			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			"Authors",
+		);
+		const addedColumn = await workspace.addColumn({
+			tableId: authors.id,
+			name: "pen_name",
+			type: "text",
+		});
+		const column = requireColumn(
+			requireTable(addedColumn.design?.tables, "Authors"),
+			"pen_name",
+		);
+		await workspace.updateColumn({
+			tableId: authors.id,
+			columnId: column.id,
+			changes: {
+				default: { kind: "literal", literalType: "text", value: "Writer" },
+			},
+		});
+		const undone = await workspace.undo();
+		expect(undone.undoRedo).toEqual({ canUndo: true, canRedo: true });
+		const viewport = { x: -150, y: 75, zoom: 1.4 };
+
+		const navigated = await workspace.setViewport(viewport);
+		expect(navigated.design?.viewport).toEqual(viewport);
+		expect(navigated.undoRedo).toEqual({ canUndo: true, canRedo: true });
+
+		const redone = await workspace.redo();
+		expect(
+			requireColumn(requireTable(redone.design?.tables, "Authors"), "pen_name").default,
+		).toEqual({
+			kind: "literal",
+			literalType: "text",
+			value: "Writer",
+		});
+		expect(redone.design?.viewport).toEqual(viewport);
+		expect(redone.undoRedo).toEqual({ canUndo: true, canRedo: false });
+	}, 120_000);
 	test("restores each direct relationship with its generated column and database constraints", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Relationships" });
