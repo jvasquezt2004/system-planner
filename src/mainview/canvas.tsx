@@ -8,7 +8,7 @@ import {
 	type Design,
 	type DesignColumn,
 	type DesignTable,
-	type RelationshipCardinality,
+	type RelationshipCreationCardinality,
 } from "../shared/design";
 import { describeColumnDefault } from "../shared/column-defaults";
 import {
@@ -77,7 +77,8 @@ export type TableCanvasProps = {
 	onRelateTables: (
 		referencingTableId: string,
 		referencedTableId: string,
-		cardinality: RelationshipCardinality,
+		cardinality: RelationshipCreationCardinality,
+		junctionPosition?: CanvasPoint,
 	) => void;
 	onRelatingChange: (relating: boolean) => void;
 	onMoveTable: (tableId: string, position: CanvasPoint) => void;
@@ -112,7 +113,7 @@ export function TableCanvas({
 	// starting card is always the referencing side that stores the constraint.
 	const [relatingFrom, setRelatingFrom] = useState<string | null>(null);
 	const [relatingCardinality, setRelatingCardinality] =
-		useState<RelationshipCardinality>("one-to-many");
+		useState<RelationshipCreationCardinality>("one-to-many");
 	const relatingFromRef = useRef(relatingFrom);
 	relatingFromRef.current = relatingFrom;
 	const relatingCardinalityRef = useRef(relatingCardinality);
@@ -214,7 +215,12 @@ export function TableCanvas({
 			event.preventDefault();
 			setRelatingFrom(null);
 			if (tableId && tableId !== relating) {
-				onRelateTables(relating, tableId, relatingCardinalityRef.current);
+				const cardinality = relatingCardinalityRef.current;
+				const junctionPosition =
+					cardinality === "many-to-many"
+						? manyToManyJunctionPosition(relating, tableId)
+						: undefined;
+				onRelateTables(relating, tableId, cardinality, junctionPosition);
 			} else {
 				onSelectTable(tableId ?? null);
 			}
@@ -328,10 +334,52 @@ export function TableCanvas({
 		return { x, y };
 	}
 
+	/**
+	 * A new junction lands centred below the two tables it joins, pushed further
+	 * down until it clears every card. The clearance leaves room for the
+	 * neighbours' enclosures and the junction's own two, headings included.
+	 */
+	function manyToManyJunctionPosition(
+		sourceId: string,
+		targetId: string,
+	): CanvasPoint | undefined {
+		const source = design.tables.find((table) => table.id === sourceId);
+		const target = design.tables.find((table) => table.id === targetId);
+		if (!source || !target) return undefined;
+
+		const gap = 2 * (ENCLOSURE_INSET + ENCLOSURE_STEP) + 2 * ENCLOSURE_LABEL_BAND + 16;
+		const junctionHeight = CARD_TOP_RULE + CARD_HEADER_HEIGHT + CARD_ROW_HEIGHT * 3;
+		const x = Math.round((source.position.x + target.position.x) / 2);
+		let y =
+			Math.max(
+				source.position.y + cardHeight(source),
+				target.position.y + cardHeight(target),
+			) + gap;
+
+		while (true) {
+			const collisions = design.tables.filter((table) => {
+				const horizontalOverlap =
+					x < table.position.x + CARD_WIDTH + gap &&
+					x + CARD_WIDTH + gap > table.position.x;
+				const verticalOverlap =
+					y < table.position.y + cardHeight(table) + gap &&
+					y + junctionHeight + gap > table.position.y;
+				return horizontalOverlap && verticalOverlap;
+			});
+			if (collisions.length === 0) return { x, y };
+			y = Math.max(
+				...collisions.map((table) => table.position.y + cardHeight(table) + gap),
+			);
+		}
+	}
+
 	const minor = GRID_SIZE * viewport.zoom;
 	const major = MAJOR_GRID_SIZE * viewport.zoom;
 	// Dots fade as the page zooms out, so a distant view never turns grey.
 	const dotAlpha = viewport.zoom < 0.55 ? 0.07 : 0.14;
+	const manyToManyJunctionIds = new Set(
+		design.manyToManyRelationships.map((association) => association.junctionTableId),
+	);
 	const relationships = resolveRelationships(design);
 	const foreignKeyColumnIds = new Set(
 		design.relationships.map((relationship) => relationship.referencingColumnId),
@@ -444,6 +492,7 @@ export function TableCanvas({
 						position={positionOf(table)}
 						highlightedColumnIds={highlightedColumns(table.id)}
 						foreignKeyColumnIds={foreignKeyColumnIds}
+						manyToManyJunction={manyToManyJunctionIds.has(table.id)}
 						relationshipUniqueColumnIds={relationshipUniqueColumnIds}
 						onSelect={() => onSelectTable(table.id)}
 						onStartRelate={() => {
@@ -469,7 +518,9 @@ export function TableCanvas({
 							<span className="font-display text-[14px] font-semibold text-ink">
 								{relatingTable.name}
 							</span>{" "}
-							will store the reference. Click the table it references.
+							{relatingCardinality === "many-to-many"
+								? "will be joined through a visible, editable junction. Click the other table."
+								: "will store the reference. Click the table it references."}
 						</p>
 					</div>
 					<ToggleGroup
@@ -480,7 +531,11 @@ export function TableCanvas({
 						aria-label="Relationship cardinality"
 						value={relatingCardinality}
 						onValueChange={(value) => {
-							if (value === "one-to-many" || value === "one-to-one") {
+							if (
+								value === "one-to-many" ||
+								value === "one-to-one" ||
+								value === "many-to-many"
+							) {
 								setRelatingCardinality(value);
 							}
 						}}
@@ -496,6 +551,12 @@ export function TableCanvas({
 							data-testid="relate-cardinality-one-to-one"
 						>
 							one-to-one
+						</ToggleGroupItem>
+						<ToggleGroupItem
+							value="many-to-many"
+							data-testid="relate-cardinality-many-to-many"
+						>
+							many-to-many
 						</ToggleGroupItem>
 					</ToggleGroup>
 					<Button variant="ghost" size="xs" onClick={() => setRelatingFrom(null)}>
@@ -878,6 +939,7 @@ function TableCard({
 	dragging,
 	relatingSource,
 	relatingTarget,
+	manyToManyJunction,
 	position,
 	highlightedColumnIds,
 	foreignKeyColumnIds,
@@ -890,6 +952,7 @@ function TableCard({
 	dragging: boolean;
 	relatingSource: boolean;
 	relatingTarget: boolean;
+	manyToManyJunction: boolean;
 	position: CanvasPoint;
 	highlightedColumnIds: Set<string>;
 	foreignKeyColumnIds: Set<string>;
@@ -941,8 +1004,19 @@ function TableCard({
 				className="flex items-center justify-between gap-2 border-b border-rule-strong pl-3 pr-1.5"
 				style={{ height: CARD_HEADER_HEIGHT }}
 			>
-				<span className="truncate font-display text-[16px] leading-none font-semibold tracking-[-0.005em] text-ink">
-					{table.name}
+				<span className="flex min-w-0 items-baseline gap-2">
+					<span className="truncate font-display text-[16px] leading-none font-semibold tracking-[-0.005em] text-ink">
+						{table.name}
+					</span>
+					{manyToManyJunction && (
+						<span
+							data-testid="many-to-many-junction"
+							title="Visible junction table for a many-to-many relationship"
+							className="shrink-0 font-mono text-[9.5px] font-medium tracking-[0.06em] text-ink-3"
+						>
+							M:N
+						</span>
+					)}
 				</span>
 				<div className="flex shrink-0 items-center gap-1">
 					<span

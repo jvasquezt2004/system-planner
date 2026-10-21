@@ -24,13 +24,23 @@ a one-to-many relationship frames the "many" card in an enclosure headed with
 the "one" table's name — and enforced with `NO ACTION` on updates and deletes. A
 one-to-one relationship also owns uniqueness on that column, so at most one
 referencing record may name the same referenced record, and the referencing
-card shows `UQ` for it. Deleting a referenced table or column first lists the
-affected relationships, including whether their uniqueness is affected, and
-asks for confirmation; removing a relationship keeps its columns and drops only
-its own foreign key and uniqueness. The generated SQL and the sandbox result
-live in the SQL preview view: the masthead's Canvas / SQL preview switch swaps
-it in place of the canvas, in the same window. It follows the design live and
-copies the SQL.
+card shows `UQ` for it. A many-to-many relationship creates a named, visible
+junction with its own identity primary key, two required matching references,
+and unique endpoint pairs. The junction card carries an `M:N` mark and, because
+it holds two one-to-many references, sits inside one enclosure per endpoint —
+an indicator, never containment; the junction and added association fields
+remain editable.
+Deleting a referenced table or column lists affected relationships, associations,
+and owned constraints and asks for confirmation; cancelling leaves the design
+unchanged. Removing a direct relationship keeps its columns and drops only its
+own foreign key and uniqueness. Removing a many-to-many association keeps its
+junction and all columns and drops both foreign keys and pair uniqueness. The
+generated SQL and sandbox check live in the SQL preview view, switched in place
+of the canvas in the same window by the masthead's Canvas / SQL preview toggle.
+The view holds generated SQL and its status, Copy SQL, an export action with a
+file-name field, and the sandbox check, including the last successful sandbox
+when the current draft is not yet accepted. Undo and Redo buttons sit in the
+masthead next to the project name and revision (`undo-button` and `redo-button`).
 
 ## Commands
 
@@ -52,6 +62,8 @@ bunx tsc --noEmit      # typecheck
   validation, safe encoding, and display used by the editor and SQL generation.
 - `src/shared/relationships.ts` — resolving relationship participants, naming
   generated foreign-key columns, and describing affected dependencies.
+- `src/shared/postgres-identifiers.ts` — UTF-8-aware PostgreSQL identifier
+  limits and collision-safe suffixes.
 - `src/shared/rpc.ts` — typed Electrobun RPC schema between Bun and the view.
 - `src/bun/workspace.ts` — the public design workspace interface used by the
   React view and behavioral tests. Autosave, SQL generation, and sandbox
@@ -108,9 +120,9 @@ development still works. The verification procedure and recorded result live in
   supported types, keys, nullability, uniqueness, notes, and incomplete drafts.
 - [docs/column-defaults.md](docs/column-defaults.md) — structured defaults,
   typed literals, database-generated values, validation, and safe encoding.
-- [docs/relationships.md](docs/relationships.md) — one-to-many relationships,
-  generated foreign-key columns, required/optional references, indicators, and
-  deletion safeguards.
+- [docs/relationships.md](docs/relationships.md) — one-to-many, one-to-one, and
+  many-to-many associations, generated foreign keys, junction editing,
+  cardinality indicators, and deletion safeguards.
 - [docs/adr](docs/adr) — architecture decisions.
 - [docs/packaged-windows-smoke-check.md](docs/packaged-windows-smoke-check.md) —
   packaged Windows verification.

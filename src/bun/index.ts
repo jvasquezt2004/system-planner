@@ -1,7 +1,8 @@
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { join } from "node:path";
-import type { AppRPCSchema } from "../shared/rpc";
+import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
+import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
 
 const DEV_SERVER_PORT = 5173;
@@ -32,6 +33,22 @@ const databasePath =
 // workspace interface. The view only sees this interface through typed RPC.
 const workspacePromise = createDesignWorkspace({ databasePath });
 
+const pendingSqlExports = new Map<string, SqlPreviewExportRequest>();
+const sqlPreviewActions = createSqlPreviewActions({
+	writeClipboardText: Utils.clipboardWriteText,
+	// Electrobun has a native folder picker but no native save dialog.
+	chooseExportDirectory: async () => {
+		const [directory] = await Utils.openFileDialog({
+			startingFolder: Utils.paths.documents,
+			allowedFileTypes: "*",
+			canChooseFiles: false,
+			canChooseDirectory: true,
+			allowsMultipleSelection: false,
+		});
+		return directory ?? null;
+	},
+});
+
 const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 	maxRequestTime: 60_000,
 	handlers: {
@@ -40,6 +57,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			createProject: async ({ name }) => (await workspacePromise).createProject({ name }),
 			openProject: async ({ projectId }) =>
 				(await workspacePromise).openProject({ projectId }),
+			undo: async () => (await workspacePromise).undo(),
+			redo: async () => (await workspacePromise).redo(),
 			addTable: async ({ name, position }) =>
 				(await workspacePromise).addTable({ name, position }),
 			renameTable: async ({ tableId, name }) =>
@@ -54,11 +73,17 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).updateColumn({ tableId, columnId, changes }),
 			removeColumn: async ({ tableId, columnId, confirmed }) =>
 				(await workspacePromise).removeColumn({ tableId, columnId, confirmed }),
-			addRelationship: async ({ referencingTableId, referencedTableId, cardinality }) =>
+			addRelationship: async ({
+				referencingTableId,
+				referencedTableId,
+				cardinality,
+				junctionPosition,
+			}) =>
 				(await workspacePromise).addRelationship({
 					referencingTableId,
 					referencedTableId,
 					cardinality,
+					junctionPosition,
 				}),
 			updateRelationship: async ({ relationshipId, required, cardinality }) =>
 				(await workspacePromise).updateRelationship({
@@ -71,9 +96,25 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			describeRemoval: async (target) =>
 				(await workspacePromise).describeRemoval(target),
 			setViewport: async (viewport) => (await workspacePromise).setViewport(viewport),
-			// The SQL preview's copy action falls back to the native clipboard when
-			// the webview's Clipboard API is unavailable.
-			copyText: ({ text }) => Utils.clipboardWriteText(text),
+			copySqlPreview: ({ preview }) => sqlPreviewActions.copy(preview),
+			beginSqlPreviewExport: (request) => {
+				const requestId = crypto.randomUUID();
+				pendingSqlExports.set(requestId, request);
+				return { requestId };
+			},
+		},
+		messages: {
+			// Start the native picker from a message, not an awaited RPC request.
+			chooseSqlPreviewExportDirectory: ({ requestId }) => {
+				const pending = pendingSqlExports.get(requestId);
+				if (!pending) return;
+				pendingSqlExports.delete(requestId);
+				void sqlPreviewActions
+					.export(pending.preview, pending.fileName)
+					.then((result) => {
+						rpc.send.sqlPreviewExportCompleted({ requestId, result });
+					});
+			},
 		},
 	},
 });

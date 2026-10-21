@@ -2,11 +2,12 @@ import { PGlite } from "@electric-sql/pglite";
 import type {
 	SandboxAppliedRelationship,
 	SandboxAppliedTable,
+	SandboxFailure,
 } from "../shared/design";
 
 export type SandboxApplyResult =
 	| { ok: true; tables: SandboxAppliedTable[]; relationships: SandboxAppliedRelationship[] }
-	| { ok: false; error: string };
+	| { ok: false; failure: SandboxFailure; error: string };
 
 /**
  * A disposable PostgreSQL preview. Applying always builds a fresh database, so
@@ -39,7 +40,9 @@ const CATALOG_QUERY = `
 	LEFT JOIN (
 		SELECT kcu.table_schema, kcu.table_name, kcu.column_name,
 			bool_or(tc.constraint_type = 'PRIMARY KEY') AS is_primary_key,
-			bool_or(tc.constraint_type = 'UNIQUE') AS is_unique
+			bool_or(
+				tc.constraint_type = 'UNIQUE' AND constraint_columns.column_count = 1
+			) AS is_unique
 		FROM information_schema.table_constraints tc
 		JOIN information_schema.key_column_usage kcu
 			ON kcu.constraint_catalog = tc.constraint_catalog
@@ -47,6 +50,18 @@ const CATALOG_QUERY = `
 			AND kcu.constraint_name = tc.constraint_name
 			AND kcu.table_schema = tc.table_schema
 			AND kcu.table_name = tc.table_name
+		LEFT JOIN (
+			SELECT constraint_catalog, constraint_schema, constraint_name,
+				table_schema, table_name, COUNT(*) AS column_count
+			FROM information_schema.key_column_usage
+			GROUP BY constraint_catalog, constraint_schema, constraint_name,
+				table_schema, table_name
+		) constraint_columns
+			ON constraint_columns.constraint_catalog = kcu.constraint_catalog
+			AND constraint_columns.constraint_schema = kcu.constraint_schema
+			AND constraint_columns.constraint_name = kcu.constraint_name
+			AND constraint_columns.table_schema = kcu.table_schema
+			AND constraint_columns.table_name = kcu.table_name
 		WHERE tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
 		GROUP BY kcu.table_schema, kcu.table_name, kcu.column_name
 	) constraints
@@ -106,8 +121,12 @@ export function createPGliteSandbox(): SchemaSandbox {
 		async apply(sql) {
 			const instance = new PGlite();
 			database = instance;
+			let failure: SandboxFailure = "sandbox-error";
 			try {
+				await instance.waitReady;
+				failure = "sql-rejected";
 				await instance.exec(sql);
+				failure = "sandbox-error";
 				const result = await instance.query<CatalogRow>(CATALOG_QUERY);
 				const relationships = await instance.query<RelationshipRow>(
 					RELATIONSHIP_QUERY,
@@ -120,6 +139,7 @@ export function createPGliteSandbox(): SchemaSandbox {
 			} catch (error) {
 				return {
 					ok: false,
+					failure,
 					error: error instanceof Error ? error.message : String(error),
 				};
 			}

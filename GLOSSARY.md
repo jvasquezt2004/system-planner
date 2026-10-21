@@ -30,9 +30,15 @@ referenced-side record, enforced by uniqueness on the referencing column. It
 does not require every referenced-side record to participate.
 _Avoid_: Mandatory pairing on both sides
 
+**Many-to-many relationship**:
+An association where each record may pair with multiple records from the other
+table, represented by an editable junction table with its own primary key and
+unique endpoint pair.
+_Avoid_: Hidden link table, composite endpoint key
+
 **Relationship-owned constraints**:
-The foreign key and, for a one-to-one relationship, the uniqueness constraint
-that exist because of a relationship. Removing the relationship removes exactly
+The foreign key, one-to-one uniqueness, or many-to-many pair uniqueness that
+exists because of a relationship. Removing the relationship removes exactly
 these, never an independently configured column constraint.
 _Avoid_: Column setting
 

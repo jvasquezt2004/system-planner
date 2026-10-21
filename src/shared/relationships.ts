@@ -11,11 +11,16 @@ import type {
 	DesignColumn,
 	DesignRelationship,
 	DesignTable,
+	DesignManyToManyAssociation,
 	RelationshipCardinality,
 	RelationshipConstraint,
 	RemovalPlan,
 	RemovalTarget,
 } from "./design";
+import {
+	truncatePostgresIdentifier,
+	uniquePostgresIdentifier,
+} from "./postgres-identifiers";
 
 /** A relationship resolved against the current design. */
 export type RelationshipView = {
@@ -39,6 +44,7 @@ export type RelationshipView = {
 	 * Removal drops only what this flag describes.
 	 */
 	ownsUniqueness: boolean;
+	manyToManyAssociation: DesignManyToManyAssociation | null;
 };
 
 export function isRelationshipCardinality(
@@ -51,6 +57,20 @@ export function isRelationshipCardinality(
 export function primaryKeyColumn(table: DesignTable): DesignColumn | null {
 	const keys = table.columns.filter((column) => column.primaryKey);
 	return keys.length === 1 ? keys[0] : null;
+}
+
+/** Finds the many-to-many association that owns a relationship, if any. */
+export function manyToManyAssociationForRelationship(
+	design: Design,
+	relationshipId: string,
+): DesignManyToManyAssociation | null {
+	return (
+		design.manyToManyRelationships.find(
+			(association) =>
+				association.leftRelationshipId === relationshipId ||
+				association.rightRelationshipId === relationshipId,
+		) ?? null
+	);
 }
 
 /** Returns null when the relationship points at something the design no longer has. */
@@ -71,6 +91,10 @@ export function resolveRelationship(
 	);
 	if (!referencedTable) return null;
 	const referencedColumn = primaryKeyColumn(referencedTable);
+	const manyToManyAssociation = manyToManyAssociationForRelationship(
+		design,
+		relationship.id,
+	);
 	return {
 		relationship,
 		referencingTable,
@@ -83,6 +107,7 @@ export function resolveRelationship(
 			relationship.cardinality === "one-to-one" &&
 			!referencingColumn.unique &&
 			!referencingColumn.primaryKey,
+		manyToManyAssociation,
 	};
 }
 
@@ -107,7 +132,7 @@ export function relationshipsForTable(
 
 /**
  * The generated foreign-key column is named after the referenced table and key
- * (for example `author_id`) and never reuses an existing column name.
+ * (for example `author_id`) and never reuses an existing PostgreSQL column name.
  */
 export function foreignKeyColumnName(
 	referencingTable: DesignTable,
@@ -117,14 +142,15 @@ export function foreignKeyColumnName(
 	const owner = singularize(toSnakeCase(referencedTable.name)) || "referenced";
 	const key = toSnakeCase(referencedColumn.name) || "id";
 	const base = key === "id" ? `${owner}_id` : `${owner}_${key}`;
-	const taken = new Set(referencingTable.columns.map((column) => column.name));
-	if (!taken.has(base)) return base;
-	let index = 2;
-	while (taken.has(`${base}_${index}`)) index += 1;
-	return `${base}_${index}`;
+	const taken = new Set(
+		referencingTable.columns.map((column) =>
+			truncatePostgresIdentifier(column.name),
+		),
+	);
+	return uniquePostgresIdentifier(base, taken);
 }
 
-/** PostgreSQL names foreign keys by table and column; ours is explicit and stable. */
+/** Preferred foreign-key name; SQL generation bounds and deconflicts it. */
 export function relationshipConstraintName(view: RelationshipView): string {
 	return `${view.referencingTable.name}_${view.referencingColumn.name}_fkey`;
 }
@@ -155,17 +181,56 @@ function affectedRelationships(
 	target: RemovalTarget,
 ): AffectedRelationship[] {
 	const affected: AffectedRelationship[] = [];
+	const associationRelationshipIds = new Set(
+		design.manyToManyRelationships.flatMap((association) => [
+			association.leftRelationshipId,
+			association.rightRelationshipId,
+		]),
+	);
+
+	for (const association of design.manyToManyRelationships) {
+		const leftRelationship = design.relationships.find(
+			(relationship) => relationship.id === association.leftRelationshipId,
+		);
+		const rightRelationship = design.relationships.find(
+			(relationship) => relationship.id === association.rightRelationshipId,
+		);
+		if (
+			![leftRelationship, rightRelationship].some(
+				(relationship) =>
+					relationship !== undefined &&
+					relationshipTouchesTarget(design, relationship, target),
+			)
+		) {
+			continue;
+		}
+
+		const leftTable = design.tables.find((table) => table.id === association.leftTableId);
+		const rightTable = design.tables.find((table) => table.id === association.rightTableId);
+		const leftView = leftRelationship
+			? resolveRelationship(design, leftRelationship)
+			: null;
+		const rightView = rightRelationship
+			? resolveRelationship(design, rightRelationship)
+			: null;
+		affected.push({
+			relationshipId: association.id,
+			cardinality: "many-to-many",
+			referencingTable: leftTable?.name ?? "(missing table)",
+			referencingColumn: leftView?.referencedColumn?.name ?? "(no primary key)",
+			referencedTable: rightTable?.name ?? "(missing table)",
+			referencedColumn: rightView?.referencedColumn?.name ?? null,
+			junctionTable:
+				design.tables.find((table) => table.id === association.junctionTableId)?.name ??
+				"(missing table)",
+			constraints: ["foreign-key", "foreign-key", "pair-unique"],
+		});
+	}
+
 	for (const relationship of design.relationships) {
+		if (associationRelationshipIds.has(relationship.id)) continue;
+		if (!relationshipTouchesTarget(design, relationship, target)) continue;
 		const view = resolveRelationship(design, relationship);
-		const ownsTarget =
-			target.kind === "table"
-				? relationship.referencingTableId === target.tableId ||
-					relationship.referencedTableId === target.tableId
-				: (relationship.referencingTableId === target.tableId &&
-						relationship.referencingColumnId === target.columnId) ||
-					(relationship.referencedTableId === target.tableId &&
-						view?.referencedColumn?.id === target.columnId);
-		if (!ownsTarget) continue;
 		affected.push({
 			relationshipId: relationship.id,
 			cardinality: relationship.cardinality,
@@ -177,6 +242,26 @@ function affectedRelationships(
 		});
 	}
 	return affected;
+}
+
+function relationshipTouchesTarget(
+	design: Design,
+	relationship: DesignRelationship,
+	target: RemovalTarget,
+): boolean {
+	if (target.kind === "table") {
+		return (
+			relationship.referencingTableId === target.tableId ||
+			relationship.referencedTableId === target.tableId
+		);
+	}
+	const view = resolveRelationship(design, relationship);
+	return (
+		(relationship.referencingTableId === target.tableId &&
+			relationship.referencingColumnId === target.columnId) ||
+		(relationship.referencedTableId === target.tableId &&
+			view?.referencedColumn?.id === target.columnId)
+	);
 }
 
 function removalTargetLabel(design: Design, target: RemovalTarget): string {

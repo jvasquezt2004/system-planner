@@ -70,7 +70,7 @@
 
     "@babel/types": ["@babel/types@7.29.8", "https://registry.npmjs.org/@babel/types/-/types-7.29.8.tgz", {"dependencies": {"@babel/helper-string-parser": "^7.29.7", "@babel/helper-validator-identifier": "^7.29.7"}}, "sha512-Vj1jF3cPfxg7OAfoI7QnVKLoILlm2JF9pnVHrX8qx7AHMiYWT+NDAA7jChlNgRS4WTLc/fD1lXLmPixluj+3Gg=="],
 
-    "@electric-sql/pglite": ["@electric-sql/pglite@0.5.10", "", {}, ""],
+    "@electric-sql/pglite": ["@electric-sql/pglite@0.5.10", "https://registry.npmjs.org/@electric-sql/pglite/-/pglite-0.5.10.tgz", {}, "sha512-tXc/25U3ulOkiRQuTFdwIv+JhBqtMdAF7Gvo6CfZZWtSB4+hgC4Wr2vwK5ngvvN5PJfAAEGIsfyCVy1JhCOBYw=="],
 
     "@esbuild/aix-ppc64": ["@esbuild/aix-ppc64@0.25.12", "https://registry.npmjs.org/@esbuild/aix-ppc64/-/aix-ppc64-0.25.12.tgz", {"os": ["aix"], "cpu": ["ppc64"]}, "sha512-Hhmwd6CInZ3dwpuGTF8fJG6yoWmsToE+vYgD4nytZVxcu1ulHpUQRAB1UJ8+N1Am3Mz4+xOByoQoSZf4D+CpkA=="],
 

@@ -5,15 +5,25 @@ import type {
 	CanvasViewport,
 	ColumnChanges,
 	ColumnType,
+	DisplayedSqlPreview,
 	RelationshipCardinality,
+	RelationshipCreationCardinality,
 	RemovalPlan,
 	RemovalTarget,
+	SqlPreviewCopyResult,
+	SqlPreviewExportResult,
 	WorkspaceState,
 } from "../shared/design";
-import type { AppRPCSchema } from "../shared/rpc";
+import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
+import { errorMessage } from "../shared/error-message";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
 let latestState: WorkspaceState | null = null;
+
+const pendingSqlExports = new Map<
+	string,
+	(result: SqlPreviewExportResult) => void
+>();
 
 const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 	// Autosave plus sandbox validation can take longer than the 1s default.
@@ -23,6 +33,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 			workspaceState(state) {
 				latestState = state;
 				for (const listener of listeners) listener(state);
+			},
+			sqlPreviewExportCompleted({ requestId, result }) {
+				const resolve = pendingSqlExports.get(requestId);
+				if (!resolve) return;
+				pendingSqlExports.delete(requestId);
+				resolve(result);
 			},
 		},
 	},
@@ -45,6 +61,12 @@ export const workspaceClient = {
 	},
 	openProject(projectId: string): Promise<WorkspaceState> {
 		return rpc.request.openProject({ projectId });
+	},
+	undo(): Promise<WorkspaceState> {
+		return rpc.request.undo({});
+	},
+	redo(): Promise<WorkspaceState> {
+		return rpc.request.redo({});
 	},
 	addTable(name: string, position?: CanvasPoint): Promise<WorkspaceState> {
 		return rpc.request.addTable({ name, position });
@@ -82,12 +104,14 @@ export const workspaceClient = {
 	addRelationship(
 		referencingTableId: string,
 		referencedTableId: string,
-		cardinality?: RelationshipCardinality,
+		cardinality?: RelationshipCreationCardinality,
+		junctionPosition?: CanvasPoint,
 	): Promise<WorkspaceState> {
 		return rpc.request.addRelationship({
 			referencingTableId,
 			referencedTableId,
 			cardinality,
+			junctionPosition,
 		});
 	},
 	updateRelationship(
@@ -102,11 +126,29 @@ export const workspaceClient = {
 	describeRemoval(target: RemovalTarget): Promise<RemovalPlan> {
 		return rpc.request.describeRemoval(target);
 	},
-	copyText(text: string): Promise<void> {
-		return rpc.request.copyText({ text });
-	},
 	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport(viewport);
+	},
+	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
+		return rpc.request.copySqlPreview({ preview });
+	},
+	async exportSqlPreview(request: SqlPreviewExportRequest): Promise<SqlPreviewExportResult> {
+		const { requestId } =
+			await rpc.request.beginSqlPreviewExport(request);
+		const { promise, resolve } =
+			Promise.withResolvers<SqlPreviewExportResult>();
+		pendingSqlExports.set(requestId, resolve);
+		try {
+			await rpc.send.chooseSqlPreviewExportDirectory({ requestId });
+		} catch (cause) {
+			pendingSqlExports.delete(requestId);
+			return {
+				status: "failed",
+				revision: request.preview.revision,
+				error: errorMessage(cause),
+			};
+		}
+		return promise;
 	},
 	subscribe(listener: (state: WorkspaceState) => void): () => void {
 		listeners.add(listener);

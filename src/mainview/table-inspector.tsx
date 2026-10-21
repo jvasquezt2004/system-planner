@@ -15,12 +15,13 @@ import {
 	type ColumnLiteralType,
 	type ColumnType,
 } from "../shared/column-types";
-import type {
-	ColumnChanges,
-	DesignColumn,
-	DesignTable,
-	RelationshipCardinality,
-	SqlState,
+import {
+	getSqlValidationErrors,
+	type ColumnChanges,
+	type DesignColumn,
+	type DesignTable,
+	type RelationshipCardinality,
+	type SqlState,
 } from "../shared/design";
 import type { RelationshipView } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
@@ -95,7 +96,15 @@ export function TableInspector({
 
 	const selectedColumn =
 		table.columns.find((column) => column.id === selectedColumnId) ?? null;
-	const validationErrors = sql.status === "current" ? [] : sql.errors;
+	const manyToManyReference =
+		selectedColumn !== null &&
+		relationships.some(
+			(view) =>
+				view.manyToManyAssociation !== null &&
+				view.referencingTable.id === table.id &&
+				view.referencingColumn.id === selectedColumn.id,
+		);
+	const validationErrors = getSqlValidationErrors(sql);
 	const renamed = name.trim().length > 0 && name.trim() !== table.name;
 
 	return (
@@ -233,6 +242,7 @@ export function TableInspector({
 						<ColumnEditor
 							tableName={table.name}
 							column={selectedColumn}
+							manyToManyReference={manyToManyReference}
 							busy={busy}
 							onApply={(changes) => onApplyColumn(selectedColumn.id, changes)}
 							onRemove={() => onRemoveColumn(selectedColumn.id)}
@@ -282,10 +292,9 @@ export function TableInspector({
 					</ul>
 				)}
 				<p className="px-6 pt-2.5 text-[11.5px] leading-relaxed text-ink-3">
-					A required reference means every referencing record must name one related
-					record. One-to-one also restricts each referenced record to at most one
-					referencing record. Neither setting requires the referenced table to have
-					children.
+					Required references need a parent for every referencing row. One-to-one
+					limits each parent to one referencing row. Many-to-many stores pairs in
+					this editable junction; either endpoint may have no pairs.
 				</p>
 			</Section>
 
@@ -370,10 +379,12 @@ function RelationshipRow({
 	const outgoing = view.referencingTable.id === table.id;
 	const referencing = view.referencingTable.name;
 	const referenced = view.referencedTable.name;
+	const manyToMany = view.manyToManyAssociation !== null;
 	return (
 		<li
 			data-testid="table-relationship"
 			data-relationship-id={relationshipId}
+			data-cardinality={manyToMany ? "many-to-many" : view.relationship.cardinality}
 			data-selected={selected ? "true" : undefined}
 			className={cn(
 				"border-l-2",
@@ -402,61 +413,69 @@ function RelationshipRow({
 						{outgoing ? `References ${referenced}` : `Referenced by ${referencing}`}
 					</span>
 					<span className="kicker shrink-0">
-						{view.oneToOne ? "one-to-one" : "one-to-many"}
+						{manyToMany
+							? "many-to-many"
+							: view.oneToOne
+								? "one-to-one"
+								: "one-to-many"}
 					</span>
 				</span>
 				<span className="truncate pl-5 font-mono text-[10.5px] text-ink-3">
 					{referencing}.{view.referencingColumn.name} → {referenced}.
 					{view.referencedColumn?.name ?? "(no primary key)"}
-					{view.oneToOne ? " · unique" : ""}
+					{manyToMany ? " · visible junction" : view.oneToOne ? " · unique" : ""}
 				</span>
 			</button>
 			<div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 pr-4 pb-2.5 pl-[42px]">
 				<label
 					className="flex items-center gap-1.5 text-[12px] text-ink-2"
 					title={
-						view.oneToOne
-							? `Every ${referencing} record must name one ${referenced} record, and at most one ${referencing} record may name it. ${referenced} records may still have none.`
-							: `Every ${referencing} record must name one ${referenced} record. ${referenced} records may have none.`
+						manyToMany
+							? "Many-to-many junction references are always required."
+							: view.oneToOne
+								? `Every ${referencing} record must name one ${referenced} record, and at most one ${referencing} record may name it. ${referenced} records may still have none.`
+								: `Every ${referencing} record must name one ${referenced} record. ${referenced} records may have none.`
 					}
 				>
 					<Checkbox
 						aria-label={`Required reference from ${referencing} to ${referenced}`}
 						data-testid="relationship-required"
 						checked={view.required}
-						disabled={busy}
+						disabled={busy || manyToMany}
 						onCheckedChange={(checked) => onSetRequired(relationshipId, checked === true)}
 					/>
 					Required
 				</label>
-				<ToggleGroup
-					type="single"
-					variant="outline"
-					size="sm"
-					spacing={0}
-					aria-label={`Cardinality of the reference from ${referencing} to ${referenced}`}
-					value={view.relationship.cardinality}
-					disabled={busy}
-					onValueChange={(value) => {
-						if (
-							(value === "one-to-many" || value === "one-to-one") &&
-							value !== view.relationship.cardinality
-						) {
-							onSetCardinality(relationshipId, value);
-						}
-					}}
-				>
-					<ToggleGroupItem value="one-to-many" data-testid="relationship-one-to-many">
-						many
-					</ToggleGroupItem>
-					<ToggleGroupItem
-						value="one-to-one"
-						data-testid="relationship-one-to-one"
-						title={`One-to-one adds uniqueness on ${referencing}.${view.referencingColumn.name}, so at most one record may name the same ${referenced} record.`}
+				{!manyToMany && (
+					<ToggleGroup
+						type="single"
+						variant="outline"
+						size="sm"
+						spacing={0}
+						aria-label={`Cardinality of the reference from ${referencing} to ${referenced}`}
+						value={view.relationship.cardinality}
+						disabled={busy}
+						onValueChange={(value) => {
+							if (
+								(value === "one-to-many" || value === "one-to-one") &&
+								value !== view.relationship.cardinality
+							) {
+								onSetCardinality(relationshipId, value);
+							}
+						}}
 					>
-						one-to-one
-					</ToggleGroupItem>
-				</ToggleGroup>
+						<ToggleGroupItem value="one-to-many" data-testid="relationship-one-to-many">
+							many
+						</ToggleGroupItem>
+						<ToggleGroupItem
+							value="one-to-one"
+							data-testid="relationship-one-to-one"
+							title={`One-to-one adds uniqueness on ${referencing}.${view.referencingColumn.name}, so at most one record may name the same ${referenced} record.`}
+						>
+							one-to-one
+						</ToggleGroupItem>
+					</ToggleGroup>
+				)}
 				<Button
 					variant="strike"
 					size="xs"
@@ -464,11 +483,15 @@ function RelationshipRow({
 					onPointerDown={(event) => event.stopPropagation()}
 					onClick={() => onRemove(relationshipId)}
 					disabled={busy}
-					title="Remove the relationship-owned foreign key and uniqueness, keeping the columns"
+					title={
+						manyToMany
+							? "Remove the many-to-many relationship's constraints, keeping the junction and its columns"
+							: "Remove the relationship-owned foreign key and uniqueness, keeping the columns"
+					}
 					className="ml-auto"
 				>
 					<Unlink />
-					Remove link
+					{manyToMany ? "Remove association" : "Remove link"}
 				</Button>
 			</div>
 		</li>
@@ -548,12 +571,14 @@ function capitalize(value: string): string {
 function ColumnEditor({
 	tableName,
 	column,
+	manyToManyReference,
 	busy,
 	onApply,
 	onRemove,
 }: {
 	tableName: string;
 	column: DesignColumn;
+	manyToManyReference: boolean;
 	busy: boolean;
 	onApply: (changes: ColumnChanges) => void;
 	onRemove: () => void;
@@ -670,6 +695,13 @@ function ColumnEditor({
 					{tableName}.{column.name}
 				</span>
 			</header>
+			{manyToManyReference && (
+				<Hint testId="many-to-many-reference-lock">
+					Many-to-many references stay required; pair uniqueness belongs to the
+					association. Nullability, uniqueness, primary-key, and default/identity
+					settings are locked.
+				</Hint>
+			)}
 
 			<Field label="Name" htmlFor="column-name">
 				<Input
@@ -719,7 +751,11 @@ function ColumnEditor({
 			)}
 
 			<Field label="Default">
-				<Select value={choice} onValueChange={(value) => chooseDefault(value as DefaultChoice)}>
+				<Select
+					value={choice}
+					onValueChange={(value) => chooseDefault(value as DefaultChoice)}
+					disabled={manyToManyReference}
+				>
 					<SelectTrigger
 						aria-label="Column default"
 						data-testid="column-default-picker"
@@ -767,6 +803,7 @@ function ColumnEditor({
 							spacing={0}
 							aria-label="Default value"
 							data-testid="column-default-literal"
+							disabled={manyToManyReference}
 							value={literalValue === "true" || literalValue === "false" ? literalValue : ""}
 							onValueChange={(value) => {
 								if (value) updateLiteralValue(value);
@@ -784,6 +821,7 @@ function ColumnEditor({
 							value={literalValue}
 							onChange={(event) => updateLiteralValue(event.target.value)}
 							aria-label="Default value"
+							disabled={manyToManyReference}
 							data-testid="column-default-literal"
 							rows={2}
 							placeholder={LITERAL_PLACEHOLDERS.json}
@@ -794,6 +832,7 @@ function ColumnEditor({
 							value={literalValue}
 							onChange={(event) => updateLiteralValue(event.target.value)}
 							aria-label="Default value"
+							disabled={manyToManyReference}
 							data-testid="column-default-literal"
 							inputMode={
 								literalType === "integer" || literalType === "numeric"
@@ -831,7 +870,7 @@ function ColumnEditor({
 						label="Nullable"
 						testId="column-nullable"
 						checked={draft.nullable}
-						disabled={draft.primaryKey || draft.identity}
+						disabled={manyToManyReference || draft.primaryKey || draft.identity}
 						title={
 							draft.primaryKey
 								? "A primary key is always required"
@@ -845,7 +884,7 @@ function ColumnEditor({
 						label="Unique"
 						testId="column-unique"
 						checked={draft.unique && !draft.primaryKey}
-						disabled={draft.primaryKey}
+						disabled={manyToManyReference || draft.primaryKey}
 						title={draft.primaryKey ? "A primary key is already unique" : undefined}
 						onChange={(checked) => setDraft({ ...draft, unique: checked })}
 					/>
@@ -853,6 +892,7 @@ function ColumnEditor({
 						label="Primary key"
 						testId="column-primary-key"
 						checked={draft.primaryKey}
+						disabled={manyToManyReference}
 						onChange={(checked) =>
 							setDraft(
 								checked

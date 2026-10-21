@@ -9,8 +9,15 @@ import type {
 	RemovalTarget,
 	RemoveRelationshipAction,
 	UpdateRelationshipAction,
+	DisplayedSqlPreview,
+	SqlPreviewCopyResult,
+	SqlPreviewExportResult,
 	WorkspaceState,
 } from "./design";
+export type SqlPreviewExportRequest = Readonly<{
+	preview: DisplayedSqlPreview;
+	fileName: string;
+}>;
 
 /**
  * Typed Electrobun communication between the Bun main process and the React
@@ -30,6 +37,14 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			};
 			openProject: {
 				params: { projectId: string };
+				response: WorkspaceState;
+			};
+			undo: {
+				params: Record<string, never>;
+				response: WorkspaceState;
+			};
+			redo: {
+				params: Record<string, never>;
 				response: WorkspaceState;
 			};
 			addTable: {
@@ -80,17 +95,27 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: CanvasViewport;
 				response: WorkspaceState;
 			};
-			copyText: {
-				params: { text: string };
-				response: void;
+			copySqlPreview: {
+				params: { preview: DisplayedSqlPreview };
+				response: SqlPreviewCopyResult;
+			};
+			beginSqlPreviewExport: {
+				params: SqlPreviewExportRequest;
+				response: { requestId: string };
 			};
 		};
-		messages: Record<string, never>;
+		messages: {
+			chooseSqlPreviewExportDirectory: { requestId: string };
+		};
 	};
 	webview: {
 		requests: Record<string, never>;
 		messages: {
 			workspaceState: WorkspaceState;
+			sqlPreviewExportCompleted: {
+				requestId: string;
+				result: SqlPreviewExportResult;
+			};
 		};
 	};
 }

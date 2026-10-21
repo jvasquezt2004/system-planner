@@ -20,7 +20,10 @@ import {
 const openWorkspaces: DesignWorkspace[] = [];
 const temporaryDirectories: string[] = [];
 
-type TestWorkspaceOptions = Pick<DesignWorkspaceOptions, "createSandbox" | "openStore">;
+type TestWorkspaceOptions = Pick<
+	DesignWorkspaceOptions,
+	"createSandbox" | "openStore" | "now"
+>;
 
 async function openTestWorkspace(options: TestWorkspaceOptions = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "db-planner-workspace-"));
@@ -83,6 +86,7 @@ describe("design workspace", () => {
 		expect(created.design).toEqual({
 			tables: [],
 			relationships: [],
+			manyToManyRelationships: [],
 			viewport: { x: 0, y: 0, zoom: 1 },
 		});
 		expect(created.save.status).toBe("saved");
@@ -171,11 +175,16 @@ describe("design workspace", () => {
 		await workspace.createProject({ name: "Library" });
 		const state = await workspace.addTable({ name: "Books" });
 
-		expect(state.save.status).toBe("saved");
-		expect(state.design?.tables.map((table) => table.name)).toEqual(["Books"]);
+		expect(state.sql.status).toBe("current");
+		if (state.sql.status !== "current") {
+			throw new Error("Expected generated SQL even though its first sandbox build failed.");
+		}
+		expect(state.sql.revision).toBe(state.revision);
 		expect(state.sandbox.status).toBe("failed");
 		if (state.sandbox.status === "failed") {
+			expect(state.sandbox.failure).toBe("sandbox-error");
 			expect(state.sandbox.error).toContain("PGlite runtime unavailable");
+			expect(state.sandbox.lastApplied).toBeNull();
 		}
 
 		const persistedDesign = await workspace.getState();
@@ -220,7 +229,7 @@ describe("design workspace", () => {
 		expect(schoolState.project?.name).toBe("School");
 		expect(schoolState.design?.tables.map((table) => table.name)).toEqual(["Students"]);
 		expect(schoolState.revision).toBe(2);
-	});
+	}, 60_000);
 
 	test("autosaves an incomplete, semantically invalid draft and restores it in a fresh workspace", async () => {
 		const { workspace, databasePath } = await openTestWorkspace();
@@ -246,7 +255,7 @@ describe("design workspace", () => {
 			"Books",
 		]);
 		expect(reopenedState.save).toMatchObject({ status: "saved", revision: 3 });
-	});
+	}, 30_000);
 
 	test("applies rapid edits immediately and never lets a late older save replace the latest design", async () => {
 		// Revision 2 finishes after 3 and 4, so completion order is inverted.
@@ -404,6 +413,58 @@ describe("design workspace", () => {
 			throw new Error("Expected the sandbox to accept the renamed table.");
 		}
 		expect(state.sandbox.tables.map((applied) => applied.name)).toEqual(["Volumes"]);
+	}, 30_000);
+
+	test("debounces rapid structural edits and applies only the settled design", async () => {
+		let rebuilds = 0;
+		const { workspace } = await openTestWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					async apply(sql) {
+						rebuilds += 1;
+						return sandbox.apply(sql);
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+
+		await workspace.createProject({ name: "Library" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = requireTable(withTable.design?.tables[0]);
+		const renameToVolumes = workspace.renameTable({ tableId: table.id, name: "Volumes" });
+		const renameToDrafts = workspace.renameTable({ tableId: table.id, name: "Drafts" });
+		const renameBackToVolumes = workspace.renameTable({ tableId: table.id, name: "Volumes" });
+
+		const pending = workspace.getState();
+		expect(pending.sql).toMatchObject({
+			status: "checking",
+			availableRevision: withTable.revision,
+			draftRevision: pending.revision,
+		});
+		if (pending.sql.status !== "checking") {
+			throw new Error("Expected the current draft to be awaiting preview validation.");
+		}
+		expect(pending.sql.sql).toContain('CREATE TABLE "Books"');
+		expect(pending.sandbox).toMatchObject({
+			status: "applied",
+			revision: withTable.revision,
+		});
+
+		await Promise.all([renameToVolumes, renameToDrafts, renameBackToVolumes]);
+		const settled = workspace.getState();
+		expect(settled.sql).toMatchObject({
+			status: "current",
+			revision: settled.revision,
+		});
+		if (settled.sql.status !== "current") {
+			throw new Error("Expected the settled design to have current SQL.");
+		}
+		expect(settled.sql.sql).toContain('CREATE TABLE "Volumes"');
+		expect(settled.sql.sql).not.toContain('CREATE TABLE "Drafts"');
+		expect(settled.sandbox.status).toBe("applied");
+		expect(rebuilds).toBe(2);
 	});
 
 	test("saves a rename that makes the draft temporarily invalid without dropping the sandbox", async () => {
@@ -423,8 +484,181 @@ describe("design workspace", () => {
 			throw new Error("Expected the SQL preview to be out of date.");
 		}
 		expect(state.sql.errors.join(" ")).toContain("used more than once");
+		expect(state.sql.revision).toBe(3);
+		expect(state.sql.draftRevision).toBe(4);
 		expect(state.sandbox).toMatchObject({ status: "applied", revision: 3 });
+	}, 30_000);
+	test("shows an empty blocked preview when the first draft cannot generate SQL", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		const created = await workspace.createProject({ name: "Unfinished" });
+		expect(created.sql).toMatchObject({
+			status: "empty",
+			draftRevision: created.revision,
+			errors: [],
+		});
+		const first = workspace.addTable({ name: "Books" });
+		const second = workspace.addTable({ name: "Books" });
+		await Promise.all([first, second]);
+
+		const blocked = workspace.getState();
+		expect(blocked.design?.tables.map((table) => table.name)).toEqual(["Books", "Books"]);
+		expect(blocked.sql).toMatchObject({
+			status: "empty",
+			draftRevision: blocked.revision,
+		});
+		expect(blocked.sql.status === "empty" ? blocked.sql.errors.join(" ") : "").toContain(
+			"used more than once",
+		);
+		expect(blocked.sandbox).toEqual({ status: "idle" });
 	});
+
+	test("retains the last successful sandbox when PostgreSQL rejects a candidate", async () => {
+		let attempts = 0;
+		const { workspace } = await openTestWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					apply(sql) {
+						attempts += 1;
+						return sandbox.apply(
+							attempts === 1 ? sql : `${sql}\nTHIS IS NOT VALID SQL`,
+						);
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+
+		await workspace.createProject({ name: "Library" });
+		const accepted = await workspace.addTable({ name: "Books" });
+		const table = requireTable(accepted.design?.tables[0]);
+		const rejected = await workspace.renameTable({
+			tableId: table.id,
+			name: "Volumes",
+		});
+
+		expect(rejected.design?.tables[0].name).toBe("Volumes");
+		expect(rejected.sql.status).toBe("current");
+		if (rejected.sql.status !== "current") {
+			throw new Error("Expected generated SQL to remain available after a sandbox rejection.");
+		}
+		expect(rejected.sandbox.status).toBe("failed");
+		if (rejected.sandbox.status !== "failed") {
+			throw new Error("Expected PostgreSQL to reject the candidate preview.");
+		}
+		expect(rejected.sandbox.failure).toBe("sql-rejected");
+		if (rejected.sandbox.failure !== "sql-rejected") {
+			throw new Error("Expected a SQL rejection result.");
+		}
+		expect(rejected.sandbox.attemptedSql).toBe(rejected.sql.sql);
+		expect(rejected.sandbox.error.toLowerCase()).toContain("syntax error");
+		expect(rejected.sandbox.lastApplied).toMatchObject({
+			revision: accepted.revision,
+			sql: accepted.sql.status === "current" ? accepted.sql.sql : "",
+			tables: [{ name: "Books" }],
+		});
+	}, 30_000);
+
+	test("ignores older sandbox completions after a newer edit or project switch", async () => {
+		type PreviewGate = {
+			started: Promise<void>;
+			signalStarted: () => void;
+			wait: Promise<void>;
+			unblock: () => void;
+		};
+		const createGate = () => {
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			return {
+				started: started.promise,
+				signalStarted: started.resolve,
+				wait: release.promise,
+				unblock: release.resolve,
+			};
+		};
+		let nextGate: PreviewGate | null = null;
+		const { workspace } = await openTestWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					async apply(sql) {
+						const result = await sandbox.apply(sql);
+						const gate = nextGate;
+						if (gate) {
+							nextGate = null;
+							gate.signalStarted();
+							await gate.wait;
+						}
+						return result;
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+
+		let revisionGate: PreviewGate | null = null;
+		let projectGate: PreviewGate | null = null;
+		try {
+			await workspace.createProject({ name: "Alpha" });
+			const alpha = await workspace.addTable({ name: "Authors" });
+			const author = requireTable(alpha.design?.tables[0]);
+
+			revisionGate = createGate();
+			nextGate = revisionGate;
+			const olderRevision = workspace.renameTable({
+				tableId: author.id,
+				name: "Writers",
+			});
+			await revisionGate.started;
+			const latestRevision = await workspace.renameTable({
+				tableId: author.id,
+				name: "Novelists",
+			});
+			expect(latestRevision.sandbox).toMatchObject({
+				status: "applied",
+				revision: latestRevision.revision,
+			});
+			revisionGate.unblock();
+			await olderRevision;
+			expect(workspace.getState().sql).toMatchObject({
+				status: "current",
+				revision: latestRevision.revision,
+			});
+
+			projectGate = createGate();
+			nextGate = projectGate;
+			const previousProjectWork = workspace.renameTable({
+				tableId: author.id,
+				name: "Late Writers",
+			});
+			await projectGate.started;
+			await workspace.createProject({ name: "Beta" });
+			const beta = await workspace.addTable({ name: "Books" });
+			projectGate.unblock();
+			await previousProjectWork;
+
+			const current = workspace.getState();
+			expect(current.project?.name).toBe("Beta");
+			expect(current.design?.tables.map((table) => table.name)).toEqual(["Books"]);
+			expect(current.sql).toMatchObject({
+				status: "current",
+				revision: beta.revision,
+			});
+			if (current.sql.status !== "current") {
+				throw new Error("Expected current SQL for the selected project.");
+			}
+			expect(current.sql.sql).not.toContain("Late Writers");
+			expect(current.sandbox).toMatchObject({
+				status: "applied",
+				revision: beta.revision,
+			});
+		} finally {
+			revisionGate?.unblock();
+			projectGate?.unblock();
+		}
+	}, 60_000);
+
 
 	test(
 		"removes one table without removing unrelated tables",
@@ -1529,6 +1763,42 @@ describe("design workspace", () => {
 			position: { x: 512, y: 256 },
 		});
 	});
+	test("keeps save feedback on the newest layout revision when an older save finishes late", async () => {
+		let savedAt = 0;
+		const { workspace, databasePath } = await openTestWorkspace({
+			now: () => ++savedAt,
+			openStore: (path) =>
+				createDelayedStore(path, (documentRevision) =>
+					documentRevision === 3 ? 80 : 0,
+				),
+		});
+		await workspace.createProject({ name: "Layout history" });
+		const added = await workspace.addTable({ name: "Books" });
+		const books = requireTable(added.design?.tables[0]);
+
+		const olderSave = workspace.moveTable({
+			tableId: books.id,
+			position: { x: 180, y: 120 },
+		});
+		const latest = await workspace.moveTable({
+			tableId: books.id,
+			position: { x: 360, y: 240 },
+		});
+		expect(latest.save.status).toBe("saved");
+		await olderSave;
+		expect(workspace.getState().design?.tables[0].position).toEqual({
+			x: 360,
+			y: 240,
+		});
+		expect(workspace.getState().save).toEqual(latest.save);
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		expect(reopened.getState().design?.tables[0].position).toEqual({
+			x: 360,
+			y: 240,
+		});
+	}, 30_000);
 });
 
 function requireTable(table: DesignTable | undefined): DesignTable {

@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, FileCode2, PenTool, Plus, X } from "lucide-react";
-import type {
-	AffectedRelationship,
-	CanvasPoint,
-	CanvasViewport,
-	ColumnChanges,
-	ProjectSummary,
-	RelationshipCardinality,
-	RemovalPlan,
-	RemovalTarget,
-	SandboxState,
-	SaveState,
-	SqlState,
-	WorkspaceState,
+import { ChevronDown, FileCode2, PenTool, Plus, Redo2, Undo2, X } from "lucide-react";
+import { errorMessage } from "../shared/error-message";
+import {
+	getSqlPreviewValidationStatus,
+	getSqlValidationErrors,
+	type AffectedRelationship,
+	type CanvasPoint,
+	type CanvasViewport,
+	type ColumnChanges,
+	type ProjectSummary,
+	type RelationshipCardinality,
+	type RelationshipCreationCardinality,
+	type RemovalPlan,
+	type RemovalTarget,
+	type SandboxState,
+	type SaveState,
+	type SqlPreviewValidationStatus,
+	type SqlState,
+	type WorkspaceState,
 } from "../shared/design";
 import { relationshipsForTable } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
@@ -43,7 +48,7 @@ import {
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { TableCanvas } from "./canvas";
-import { SqlPreviewView } from "./sql-preview";
+import { SqlPreviewView, sqlStatusLine } from "./sql-preview";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
 
@@ -176,7 +181,8 @@ function App() {
 		(
 			referencingTableId: string,
 			referencedTableId: string,
-			cardinality: RelationshipCardinality,
+			cardinality: RelationshipCreationCardinality,
+			junctionPosition?: CanvasPoint,
 		) => {
 			void (async () => {
 				setBusy(true);
@@ -186,13 +192,24 @@ function App() {
 						referencingTableId,
 						referencedTableId,
 						cardinality,
+						junctionPosition,
 					);
 					setState(next);
-					const created =
-						next.design?.relationships[next.design.relationships.length - 1];
-					setSelectedTableId(referencingTableId);
+					// A many-to-many relationship opens its new junction table.
+					if (cardinality === "many-to-many") {
+						const associations = next.design?.manyToManyRelationships ?? [];
+						const created = associations[associations.length - 1];
+						if (created) {
+							setSelectedTableId(created.junctionTableId);
+							setSelectedRelationshipId(created.leftRelationshipId);
+						}
+					} else {
+						const created =
+							next.design?.relationships[next.design.relationships.length - 1];
+						setSelectedTableId(referencingTableId);
+						if (created) setSelectedRelationshipId(created.id);
+					}
 					setSelectedColumnId(null);
-					if (created) setSelectedRelationshipId(created.id);
 				} catch (cause) {
 					setError(errorMessage(cause));
 				} finally {
@@ -356,6 +373,8 @@ function App() {
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
+				onUndo={() => void run(() => workspaceClient.undo())}
+				onRedo={() => void run(() => workspaceClient.redo())}
 				view={view}
 				onViewChange={setView}
 			/>
@@ -401,7 +420,15 @@ function App() {
 								onAddTable={handleAddTable}
 							/>
 						</div>
-						{view === "sql" && <SqlPreviewView sql={state.sql} sandbox={state.sandbox} />}
+						{view === "sql" && (
+							<SqlPreviewView
+								key={state.project.id}
+								sql={state.sql}
+								sandbox={state.sandbox}
+								draftRevision={state.revision}
+								validationStatus={getSqlPreviewValidationStatus(state)}
+							/>
+						)}
 					</>
 				) : (
 					<ProjectIndex
@@ -495,6 +522,8 @@ function Masthead({
 	busy,
 	onOpenProject,
 	onNewProject,
+	onUndo,
+	onRedo,
 	view,
 	onViewChange,
 }: {
@@ -502,6 +531,8 @@ function Masthead({
 	busy: boolean;
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
+	onUndo: () => void;
+	onRedo: () => void;
 	view: WorkspaceView;
 	onViewChange: (view: WorkspaceView) => void;
 }) {
@@ -572,6 +603,32 @@ function Masthead({
 						rev. {state.revision}
 					</span>
 				)}
+				{project && (
+					<span className="flex shrink-0 items-center">
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							data-testid="undo-button"
+							aria-label="Undo last design change"
+							title="Undo last design change"
+							disabled={busy || !state.undoRedo.canUndo}
+							onClick={onUndo}
+						>
+							<Undo2 />
+						</Button>
+						<Button
+							variant="ghost"
+							size="icon-sm"
+							data-testid="redo-button"
+							aria-label="Redo last undone design change"
+							title="Redo last undone design change"
+							disabled={busy || !state.undoRedo.canRedo}
+							onClick={onRedo}
+						>
+							<Redo2 />
+						</Button>
+					</span>
+				)}
 			</div>
 
 			<div className="flex shrink-0 items-center gap-5">
@@ -581,10 +638,13 @@ function Masthead({
 							<SaveStatus save={state.save} />
 						</StatusLine>
 						<StatusLine label="Sandbox">
-							<SandboxStatus sandbox={state.sandbox} />
+							<SandboxStatus sandbox={state.sandbox} draftRevision={state.revision} />
 						</StatusLine>
 						<StatusLine label="SQL">
-							<SqlStatus sql={state.sql} />
+							<SqlStatus
+								sql={state.sql}
+								validationStatus={getSqlPreviewValidationStatus(state)}
+							/>
 						</StatusLine>
 					</dl>
 				)}
@@ -660,13 +720,25 @@ function SaveStatus({ save }: { save: SaveState }) {
 	);
 }
 
-function SandboxStatus({ sandbox }: { sandbox: SandboxState }) {
+/**
+ * The sandbox line separates a result for the current draft from an older
+ * one: an accepted revision that is not the draft reads as out of date.
+ */
+function SandboxStatus({
+	sandbox,
+	draftRevision,
+}: {
+	sandbox: SandboxState;
+	draftRevision: number;
+}) {
 	if (sandbox.status === "applied") {
+		const current = sandbox.revision === draftRevision;
 		return (
 			<>
-				<Mark tone="ok" />
-				<span className="text-ink-2">
-					Accepted <span className="figures font-mono text-[11px] text-ink-3">rev. {sandbox.revision}</span>
+				<Mark tone={current ? "ok" : "warn"} />
+				<span className={current ? "text-ink-2" : "text-ochre"}>
+					{current ? "Accepted" : "Out of date"}{" "}
+					<span className="figures font-mono text-[11px] text-ink-3">rev. {sandbox.revision}</span>
 				</span>
 			</>
 		);
@@ -675,8 +747,9 @@ function SandboxStatus({ sandbox }: { sandbox: SandboxState }) {
 		return (
 			<>
 				<Mark tone="bad" />
-				<span className="text-proof-red">
-					Rejected <span className="figures font-mono text-[11px]">rev. {sandbox.revision}</span>
+				<span className="text-proof-red" title={sandbox.error}>
+					{sandbox.failure === "sql-rejected" ? "Rejected" : "Sandbox error"}{" "}
+					<span className="figures font-mono text-[11px]">rev. {sandbox.revision}</span>
 				</span>
 			</>
 		);
@@ -685,7 +758,7 @@ function SandboxStatus({ sandbox }: { sandbox: SandboxState }) {
 		return (
 			<>
 				<Mark tone="warn" />
-				<span className="text-ink-3 italic">Applying…</span>
+				<span className="text-ink-3 italic">Rebuilding…</span>
 			</>
 		);
 	}
@@ -697,29 +770,29 @@ function SandboxStatus({ sandbox }: { sandbox: SandboxState }) {
 	);
 }
 
-function SqlStatus({ sql }: { sql: SqlState }) {
-	if (sql.status === "current") {
-		return (
-			<>
-				<Mark tone="ok" />
-				<span className="text-ink-2">Current</span>
-			</>
-		);
-	}
-	if (sql.status === "stale") {
-		return (
-			<>
-				<Mark tone="warn" />
-				<span className="text-ochre" title={sql.errors.join("\n")}>
-					Out of date
-				</span>
-			</>
-		);
-	}
+function SqlStatus({
+	sql,
+	validationStatus,
+}: {
+	sql: SqlState;
+	validationStatus: SqlPreviewValidationStatus | null;
+}) {
+	const status = sqlStatusLine(sql, validationStatus);
+	const errors = getSqlValidationErrors(sql);
 	return (
 		<>
-			<Mark tone="muted" />
-			<span className="text-ink-3">Not available</span>
+			<Mark tone={status.tone} />
+			<span
+				className={cn(
+					status.tone === "ok" && "text-ink-2",
+					status.tone === "warn" && "text-ochre",
+					status.tone === "bad" && "text-proof-red",
+					status.tone === "muted" && "text-ink-3",
+				)}
+				title={errors.length > 0 ? errors.join("\n") : undefined}
+			>
+				{status.label}
+			</span>
 		</>
 	);
 }
@@ -927,16 +1000,18 @@ function RemovalDialog({
 										)}
 									>
 										<span className="min-w-0 truncate">
-											{relationship.referencingTable}.{relationship.referencingColumn} →{" "}
-											{relationship.referencedTable}.
-											{relationship.referencedColumn ?? "(no primary key)"}
+											{relationship.cardinality === "many-to-many"
+												? `${relationship.referencingTable} ↔ ${relationship.referencedTable} via ${relationship.junctionTable ?? "(missing junction)"}`
+												: `${relationship.referencingTable}.${relationship.referencingColumn} → ${relationship.referencedTable}.${relationship.referencedColumn ?? "(no primary key)"}`}
 										</span>
 										<span className="kicker shrink-0">
-											{relationship.constraints
-												.map((constraint) =>
-													constraint === "unique" ? "unique" : "foreign key",
-												)
-												.join(" + ")}
+											{relationship.cardinality === "many-to-many"
+												? "2 foreign keys + unique pair"
+												: relationship.constraints
+														.map((constraint) =>
+															constraint === "unique" ? "unique" : "foreign key",
+														)
+														.join(" + ")}
 										</span>
 									</li>
 								))}
@@ -960,10 +1035,6 @@ function RemovalDialog({
 			</DialogContent>
 		</Dialog>
 	);
-}
-
-function errorMessage(cause: unknown): string {
-	return cause instanceof Error ? cause.message : String(cause);
 }
 
 export default App;

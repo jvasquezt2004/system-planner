@@ -57,6 +57,14 @@ export type DesignTable = {
  * column; neither cardinality requires the referenced side to participate.
  */
 export type RelationshipCardinality = "one-to-many" | "one-to-one";
+/** Cardinality choices available when the designer starts a relationship. */
+export type RelationshipCreationCardinality =
+	| RelationshipCardinality
+	| "many-to-many";
+
+export type AffectedRelationshipCardinality =
+	| RelationshipCardinality
+	| "many-to-many";
 
 /**
  * An association backed by a real foreign key. The referencing side owns a
@@ -74,9 +82,20 @@ export type DesignRelationship = {
 	referencedTableId: string;
 };
 
+/** One visible junction table groups its two required endpoint references. */
+export type DesignManyToManyAssociation = {
+	id: string;
+	leftTableId: string;
+	rightTableId: string;
+	junctionTableId: string;
+	leftRelationshipId: string;
+	rightRelationshipId: string;
+};
+
 export type Design = {
 	tables: DesignTable[];
 	relationships: DesignRelationship[];
+	manyToManyRelationships: DesignManyToManyAssociation[];
 	viewport: CanvasViewport;
 };
 
@@ -87,9 +106,71 @@ export type SaveState =
 	| { status: "failed"; revision: number; error: string };
 
 export type SqlState =
-	| { status: "empty"; errors: string[] }
+	| { status: "empty"; draftRevision: number; errors: string[] }
+	| {
+			status: "checking";
+			draftRevision: number;
+			availableRevision: number | null;
+			sql: string | null;
+	  }
 	| { status: "current"; revision: number; sql: string }
-	| { status: "stale"; revision: number; sql: string; errors: string[] };
+	| {
+			status: "stale";
+			revision: number;
+			draftRevision: number;
+			sql: string;
+			errors: string[];
+	  };
+
+/** Immutable SQL and status represented by the preview when an action starts. */
+export type DisplayedSqlPreview = Readonly<{
+	status: "current" | "checking" | "stale";
+	revision: number;
+	draftRevision: number;
+	sql: string;
+}>;
+
+/** Result of copying the read-only SQL preview to the system clipboard. */
+export type SqlPreviewCopyResult =
+	| { status: "copied"; revision: number }
+	| { status: "failed"; revision: number; error: string };
+
+/** Result of exporting a read-only SQL preview to a new file. */
+export type SqlPreviewExportResult =
+	| { status: "saved"; revision: number; path: string }
+	| { status: "cancelled"; revision: number }
+	| { status: "failed"; revision: number; error: string };
+
+/** Returns the SQL text currently visible, including an older stale snapshot. */
+export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | null {
+	switch (sql.status) {
+		case "current":
+			return {
+				status: "current",
+				revision: sql.revision,
+				draftRevision: sql.revision,
+				sql: sql.sql,
+			};
+		case "checking":
+			return sql.sql === null || sql.availableRevision === null
+				? null
+				: {
+						status: "checking",
+						revision: sql.availableRevision,
+						draftRevision: sql.draftRevision,
+						sql: sql.sql,
+					};
+		case "stale":
+			return {
+				status: "stale",
+				revision: sql.revision,
+				draftRevision: sql.draftRevision,
+				sql: sql.sql,
+			};
+		case "empty":
+			return null;
+	}
+}
 
 export type SandboxAppliedColumn = {
 	name: string;
@@ -118,27 +199,57 @@ export type SandboxAppliedRelationship = {
 	deleteRule: string;
 };
 
+/** One successful, disposable sandbox build for a specific design revision. */
+export type SandboxSnapshot = {
+	revision: number;
+	tables: SandboxAppliedTable[];
+	relationships: SandboxAppliedRelationship[];
+	sql: string;
+};
+
+export type SandboxFailure = "sql-rejected" | "sandbox-error";
+
 export type SandboxState =
 	| { status: "idle" }
-	| { status: "applying"; revision: number }
 	| {
-			status: "applied";
+			status: "applying";
 			revision: number;
-			tables: SandboxAppliedTable[];
-			relationships: SandboxAppliedRelationship[];
-			sql: string;
+			attemptedSql: string;
+			lastApplied: SandboxSnapshot | null;
 	  }
+	| ({ status: "applied" } & SandboxSnapshot)
 	| {
 			status: "failed";
+			failure: "sql-rejected";
 			revision: number;
 			attemptedSql: string;
 			error: string;
+			lastApplied: SandboxSnapshot | null;
+	  }
+	| {
+			status: "failed";
+			failure: "sandbox-error";
+			revision: number;
+			error: string;
+			lastApplied: SandboxSnapshot | null;
 	  };
 
+export function getSqlValidationErrors(sql: SqlState): string[] {
+	return sql.status === "empty" || sql.status === "stale" ? sql.errors : [];
+}
+
+export function getLastAppliedSandbox(
+	sandbox: SandboxState,
+): SandboxSnapshot | null {
+	if (sandbox.status === "applied") return sandbox;
+	if (sandbox.status === "idle") return null;
+	return sandbox.lastApplied;
+}
+
 /**
- * Observable state of the design workspace. It distinguishes the current
- * project/design revision, save outcome, SQL availability, and sandbox outcome
- * so that unfinished, stale, failed, and applied states never blur together.
+ * Observable workspace state. `revision` identifies the current draft,
+ * `sql.revision` identifies available SQL, and an applied sandbox's revision
+ * or a non-null `sandbox.lastApplied.revision` identifies the last success.
  */
 export type WorkspaceState = {
 	projects: ProjectSummary[];
@@ -148,7 +259,112 @@ export type WorkspaceState = {
 	save: SaveState;
 	sql: SqlState;
 	sandbox: SandboxState;
+	/** In-memory undo/redo availability for the currently open project only. */
+	undoRedo: { canUndo: boolean; canRedo: boolean };
 };
+
+/** How the displayed SQL relates to sandbox validation for the current draft. */
+export type SqlPreviewValidationStatus =
+	| { status: "accepted"; tone: "success"; revision: number }
+	| {
+			status: "out-of-date";
+			tone: "info";
+			sqlRevision: number;
+			draftRevision: number;
+	  }
+	| {
+			status: "not-yet-validated";
+			tone: "info";
+			sqlRevision: number;
+			draftRevision: number;
+			reason: "checking" | "rebuilding" | "not-started";
+	  }
+	| {
+			status: "sandbox-error";
+			tone: "error";
+			revision: number;
+			error: string;
+	  }
+	| {
+			status: "rejected";
+			tone: "error";
+			revision: number;
+			error: string;
+	  };
+
+/** Derives validation feedback for the exact SQL preview visible in the workspace. */
+export function getSqlPreviewValidationStatus(
+	state: WorkspaceState,
+): SqlPreviewValidationStatus | null {
+	const preview = getDisplayedSqlPreview(state.sql);
+	if (!preview) return null;
+
+	if (state.sql.status === "stale") {
+		return {
+			status: "out-of-date",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+		};
+	}
+
+	if (state.sql.status === "checking") {
+		return {
+			status: "not-yet-validated",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+			reason: "checking",
+		};
+	}
+
+	const { sandbox } = state;
+	if (sandbox.status === "failed" && sandbox.revision === preview.revision) {
+		return sandbox.failure === "sql-rejected"
+			? {
+					status: "rejected",
+					tone: "error",
+					revision: preview.revision,
+					error: sandbox.error,
+				}
+			: {
+					status: "sandbox-error",
+					tone: "error",
+					revision: preview.revision,
+					error: sandbox.error,
+				};
+	}
+
+	if (sandbox.status === "applying" && sandbox.revision === preview.revision) {
+		return {
+			status: "not-yet-validated",
+			tone: "info",
+			sqlRevision: preview.revision,
+			draftRevision: state.revision,
+			reason: "rebuilding",
+		};
+	}
+
+	if (
+		sandbox.status === "applied" &&
+		sandbox.revision === preview.revision &&
+		state.revision === preview.revision
+	) {
+		return {
+			status: "accepted",
+			tone: "success",
+			revision: preview.revision,
+		};
+	}
+
+	return {
+		status: "not-yet-validated",
+		tone: "info",
+		sqlRevision: preview.revision,
+		draftRevision: state.revision,
+		reason: "not-started",
+	};
+}
 
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
@@ -193,7 +409,9 @@ export type RemoveColumnAction = {
 export type AddRelationshipAction = {
 	referencingTableId: string;
 	referencedTableId: string;
-	cardinality?: RelationshipCardinality;
+	cardinality?: RelationshipCreationCardinality;
+	/** Canvas placement for the visible junction created by many-to-many. */
+	junctionPosition?: CanvasPoint;
 };
 
 /** An omitted property keeps its current value. */
@@ -204,7 +422,7 @@ export type UpdateRelationshipAction = {
 };
 
 /** Constraints a relationship owns and a destructive edit would remove. */
-export type RelationshipConstraint = "foreign-key" | "unique";
+export type RelationshipConstraint = "foreign-key" | "unique" | "pair-unique";
 
 export type RemoveRelationshipAction = { relationshipId: string };
 
@@ -212,14 +430,16 @@ export type RemovalTarget =
 	| { kind: "table"; tableId: string }
 	| { kind: "column"; tableId: string; columnId: string };
 
-/** A relationship a pending removal would also delete. */
+/** A relationship or association a pending removal would also delete. */
 export type AffectedRelationship = {
 	relationshipId: string;
-	cardinality: RelationshipCardinality;
+	cardinality: AffectedRelationshipCardinality;
 	referencingTable: string;
 	referencingColumn: string;
 	referencedTable: string;
 	referencedColumn: string | null;
+	/** Present for a many-to-many association. */
+	junctionTable?: string;
 	/** The relationship-owned constraints, never independent column settings. */
 	constraints: RelationshipConstraint[];
 };
