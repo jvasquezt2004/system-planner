@@ -20,7 +20,10 @@ import {
 const openWorkspaces: DesignWorkspace[] = [];
 const temporaryDirectories: string[] = [];
 
-type TestWorkspaceOptions = Pick<DesignWorkspaceOptions, "createSandbox" | "openStore">;
+type TestWorkspaceOptions = Pick<
+	DesignWorkspaceOptions,
+	"createSandbox" | "openStore" | "now"
+>;
 
 async function openTestWorkspace(options: TestWorkspaceOptions = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "db-planner-workspace-"));
@@ -1760,6 +1763,42 @@ describe("design workspace", () => {
 			position: { x: 512, y: 256 },
 		});
 	});
+	test("keeps save feedback on the newest layout revision when an older save finishes late", async () => {
+		let savedAt = 0;
+		const { workspace, databasePath } = await openTestWorkspace({
+			now: () => ++savedAt,
+			openStore: (path) =>
+				createDelayedStore(path, (documentRevision) =>
+					documentRevision === 3 ? 80 : 0,
+				),
+		});
+		await workspace.createProject({ name: "Layout history" });
+		const added = await workspace.addTable({ name: "Books" });
+		const books = requireTable(added.design?.tables[0]);
+
+		const olderSave = workspace.moveTable({
+			tableId: books.id,
+			position: { x: 180, y: 120 },
+		});
+		const latest = await workspace.moveTable({
+			tableId: books.id,
+			position: { x: 360, y: 240 },
+		});
+		expect(latest.save.status).toBe("saved");
+		await olderSave;
+		expect(workspace.getState().design?.tables[0].position).toEqual({
+			x: 360,
+			y: 240,
+		});
+		expect(workspace.getState().save).toEqual(latest.save);
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		expect(reopened.getState().design?.tables[0].position).toEqual({
+			x: 360,
+			y: 240,
+		});
+	}, 30_000);
 });
 
 function requireTable(table: DesignTable | undefined): DesignTable {

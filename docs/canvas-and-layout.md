@@ -40,6 +40,15 @@ connectors show the two endpoint relationships.
 | Edit column notes | unchanged | unchanged and **not** rebuilt | yes |
 | Move a card, pan, zoom | unchanged | unchanged and **not** rebuilt | yes |
 
+
+A card drag is committed as one move when the pointer is released. Undoing or
+redoing that move restores the card position in one step and saves the layout
+without advancing the schema revision or restarting SQL/sandbox validation.
+
+Panning and zooming are viewport navigation, not undoable edits. They are
+autosaved without adding history entries or clearing redo; Undo and Redo keep
+the current viewport.
+
 ### SQL preview and sandbox feedback
 
 Structural edits are saved immediately. SQL generation and the disposable

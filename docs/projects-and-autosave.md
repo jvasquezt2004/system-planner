@@ -46,12 +46,30 @@ validation never blocks saving or discards the authoritative design. Revisioned
 SQL and sandbox feedback states are documented in
 [canvas-and-layout.md](canvas-and-layout.md).
 
+## Session undo and redo
+
+Undo and redo are kept in memory for each project during the current application
+session. Switching projects selects that project's own undo/redo state; a change
+in one project can never be applied to another. Creating a project starts with
+an empty stack.
+
+Undo and redo apply a complete saved design change and autosave the result.
+Structural reversals receive a new schema revision and use the regular SQL and
+sandbox preview pipeline. Non-schema design reversals, including card positions
+and column notes, save without advancing the schema revision or rebuilding the
+sandbox. Pan and zoom autosave but do not create history entries or clear redo;
+they remain at the current viewport when an edit is undone or redone.
+
+Closing the application discards undo/redo availability. Reopening restores the
+latest autosaved design with no session undo history. Autosave is not rollback
+or version history.
+
 ## Verification
 
 Behavioral tests use the public workspace interface with real temporary SQLite:
 
 ```bash
-bun test src/bun/workspace.test.ts
+bun test src/bun/workspace.test.ts src/bun/undo-redo.test.ts
 ```
 
 They cover project listing/opening/switching, an incomplete invalid draft
@@ -61,6 +79,12 @@ in-flight save from the previous project being ignored after a switch. Preview
 cases use real SQLite and PGlite to cover debounced edits, empty and stale SQL,
 database rejection with the last successful sandbox retained, and older results
 ignored after a newer revision or project switch.
+
+`src/bun/undo-redo.test.ts` uses real SQLite and PGlite to cover structured
+defaults, table renames, one-step card moves, all three relationship forms,
+relationship removals retaining generated columns and junction tables, confirmed
+table and column dependency deletions, branching, project isolation, and reopen
+without persisted undo history.
 
 The real Electrobun view/main path was also exercised in the dev build through
 WebView2 remote debugging with a temporary database. Creating `Alpha` and
@@ -76,3 +100,11 @@ beta:  {"header":"Beta","save":"Saved","tables":["Beta table"],"projects":["Beta
 The same run left both projects and their independent designs in SQLite. A
 packaged Windows build was not rebuilt for this check; the packaged procedure is
 recorded in [packaged-windows-smoke-check.md](packaged-windows-smoke-check.md).
+
+A separate real desktop walkthrough used `hutch run dev`, a temporary SQLite
+file, an isolated WebView2 profile, and remote debugging port 9312. It created
+an Authors/Books one-to-many relationship, cancelled a dependency warning
+without changing the design, then confirmed table deletion. Undo restored
+Authors, its relationship, and an accepted PGlite preview; Redo removed Authors
+while retaining `Books.author_id`. After relaunching against the same database,
+the latest design reopened at revision 7 with Undo and Redo disabled.

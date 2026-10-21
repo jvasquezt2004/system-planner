@@ -209,6 +209,8 @@ export type WorkspaceState = {
 	save: SaveState;
 	sql: SqlState;
 	sandbox: SandboxState;
+	/** In-memory undo/redo availability for the currently open project only. */
+	undoRedo: { canUndo: boolean; canRedo: boolean };
 };
 
 export type CreateProjectAction = { name: string };

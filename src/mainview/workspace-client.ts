@@ -47,6 +47,12 @@ export const workspaceClient = {
 	openProject(projectId: string): Promise<WorkspaceState> {
 		return rpc.request.openProject({ projectId });
 	},
+	undo(): Promise<WorkspaceState> {
+		return rpc.request.undo({});
+	},
+	redo(): Promise<WorkspaceState> {
+		return rpc.request.redo({});
+	},
 	addTable(name: string, position?: CanvasPoint): Promise<WorkspaceState> {
 		return rpc.request.addTable({ name, position });
 	},
