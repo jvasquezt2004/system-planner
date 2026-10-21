@@ -6,6 +6,7 @@ import type {
 	ColumnChanges,
 	ColumnType,
 	RelationshipCardinality,
+	RelationshipCreationCardinality,
 	RemovalPlan,
 	RemovalTarget,
 	WorkspaceState,
@@ -82,12 +83,14 @@ export const workspaceClient = {
 	addRelationship(
 		referencingTableId: string,
 		referencedTableId: string,
-		cardinality?: RelationshipCardinality,
+		cardinality?: RelationshipCreationCardinality,
+		junctionPosition?: CanvasPoint,
 	): Promise<WorkspaceState> {
 		return rpc.request.addRelationship({
 			referencingTableId,
 			referencedTableId,
 			cardinality,
+			junctionPosition,
 		});
 	},
 	updateRelationship(

@@ -31,19 +31,22 @@ import {
 	type RemoveTableAction,
 	RenameTableAction,
 	type SetViewportAction,
+	type RelationshipCreationCardinality,
 	type UpdateColumnAction,
 	type UpdateRelationshipAction,
 	type WorkspaceState,
 } from "../shared/design";
+import { uniquePostgresIdentifier } from "../shared/postgres-identifiers";
 import {
 	foreignKeyColumnName,
 	isRelationshipCardinality,
+	manyToManyAssociationForRelationship,
 	primaryKeyColumn,
 	removalPlan,
 	resolveRelationship,
 } from "../shared/relationships";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
-import { generateDesignSql } from "./sql";
+import { generateDesignSql, postgresSchemaRelationNames } from "./sql";
 import { openDesignStore, type DesignStore } from "./store";
 
 export type DesignWorkspaceOptions = {
@@ -402,6 +405,7 @@ export async function createDesignWorkspace(
 				const design: Design = {
 					tables: [],
 					relationships: [],
+					manyToManyRelationships: [],
 					viewport: { ...DEFAULT_VIEWPORT },
 				};
 				const revision = 1;
@@ -554,6 +558,18 @@ export async function createDesignWorkspace(
 				const table = requireTable(design, action.tableId);
 				const column = requireColumn(table, action.columnId);
 				const changes = normalizeColumnChanges(action.changes);
+				if (
+					isManyToManyReferenceColumn(design, table.id, column.id) &&
+					(changes.nullable === true ||
+						changes.primaryKey === true ||
+						changes.unique === true ||
+						changes.identity === true ||
+						(changes.default !== undefined && changes.default.kind !== "none"))
+				) {
+					throw new Error(
+						"Many-to-many junction references must remain required and cannot own individual defaults, keys, or uniqueness.",
+					);
+				}
 
 				let updated: DesignColumn = { ...column, ...changes };
 				// Identity generation only exists for integer types, so changing the
@@ -614,7 +630,90 @@ export async function createDesignWorkspace(
 				const { projectId, design } = requireOpenDesign();
 				const referencingTable = requireTable(design, action.referencingTableId);
 				const referencedTable = requireTable(design, action.referencedTableId);
-				const cardinality = requireCardinality(action.cardinality);
+				const creationCardinality = requireRelationshipCreationCardinality(
+					action.cardinality,
+				);
+
+				if (creationCardinality === "many-to-many") {
+					const leftKey = primaryKeyColumn(referencingTable);
+					const rightKey = primaryKeyColumn(referencedTable);
+					if (!leftKey) {
+						throw new Error(
+							`Table "${referencingTable.name}" needs exactly one primary key column before it can participate in a many-to-many relationship.`,
+						);
+					}
+					if (!rightKey) {
+						throw new Error(
+							`Table "${referencedTable.name}" needs exactly one primary key column before it can participate in a many-to-many relationship.`,
+						);
+					}
+
+					const junction = createDefaultTable(
+						nextTableName(design, `${referencingTable.name}${referencedTable.name}`),
+						action.junctionPosition !== undefined
+							? requirePoint(action.junctionPosition, "Junction table position")
+							: defaultTablePosition(design),
+						createId,
+					);
+					const leftColumn = createRelationshipColumn(
+						junction,
+						referencingTable,
+						leftKey,
+						createId,
+					);
+					const withLeftColumn = {
+						...junction,
+						columns: [...junction.columns, leftColumn],
+					};
+					const rightColumn = createRelationshipColumn(
+						withLeftColumn,
+						referencedTable,
+						rightKey,
+						createId,
+					);
+					const junctionTable = {
+						...withLeftColumn,
+						columns: [...withLeftColumn.columns, rightColumn],
+					};
+					const leftRelationship: DesignRelationship = {
+						id: createId(),
+						cardinality: "one-to-many",
+						referencingTableId: junction.id,
+						referencingColumnId: leftColumn.id,
+						referencedTableId: referencingTable.id,
+					};
+					const rightRelationship: DesignRelationship = {
+						id: createId(),
+						cardinality: "one-to-many",
+						referencingTableId: junction.id,
+						referencingColumnId: rightColumn.id,
+						referencedTableId: referencedTable.id,
+					};
+					const association = {
+						id: createId(),
+						leftTableId: referencingTable.id,
+						rightTableId: referencedTable.id,
+						junctionTableId: junction.id,
+						leftRelationshipId: leftRelationship.id,
+						rightRelationshipId: rightRelationship.id,
+					};
+					const nextDesign: Design = {
+						...design,
+						tables: [...design.tables, junctionTable],
+						relationships: [
+							...design.relationships,
+							leftRelationship,
+							rightRelationship,
+						],
+						manyToManyRelationships: [
+							...design.manyToManyRelationships,
+							association,
+						],
+					};
+					return applyStructuralChange(projectId, nextDesign);
+				}
+
+				const cardinality = requireCardinality(creationCardinality);
 				const referencedColumn = primaryKeyColumn(referencedTable);
 				if (!referencedColumn) {
 					throw new Error(
@@ -622,18 +721,12 @@ export async function createDesignWorkspace(
 					);
 				}
 
-				const column: DesignColumn = {
-					id: createId(),
-					name: foreignKeyColumnName(referencingTable, referencedTable, referencedColumn),
-					// Only the key's type transfers; identity and defaults stay behind.
-					type: referencedColumn.type,
-					nullable: false,
-					primaryKey: false,
-					unique: false,
-					identity: false,
-					default: noColumnDefault(),
-					notes: "",
-				};
+				const column = createRelationshipColumn(
+					referencingTable,
+					referencedTable,
+					referencedColumn,
+					createId,
+				);
 				const relationship: DesignRelationship = {
 					id: createId(),
 					cardinality,
@@ -643,12 +736,10 @@ export async function createDesignWorkspace(
 				};
 
 				const nextDesign: Design = {
-					...design,
-					tables: design.tables.map((candidate) =>
-						candidate.id === referencingTable.id
-							? { ...candidate, columns: [...candidate.columns, column] }
-							: candidate,
-					),
+					...replaceTable(design, {
+						...referencingTable,
+						columns: [...referencingTable.columns, column],
+					}),
 					relationships: [...design.relationships, relationship],
 				};
 				return applyStructuralChange(projectId, nextDesign);
@@ -661,6 +752,20 @@ export async function createDesignWorkspace(
 				const required = action.required;
 				if (required !== undefined && typeof required !== "boolean") {
 					throw new Error("Relationship required must be true or false.");
+				}
+				const association = manyToManyAssociationForRelationship(
+					design,
+					relationship.id,
+				);
+				if (association && required === false) {
+					throw new Error("Many-to-many junction references must remain required.");
+				}
+				if (
+					association &&
+					action.cardinality !== undefined &&
+					action.cardinality !== "one-to-many"
+				) {
+					throw new Error("Many-to-many junction reference cardinality cannot be changed.");
 				}
 				const cardinality =
 					action.cardinality === undefined
@@ -701,13 +806,28 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
 				const relationship = requireRelationship(design, action.relationshipId);
+				const association = manyToManyAssociationForRelationship(
+					design,
+					relationship.id,
+				);
+				const relationshipIds = association
+					? new Set([
+							association.leftRelationshipId,
+							association.rightRelationshipId,
+						])
+					: new Set([relationship.id]);
 
-				// Only the constraint goes; the columns it participated in stay.
+				// Remove relationship-owned constraints, never the junction or its columns.
 				const nextDesign: Design = {
 					...design,
 					relationships: design.relationships.filter(
-						(candidate) => candidate.id !== relationship.id,
+						(candidate) => !relationshipIds.has(candidate.id),
 					),
+					manyToManyRelationships: association
+						? design.manyToManyRelationships.filter(
+								(candidate) => candidate.id !== association.id,
+							)
+						: design.manyToManyRelationships,
 				};
 				return applyStructuralChange(projectId, nextDesign);
 			});
@@ -772,6 +892,7 @@ function normalizeDesign(design: Design): Design {
 				? relationship.cardinality
 				: "one-to-many",
 		})),
+		manyToManyRelationships: design.manyToManyRelationships ?? [],
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 	};
 }
@@ -801,12 +922,36 @@ function createDefaultTable(
 	};
 }
 
+function createRelationshipColumn(
+	referencingTable: DesignTable,
+	referencedTable: DesignTable,
+	referencedColumn: DesignColumn,
+	createId: () => string,
+): DesignColumn {
+	return {
+		id: createId(),
+		name: foreignKeyColumnName(referencingTable, referencedTable, referencedColumn),
+		type: referencedColumn.type,
+		nullable: false,
+		primaryKey: false,
+		unique: false,
+		identity: false,
+		default: noColumnDefault(),
+		notes: "",
+	};
+}
+
 function defaultTablePosition(design: Design): CanvasPoint {
 	const index = design.tables.length;
 	return {
 		x: 40 + (index % 3) * 300,
 		y: 40 + Math.floor(index / 3) * 240,
 	};
+}
+
+function nextTableName(design: Design, base: string): string {
+	const names = postgresSchemaRelationNames(design);
+	return uniquePostgresIdentifier(base, names);
 }
 
 function requireTable(design: Design, tableId: string): DesignTable {
@@ -827,6 +972,19 @@ function requireRelationship(design: Design, relationshipId: string): DesignRela
 	);
 	if (!relationship) throw new Error("That relationship could not be found.");
 	return relationship;
+}
+
+function isManyToManyReferenceColumn(
+	design: Design,
+	tableId: string,
+	columnId: string,
+): boolean {
+	return design.relationships.some(
+		(relationship) =>
+			relationship.referencingTableId === tableId &&
+			relationship.referencingColumnId === columnId &&
+			manyToManyAssociationForRelationship(design, relationship.id) !== null,
+	);
 }
 
 function requireRemovalTarget(design: Design, target: RemovalTarget) {
@@ -852,6 +1010,9 @@ function requireConfirmedRemoval(
 }
 
 function describeAffectedRelationship(affected: AffectedRelationship): string {
+	if (affected.cardinality === "many-to-many") {
+		return `many-to-many ${affected.referencingTable} ↔ ${affected.referencedTable} via ${affected.junctionTable ?? "(missing junction)"}`;
+	}
 	return `${affected.referencingTable}.${affected.referencingColumn} → ${affected.referencedTable}.${affected.referencedColumn ?? "(no primary key)"}`;
 }
 
@@ -862,7 +1023,10 @@ function removeTableAndItsRelationships(design: Design, table: DesignTable): Des
 		...design,
 		tables: design.tables.filter((candidate) => candidate.id !== table.id),
 		relationships: design.relationships.filter(
-			(relationship) => !affected.has(relationship.id),
+			(relationship) => !affected.relationshipIds.has(relationship.id),
+		),
+		manyToManyRelationships: design.manyToManyRelationships.filter(
+			(association) => !affected.associationIds.has(association.id),
 		),
 	};
 }
@@ -891,18 +1055,36 @@ function removeColumnAndItsRelationships(
 				: candidate,
 		),
 		relationships: design.relationships.filter(
-			(relationship) => !affected.has(relationship.id),
+			(relationship) => !affected.relationshipIds.has(relationship.id),
+		),
+		manyToManyRelationships: design.manyToManyRelationships.filter(
+			(association) => !affected.associationIds.has(association.id),
 		),
 	};
 }
 
 /** The cascade set is exactly what the confirmation listed, never a second rule. */
-function affectedRelationshipIds(design: Design, target: RemovalTarget): Set<string> {
-	return new Set(
-		removalPlan(design, target).relationships.map(
-			(relationship) => relationship.relationshipId,
-		),
-	);
+function affectedRelationshipIds(
+	design: Design,
+	target: RemovalTarget,
+): { relationshipIds: Set<string>; associationIds: Set<string> } {
+	const relationshipIds = new Set<string>();
+	const associationIds = new Set<string>();
+	for (const affected of removalPlan(design, target).relationships) {
+		if (affected.cardinality !== "many-to-many") {
+			relationshipIds.add(affected.relationshipId);
+			continue;
+		}
+		associationIds.add(affected.relationshipId);
+		const association = design.manyToManyRelationships.find(
+			(candidate) => candidate.id === affected.relationshipId,
+		);
+		if (association) {
+			relationshipIds.add(association.leftRelationshipId);
+			relationshipIds.add(association.rightRelationshipId);
+		}
+	}
+	return { relationshipIds, associationIds };
 }
 
 function replaceTable(design: Design, table: DesignTable): Design {
@@ -941,6 +1123,14 @@ function requireCardinality(value: unknown) {
 		throw new Error("That relationship cardinality is not supported.");
 	}
 	return value;
+}
+
+function requireRelationshipCreationCardinality(
+	value: unknown,
+): RelationshipCreationCardinality {
+	if (value === undefined) return "one-to-many";
+	if (value === "many-to-many" || isRelationshipCardinality(value)) return value;
+	throw new Error("That relationship cardinality is not supported.");
 }
 
 function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {

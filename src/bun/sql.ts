@@ -7,18 +7,41 @@ import type {
 	Design,
 	DesignColumn,
 	DesignRelationship,
+	DesignManyToManyAssociation,
 	DesignTable,
 } from "../shared/design";
 import {
 	relationshipConstraintName,
 	relationshipUniqueConstraintName,
 	resolveRelationship,
+	resolveRelationships,
 	type RelationshipView,
 } from "../shared/relationships";
+import {
+	postgresGeneratedObjectName,
+	truncatePostgresIdentifier,
+	uniquePostgresIdentifier,
+} from "../shared/postgres-identifiers";
 
 export type SqlGeneration =
 	| { ok: true; sql: string }
 	| { ok: false; errors: string[] };
+
+type PairConstraint = {
+	junction: DesignTable;
+	leftColumn: DesignColumn;
+	rightColumn: DesignColumn;
+};
+
+/** Names of the tables, identity sequences, and indexes in PostgreSQL's schema namespace. */
+export function postgresSchemaRelationNames(design: Design): Set<string> {
+	const relationships = resolveRelationships(design);
+	const junctions = (design.manyToManyRelationships ?? []).flatMap((association) => {
+		const junction = design.tables.find((table) => table.id === association.junctionTableId);
+		return junction ? [junction] : [];
+	});
+	return planPostgresIdentifiers(design, relationships, junctions).relationNames;
+}
 
 /**
  * Generates read-only PostgreSQL from the authoritative design. An incomplete
@@ -43,10 +66,33 @@ export function generateDesignSql(design: Design): SqlGeneration {
 		if (view) relationships.push(view);
 	}
 
+	const pairConstraints: PairConstraint[] = [];
+	for (const association of design.manyToManyRelationships ?? []) {
+		const constraint = validateManyToManyAssociation(design, association, errors);
+		if (constraint) pairConstraints.push(constraint);
+	}
+
 	if (errors.length > 0) return { ok: false, errors };
+
+	const namePlan = planPostgresIdentifiers(
+		design,
+		relationships,
+		pairConstraints.map(({ junction }) => junction),
+	);
+	const pairConstraintSql = pairConstraints.map(
+		({ junction, leftColumn, rightColumn }, index) => {
+			const name = namePlan.pairConstraintNames[index];
+			if (!name) throw new Error("A pair constraint has no planned name.");
+			return renderPairConstraint(junction, leftColumn, rightColumn, name);
+		},
+	);
 	const statements = [
 		...design.tables.map(renderTable),
-		...relationships.map(renderRelationship),
+		...namePlan.namedRelationships.map(
+			({ view, foreignKeyConstraintName, uniqueConstraintName }) =>
+				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
+		),
+		...pairConstraintSql,
 	];
 	return { ok: true, sql: `${statements.join("\n\n")}\n` };
 }
@@ -76,6 +122,167 @@ function validateRelationship(
 		return null;
 	}
 	return view;
+}
+
+function validateManyToManyAssociation(
+	design: Design,
+	association: DesignManyToManyAssociation,
+	errors: string[],
+): PairConstraint | null {
+	const junction = design.tables.find(
+		(table) => table.id === association.junctionTableId,
+	);
+	const leftRelationship = design.relationships.find(
+		(relationship) => relationship.id === association.leftRelationshipId,
+	);
+	const rightRelationship = design.relationships.find(
+		(relationship) => relationship.id === association.rightRelationshipId,
+	);
+	if (!junction || !leftRelationship || !rightRelationship) {
+		errors.push("A many-to-many relationship refers to a missing junction or reference.");
+		return null;
+	}
+
+	const leftColumn = junction.columns.find(
+		(column) => column.id === leftRelationship.referencingColumnId,
+	);
+	const rightColumn = junction.columns.find(
+		(column) => column.id === rightRelationship.referencingColumnId,
+	);
+	if (
+		leftRelationship.id === rightRelationship.id ||
+		leftRelationship.referencingTableId !== junction.id ||
+		rightRelationship.referencingTableId !== junction.id ||
+		leftRelationship.referencedTableId !== association.leftTableId ||
+		rightRelationship.referencedTableId !== association.rightTableId ||
+		leftRelationship.cardinality !== "one-to-many" ||
+		rightRelationship.cardinality !== "one-to-many" ||
+		!leftColumn ||
+		!rightColumn ||
+		leftColumn.id === rightColumn.id
+	) {
+		errors.push(
+			`Many-to-many junction "${junction.name}" needs two distinct references to its endpoint tables.`,
+		);
+		return null;
+	}
+
+	if (
+		leftColumn.nullable ||
+		rightColumn.nullable ||
+		leftColumn.primaryKey ||
+		rightColumn.primaryKey ||
+		leftColumn.unique ||
+		rightColumn.unique ||
+		leftColumn.identity ||
+		rightColumn.identity ||
+		leftColumn.default.kind !== "none" ||
+		rightColumn.default.kind !== "none"
+	) {
+		errors.push(
+			`Many-to-many junction "${junction.name}" needs required references without individual defaults or uniqueness.`,
+		);
+		return null;
+	}
+
+	return { junction, leftColumn, rightColumn };
+}
+
+function planPostgresIdentifiers(
+	design: Design,
+	relationships: RelationshipView[],
+	junctions: DesignTable[],
+) {
+	const relationNames = initialPostgresRelationNames(design);
+	const constraintNames = new Set(relationNames);
+	const namedRelationships = relationships.map((view) => {
+		const foreignKeyConstraintName = allocateConstraintName(
+			constraintNames,
+			relationshipConstraintName(view),
+		);
+		const uniqueConstraintName = view.ownsUniqueness
+			? allocateConstraintName(constraintNames, relationshipUniqueConstraintName(view))
+			: null;
+		if (uniqueConstraintName) relationNames.add(uniqueConstraintName);
+		return { view, foreignKeyConstraintName, uniqueConstraintName };
+	});
+	const pairConstraintNames = junctions.map((junction) => {
+		const name = allocateConstraintName(
+			constraintNames,
+			`${junction.name}_pair_key`,
+		);
+		relationNames.add(name);
+		return name;
+	});
+	return { namedRelationships, pairConstraintNames, relationNames };
+}
+
+/** Tables, PostgreSQL-generated identity sequences, and indexes. */
+function initialPostgresRelationNames(design: Design): Set<string> {
+	const names = new Set(
+		design.tables.map((table) => truncatePostgresIdentifier(table.name)),
+	);
+	for (const table of design.tables) {
+		const tableName = truncatePostgresIdentifier(table.name);
+		for (const column of table.columns) {
+			if (column.identity) {
+				addPostgresGeneratedRelationName(
+					names,
+					tableName,
+					truncatePostgresIdentifier(column.name),
+					"seq",
+				);
+			}
+		}
+		for (const column of table.columns) {
+			if (column.unique && !column.primaryKey) {
+				addPostgresGeneratedRelationName(
+					names,
+					tableName,
+					truncatePostgresIdentifier(column.name),
+					"key",
+				);
+			}
+		}
+		if (table.columns.some((column) => column.primaryKey)) {
+			addPostgresGeneratedRelationName(names, tableName, null, "pkey");
+		}
+	}
+	return names;
+}
+
+function addPostgresGeneratedRelationName(
+	names: Set<string>,
+	tableName: string,
+	columnName: string | null,
+	label: string,
+): void {
+	for (let index = 0; ; index += 1) {
+		const generatedLabel = index === 0 ? label : `${label}${index}`;
+		const name = postgresGeneratedObjectName(
+			tableName,
+			columnName,
+			generatedLabel,
+		);
+		if (names.has(name)) continue;
+		names.add(name);
+		return;
+	}
+}
+
+function allocateConstraintName(names: Set<string>, preferred: string): string {
+	const name = uniquePostgresIdentifier(preferred, names);
+	names.add(name);
+	return name;
+}
+
+function renderPairConstraint(
+	junction: DesignTable,
+	leftColumn: DesignColumn,
+	rightColumn: DesignColumn,
+	constraintName: string,
+): string {
+	return `ALTER TABLE ${quoteIdentifier(junction.name)}\n  ADD CONSTRAINT ${quoteIdentifier(constraintName)} UNIQUE (${quoteIdentifier(leftColumn.name)}, ${quoteIdentifier(rightColumn.name)});`;
 }
 
 function validateTable(table: DesignTable, tableNames: Set<string>, errors: string[]) {
@@ -173,20 +380,27 @@ function renderColumn(column: DesignColumn): string {
  * never has to satisfy a dependency. NO ACTION keeps relationships from
  * changing or deleting referencing rows without the designer's intent.
  */
-function renderRelationship(view: RelationshipView): string {
+function renderRelationship(
+	view: RelationshipView,
+	foreignKeyConstraintName: string,
+	uniqueConstraintName: string | null,
+): string {
 	const referencedColumn = view.referencedColumn;
 	if (!referencedColumn) {
 		throw new Error("A rendered relationship needs a referenced primary key.");
 	}
 	const statements = [
-		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(relationshipConstraintName(view))} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
+		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(foreignKeyConstraintName)} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
 	];
 	// A one-to-one association owns uniqueness on its referencing column. An
 	// independent key or unique setting already supplies uniqueness, so the
 	// relationship does not repeat it.
 	if (view.ownsUniqueness) {
+		if (!uniqueConstraintName) {
+			throw new Error("A one-to-one relationship needs a unique constraint name.");
+		}
 		statements.push(
-			`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(relationshipUniqueConstraintName(view))} UNIQUE (${quoteIdentifier(view.referencingColumn.name)});`,
+			`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(uniqueConstraintName)} UNIQUE (${quoteIdentifier(view.referencingColumn.name)});`,
 		);
 	}
 	return statements.join("\n");

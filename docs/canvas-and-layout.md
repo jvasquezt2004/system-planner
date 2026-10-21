@@ -7,6 +7,9 @@ nullability — never stored records. Card position, canvas pan, and zoom are
 layout, not database structure. All column editing happens in the focused
 side panel described in [column-editing.md](column-editing.md).
 
+A many-to-many junction is an ordinary editable table card marked `M:N`; its
+connectors show the two endpoint relationships.
+
 ## Using the canvas
 
 - **Add table** — name a table in the canvas toolbar and submit. The new table
@@ -16,11 +19,11 @@ side panel described in [column-editing.md](column-editing.md).
   panel shows that table's details. Selecting is view-only state; it is not
   saved and does not create a schema revision.
 - **Rename** — edit the name in the inspector and submit. Renaming keeps the
-  table's stable internal identity, so positions and (in later tickets)
-  relationships stay attached to the same table.
-- **Remove** — the inspector removes the table after an inline confirmation.
-  Unrelated tables are untouched. Dependency warnings for referenced tables
-  arrive with the relationship tickets.
+  table's stable internal identity, so positions and relationships stay attached
+  to the same table.
+- **Remove** — the inspector lists affected relationships and requires
+  confirmation. Cancel leaves the design unchanged. Confirming removes affected
+  relationships but preserves junction tables and unrelated tables.
 - **Pan** — drag empty canvas. **Zoom** — mouse wheel over the canvas (around
   the pointer), or the `−`, `+`, and `100%` controls (around the view centre).
   The grid moves and scales with the canvas.
@@ -33,6 +36,7 @@ side panel described in [column-editing.md](column-editing.md).
 | --- | --- | --- | --- |
 | Add, rename, remove a table | advances | regenerated and rebuilt after editing settles | yes |
 | Add, edit, or remove a column | advances | regenerated and rebuilt after editing settles | yes |
+| Create, edit, or remove a relationship | advances | regenerated and rebuilt after editing settles | yes |
 | Edit column notes | unchanged | unchanged and **not** rebuilt | yes |
 | Move a card, pan, zoom | unchanged | unchanged and **not** rebuilt | yes |
 
@@ -73,9 +77,9 @@ a project restores the latest saved table positions and the pan/zoom viewport
 together with the schema.
 
 The canvas deliberately has no notion of containment or proximity: cards that
-overlap, sit beside each other, or are far apart are the same schema. That
-leaves room for relationship connectors in later tickets without position ever
-deciding structure.
+overlap, sit beside each other, or are far apart are the same schema.
+Relationship connectors and endpoint marks communicate cardinality; position
+never defines relationship structure.
 
 ## Verification
 
