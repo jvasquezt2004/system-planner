@@ -103,6 +103,56 @@ export type SqlState =
 			errors: string[];
 	  };
 
+/** Immutable SQL and status represented by the preview when an action starts. */
+export type DisplayedSqlPreview = Readonly<{
+	status: "current" | "checking" | "stale";
+	revision: number;
+	draftRevision: number;
+	sql: string;
+}>;
+
+/** Result of copying the read-only SQL preview to the system clipboard. */
+export type SqlPreviewCopyResult =
+	| { status: "copied"; revision: number }
+	| { status: "failed"; revision: number; error: string };
+
+/** Result of exporting a read-only SQL preview to a new file. */
+export type SqlPreviewExportResult =
+	| { status: "saved"; revision: number; path: string }
+	| { status: "cancelled"; revision: number }
+	| { status: "failed"; revision: number; error: string };
+
+/** Returns the SQL text currently visible, including an older stale snapshot. */
+export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | null {
+	switch (sql.status) {
+		case "current":
+			return {
+				status: "current",
+				revision: sql.revision,
+				draftRevision: sql.revision,
+				sql: sql.sql,
+			};
+		case "checking":
+			return sql.sql === null || sql.availableRevision === null
+				? null
+				: {
+						status: "checking",
+						revision: sql.availableRevision,
+						draftRevision: sql.draftRevision,
+						sql: sql.sql,
+					};
+		case "stale":
+			return {
+				status: "stale",
+				revision: sql.revision,
+				draftRevision: sql.draftRevision,
+				sql: sql.sql,
+			};
+		case "empty":
+			return null;
+	}
+}
+
 export type SandboxAppliedColumn = {
 	name: string;
 	dataType: string;

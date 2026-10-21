@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
+import { errorMessage } from "../shared/error-message";
 import {
+	getDisplayedSqlPreview,
 	getLastAppliedSandbox,
 	getSqlValidationErrors,
 	type AffectedRelationship,
@@ -384,7 +386,7 @@ function App() {
 						onSetRelationshipCardinality={handleSetRelationshipCardinality}
 						onRemoveRelationship={handleRemoveRelationship}
 					/>
-					<SqlPanel sql={state.sql} />
+					<SqlPanel key={state.project?.id ?? "no-project"} sql={state.sql} />
 					<SandboxPanel sandbox={state.sandbox} draftRevision={state.revision} />
 				</aside>
 			</div>
@@ -596,7 +598,8 @@ function ProjectsPanel({
 
 function SqlPanel({ sql }: { sql: SqlState }) {
 	const errors = getSqlValidationErrors(sql);
-	const sqlText = sql.status === "empty" ? null : sql.sql;
+	const preview = getDisplayedSqlPreview(sql);
+	const sqlText = preview?.sql ?? null;
 	const label =
 		sql.status === "current"
 			? "Current"
@@ -615,6 +618,61 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 				: sql.status === "checking" || sql.status === "stale"
 					? "warn"
 					: "muted";
+	const [fileName, setFileName] = useState("schema.sql");
+	const [action, setAction] = useState<"copy" | "export" | null>(null);
+	const [feedback, setFeedback] = useState<{
+		tone: "success" | "info" | "error";
+		message: string;
+	} | null>(null);
+
+	async function runSqlAction(
+		kind: "copy" | "export",
+		operation: () => Promise<void>,
+	) {
+		if (action) return;
+		setAction(kind);
+		setFeedback(null);
+		try {
+			await operation();
+		} catch (cause) {
+			const label = kind === "copy" ? "Copy" : "Export";
+			setFeedback({ tone: "error", message: `${label} failed: ${errorMessage(cause)}` });
+		} finally {
+			setAction(null);
+		}
+	}
+
+	async function copyPreview() {
+		if (!preview) return;
+		await runSqlAction("copy", async () => {
+			const result = await workspaceClient.copySqlPreview(preview);
+			setFeedback(
+				result.status === "copied"
+					? {
+							tone: "success",
+							message: `Copied displayed SQL from revision ${result.revision}.`,
+						}
+					: { tone: "error", message: `Copy failed: ${result.error}` },
+			);
+		});
+	}
+
+	async function exportPreview() {
+		if (!preview) return;
+		await runSqlAction("export", async () => {
+			const result = await workspaceClient.exportSqlPreview({ preview, fileName });
+			setFeedback(
+				result.status === "saved"
+					? {
+							tone: "success",
+							message: `Exported displayed SQL from revision ${result.revision} to ${fileName}.`,
+						}
+					: result.status === "cancelled"
+						? { tone: "info", message: "Export cancelled." }
+						: { tone: "error", message: `Export failed: ${result.error}` },
+			);
+		});
+	}
 
 	return (
 		<section className="rounded-xl border border-slate-800 bg-slate-900/60">
@@ -654,6 +712,54 @@ function SqlPanel({ sql }: { sql: SqlState }) {
 							<li key={message}>{message}</li>
 						))}
 					</ul>
+				)}
+				<div className="mt-3 flex items-end gap-2">
+					<label className="min-w-0 flex-1 text-[11px] text-slate-400">
+						<span>SQL file name</span>
+						<input
+							aria-label="SQL file name"
+							value={fileName}
+							onChange={(event) => setFileName(event.target.value)}
+							disabled={!preview || action !== null}
+							className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-100 outline-none focus:border-indigo-500 disabled:opacity-40"
+						/>
+					</label>
+					<div className="flex gap-1.5">
+						<button
+							type="button"
+							onClick={() => void copyPreview()}
+							disabled={!preview || action !== null}
+							className="rounded-md border border-slate-700 px-2.5 py-1.5 text-xs text-slate-200 hover:border-slate-500 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							{action === "copy" ? "Copying…" : "Copy SQL"}
+						</button>
+						<button
+							type="button"
+							onClick={() => void exportPreview()}
+							disabled={!preview || action !== null}
+							className="rounded-md bg-indigo-500 px-2.5 py-1.5 text-xs font-medium text-white hover:bg-indigo-400 disabled:cursor-not-allowed disabled:opacity-40"
+						>
+							{action === "export" ? "Exporting…" : "Export SQL"}
+						</button>
+					</div>
+				</div>
+				<p className="mt-1 text-[10px] text-slate-500">
+					Choose a folder for the export. Existing files are not overwritten.
+				</p>
+				{feedback && (
+					<p
+						role={feedback.tone === "error" ? "alert" : "status"}
+						data-testid="sql-action-status"
+						className={`mt-2 text-xs ${
+							feedback.tone === "error"
+								? "text-red-300"
+								: feedback.tone === "success"
+									? "text-emerald-300"
+									: "text-slate-400"
+						}`}
+					>
+						{feedback.message}
+					</p>
 				)}
 			</div>
 		</section>
@@ -860,10 +966,6 @@ function StatusPill({
 			{children}
 		</span>
 	);
-}
-
-function errorMessage(cause: unknown): string {
-	return cause instanceof Error ? cause.message : String(cause);
 }
 
 export default App;
