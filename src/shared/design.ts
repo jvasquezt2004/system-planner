@@ -57,6 +57,14 @@ export type DesignTable = {
  * column; neither cardinality requires the referenced side to participate.
  */
 export type RelationshipCardinality = "one-to-many" | "one-to-one";
+/** Cardinality choices available when the designer starts a relationship. */
+export type RelationshipCreationCardinality =
+	| RelationshipCardinality
+	| "many-to-many";
+
+export type AffectedRelationshipCardinality =
+	| RelationshipCardinality
+	| "many-to-many";
 
 /**
  * An association backed by a real foreign key. The referencing side owns a
@@ -74,9 +82,20 @@ export type DesignRelationship = {
 	referencedTableId: string;
 };
 
+/** One visible junction table groups its two required endpoint references. */
+export type DesignManyToManyAssociation = {
+	id: string;
+	leftTableId: string;
+	rightTableId: string;
+	junctionTableId: string;
+	leftRelationshipId: string;
+	rightRelationshipId: string;
+};
+
 export type Design = {
 	tables: DesignTable[];
 	relationships: DesignRelationship[];
+	manyToManyRelationships: DesignManyToManyAssociation[];
 	viewport: CanvasViewport;
 };
 
@@ -235,7 +254,9 @@ export type RemoveColumnAction = {
 export type AddRelationshipAction = {
 	referencingTableId: string;
 	referencedTableId: string;
-	cardinality?: RelationshipCardinality;
+	cardinality?: RelationshipCreationCardinality;
+	/** Canvas placement for the visible junction created by many-to-many. */
+	junctionPosition?: CanvasPoint;
 };
 
 /** An omitted property keeps its current value. */
@@ -246,7 +267,7 @@ export type UpdateRelationshipAction = {
 };
 
 /** Constraints a relationship owns and a destructive edit would remove. */
-export type RelationshipConstraint = "foreign-key" | "unique";
+export type RelationshipConstraint = "foreign-key" | "unique" | "pair-unique";
 
 export type RemoveRelationshipAction = { relationshipId: string };
 
@@ -254,14 +275,16 @@ export type RemovalTarget =
 	| { kind: "table"; tableId: string }
 	| { kind: "column"; tableId: string; columnId: string };
 
-/** A relationship a pending removal would also delete. */
+/** A relationship or association a pending removal would also delete. */
 export type AffectedRelationship = {
 	relationshipId: string;
-	cardinality: RelationshipCardinality;
+	cardinality: AffectedRelationshipCardinality;
 	referencingTable: string;
 	referencingColumn: string;
 	referencedTable: string;
 	referencedColumn: string | null;
+	/** Present for a many-to-many association. */
+	junctionTable?: string;
 	/** The relationship-owned constraints, never independent column settings. */
 	constraints: RelationshipConstraint[];
 };

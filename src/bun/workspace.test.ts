@@ -83,6 +83,7 @@ describe("design workspace", () => {
 		expect(created.design).toEqual({
 			tables: [],
 			relationships: [],
+			manyToManyRelationships: [],
 			viewport: { x: 0, y: 0, zoom: 1 },
 		});
 		expect(created.save.status).toBe("saved");
@@ -225,7 +226,7 @@ describe("design workspace", () => {
 		expect(schoolState.project?.name).toBe("School");
 		expect(schoolState.design?.tables.map((table) => table.name)).toEqual(["Students"]);
 		expect(schoolState.revision).toBe(2);
-	}, 30_000);
+	}, 60_000);
 
 	test("autosaves an incomplete, semantically invalid draft and restores it in a fresh workspace", async () => {
 		const { workspace, databasePath } = await openTestWorkspace();

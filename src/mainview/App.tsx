@@ -8,6 +8,7 @@ import {
 	type ColumnChanges,
 	type ProjectSummary,
 	type RelationshipCardinality,
+	type RelationshipCreationCardinality,
 	type RemovalPlan,
 	type RemovalTarget,
 	type SandboxState,
@@ -120,7 +121,8 @@ function App() {
 		(
 			referencingTableId: string,
 			referencedTableId: string,
-			cardinality: RelationshipCardinality,
+			cardinality: RelationshipCreationCardinality,
+			junctionPosition?: CanvasPoint,
 		) => {
 			void (async () => {
 				setBusy(true);
@@ -130,12 +132,22 @@ function App() {
 						referencingTableId,
 						referencedTableId,
 						cardinality,
+						junctionPosition,
 					);
 					setState(next);
-					const created =
-						next.design?.relationships[next.design.relationships.length - 1];
-					if (created) setSelectedRelationshipId(created.id);
-					setSelectedTableId(referencingTableId);
+					if (cardinality === "many-to-many") {
+						const associations = next.design?.manyToManyRelationships ?? [];
+						const created = associations[associations.length - 1];
+						if (created) {
+							setSelectedRelationshipId(created.leftRelationshipId);
+							setSelectedTableId(created.junctionTableId);
+						}
+					} else {
+						const created =
+							next.design?.relationships[next.design.relationships.length - 1];
+						if (created) setSelectedRelationshipId(created.id);
+						setSelectedTableId(referencingTableId);
+					}
 					setSelectedColumnId(null);
 				} catch (cause) {
 					setError(errorMessage(cause));
@@ -448,18 +460,17 @@ function RemovalDialog({
 									data-cardinality={relationship.cardinality}
 									className="rounded border border-slate-800 bg-slate-950 px-2 py-1 text-[11px] text-slate-300"
 								>
-									{relationship.referencingTable}.
-									{relationship.referencingColumn} →{" "}
-									{relationship.referencedTable}.
-									{relationship.referencedColumn ?? "(no primary key)"}
+									{relationship.cardinality === "many-to-many"
+										? `Many-to-many: ${relationship.referencingTable} ↔ ${relationship.referencedTable} via ${relationship.junctionTable ?? "(missing junction)"}; `
+										: `${relationship.referencingTable}.${relationship.referencingColumn} → ${relationship.referencedTable}.${relationship.referencedColumn ?? "(no primary key)"}`}
 									<span className="ml-1 text-slate-500">
-										{relationship.constraints
-											.map((constraint) =>
-												constraint === "unique"
-													? "unique"
-													: "foreign key",
-											)
-											.join(" + ")}
+										{relationship.cardinality === "many-to-many"
+											? "2 foreign keys + unique pair"
+											: relationship.constraints
+													.map((constraint) =>
+														constraint === "unique" ? "unique" : "foreign key",
+													)
+													.join(" + ")}
 									</span>
 								</li>
 							))}

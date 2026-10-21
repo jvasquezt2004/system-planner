@@ -7,7 +7,7 @@ import {
 	type Design,
 	type DesignColumn,
 	type DesignTable,
-	type RelationshipCardinality,
+	type RelationshipCreationCardinality,
 } from "../shared/design";
 import { describeColumnDefault } from "../shared/column-defaults";
 import {
@@ -55,7 +55,8 @@ export type TableCanvasProps = {
 	onRelateTables: (
 		referencingTableId: string,
 		referencedTableId: string,
-		cardinality: RelationshipCardinality,
+		cardinality: RelationshipCreationCardinality,
+		junctionPosition?: CanvasPoint,
 	) => void;
 	onMoveTable: (tableId: string, position: CanvasPoint) => void;
 	onViewportChange: (viewport: CanvasViewport) => void;
@@ -87,7 +88,7 @@ export function TableCanvas({
 	// starting card is always the referencing side that stores the constraint.
 	const [relatingFrom, setRelatingFrom] = useState<string | null>(null);
 	const [relatingCardinality, setRelatingCardinality] =
-		useState<RelationshipCardinality>("one-to-many");
+		useState<RelationshipCreationCardinality>("one-to-many");
 	const relatingFromRef = useRef(relatingFrom);
 	relatingFromRef.current = relatingFrom;
 	const relatingCardinalityRef = useRef(relatingCardinality);
@@ -181,7 +182,12 @@ export function TableCanvas({
 			event.preventDefault();
 			setRelatingFrom(null);
 			if (tableId && tableId !== relating) {
-				onRelateTables(relating, tableId, relatingCardinalityRef.current);
+				const cardinality = relatingCardinalityRef.current;
+				const junctionPosition =
+					cardinality === "many-to-many"
+						? manyToManyJunctionPosition(relating, tableId)
+						: undefined;
+				onRelateTables(relating, tableId, cardinality, junctionPosition);
 			} else {
 				onSelectTable(tableId ?? null);
 			}
@@ -295,10 +301,49 @@ export function TableCanvas({
 		return { x, y };
 	}
 
+	function manyToManyJunctionPosition(
+		sourceId: string,
+		targetId: string,
+	): CanvasPoint | undefined {
+		const source = design.tables.find((table) => table.id === sourceId);
+		const target = design.tables.find((table) => table.id === targetId);
+		if (!source || !target) return undefined;
+
+		const gap = 24;
+		const junctionHeight = CARD_HEADER_HEIGHT + CARD_ROW_HEIGHT * 3 + 2;
+		const tableHeight = (table: DesignTable) =>
+			CARD_HEADER_HEIGHT + CARD_ROW_HEIGHT * table.columns.length + 2;
+		const x = Math.round((source.position.x + target.position.x) / 2);
+		let y =
+			Math.max(
+				source.position.y + tableHeight(source),
+				target.position.y + tableHeight(target),
+			) + gap;
+
+		while (true) {
+			const collisions = design.tables.filter((table) => {
+				const horizontalOverlap =
+					x < table.position.x + CARD_WIDTH + gap &&
+					x + CARD_WIDTH + gap > table.position.x;
+				const verticalOverlap =
+					y < table.position.y + tableHeight(table) + gap &&
+					y + junctionHeight + gap > table.position.y;
+				return horizontalOverlap && verticalOverlap;
+			});
+			if (collisions.length === 0) return { x, y };
+			y = Math.max(
+				...collisions.map((table) => table.position.y + tableHeight(table) + gap),
+			);
+		}
+	}
+
 	const minor = GRID_SIZE * viewport.zoom;
 	const major = MAJOR_GRID_SIZE * viewport.zoom;
 	const minorLine = "rgba(148, 163, 184, 0.10)";
 	const majorLine = "rgba(148, 163, 184, 0.20)";
+	const manyToManyJunctionIds = new Set(
+		design.manyToManyRelationships.map((association) => association.junctionTableId),
+	);
 	const relationships = resolveRelationships(design);
 	const foreignKeyColumnIds = new Set(
 		design.relationships.map((relationship) => relationship.referencingColumnId),
@@ -392,6 +437,7 @@ export function TableCanvas({
 						position={positionOf(table)}
 						highlightedColumnIds={highlightedColumns(table.id)}
 						foreignKeyColumnIds={foreignKeyColumnIds}
+						manyToManyJunction={manyToManyJunctionIds.has(table.id)}
 						relationshipUniqueColumnIds={relationshipUniqueColumnIds}
 						onSelect={() => onSelectTable(table.id)}
 						onStartRelate={() => {
@@ -412,8 +458,17 @@ export function TableCanvas({
 					className="absolute left-1/2 top-4 flex -translate-x-1/2 flex-wrap items-center gap-3 rounded-lg border border-indigo-500/60 bg-indigo-500/15 px-4 py-2 text-xs text-indigo-100 shadow-lg backdrop-blur"
 				>
 					<span>
-						Relating from <strong>“{relatingTable.name}”</strong>, which will store
-						the reference. Click the table it references.
+						{relatingCardinality === "many-to-many" ? (
+							<>
+								Relating <strong>“{relatingTable.name}”</strong> through a visible,
+								editable junction. Click the other endpoint.
+							</>
+						) : (
+							<>
+								Relating from <strong>“{relatingTable.name}”</strong>, which will
+								store the reference. Click the table it references.
+							</>
+						)}
 					</span>
 					<span
 						role="group"
@@ -424,6 +479,7 @@ export function TableCanvas({
 							[
 								["one-to-many", "many"],
 								["one-to-one", "one-to-one"],
+								["many-to-many", "many-to-many"],
 							] as const
 						).map(([value, label]) => (
 							<button
@@ -663,6 +719,7 @@ function TableCard({
 	selected,
 	dragging,
 	relating,
+	manyToManyJunction,
 	position,
 	highlightedColumnIds,
 	foreignKeyColumnIds,
@@ -674,6 +731,7 @@ function TableCard({
 	selected: boolean;
 	dragging: boolean;
 	relating: boolean;
+	manyToManyJunction: boolean;
 	position: CanvasPoint;
 	highlightedColumnIds: Set<string>;
 	foreignKeyColumnIds: Set<string>;
@@ -730,6 +788,15 @@ function TableCard({
 					>
 						relate
 					</button>
+					{manyToManyJunction && (
+						<span
+							data-testid="many-to-many-junction"
+							title="Visible junction table for a many-to-many relationship"
+							className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-indigo-200"
+						>
+							M:N
+						</span>
+					)}
 					<span className="rounded bg-slate-950/60 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-slate-400">
 						{table.columns.length} {table.columns.length === 1 ? "col" : "cols"}
 					</span>

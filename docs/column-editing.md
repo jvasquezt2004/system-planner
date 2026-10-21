@@ -21,14 +21,16 @@ of the table's structure.
   types. See [column-defaults.md](column-defaults.md) for the compatibility
   matrix, value formats, and validation rules.
 - **Remove column** — inline confirmation, then removal. The column's stable
-  identity disappears with it; other columns keep theirs. Relationship
-  dependency warnings arrive with the relationship tickets.
+  identity disappears with it; other columns keep theirs. If relationships use
+  the column, the warning lists affected links; cancel to keep the design
+  unchanged or confirm to remove them. Removing a many-to-many link preserves
+  its junction table and remaining columns.
 - **Notes** — design intent stored with the column. Notes never appear in SQL
   and do not change the schema revision or rebuild the sandbox.
 
 Renaming a column, changing its type, or toggling its key settings keeps the
 column's stable identity. Associated metadata — notes, uniqueness, defaults, and
-later relationships — therefore survives a rename.
+relationships — therefore survives a rename.
 
 ## Supported types
 

@@ -54,11 +54,17 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).updateColumn({ tableId, columnId, changes }),
 			removeColumn: async ({ tableId, columnId, confirmed }) =>
 				(await workspacePromise).removeColumn({ tableId, columnId, confirmed }),
-			addRelationship: async ({ referencingTableId, referencedTableId, cardinality }) =>
+			addRelationship: async ({
+				referencingTableId,
+				referencedTableId,
+				cardinality,
+				junctionPosition,
+			}) =>
 				(await workspacePromise).addRelationship({
 					referencingTableId,
 					referencedTableId,
 					cardinality,
+					junctionPosition,
 				}),
 			updateRelationship: async ({ relationshipId, required, cardinality }) =>
 				(await workspacePromise).updateRelationship({
