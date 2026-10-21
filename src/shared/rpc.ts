@@ -32,6 +32,14 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { projectId: string };
 				response: WorkspaceState;
 			};
+			undo: {
+				params: Record<string, never>;
+				response: WorkspaceState;
+			};
+			redo: {
+				params: Record<string, never>;
+				response: WorkspaceState;
+			};
 			addTable: {
 				params: { name: string; position?: CanvasPoint };
 				response: WorkspaceState;

@@ -40,6 +40,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			createProject: async ({ name }) => (await workspacePromise).createProject({ name }),
 			openProject: async ({ projectId }) =>
 				(await workspacePromise).openProject({ projectId }),
+			undo: async () => (await workspacePromise).undo(),
+			redo: async () => (await workspacePromise).redo(),
 			addTable: async ({ name, position }) =>
 				(await workspacePromise).addTable({ name, position }),
 			renameTable: async ({ tableId, name }) =>

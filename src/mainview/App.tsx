@@ -314,7 +314,31 @@ function App() {
 						)}
 					</div>
 				</div>
-				<SaveBadge save={state.save} />
+				<div className="flex items-center gap-2">
+					<button
+						type="button"
+						data-testid="undo-button"
+						aria-label="Undo last design change"
+						title="Undo last design change"
+						disabled={busy || !state.undoRedo.canUndo}
+						onClick={() => void run(() => workspaceClient.undo())}
+						className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-indigo-400/60 disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						Undo
+					</button>
+					<button
+						type="button"
+						data-testid="redo-button"
+						aria-label="Redo last undone design change"
+						title="Redo last undone design change"
+						disabled={busy || !state.undoRedo.canRedo}
+						onClick={() => void run(() => workspaceClient.redo())}
+						className="rounded-md border border-slate-700 px-3 py-1.5 text-xs text-slate-200 transition hover:border-indigo-400/60 disabled:cursor-not-allowed disabled:opacity-40"
+					>
+						Redo
+					</button>
+					<SaveBadge save={state.save} />
+				</div>
 			</header>
 
 			{error && (

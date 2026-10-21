@@ -77,6 +77,8 @@ export interface DesignWorkspace {
 	listProjects(): ProjectSummary[];
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
+	undo(): Promise<WorkspaceState>;
+	redo(): Promise<WorkspaceState>;
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
@@ -97,6 +99,17 @@ export interface DesignWorkspace {
 
 const DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
+type DesignHistoryEntry = {
+	before: Design;
+	after: Design;
+	structural: boolean;
+};
+
+type ProjectDesignHistory = {
+	entries: DesignHistoryEntry[];
+	cursor: number;
+};
+
 export async function createDesignWorkspace(
 	options: DesignWorkspaceOptions,
 ): Promise<DesignWorkspace> {
@@ -107,6 +120,32 @@ export async function createDesignWorkspace(
 	const createId = options.createId ?? (() => crypto.randomUUID());
 
 	const listeners = new Set<WorkspaceListener>();
+	const histories = new Map<string, ProjectDesignHistory>();
+
+	function getUndoRedoState(projectId: string | null): WorkspaceState["undoRedo"] {
+		const history = projectId ? histories.get(projectId) : undefined;
+		return {
+			canUndo: history !== undefined && history.cursor > 0,
+			canRedo: history !== undefined && history.cursor < history.entries.length,
+		};
+	}
+
+	function recordDesignChange(
+		projectId: string,
+		before: Design,
+		after: Design,
+		structural: boolean,
+	): WorkspaceState["undoRedo"] {
+		let history = histories.get(projectId);
+		if (!history) {
+			history = { entries: [], cursor: 0 };
+			histories.set(projectId, history);
+		}
+		history.entries.length = history.cursor;
+		history.entries.push({ before, after, structural });
+		history.cursor = history.entries.length;
+		return getUndoRedoState(projectId);
+	}
 	let state: WorkspaceState = {
 		projects: store.listProjects(),
 		project: null,
@@ -115,6 +154,7 @@ export async function createDesignWorkspace(
 		save: { status: "idle" },
 		sql: { status: "empty", draftRevision: 0, errors: [] },
 		sandbox: { status: "idle" },
+		undoRedo: { canUndo: false, canRedo: false },
 	};
 	let activeProjectId: string | null = null;
 	/** Orders every stored document, including layout-only writes. */
@@ -152,8 +192,16 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	function isCurrent(projectId: string, revision: number) {
-		return activeProjectId === projectId && state.revision === revision;
+	function isCurrentSave(
+		projectId: string,
+		revision: number,
+		documentRevisionToSave: number,
+	) {
+		return (
+			activeProjectId === projectId &&
+			state.revision === revision &&
+			documentRevision === documentRevisionToSave
+		);
 	}
 	function isCurrentPreview(projectId: string, revision: number, requestId: number) {
 		return (
@@ -312,7 +360,7 @@ export async function createDesignWorkspace(
 				documentRevision: documentRevisionToSave,
 				savedAt,
 			});
-			if (isCurrent(projectId, revision)) {
+			if (isCurrentSave(projectId, revision, documentRevisionToSave)) {
 				setState({
 					...state,
 					projects: store.listProjects(),
@@ -320,7 +368,7 @@ export async function createDesignWorkspace(
 				});
 			}
 		} catch (error) {
-			if (isCurrent(projectId, revision)) {
+			if (isCurrentSave(projectId, revision, documentRevisionToSave)) {
 				setState({
 					...state,
 					save: {
@@ -333,7 +381,16 @@ export async function createDesignWorkspace(
 		}
 	}
 	/** Saves the draft immediately and debounces its disposable preview rebuild. */
-	async function applyStructuralChange(projectId: string, design: Design) {
+	async function applyStructuralChange(
+		projectId: string,
+		design: Design,
+		recordHistory = true,
+	) {
+		const before = state.design;
+		if (!before) throw new Error("Open a project before editing its design.");
+		const undoRedo = recordHistory
+			? recordDesignChange(projectId, before, design, true)
+			: getUndoRedoState(projectId);
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -342,6 +399,7 @@ export async function createDesignWorkspace(
 			...state,
 			design,
 			revision,
+			undoRedo,
 			save: { status: "saving", revision },
 			sql: {
 				status: "checking",
@@ -365,17 +423,51 @@ export async function createDesignWorkspace(
 	 * viewport, and column notes. The schema revision, SQL preview, and applied
 	 * sandbox stay exactly as they were; only the stored document changes.
 	 */
-	async function applyNonSchemaChange(projectId: string, design: Design) {
+	async function applyNonSchemaChange(
+		projectId: string,
+		design: Design,
+		recordHistory = true,
+	) {
+		const before = state.design;
+		if (!before) throw new Error("Open a project before editing its design.");
+		const undoRedo = recordHistory
+			? recordDesignChange(projectId, before, design, false)
+			: getUndoRedoState(projectId);
 		const revision = state.revision;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
 		setState({
 			...state,
 			design,
+			undoRedo,
 			save: { status: "saving", revision },
 		});
 		await saveDocument(projectId, revision, nextDocumentRevision, design);
 		return state;
+	}
+
+	async function applyHistoryChange(direction: "undo" | "redo") {
+		const { projectId } = requireOpenDesign();
+		const history = histories.get(projectId);
+		if (!history) return state;
+
+		const undoing = direction === "undo";
+		const entry = history.entries[undoing ? history.cursor - 1 : history.cursor];
+		if (!entry) return state;
+
+		history.cursor += undoing ? -1 : 1;
+		try {
+			const design = undoing ? entry.before : entry.after;
+			return entry.structural
+				? await applyStructuralChange(projectId, design, false)
+				: await applyNonSchemaChange(projectId, design, false);
+		} catch (error) {
+			history.cursor += undoing ? 1 : -1;
+			if (activeProjectId === projectId) {
+				setState({ ...state, undoRedo: getUndoRedoState(projectId) });
+			}
+			throw error;
+		}
 	}
 
 	function requireOpenDesign(): { projectId: string; design: Design } {
@@ -428,6 +520,7 @@ export async function createDesignWorkspace(
 					save: { status: "saved", revision, savedAt },
 					sql: { status: "empty", draftRevision: revision, errors: [] },
 					sandbox: { status: "idle" },
+					undoRedo: getUndoRedoState(project.id),
 				});
 				return state;
 			});
@@ -454,6 +547,7 @@ export async function createDesignWorkspace(
 						errors: [],
 					},
 					sandbox: { status: "idle" },
+					undoRedo: getUndoRedoState(record.project.id),
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
@@ -461,6 +555,12 @@ export async function createDesignWorkspace(
 				}
 				return state;
 			});
+		},
+		undo() {
+			return runTask(() => applyHistoryChange("undo"));
+		},
+		redo() {
+			return runTask(() => applyHistoryChange("redo"));
 		},
 		addTable(action) {
 			return runTask(async () => {
@@ -859,6 +959,7 @@ export async function createDesignWorkspace(
 			await settle();
 			listeners.clear();
 			store.close();
+			histories.clear();
 		},
 	};
 
