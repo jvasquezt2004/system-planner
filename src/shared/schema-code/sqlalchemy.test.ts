@@ -256,12 +256,12 @@ describe("SQLAlchemy schema code", () => {
 		      )
 		      parent: Mapped["Comment | None"] = relationship(
 		          "Comment",
-		          back_populates="replies",
+		          back_populates="children",
 		          foreign_keys="[Comment.parent_id]",
 		          remote_side="[Comment.id]",
 		          uselist=False,
 		      )
-		      replies: Mapped[list["Comment"]] = relationship(
+		      children: Mapped[list["Comment"]] = relationship(
 		          "Comment",
 		          back_populates="parent",
 		          foreign_keys="[Comment.parent_id]",
@@ -580,7 +580,10 @@ describe("SQLAlchemy schema code", () => {
 		expect(result.code).toContain("secondary=\"post_tags\"");
 		expect(result.code).toContain("author_posts: Mapped[list[\"Post\"]]");
 		expect(result.code).toContain("editor_posts: Mapped[list[\"Post\"]]");
-		expect(result.code).toContain("replies: Mapped[list[\"Comment\"]]");
+		expect(result.code).toContain("children: Mapped[list[\"Comment\"]]");
+		expect(result.code).toContain("profile: Mapped[\"Profile | None\"]");
+		expect(result.code).toContain("post_tags: Mapped[list[\"PostTag\"]]");
+		expect(result.code).toContain("posts: Mapped[list[\"Post\"]]");
 	});
 
 	test("maps the full PostgreSQL type catalog and defaults", () => {
@@ -598,6 +601,16 @@ describe("SQLAlchemy schema code", () => {
 		if (!result.ok) return;
 		for (const fragment of ["class Class(Base):", "mapped_column(\"from\"", "mapped_column(\"2fa_secret\"", "mapped_column(\"userId\""]) {
 			expect(result.code).toContain(fragment);
+		}
+	});
+
+	test("uses shared irregular singularization for class names", () => {
+		for (const [tableName, className] of [["people", "Person"], ["data", "Data"]]) {
+			const design = structuredClone(minimalDesign);
+			design.tables[0]!.name = tableName!;
+			const code = generatedCode(design);
+			expect(code).toContain(`class ${className}(Base):`);
+			expect(code).toContain(`__tablename__ = "${tableName}"`);
 		}
 	});
 

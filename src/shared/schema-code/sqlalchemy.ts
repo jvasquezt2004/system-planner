@@ -2,6 +2,7 @@ import { planSchemaObjectNames } from "../../bun/sql";
 import { resolveRelationship } from "../relationships";
 import type { Design, DesignColumn, DesignIndex, DesignTable } from "../design";
 import type { SchemaCodeGeneration } from "./types";
+import { modelWords, planRelationshipNames, splitWords } from "./naming";
 
 type Relation = {
 	id: string;
@@ -35,31 +36,9 @@ function identifier(value: string): string {
 	return name;
 }
 
-function singular(value: string): string {
-	const lower = value.toLowerCase();
-	if (["status", "data"].includes(lower)) return value;
-	if (/ies$/i.test(value) && value.length > 3) return `${value.slice(0, -3)}y`;
-	if (/(sses|shes|ches|xes|zes)$/i.test(value)) return value.slice(0, -2);
-	if (/s$/i.test(value) && !/(ss|us|is)$/i.test(value)) return value.slice(0, -1);
-	return value;
-}
-
-function pascal(value: string): string {
-	const parts = singular(value).match(/[A-Za-z0-9]+/g) ?? [];
-	const name = parts.map((part) => part[0]!.toUpperCase() + part.slice(1)).join("") || "Table";
+function pascalWords(words: readonly string[]): string {
+	const name = words.map((word) => word[0]!.toUpperCase() + word.slice(1)).join("") || "Table";
 	return /^\d/.test(name) ? `Table${name}` : name;
-}
-
-function plural(value: string): string {
-	if (/(s|x|z|ch|sh)$/i.test(value)) return `${value}es`;
-	if (/[^aeiou]y$/i.test(value)) return `${value.slice(0, -1)}ies`;
-	return `${value}s`;
-}
-
-function relationshipBase(column: string, table: string): string {
-	const name = snake(column);
-	if (name.endsWith("_id") && name.length > 3) return identifier(name.slice(0, -3));
-	return identifier(singular(table));
 }
 
 function allocate(base: string, used: Set<string>): string {
@@ -203,42 +182,36 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		"CIDR", "ENUM", "INET", "JSONB", "MACADDR", "MONEY", "PGUUID", "JSON", "DeclarativeBase", "Mapped", "mapped_column", "relationship",
 		"HALFVEC", "SPARSEVEC", "Vector", "VectorBit",
 	]);
+	const relationshipPlan = planRelationshipNames(design);
 	for (const enumType of design.enumTypes ?? []) {
-		const className = allocate(pascal(enumType.name), usedDeclarations);
+		const className = allocate(pascalWords(splitWords(enumType.name)), usedDeclarations);
 		enumNames.set(enumType.id, className);
 		usedDeclarations.add(`${className}Type`);
 	}
 	const classNames = new Map<string, string>();
-	for (const table of design.tables) classNames.set(table.id, allocate(pascal(table.name), usedDeclarations));
+	for (const table of design.tables) {
+		classNames.set(table.id, allocate(pascalWords(modelWords(table)), usedDeclarations));
+	}
 	const fields = new Map<string, Map<string, string>>();
-	const usedAttrs = new Map<string, Set<string>>();
 	for (const table of design.tables) {
 		const used = new Set<string>();
 		const tableFields = new Map<string, string>();
 		for (const column of table.columns) tableFields.set(column.id, allocate(identifier(column.name), used));
 		fields.set(table.id, tableFields);
-		usedAttrs.set(table.id, new Set(tableFields.values()));
 	}
 	const relations: Relation[] = [];
 	for (const relationship of design.relationships) {
 		const view = resolveRelationship(design, relationship);
-		if (!view || !view.referencedColumn) continue;
-		const fieldSet = usedAttrs.get(view.referencingTable.id)!;
-		const backSet = usedAttrs.get(view.referencedTable.id)!;
-		const self = view.referencingTable.id === view.referencedTable.id;
-		const base = self ? "parent" : relationshipBase(view.referencingColumn.name, view.referencedTable.name);
-		const relationCount = design.relationships.filter((candidate) => candidate.referencedTableId === view.referencedTable.id && candidate.referencingTableId === view.referencingTable.id).length;
-		const cardinality = relationship.cardinality ?? "one-to-many";
-		const role = singular(view.referencingTable.name);
-		const backBase = self ? "replies" : cardinality === "one-to-one" ? role : relationCount > 1 ? `${base}_${plural(role)}` : plural(role);
+		const planned = relationshipPlan.relationships.get(relationship.id);
+		if (!view || !view.referencedColumn || !planned) continue;
 		const relation: Relation = {
 			id: relationship.id,
 			from: view.referencingTable,
 			to: view.referencedTable,
 			column: view.referencingColumn,
-			name: allocate(base, fieldSet),
-			backName: allocate(identifier(backBase), backSet),
-			cardinality,
+			name: identifier(planned.forward.join("_")),
+			backName: identifier(planned.backward.join("_")),
+			cardinality: planned.backwardIsList ? "one-to-many" : "one-to-one",
 		};
 		relations.push(relation);
 	}
@@ -426,7 +399,9 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const isRight = rv.referencedTable.id === table.id;
 			if (!isLeft && !isRight) continue;
 			const other = isLeft ? rv.referencedTable : lv.referencedTable;
-			const attr = allocate(identifier(plural(singular(other.name))), usedAttrs.get(table.id)!);
+			const planned = relationshipPlan.manyToMany.get(association.id);
+			if (!planned) continue;
+			const attr = identifier((isLeft ? planned.left : planned.right).join("_"));
 			const otherName = classNames.get(other.id)!;
 			const junctionTable = design.tables.find((candidate) => candidate.id === association.junctionTableId)!;
 			const annotation = `list["${otherName}"]`;
