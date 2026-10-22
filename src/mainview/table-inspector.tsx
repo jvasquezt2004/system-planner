@@ -14,12 +14,17 @@ import {
 	findColumnTypeInfo,
 	type ColumnLiteralType,
 	type ColumnType,
+	type ColumnTypeParameters,
 } from "../shared/column-types";
 import {
 	getSqlValidationErrors,
+	type DesignIndex,
+	type DesignEnumType,
+	type DesignUniqueConstraint,
 	type ColumnChanges,
 	type DesignColumn,
 	type DesignTable,
+	type ReferentialAction,
 	type RelationshipCardinality,
 	type SqlState,
 } from "../shared/design";
@@ -41,9 +46,13 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { ColumnBadge } from "./column-badge";
 import { ColumnTypeBadge } from "./column-type-badge";
+import { EnumTypeEditor } from "./enum-type-editor";
+import { IndexEditor } from "./index-editor";
+import { UniqueConstraintEditor } from "./unique-constraint-editor";
 
 type TableInspectorProps = {
 	table: DesignTable;
+	enumTypes: DesignEnumType[];
 	selectedColumnId: string | null;
 	relationships: RelationshipView[];
 	selectedRelationshipId: string | null;
@@ -54,6 +63,9 @@ type TableInspectorProps = {
 	onSelectColumn: (columnId: string | null) => void;
 	onAddColumn: () => void;
 	onApplyColumn: (columnId: string, changes: ColumnChanges) => void;
+	onUpdateIndexes: (indexes: DesignIndex[]) => void;
+	onUpdateEnumTypes: (enumTypes: DesignEnumType[]) => void;
+	onUpdateUniqueConstraints: (constraints: DesignUniqueConstraint[]) => void;
 	onRemoveColumn: (columnId: string) => void;
 	onSelectRelationship: (relationshipId: string | null) => void;
 	onSetRelationshipRequired: (relationshipId: string, required: boolean) => void;
@@ -61,6 +73,7 @@ type TableInspectorProps = {
 		relationshipId: string,
 		cardinality: RelationshipCardinality,
 	) => void;
+	onSetReferentialAction: (relationshipId: string, action: "onDelete" | "onUpdate", value: ReferentialAction) => void;
 	onRemoveRelationship: (relationshipId: string) => void;
 };
 
@@ -72,6 +85,7 @@ type TableInspectorProps = {
  */
 export function TableInspector({
 	table,
+	enumTypes,
 	selectedColumnId,
 	relationships,
 	selectedRelationshipId,
@@ -82,10 +96,14 @@ export function TableInspector({
 	onSelectColumn,
 	onAddColumn,
 	onApplyColumn,
+	onUpdateIndexes,
+	onUpdateEnumTypes,
+	onUpdateUniqueConstraints,
 	onRemoveColumn,
 	onSelectRelationship,
 	onSetRelationshipRequired,
 	onSetRelationshipCardinality,
+	onSetReferentialAction,
 	onRemoveRelationship,
 }: TableInspectorProps) {
 	const [name, setName] = useState(table.name);
@@ -135,7 +153,12 @@ export function TableInspector({
 						onChange={(event) => setName(event.target.value)}
 						aria-label="Selected table name"
 						data-testid="table-name-input"
-						className="min-w-0 flex-1 border-b border-transparent bg-transparent pb-0.5 font-display text-[28px] leading-tight font-medium tracking-[-0.015em] text-ink outline-none hover:border-rule focus:border-pencil"
+						className={cn(
+							"min-w-0 flex-1 border-b border-transparent bg-transparent",
+							"pb-0.5 font-display text-[28px] leading-tight font-medium",
+							"tracking-[-0.015em] text-ink outline-none hover:border-rule",
+							"focus:border-pencil",
+						)}
 					/>
 					<Button
 						type="submit"
@@ -239,8 +262,9 @@ export function TableInspector({
 
 				<div className="px-6 pt-3">
 					{selectedColumn ? (
-						<ColumnEditor
+							<ColumnEditor
 							tableName={table.name}
+								enumTypes={enumTypes}
 							column={selectedColumn}
 							manyToManyReference={manyToManyReference}
 							busy={busy}
@@ -255,6 +279,23 @@ export function TableInspector({
 					)}
 				</div>
 			</Section>
+
+			<EnumTypeEditor
+				enumTypes={enumTypes}
+				busy={busy}
+				onChange={onUpdateEnumTypes}
+			/>
+			<UniqueConstraintEditor
+				table={table}
+				busy={busy}
+				onChange={onUpdateUniqueConstraints}
+			/>
+			<IndexEditor
+				table={table}
+				indexes={table.indexes ?? []}
+				busy={busy}
+				onChange={onUpdateIndexes}
+			/>
 
 			<Section
 				id="relationships-heading"
@@ -286,6 +327,7 @@ export function TableInspector({
 								onSelect={onSelectRelationship}
 								onSetRequired={onSetRelationshipRequired}
 								onSetCardinality={onSetRelationshipCardinality}
+								onSetAction={onSetReferentialAction}
 								onRemove={onRemoveRelationship}
 							/>
 						))}
@@ -363,6 +405,7 @@ function RelationshipRow({
 	onSelect,
 	onSetRequired,
 	onSetCardinality,
+	onSetAction,
 	onRemove,
 }: {
 	view: RelationshipView;
@@ -373,6 +416,7 @@ function RelationshipRow({
 	onSelect: (relationshipId: string | null) => void;
 	onSetRequired: (relationshipId: string, required: boolean) => void;
 	onSetCardinality: (relationshipId: string, cardinality: RelationshipCardinality) => void;
+	onSetAction: (relationshipId: string, action: "onDelete" | "onUpdate", value: ReferentialAction) => void;
 	onRemove: (relationshipId: string) => void;
 }) {
 	const relationshipId = view.relationship.id;
@@ -433,7 +477,11 @@ function RelationshipRow({
 						manyToMany
 							? "Many-to-many junction references are always required."
 							: view.oneToOne
-								? `Every ${referencing} record must name one ${referenced} record, and at most one ${referencing} record may name it. ${referenced} records may still have none.`
+								? [
+									`Every ${referencing} record must name one ${referenced} record,`,
+									`and at most one ${referencing} record may name it.`,
+									`${referenced} records may still have none.`,
+								].join(" ")
 								: `Every ${referencing} record must name one ${referenced} record. ${referenced} records may have none.`
 					}
 				>
@@ -470,12 +518,41 @@ function RelationshipRow({
 						<ToggleGroupItem
 							value="one-to-one"
 							data-testid="relationship-one-to-one"
-							title={`One-to-one adds uniqueness on ${referencing}.${view.referencingColumn.name}, so at most one record may name the same ${referenced} record.`}
+							title={[
+								`One-to-one adds uniqueness on ${referencing}.${view.referencingColumn.name},`,
+								`so at most one record may name the same ${referenced} record.`,
+							].join(" ")}
 						>
 							one-to-one
 						</ToggleGroupItem>
 					</ToggleGroup>
 				)}
+			<div className="flex gap-2 pl-5">
+				{(["onDelete", "onUpdate"] as const).map((action) => (
+					<Select
+						key={action}
+						value={view.relationship[action] ?? "NO ACTION"}
+						onValueChange={(value) =>
+							onSetAction(relationshipId, action, value as ReferentialAction)
+						}
+					>
+						<SelectTrigger
+							aria-label={action === "onDelete" ? "On delete action" : "On update action"}
+							className="h-7 flex-1 text-[10.5px]"
+							disabled={busy}
+						>
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent>
+							{["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"].map((value) => (
+								<SelectItem key={value} value={value}>
+									{action === "onDelete" ? "delete" : "update"}: {value}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				))}
+			</div>
 				<Button
 					variant="strike"
 					size="xs"
@@ -501,6 +578,8 @@ function RelationshipRow({
 type ColumnDraft = {
 	name: string;
 	type: ColumnType;
+	typeParameters?: ColumnTypeParameters;
+	enumTypeId?: string;
 	nullable: boolean;
 	primaryKey: boolean;
 	unique: boolean;
@@ -513,6 +592,8 @@ function draftFrom(column: DesignColumn): ColumnDraft {
 	return {
 		name: column.name,
 		type: column.type,
+		typeParameters: column.typeParameters,
+		enumTypeId: column.enumTypeId,
 		nullable: column.nullable,
 		primaryKey: column.primaryKey,
 		unique: column.unique,
@@ -526,6 +607,8 @@ function changesFrom(column: DesignColumn, draft: ColumnDraft): ColumnChanges {
 	const changes: ColumnChanges = {};
 	if (draft.name.trim() !== column.name) changes.name = draft.name.trim();
 	if (draft.type !== column.type) changes.type = draft.type;
+	if (JSON.stringify(draft.typeParameters ?? {}) !== JSON.stringify(column.typeParameters ?? {})) changes.typeParameters = draft.typeParameters;
+	if (draft.enumTypeId !== column.enumTypeId) changes.enumTypeId = draft.enumTypeId;
 	if (draft.nullable !== column.nullable) changes.nullable = draft.nullable;
 	if (draft.primaryKey !== column.primaryKey) changes.primaryKey = draft.primaryKey;
 	if (draft.unique !== column.unique) changes.unique = draft.unique;
@@ -560,6 +643,7 @@ const LITERAL_PLACEHOLDERS: Record<ColumnLiteralType, string> = {
 	numeric: "12.50",
 	boolean: "true",
 	date: "2024-02-29",
+	time: "09:30:00-05:00",
 	timestamp: "2024-02-29T12:00:00Z",
 	json: '{"key": "value"}',
 };
@@ -570,6 +654,7 @@ function capitalize(value: string): string {
 
 function ColumnEditor({
 	tableName,
+	enumTypes,
 	column,
 	manyToManyReference,
 	busy,
@@ -577,6 +662,7 @@ function ColumnEditor({
 	onRemove,
 }: {
 	tableName: string;
+	enumTypes: DesignEnumType[];
 	column: DesignColumn;
 	manyToManyReference: boolean;
 	busy: boolean;
@@ -593,6 +679,7 @@ function ColumnEditor({
 		column.id,
 		column.name,
 		column.type,
+		column.typeParameters,
 		column.nullable,
 		column.primaryKey,
 		column.unique,
@@ -746,6 +833,99 @@ function ColumnEditor({
 					</SelectContent>
 				</Select>
 			</Field>
+			{draft.type === "enum" && (
+				<Field label="Enum type">
+					<Select
+						value={draft.enumTypeId ?? ""}
+						onValueChange={(enumTypeId) => setDraft({ ...draft, enumTypeId })}
+					>
+						<SelectTrigger aria-label="Enum type">
+							<SelectValue placeholder="Choose enum type" />
+						</SelectTrigger>
+						<SelectContent>
+							{enumTypes.map((enumType) => (
+								<SelectItem key={enumType.id} value={enumType.id}>
+									{enumType.name}
+								</SelectItem>
+							))}
+						</SelectContent>
+					</Select>
+				</Field>
+			)}
+			{(["varchar", "char", "bit"].includes(draft.type) ||
+				draft.type === "numeric" ||
+				["vector", "halfvec", "sparsevec"].includes(draft.type)) && (
+				<Field
+					label={
+						draft.type === "numeric"
+							? "Precision and scale"
+							: ["vector", "halfvec", "sparsevec"].includes(draft.type)
+								? "Dimensions"
+								: "Length"
+					}
+				>
+					<div className="flex gap-2">
+						<Input
+							aria-label="Type length or precision"
+							type="number"
+							min={1}
+							value={
+								draft.typeParameters?.dimensions ??
+								draft.typeParameters?.length ??
+								draft.typeParameters?.precision ??
+								""
+							}
+							onChange={(event) => {
+								const value = event.target.value === ""
+									? undefined
+									: Number(event.target.value);
+								const key = ["vector", "halfvec", "sparsevec"].includes(draft.type)
+									? "dimensions"
+									: ["varchar", "char", "bit"].includes(draft.type)
+										? "length"
+										: "precision";
+								setDraft({
+									...draft,
+									typeParameters: { ...draft.typeParameters, [key]: value },
+								});
+							}}
+						/>
+						{draft.type === "numeric" && (
+							<Input
+								aria-label="Numeric scale"
+								type="number"
+								min={-1000}
+								max={1000}
+								value={draft.typeParameters?.scale ?? ""}
+								onChange={(event) => setDraft({
+									...draft,
+									typeParameters: {
+										...draft.typeParameters,
+										scale: event.target.value === ""
+											? undefined
+											: Number(event.target.value),
+									},
+								})}
+							/>
+						)}
+					</div>
+				</Field>
+			)}
+			<label className="mt-2 flex items-center gap-1.5 text-[12px]">
+				<Checkbox
+					aria-label="Array type"
+					checked={draft.typeParameters?.array ?? false}
+					onCheckedChange={(checked) => setDraft({
+						...draft,
+						typeParameters: {
+							...draft.typeParameters,
+							array: checked === true,
+						},
+					})}
+				/>
+				Array
+			</label>
+
 			{dropsIdentity && (
 				<Hint>Identity generation will be cleared because it only applies to integer types.</Hint>
 			)}

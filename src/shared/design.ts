@@ -4,9 +4,9 @@
  */
 
 import type { ColumnDefault } from "./column-defaults";
-import type { ColumnType } from "./column-types";
+import type { ColumnType, ColumnTypeParameters } from "./column-types";
 
-export type { ColumnType } from "./column-types";
+export type { ColumnType, ColumnTypeParameters } from "./column-types";
 export type { ColumnDefault } from "./column-defaults";
 
 export type ProjectSummary = {
@@ -34,6 +34,9 @@ export type DesignColumn = {
 	id: string;
 	name: string;
 	type: ColumnType;
+	/** Structured PostgreSQL type modifiers; absent values preserve older documents. */
+	typeParameters?: ColumnTypeParameters;
+	enumTypeId?: string;
 	nullable: boolean;
 	primaryKey: boolean;
 	unique: boolean;
@@ -49,6 +52,33 @@ export type DesignTable = {
 	name: string;
 	position: CanvasPoint;
 	columns: DesignColumn[];
+	indexes?: DesignIndex[];
+	uniqueConstraints?: DesignUniqueConstraint[];
+};
+/** A composite uniqueness rule declared independently of a relationship. */
+export type DesignUniqueConstraint = {
+	id: string;
+	name?: string;
+	columnIds: string[];
+	nullsNotDistinct?: boolean;
+};
+/** A named PostgreSQL enum and its ordered labels. */
+export type DesignEnumType = { id: string; name: string; labels: string[] };
+
+/** PostgreSQL access method used by an index. */
+export type IndexAccessMethod = "btree" | "hash" | "gin" | "gist" | "spgist" | "brin" | "hnsw" | "ivfflat";
+/** One ordered index key, addressed by stable column id. */
+export type DesignIndexKey = { columnId: string; order?: "asc" | "desc"; nulls?: "first" | "last"; operatorClass?: string };
+/** A structured PostgreSQL index with optional explicit name and storage options. */
+export type DesignIndex = {
+	id: string;
+	name?: string;
+	method: IndexAccessMethod;
+	keys: DesignIndexKey[];
+	unique?: boolean;
+	nullsNotDistinct?: boolean;
+	includeColumnIds?: string[];
+	with?: { fillfactor?: number; fastupdate?: boolean; pagesPerRange?: number; lists?: number; m?: number; efConstruction?: number };
 };
 
 /**
@@ -57,6 +87,7 @@ export type DesignTable = {
  * column; neither cardinality requires the referenced side to participate.
  */
 export type RelationshipCardinality = "one-to-many" | "one-to-one";
+export type ReferentialAction = "NO ACTION" | "RESTRICT" | "CASCADE" | "SET NULL" | "SET DEFAULT";
 /** Cardinality choices available when the designer starts a relationship. */
 export type RelationshipCreationCardinality =
 	| RelationshipCardinality
@@ -80,6 +111,8 @@ export type DesignRelationship = {
 	referencingTableId: string;
 	referencingColumnId: string;
 	referencedTableId: string;
+	onDelete?: ReferentialAction;
+	onUpdate?: ReferentialAction;
 };
 
 /** One visible junction table groups its two required endpoint references. */
@@ -97,6 +130,7 @@ export type Design = {
 	relationships: DesignRelationship[];
 	manyToManyRelationships: DesignManyToManyAssociation[];
 	viewport: CanvasViewport;
+	enumTypes?: DesignEnumType[];
 };
 
 export type SaveState =
@@ -186,7 +220,10 @@ export type SandboxAppliedColumn = {
 export type SandboxAppliedTable = {
 	name: string;
 	columns: SandboxAppliedColumn[];
+	indexes?: SandboxAppliedIndex[];
 };
+
+export type SandboxAppliedIndex = { name: string; method: string; unique: boolean; definition: string };
 
 /** A foreign key reported by the applied sandbox, not by the draft. */
 export type SandboxAppliedRelationship = {
@@ -369,6 +406,9 @@ export function getSqlPreviewValidationStatus(
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
 export type AddTableAction = { name: string; position?: CanvasPoint };
+export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[] };
+export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[] };
+export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[] };
 export type RenameTableAction = { tableId: string; name: string };
 /** Removing a table that relationships depend on requires explicit confirmation. */
 export type RemoveTableAction = { tableId: string; confirmed?: boolean };
@@ -385,7 +425,7 @@ export type AddColumnAction = {
 export type ColumnChanges = Partial<
 	Pick<
 		DesignColumn,
-		"name" | "type" | "nullable" | "primaryKey" | "unique" | "notes" | "identity" | "default"
+		"name" | "type" | "typeParameters" | "enumTypeId" | "nullable" | "primaryKey" | "unique" | "notes" | "identity" | "default"
 	>
 >;
 
@@ -419,6 +459,8 @@ export type UpdateRelationshipAction = {
 	relationshipId: string;
 	required?: boolean;
 	cardinality?: RelationshipCardinality;
+	onDelete?: ReferentialAction;
+	onUpdate?: ReferentialAction;
 };
 
 /** Constraints a relationship owns and a destructive edit would remove. */
@@ -451,4 +493,18 @@ export type AffectedRelationship = {
 export type RemovalPlan = {
 	target: string;
 	relationships: AffectedRelationship[];
+	indexes: AffectedIndex[];
+	uniqueConstraints: AffectedUniqueConstraint[];
 };
+
+/** An index key or INCLUDE entry removed with the referenced column. */
+export type AffectedIndex = {
+	table: string;
+	indexId: string;
+	name: string;
+	removedKeys: number;
+	removedIncludes: number;
+};
+
+/** A composite unique constraint that references a removed column. */
+export type AffectedUniqueConstraint = { table: string; constraintId: string; name: string };

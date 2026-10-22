@@ -1,4 +1,5 @@
 import { PGlite } from "@electric-sql/pglite";
+import { vector } from "@electric-sql/pglite-pgvector";
 import type {
 	SandboxAppliedRelationship,
 	SandboxAppliedTable,
@@ -28,6 +29,8 @@ type CatalogRow = {
 	is_primary_key: boolean;
 	is_unique: boolean;
 };
+type IndexRow = { table_name: string; index_name: string; method: string; is_unique: boolean; definition: string };
+const INDEX_QUERY = `SELECT t.relname AS table_name, i.relname AS index_name, am.amname AS method, ix.indisunique AS is_unique, pg_get_indexdef(i.oid) AS definition FROM pg_index ix JOIN pg_class i ON i.oid = ix.indexrelid JOIN pg_class t ON t.oid = ix.indrelid JOIN pg_am am ON am.oid = i.relam JOIN pg_namespace n ON n.oid = t.relnamespace WHERE n.nspname = 'public' AND NOT EXISTS (SELECT 1 FROM pg_constraint con WHERE con.conindid = ix.indexrelid) ORDER BY t.relname, i.relname`;
 
 const CATALOG_QUERY = `
 	SELECT c.table_name, c.column_name, c.data_type, c.is_identity, c.column_default,
@@ -119,7 +122,7 @@ export function createPGliteSandbox(): SchemaSandbox {
 
 	return {
 		async apply(sql) {
-			const instance = new PGlite();
+			const instance = new PGlite({ extensions: { vector } });
 			database = instance;
 			let failure: SandboxFailure = "sandbox-error";
 			try {
@@ -131,9 +134,10 @@ export function createPGliteSandbox(): SchemaSandbox {
 				const relationships = await instance.query<RelationshipRow>(
 					RELATIONSHIP_QUERY,
 				);
+				const indexes = await instance.query<IndexRow>(INDEX_QUERY);
 				return {
 					ok: true,
-					tables: groupCatalogRows(result.rows),
+					tables: groupCatalogRows(result.rows, indexes.rows),
 					relationships: groupRelationshipRows(relationships.rows),
 				};
 			} catch (error) {
@@ -152,7 +156,7 @@ export function createPGliteSandbox(): SchemaSandbox {
 	};
 }
 
-function groupCatalogRows(rows: CatalogRow[]): SandboxAppliedTable[] {
+function groupCatalogRows(rows: CatalogRow[], indexRows: IndexRow[]): SandboxAppliedTable[] {
 	const tables = new Map<string, SandboxAppliedTable>();
 	for (const row of rows) {
 		let table = tables.get(row.table_name);
@@ -169,6 +173,11 @@ function groupCatalogRows(rows: CatalogRow[]): SandboxAppliedTable[] {
 			primaryKey: Boolean(row.is_primary_key),
 			unique: Boolean(row.is_unique),
 		});
+	}
+	for (const row of indexRows) {
+		let table = tables.get(row.table_name);
+		if (!table) { table = { name: row.table_name, columns: [] }; tables.set(row.table_name, table); }
+		(table.indexes ??= []).push({ name: row.index_name, method: row.method, unique: row.is_unique, definition: row.definition });
 	}
 	return [...tables.values()];
 }

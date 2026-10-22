@@ -9,13 +9,21 @@ import type {
 	RemovalTarget,
 	RemoveRelationshipAction,
 	UpdateRelationshipAction,
+	UpdateIndexesAction,
+	UpdateEnumTypesAction,
+	UpdateUniqueConstraintsAction,
 	DisplayedSqlPreview,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
 	WorkspaceState,
 } from "./design";
+import type { SchemaCodeSnapshot } from "./schema-code";
 export type SqlPreviewExportRequest = Readonly<{
 	preview: DisplayedSqlPreview;
+	fileName: string;
+}>;
+export type SchemaCodeExportRequest = Readonly<{
+	snapshot: SchemaCodeSnapshot;
 	fileName: string;
 }>;
 
@@ -71,6 +79,9 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { tableId: string; columnId: string; changes: ColumnChanges };
 				response: WorkspaceState;
 			};
+			updateIndexes: { params: UpdateIndexesAction; response: WorkspaceState };
+			updateEnumTypes: { params: UpdateEnumTypesAction; response: WorkspaceState };
+			updateUniqueConstraints: { params: UpdateUniqueConstraintsAction; response: WorkspaceState };
 			removeColumn: {
 				params: { tableId: string; columnId: string; confirmed?: boolean };
 				response: WorkspaceState;
@@ -101,6 +112,15 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			};
 			beginSqlPreviewExport: {
 				params: SqlPreviewExportRequest;
+				response: { requestId: string };
+			};
+			copySchemaCode: {
+				params: { snapshot: SchemaCodeSnapshot };
+				response: SqlPreviewCopyResult;
+			};
+			/** ORM exports share the SQL export's folder picker and completion message. */
+			beginSchemaCodeExport: {
+				params: SchemaCodeExportRequest;
 				response: { requestId: string };
 			};
 		};

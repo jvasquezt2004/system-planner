@@ -6,6 +6,7 @@ import type {
 	SqlPreviewExportResult,
 } from "../shared/design";
 import { errorMessage } from "../shared/error-message";
+import { schemaCodeFormat, type SchemaCodeSnapshot } from "../shared/schema-code";
 
 export type SqlPreviewActionDependencies = {
 	writeClipboardText(sql: string): void;
@@ -35,15 +36,48 @@ export function createSqlPreviewActions(dependencies: SqlPreviewActionDependenci
 			const revision = preview?.revision ?? 0;
 			try {
 				const sql = requireSql(preview);
-				const safeFileName = requireSqlFileName(fileName);
-				const directory = await dependencies.chooseExportDirectory();
-				if (directory === null) return { status: "cancelled", revision };
-				if (directory.trim().length === 0) {
-					throw new Error("No export folder was selected.");
-				}
-				const path = join(directory, safeFileName);
-				await writeNewSqlFile(path, sql);
-				return { status: "saved", revision, path };
+				const safeFileName = requireFileName(
+					fileName,
+					[".sql"],
+					"Choose a valid SQL file name ending in .sql.",
+				);
+				return await exportNewFile(revision, safeFileName, sql);
+			} catch (cause) {
+				return {
+					status: "failed",
+					revision,
+					error: exportErrorMessage(cause),
+				};
+			}
+		},
+		/** Copies the ORM code on screen, exactly as the view captured it. */
+		copyCode(snapshot: SchemaCodeSnapshot | null): SqlPreviewCopyResult {
+			const revision = snapshot?.revision ?? 0;
+			try {
+				dependencies.writeClipboardText(requireCode(snapshot));
+				return { status: "copied", revision };
+			} catch (cause) {
+				return {
+					status: "failed",
+					revision,
+					error: errorMessage(cause),
+				};
+			}
+		},
+		async exportCode(
+			snapshot: SchemaCodeSnapshot | null,
+			fileName: string,
+		): Promise<SqlPreviewExportResult> {
+			const revision = snapshot?.revision ?? 0;
+			try {
+				const code = requireCode(snapshot);
+				const format = schemaCodeFormat(snapshot?.target ?? "sql");
+				const safeFileName = requireFileName(
+					fileName,
+					format.fileExtensions,
+					`Choose a valid ${format.label} file name ending in ${format.fileExtensions.join(" or ")}.`,
+				);
+				return await exportNewFile(revision, safeFileName, code);
 			} catch (cause) {
 				return {
 					status: "failed",
@@ -53,6 +87,21 @@ export function createSqlPreviewActions(dependencies: SqlPreviewActionDependenci
 			}
 		},
 	};
+
+	async function exportNewFile(
+		revision: number,
+		fileName: string,
+		contents: string,
+	): Promise<SqlPreviewExportResult> {
+		const directory = await dependencies.chooseExportDirectory();
+		if (directory === null) return { status: "cancelled", revision };
+		if (directory.trim().length === 0) {
+			throw new Error("No export folder was selected.");
+		}
+		const path = join(directory, fileName);
+		await writeNewFile(path, contents);
+		return { status: "saved", revision, path };
+	}
 }
 
 function exportErrorMessage(cause: unknown): string {
@@ -69,27 +118,38 @@ function requireSql(preview: DisplayedSqlPreview | null): string {
 	return preview.sql;
 }
 
-function requireSqlFileName(fileName: string): string {
+function requireCode(snapshot: SchemaCodeSnapshot | null): string {
+	if (!snapshot || typeof snapshot.code !== "string" || snapshot.code.trim().length === 0) {
+		throw new Error("No generated code is available to copy or export.");
+	}
+	return snapshot.code;
+}
+
+function requireFileName(
+	fileName: string,
+	extensions: readonly string[],
+	message: string,
+): string {
 	if (
 		typeof fileName !== "string" ||
 		fileName.length === 0 ||
 		fileName !== fileName.trim() ||
-		!fileName.toLowerCase().endsWith(".sql") ||
+		!extensions.some((extension) => fileName.toLowerCase().endsWith(extension)) ||
 		/[\u0000-\u001f<>:"/\\|?*]/u.test(fileName) ||
 		fileName.endsWith(".")
 	) {
-		throw new Error("Choose a valid SQL file name ending in .sql.");
+		throw new Error(message);
 	}
 	return fileName;
 }
 
-async function writeNewSqlFile(path: string, sql: string): Promise<void> {
+async function writeNewFile(path: string, contents: string): Promise<void> {
 	let file: FileHandle | null = null;
 	let created = false;
 	try {
 		file = await open(path, "wx");
 		created = true;
-		await file.writeFile(sql, "utf8");
+		await file.writeFile(contents, "utf8");
 		await file.sync();
 		await file.close();
 		file = null;

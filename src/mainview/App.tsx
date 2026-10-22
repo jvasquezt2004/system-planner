@@ -423,6 +423,7 @@ function App() {
 						{view === "sql" && (
 							<SqlPreviewView
 								key={state.project.id}
+								design={state.design}
 								sql={state.sql}
 								sandbox={state.sandbox}
 								draftRevision={state.revision}
@@ -469,6 +470,7 @@ function App() {
 							<ScrollArea className="min-h-0 flex-1">
 								<TableInspector
 									table={selectedTable}
+									enumTypes={state.design?.enumTypes ?? []}
 									selectedColumnId={selectedColumnId}
 									relationships={inspectorRelationships}
 									selectedRelationshipId={selectedRelationshipId}
@@ -483,10 +485,28 @@ function App() {
 									onSelectColumn={setSelectedColumnId}
 									onAddColumn={handleAddColumn}
 									onApplyColumn={handleApplyColumn}
+									onUpdateIndexes={(indexes) =>
+									void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))
+								}
+								onUpdateEnumTypes={(enumTypes) =>
+									void run(() => workspaceClient.updateEnumTypes(enumTypes))
+								}
+								 onUpdateUniqueConstraints={(uniqueConstraints) =>
+									void run(() =>
+										workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints),
+									)
+								}
 									onRemoveColumn={handleRemoveColumn}
 									onSelectRelationship={handleSelectRelationship}
 									onSetRelationshipRequired={handleSetRelationshipRequired}
 									onSetRelationshipCardinality={handleSetRelationshipCardinality}
+									onSetReferentialAction={(relationshipId, action, value) =>
+									void run(() =>
+										workspaceClient.updateRelationship(relationshipId, {
+											[action]: value,
+										}),
+									)
+								}
 									onRemoveRelationship={handleRemoveRelationship}
 								/>
 							</ScrollArea>
@@ -982,12 +1002,12 @@ function RemovalDialog({
 								Remove <span className="font-mono text-[18px]">{plan.target}</span>?
 							</DialogTitle>
 							<DialogDescription>
-								{plan.relationships.length === 0
-									? "No relationships depend on it."
-									: "These relationships are affected and will be removed too. Their columns stay, and other tables and columns are untouched."}
+								{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length === 0
+									? "No schema objects depend on it."
+									: "The listed relationships, indexes, and constraints will be adjusted or removed with this change."}
 							</DialogDescription>
 						</DialogHeader>
-						{plan.relationships.length > 0 && (
+						{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length > 0 && (
 							<ul data-testid="affected-relationships" className="border-y border-rule">
 								{plan.relationships.map((relationship: AffectedRelationship, index) => (
 									<li
@@ -1002,7 +1022,8 @@ function RemovalDialog({
 										<span className="min-w-0 truncate">
 											{relationship.cardinality === "many-to-many"
 												? `${relationship.referencingTable} ↔ ${relationship.referencedTable} via ${relationship.junctionTable ?? "(missing junction)"}`
-												: `${relationship.referencingTable}.${relationship.referencingColumn} → ${relationship.referencedTable}.${relationship.referencedColumn ?? "(no primary key)"}`}
+													: `${relationship.referencingTable}.${relationship.referencingColumn} → ${relationship.referencedTable}.` +
+													(relationship.referencedColumn ?? "(no primary key)")}
 										</span>
 										<span className="kicker shrink-0">
 											{relationship.cardinality === "many-to-many"
@@ -1013,6 +1034,33 @@ function RemovalDialog({
 														)
 														.join(" + ")}
 										</span>
+									</li>
+								))}
+								{plan.indexes.map((index) => (
+								<li
+									key={index.indexId}
+									data-testid="affected-index"
+									className="flex items-baseline justify-between gap-3 border-t border-rule-soft py-2 font-mono text-[11.5px] text-ink-2"
+								>
+										<span>{index.table}.{index.name}</span>
+									<span className="kicker">
+										{index.removedKeys > 0
+											? `${index.removedKeys} key${index.removedKeys === 1 ? "" : "s"}`
+											: ""}
+										{index.removedKeys > 0 && index.removedIncludes > 0 ? " + " : ""}
+										{index.removedIncludes > 0
+											? `${index.removedIncludes} INCLUDE`
+											: ""}
+									</span>
+									</li>
+								))}
+								{plan.uniqueConstraints.map((constraint) => (
+									<li
+										key={constraint.constraintId}
+										data-testid="affected-unique-constraint"
+										className="border-t border-rule-soft py-2 font-mono text-[11.5px] text-ink-2"
+									>
+										{constraint.table}.{constraint.name}
 									</li>
 								))}
 							</ul>

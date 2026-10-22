@@ -63,8 +63,20 @@ _Avoid_: Group, container, nesting
 
 **SQL preview**:
 The read-only SQL representation generated from a design, shown in its own
-view in place of the canvas, together with the sandbox's result.
+view in place of the canvas, together with the sandbox's result. It can also
+show the same design as schema code for an ORM.
 _Avoid_: SQL editor
+
+**Code format**:
+One way the SQL preview can render a design: PostgreSQL, Prisma, Drizzle,
+SQLAlchemy, or Django ORM. PostgreSQL is the reference; an ORM format is only
+generated from a draft that already produces PostgreSQL.
+_Avoid_: Dialect, export target
+
+**Schema code**:
+The read-only, generated ORM source for one code format. It is derived from
+the design, never edited, and never shown out of date.
+_Avoid_: Migration, ORM model editor
 
 **Structured default**:
 A column's automatic value chosen from the fixed options its type supports:
@@ -74,6 +86,44 @@ _Avoid_: Default expression, SQL default
 
 **Typed literal**:
 A default value written in the category of its column's type — text, whole
-number, number, boolean, date, timestamp, or JSON — and encoded as a value in
+number, number, boolean, date, time, timestamp, or JSON — and encoded as a value in
 the generated SQL.
 _Avoid_: Literal SQL
+
+**Index**:
+A table-level PostgreSQL access structure over ordered column keys, optionally
+unique, covering additional columns, and using a selected access method.
+_Avoid_: Query, constraint (unless the index enforces a declared unique constraint)
+
+**Index key**:
+One ordered column reference in an index, identified by stable column id and
+optionally carrying ordering and operator-class choices.
+_Avoid_: Index expression
+
+**Access method**:
+The PostgreSQL index implementation selected for an index, such as B-tree,
+GIN, HNSW, or IVFFlat.
+_Avoid_: Index type (ambiguous with column type)
+
+**Operator class**:
+The PostgreSQL operator family that defines how an index key is compared or
+searched.
+_Avoid_: Operator
+
+**Enum type**:
+A named PostgreSQL type whose allowed values are a fixed, ordered set of labels.
+_Avoid_: Lookup table
+
+**Vector column**:
+A column using a pgvector vector, halfvec, or sparsevec type with a structured
+dimension parameter.
+_Avoid_: Embedding (unless that is the column's domain meaning)
+
+**Composite unique constraint**:
+A table constraint that prevents repeated combinations of two or more columns.
+_Avoid_: Unique columns (which suggests each is independently unique)
+
+**Referential action**:
+The configured PostgreSQL action for updating or deleting a row referenced by a
+foreign key.
+_Avoid_: Cascade (unless the action is specifically CASCADE)
