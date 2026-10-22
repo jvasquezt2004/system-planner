@@ -7,13 +7,26 @@ import type {
 } from "../design";
 import { planSchemaObjectNames, type SchemaObjectNames } from "../../bun/sql";
 import { renderColumnType } from "../column-types";
+import {
+	modelWords,
+	planRelationshipNames,
+	splitWords,
+} from "./naming";
 import type { SchemaCodeGeneration } from "./types";
+
+type RelationshipFields = {
+	forward: string;
+	backward: string;
+	backwardIsList: boolean;
+	relationName: string;
+};
 
 type Names = {
 	models: Map<string, string>;
 	fields: Map<string, Map<string, string>>;
 	enums: Map<string, string>;
 	enumValues: Map<string, Map<string, string>>;
+	relationships: Map<string, RelationshipFields>;
 };
 
 const reserved = new Set([
@@ -55,7 +68,7 @@ export function generatePrismaSchema(design: Design): SchemaCodeGeneration {
 	for (const table of design.tables) {
 		lines.push(...renderModel(design, table, names, objectNames), "");
 	}
-	const comments = renderMigrationNotes(design, objectNames);
+	const comments = renderMigrationNotes(design, names, objectNames);
 	if (comments.length) lines.push(...comments, "");
 	while (lines[lines.length - 1] === "") lines.pop();
 	return { ok: true, code: formatSchema(`${lines.join("\n")}\n`) };
@@ -72,35 +85,66 @@ function allocateNames(design: Design): Names {
 	const occupied = new Set<string>();
 	const models = new Map<string, string>();
 	for (const table of design.tables) {
-		models.set(table.id, unique(toPascal(table.name), occupied));
+		const name = pascalCase(modelWords(table));
+		models.set(table.id, unique(name, occupied));
 	}
 	const enums = new Map<string, string>();
 	for (const enumType of design.enumTypes ?? []) {
-		enums.set(enumType.id, unique(toPascal(enumType.name), occupied));
+		enums.set(enumType.id, unique(pascalCase(splitWords(enumType.name)), occupied));
 	}
+
 	const fields = new Map<string, Map<string, string>>();
+	const fieldNamesByTable = new Map<string, Set<string>>();
 	for (const table of design.tables) {
 		const fieldNames = new Set<string>();
-		fields.set(
-			table.id,
-			new Map(table.columns.map((column): [string, string] => [
-				column.id,
-				unique(toCamel(column.name), fieldNames),
-			])),
-		);
+		const tableFields = table.columns.map((column): [string, string] => [
+			column.id,
+			unique(camelCase(splitWords(column.name)), fieldNames),
+		]);
+		fields.set(table.id, new Map(tableFields));
+		fieldNamesByTable.set(table.id, fieldNames);
 	}
+
 	const enumValues = new Map<string, Map<string, string>>();
 	for (const enumType of design.enumTypes ?? []) {
 		const valueNames = new Set<string>();
-		enumValues.set(
-			enumType.id,
-			new Map(enumType.labels.map((label): [string, string] => [
-				label,
-				unique(toPascal(label), valueNames),
-			])),
-		);
+		const values = enumType.labels.map((label): [string, string] => [
+			label,
+			unique(pascalCase(splitWords(label)), valueNames),
+		]);
+		enumValues.set(enumType.id, new Map(values));
 	}
-	return { models, fields, enums, enumValues };
+
+	const plan = planRelationshipNames(design);
+	const relationships = new Map<string, RelationshipFields>();
+	const relationNames = new Set<string>();
+	for (const relationship of design.relationships) {
+		const planned = plan.relationships.get(relationship.id);
+		const referencingTable = design.tables.find(
+			(table) => table.id === relationship.referencingTableId,
+		);
+		const referencedTable = design.tables.find(
+			(table) => table.id === relationship.referencedTableId,
+		);
+		if (!planned || !referencingTable || !referencedTable) continue;
+
+		const referencingFields = fieldNamesByTable.get(referencingTable.id)!;
+		const referencedFields = fieldNamesByTable.get(referencedTable.id)!;
+		const forward = unique(camelCase(planned.forward), referencingFields);
+		const backward = unique(camelCase(planned.backward), referencedFields);
+		const relationNameBase =
+			`${models.get(referencingTable.id)}${pascalCase(planned.forward)}`;
+		const relationName = unique(relationNameBase, relationNames);
+		relationships.set(relationship.id, {
+			forward,
+			backward,
+			backwardIsList: planned.backwardIsList,
+			relationName,
+		});
+	}
+
+	return { models, fields, enums, enumValues, relationships };
+
 }
 
 function unique(base: string, occupied: Set<string>): string {
@@ -117,14 +161,15 @@ function validIdentifier(value: string): string {
 	return candidate || "Generated";
 }
 
-function toPascal(value: string): string {
-	const pieces = value.split(/[^A-Za-z0-9]+|(?<=[a-z0-9])(?=[A-Z])/).filter(Boolean);
-	const result = pieces.map((piece) => piece[0].toUpperCase() + piece.slice(1)).join("");
-	return result || "Generated";
+function pascalCase(words: readonly string[]): string {
+	const value = words
+		.map((word) => word[0].toUpperCase() + word.slice(1))
+		.join("");
+	return value || "Generated";
 }
 
-function toCamel(value: string): string {
-	const pascal = toPascal(value);
+function camelCase(words: readonly string[]): string {
+	const pascal = pascalCase(words);
 	return pascal[0].toLowerCase() + pascal.slice(1);
 }
 
@@ -152,7 +197,6 @@ function renderModel(
 	const modelName = names.models.get(table.id)!;
 	const fields = names.fields.get(table.id)!;
 	const relations = design.relationships.filter((relation) => relation.referencingTableId === table.id);
-	const relationFields = new Set(fields.values());
 	const lines = [`model ${modelName} {`];
 	for (const column of table.columns) {
 		const relation = relations.find((item) => item.referencingColumnId === column.id);
@@ -160,45 +204,47 @@ function renderModel(
 		const type = prismaType(column, names);
 		const attributes = columnAttributes(column, table, relation, objectNames, names, field);
 		lines.push(`  ${field} ${type}${attributes}`);
-		if (column.typeParameters?.array && column.nullable) {
-			lines.push("  // Prisma list fields cannot be optional; PostgreSQL permits NULL arrays here.");
-		}
 	}
-	for (const relation of design.relationships) {
-		const refTable = design.tables.find((item) => item.id === relation.referencedTableId)!;
-		const fkTable = design.tables.find((item) => item.id === relation.referencingTableId)!;
-		const fkColumn = fkTable.columns.find((item) => item.id === relation.referencingColumnId)!;
-		const self = refTable.id === fkTable.id;
-		if (fkTable.id === table.id) {
-			const base = `${names.models.get(refTable.id)!.toLowerCase()}By${toPascal(fkColumn.name)}`;
-			const field = unique(base, relationFields);
-			const referencedKey = refTable.columns.find((column) => column.primaryKey)!;
-			const relationName = relationIdentifier(fkTable.name, fkColumn.name, refTable.name, names);
-			const optional = fkColumn.nullable ? "?" : "";
+	for (const relationship of design.relationships) {
+		const planned = names.relationships.get(relationship.id)!;
+		const referencedTable = design.tables.find(
+			(item) => item.id === relationship.referencedTableId,
+		)!;
+		const referencingTable = design.tables.find(
+			(item) => item.id === relationship.referencingTableId,
+		)!;
+		const foreignKeyColumn = referencingTable.columns.find(
+			(item) => item.id === relationship.referencingColumnId,
+		)!;
+		const selfReference = referencedTable.id === referencingTable.id;
+
+		if (referencingTable.id === table.id) {
+			const referencedKey = referencedTable.columns.find((column) => column.primaryKey)!;
+			const optional = foreignKeyColumn.nullable ? "?" : "";
 			const relationField =
-				`  ${field} ${names.models.get(refTable.id)}${optional} ` +
-				`@relation(${quote(relationName)}, fields: [${fields.get(fkColumn.id)}], ` +
-				`references: [${names.fields.get(refTable.id)!.get(referencedKey.id)}], ` +
-				`onDelete: ${action(relation.onDelete)}, onUpdate: ${action(relation.onUpdate)}, ` +
-				`map: ${quote(objectNames.foreignKeys.get(relation.id) ?? "")})`;
+				`  ${planned.forward} ${names.models.get(referencedTable.id)}${optional} ` +
+				`@relation(${quote(planned.relationName)}, fields: [${fields.get(foreignKeyColumn.id)}], ` +
+				`references: [${names.fields.get(referencedTable.id)!.get(referencedKey.id)}], ` +
+				`onDelete: ${action(relationship.onDelete)}, onUpdate: ${action(relationship.onUpdate)}, ` +
+				`map: ${quote(objectNames.foreignKeys.get(relationship.id) ?? "")})`;
 			lines.push(relationField);
-			if (self) {
-				const back = unique(`${field}Children`, relationFields);
-				const plural = relation.cardinality === "one-to-one" ? "?" : "[]";
-				lines.push(`  ${back} ${names.models.get(refTable.id)}${plural} @relation(${quote(relationName)})`);
+			if (selfReference) {
+				const cardinality = planned.backwardIsList ? "[]" : "?";
+				lines.push(
+					`  ${planned.backward} ${names.models.get(referencedTable.id)}${cardinality} ` +
+						`@relation(${quote(planned.relationName)})`,
+				);
 			}
 		}
-	}
-	for (const relation of design.relationships) {
-		if (relation.referencedTableId !== table.id || relation.referencingTableId === table.id) continue;
-		const fkTable = design.tables.find((item) => item.id === relation.referencingTableId)!;
-		const fkColumn = fkTable.columns.find((item) => item.id === relation.referencingColumnId)!;
-		const modelNameForFk = names.models.get(fkTable.id)!;
-		const relationName = relationIdentifier(fkTable.name, fkColumn.name, table.name, names);
-		const base = toCamel(`${fkTable.name} by ${fkColumn.name}`);
-		const field = unique(base, relationFields);
-		const cardinality = relation.cardinality === "one-to-one" ? "?" : "[]";
-		lines.push(`  ${field} ${modelNameForFk}${cardinality} @relation(${quote(relationName)})`);
+
+		if (relationship.referencedTableId === table.id && !selfReference) {
+			const model = names.models.get(referencingTable.id)!;
+			const cardinality = planned.backwardIsList ? "[]" : "?";
+			lines.push(
+				`  ${planned.backward} ${model}${cardinality} ` +
+					`@relation(${quote(planned.relationName)})`,
+			);
+		}
 	}
 	const uniqueAttributes: string[] = [];
 	const indexAttributes: string[] = [];
@@ -206,10 +252,7 @@ function renderModel(
 		const columns = constraint.columnIds.map((id) => fields.get(id));
 		uniqueAttributes.push(`  @@unique([${columns.join(", ")}], map: ${quote(objectNames.uniqueConstraints.get(constraint.id) ?? "")})`);
 		if (constraint.nullsNotDistinct) {
-			const name = objectNames.uniqueConstraints.get(constraint.id) ?? "";
-			uniqueAttributes.push(
-				`  // Add with a raw SQL migration: ${renderUniqueConstraintSql(table, constraint.columnIds, name)}.`,
-			);
+			uniqueAttributes.push("  // NULLS NOT DISTINCT needs a raw SQL migration.");
 		}
 	}
 	for (const index of table.indexes ?? []) {
@@ -235,9 +278,7 @@ function renderModel(
 			: `  @@index([${keys.join(", ")}], type: ${indexType(index.method)}, map: ${quote(name)})`;
 		(index.unique ? uniqueAttributes : indexAttributes).push(attribute);
 		if (index.nullsNotDistinct) {
-			indexAttributes.push(
-				`  // PostgreSQL NULLS NOT DISTINCT is not expressible by Prisma; add with a raw SQL migration: ${renderIndexSql(table, index, name)}.`,
-			);
+			indexAttributes.push("  // NULLS NOT DISTINCT needs a raw SQL migration.");
 		}
 		const includedColumnIds = index.includeColumnIds ?? [];
 		if (includedColumnIds.length > 0) {
@@ -245,13 +286,11 @@ function renderModel(
 				.map((id) => table.columns.find((column) => column.id === id)!.name)
 				.map(sqlIdentifier)
 				.join(", ");
-			indexAttributes.push(
-				`  // INCLUDE (${included}) is not represented by Prisma; add with a raw SQL migration.`,
-			);
+			indexAttributes.push(`  // INCLUDE (${included}) needs a raw SQL migration.`);
 		}
 		if (Object.keys(index.with ?? {}).length > 0) {
 			indexAttributes.push(
-				`  // PostgreSQL storage parameters are not represented by Prisma; add WITH (${formatStorage(index)}) in a raw SQL migration.`,
+				`  // WITH (${formatStorage(index)}) needs a raw SQL migration.`,
 			);
 		}
 	}
@@ -370,11 +409,17 @@ function prismaType(column: DesignColumn, names: Names): string {
 function nativeType(column: DesignColumn): string {
 	const p = column.typeParameters ?? {};
 	const native: Record<string, string> = {
-		bigint: "BigInt", integer: "Integer", smallint: "SmallInt", text: "Text", uuid: "Uuid",
-		boolean: "Boolean", real: "Real", "double precision": "DoublePrecision", date: "Date",
-		time: `Time(${p.precision ?? 6})`, timetz: `Timetz(${p.precision ?? 6})`,
-		timestamp: `Timestamp(${p.precision ?? 6})`, timestamptz: `Timestamptz(${p.precision ?? 6})`,
-		json: "Json", jsonb: "JsonB", bytea: "ByteA", inet: "Inet", money: "Money",
+		smallint: "SmallInt",
+		uuid: "Uuid",
+		real: "Real",
+		date: "Date",
+		time: `Time(${p.precision ?? 6})`,
+		timetz: `Timetz(${p.precision ?? 6})`,
+		timestamp: `Timestamp(${p.precision ?? 6})`,
+		timestamptz: `Timestamptz(${p.precision ?? 6})`,
+		json: "Json",
+		inet: "Inet",
+		money: "Money",
 	};
 	if (column.type === "varchar" && p.length !== undefined) return `@db.VarChar(${p.length})`;
 	if (column.type === "char" && p.length !== undefined) return `@db.Char(${p.length})`;
@@ -412,9 +457,6 @@ function defaultAttribute(column: DesignColumn): string {
 	return `@default(${quote(value.value)})`;
 }
 
-function relationIdentifier(fkTable: string, fkColumn: string, targetTable: string, names: Names): string {
-	return `${names.models.get(fkTable) ?? toPascal(fkTable)}_${names.models.get(targetTable) ?? toPascal(targetTable)}_${toPascal(fkColumn)}`;
-}
 
 function action(value: string | undefined): string {
 	const normalized = value ?? "NO ACTION";
@@ -435,25 +477,61 @@ function formatStorage(index: DesignIndex): string {
 
 function renderMigrationNotes(
 	design: Design,
+	names: Names,
 	objectNames: SchemaObjectNames,
 ): string[] {
-	const identityUsed = design.tables.some((table) => table.columns.some((column) => column.identity));
-	const lines = ["// PostgreSQL migration notes"];
-	let count = 0;
+	const notes: string[] = [];
+	const identityUsed = design.tables.some((table) =>
+		table.columns.some((column) => column.identity),
+	);
 	if (identityUsed) {
-		lines.push("// Prisma autoincrement() cannot distinguish GENERATED ALWAYS from GENERATED BY DEFAULT AS IDENTITY; SQL uses GENERATED ALWAYS.");
-		count++;
+		notes.push(
+			"// Prisma autoincrement() cannot distinguish GENERATED ALWAYS identity; SQL uses GENERATED ALWAYS.",
+		);
 	}
+
+	const nullableArrays = design.tables.flatMap((table) => {
+		const model = names.models.get(table.id)!;
+		const fields = names.fields.get(table.id)!;
+		return table.columns
+			.filter((column) => column.typeParameters?.array && column.nullable)
+			.map((column) => `${model}.${fields.get(column.id)}`);
+	});
+	if (nullableArrays.length > 0) {
+		notes.push(
+			`// Prisma cannot model nullable lists; PostgreSQL nullable arrays: ${nullableArrays.join(", ")}.`,
+		);
+	}
+
 	for (const table of design.tables) {
+		for (const constraint of table.uniqueConstraints ?? []) {
+			if (!constraint.nullsNotDistinct) continue;
+			const name = objectNames.uniqueConstraints.get(constraint.id) ?? "";
+			notes.push(
+				`// ${renderUniqueConstraintSql(table, constraint.columnIds, name)}`,
+			);
+		}
 		for (const index of table.indexes ?? []) {
-			const vector = index.method === "hnsw" || index.method === "ivfflat" || index.keys.some((key) => ["vector", "halfvec", "sparsevec"].includes(table.columns.find((column) => column.id === key.columnId)?.type ?? ""));
-			if (vector) {
-				lines.push(`// Add with a raw SQL migration: ${renderIndexSql(table, index, objectNames.indexes.get(index.id) ?? "")}.`);
-				count++;
-			}
+			const vectorIndex =
+				index.method === "hnsw" ||
+				index.method === "ivfflat" ||
+				index.keys.some((key) =>
+					["vector", "halfvec", "sparsevec"].includes(
+						table.columns.find((column) => column.id === key.columnId)?.type ?? "",
+					),
+				);
+			const needsSql =
+				vectorIndex ||
+				index.nullsNotDistinct ||
+				(index.includeColumnIds?.length ?? 0) > 0 ||
+				Object.keys(index.with ?? {}).length > 0;
+			if (!needsSql) continue;
+			const name = objectNames.indexes.get(index.id) ?? "";
+			notes.push(`// ${renderIndexSql(table, index, name)}`);
 		}
 	}
-	return count ? lines : [];
+
+	return notes.length > 0 ? ["// PostgreSQL migration notes", ...notes] : [];
 }
 
 function renderUniqueConstraintSql(
