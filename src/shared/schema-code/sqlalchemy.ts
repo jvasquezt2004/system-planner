@@ -73,6 +73,19 @@ function py(value: string): string {
 	return JSON.stringify(value);
 }
 
+function pythonCall(
+	name: string,
+	args: string[],
+	indent = 0,
+	linePrefixLength = 0,
+): string {
+	const prefix = " ".repeat(indent);
+	const call = `${name}(${args.join(", ")})`;
+	if (prefix.length + linePrefixLength + call.length <= 88) return call;
+	const body = args.map((arg) => `${" ".repeat(indent + 4)}${arg},`).join("\n");
+	return `${name}(\n${body}\n${prefix})`;
+}
+
 function mappedType(design: Design, column: DesignColumn, enumNames: Map<string, string>): { expression: string; annotation: string } {
 	const p = column.typeParameters;
 	const array = p?.array === true;
@@ -161,21 +174,22 @@ function indexExpression(table: DesignTable, index: DesignIndex): string[] {
 }
 
 function renderIndex(table: DesignTable, index: DesignIndex, name: string): string {
-	const keys = indexExpression(table, index).join(", ");
-	const options = [
-		...(index.unique ? ["unique=True"] : []),
-		`postgresql_using=${py(index.method)}`,
-		...(index.includeColumnIds?.length ? [`postgresql_include=[${index.includeColumnIds.map((id) => py(table.columns.find((column) => column.id === id)!.name)).join(", ")}]`] : []),
-		...(index.unique && index.nullsNotDistinct ? ["postgresql_nulls_not_distinct=True"] : []),
-	];
+	const args = [py(name), ...indexExpression(table, index)];
+	if (index.unique) args.push("unique=True");
+	args.push(`postgresql_using=${py(index.method)}`);
+	if (index.includeColumnIds?.length) {
+		args.push(`postgresql_include=[${index.includeColumnIds.map((id) => py(table.columns.find((column) => column.id === id)!.name)).join(", ")}]`);
+	}
+	if (index.unique && index.nullsNotDistinct) args.push("postgresql_nulls_not_distinct=True");
 	const operatorClasses = index.keys.flatMap((key) => {
 		if (!key.operatorClass) return [];
 		const column = table.columns.find((candidate) => candidate.id === key.columnId)!;
 		return [`${py(column.name)}: ${py(key.operatorClass)}`];
 	});
-	if (operatorClasses.length) options.push(`postgresql_ops={${operatorClasses.join(", ")}}`);
-	const withOptions = storageOptions(index);
-	return `Index(${py(name)}, ${keys}, ${options.join(", ")}${withOptions})`;
+	if (operatorClasses.length) args.push(`postgresql_ops={${operatorClasses.join(", ")}}`);
+	const storage = storageOptions(index);
+	if (storage) args.push(storage.slice(2));
+	return pythonCall("Index", args, 8);
 }
 
 
@@ -239,30 +253,62 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		"from uuid import UUID",
 		"",
 		"from sqlalchemy import (",
-		"    ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,",
-		"    Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,",
-		"    column, text,",
+		"    ARRAY,",
+		"    BigInteger,",
+		"    Boolean,",
+		"    CHAR,",
+		"    Date,",
+		"    DOUBLE_PRECISION,",
+		"    ForeignKey,",
+		"    Identity,",
+		"    Index,",
+		"    Integer,",
+		"    Interval,",
+		"    LargeBinary,",
+		"    Numeric,",
+		"    REAL,",
+		"    SmallInteger,",
+		"    String,",
+		"    Text,",
+		"    Time,",
+		"    TIMESTAMP,",
+		"    UniqueConstraint,",
+		"    column,",
+		"    text,",
 		")",
-		"from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON",
+		"from sqlalchemy.dialects.postgresql import (",
+		"    CIDR,",
+		"    ENUM,",
+		"    INET,",
+		"    JSONB,",
+		"    MACADDR,",
+		"    MONEY,",
+		"    UUID as PGUUID,",
+		"    JSON,",
+		")",
 		"from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship",
 		"",
 		"",
 		"class Base(DeclarativeBase):",
 		"    pass",
 	];
-	if (usesPgvector) lines.splice(15, 0, "from pgvector.sqlalchemy import BIT as VectorBit, HALFVEC, SPARSEVEC, Vector");
-	if (usesPgvector) lines.splice(lines.indexOf("class Base(DeclarativeBase):"), 0, "# Install PostgreSQL's vector extension through a migration: CREATE EXTENSION IF NOT EXISTS vector;", "");
+	if (usesPgvector) lines.splice(lines.indexOf("class Base(DeclarativeBase):"), 0, "# Install PostgreSQL's vector extension through a migration: CREATE EXTENSION IF NOT EXISTS vector;", "", "");
 	for (const enumType of design.enumTypes ?? []) {
 		const className = enumNames.get(enumType.id)!;
 		const memberNames = new Set<string>();
-		lines.push("", `class ${className}(enum.Enum):`);
+		lines.push("", "", `class ${className}(enum.Enum):`);
 		for (const label of enumType.labels) {
 			const member = allocate(identifier(label).toUpperCase(), memberNames);
 			lines.push(`    ${member} = ${py(label)}`);
 		}
-		lines.push("", `${className}Type = ENUM(${className}, name=${py(enumType.name)}, create_type=True, values_callable=lambda members: [member.value for member in members])`);
+		const enumArgs = [
+			className,
+			`name=${py(enumType.name)}`,
+			"create_type=True",
+			"values_callable=lambda members: [member.value for member in members]",
+		];
+		lines.push("", "", `${className}Type = ${pythonCall("ENUM", enumArgs, 0, `${className}Type = `.length)}`);
 	}
-
 	const tableRelationships = new Map<string, { relation: Relation; forward: boolean }[]>();
 	for (const relation of relations) {
 		tableRelationships.set(relation.from.id, [...(tableRelationships.get(relation.from.id) ?? []), { relation, forward: true }]);
@@ -274,14 +320,25 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		const tableRels = tableRelationships.get(table.id) ?? [];
 		const constraints: string[] = [];
 		for (const constraint of table.uniqueConstraints ?? []) {
-			const columns = constraint.columnIds.map((id) => py(tableFields.get(id)!)).join(", ");
 			const name = names.uniqueConstraints.get(constraint.id);
-			const nullsNotDistinct = constraint.nullsNotDistinct ? ", postgresql_nulls_not_distinct=True" : "";
-			constraints.push(`UniqueConstraint(${columns}, name=${py(name ?? constraint.name ?? `${table.name}_key`)}${nullsNotDistinct})`);
+			const nullsNotDistinct = constraint.nullsNotDistinct
+				? ["postgresql_nulls_not_distinct=True"]
+				: [];
+			constraints.push(
+				pythonCall(
+					"UniqueConstraint",
+					[
+						...constraint.columnIds.map((id) => py(tableFields.get(id)!)),
+						`name=${py(name ?? constraint.name ?? `${table.name}_key`)}`,
+						...nullsNotDistinct,
+					],
+					8,
+				),
+			);
 		}
 		for (const relation of relations.filter((candidate) => candidate.from.id === table.id && candidate.cardinality === "one-to-one")) {
 			const view = resolveRelationship(design, design.relationships.find((candidate) => candidate.id === relation.id)!);
-			if (view?.ownsUniqueness) constraints.push(`UniqueConstraint(${py(tableFields.get(relation.column.id)!)}, name=${py(names.relationshipUniques.get(relation.id) ?? "")})`);
+			if (view?.ownsUniqueness) constraints.push(pythonCall("UniqueConstraint", [py(tableFields.get(relation.column.id)!), `name=${py(names.relationshipUniques.get(relation.id) ?? "")}`], 8));
 		}
 		for (const association of design.manyToManyRelationships ?? []) {
 			if (association.junctionTableId !== table.id) continue;
@@ -290,11 +347,25 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const right = design.relationships.find((r) => r.id === association.rightRelationshipId);
 			const lv = left ? resolveRelationship(design, left) : null;
 			const rv = right ? resolveRelationship(design, right) : null;
-			if (lv && rv) constraints.push(`UniqueConstraint(${py(tableFields.get(lv.referencingColumn.id)!)}, ${py(tableFields.get(rv.referencingColumn.id)!)}, name=${py(name ?? "")})`);
+			if (lv && rv) constraints.push(pythonCall("UniqueConstraint", [py(tableFields.get(lv.referencingColumn.id)!), py(tableFields.get(rv.referencingColumn.id)!), `name=${py(name ?? "")}`], 8));
 		}
 		for (const index of table.indexes ?? []) constraints.push(renderIndex(table, index, names.indexes.get(index.id) ?? index.name ?? `${table.name}_idx`));
-		lines.push("", `class ${className}(Base):`, `    __tablename__ = ${py(table.name)}`);
-		if (constraints.length) lines.push("    __table_args__ = (", ...constraints.map((constraint) => `        ${constraint},`), "    )");
+		lines.push("", "", `class ${className}(Base):`, `    __tablename__ = ${py(table.name)}`);
+		if (constraints.length) {
+			const inline = `    __table_args__ = (${constraints.join(", ")},)`;
+			if (inline.length <= 88) {
+				lines.push(inline);
+			} else {
+				lines.push("    __table_args__ = (");
+				for (const constraint of constraints) {
+					const formatted = constraint.split("\n");
+					formatted[0] = `        ${formatted[0]}`;
+					formatted[formatted.length - 1] += ",";
+					lines.push(...formatted);
+				}
+				lines.push("    )");
+			}
+		}
 		for (const column of table.columns) {
 			const attr = tableFields.get(column.id)!;
 			const type = mappedType(design, column, enumNames);
@@ -307,17 +378,24 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 				const rel = relations.find((candidate) => candidate.id === relationship.id)!;
 				const targetPk = rel.to.columns.find((candidate) => candidate.primaryKey)!;
 				const fkName = names.foreignKeys.get(rel.id);
-				const actions = [
-					...(relationship.onDelete && relationship.onDelete !== "NO ACTION" ? [`ondelete=${py(relationship.onDelete)}`] : []),
-					...(relationship.onUpdate && relationship.onUpdate !== "NO ACTION" ? [`onupdate=${py(relationship.onUpdate)}`] : []),
-				];
-				args.push(`ForeignKey(${py(`${rel.to.name}.${targetPk.name}`)}, name=${py(fkName ?? "")}${actions.length ? `, ${actions.join(", ")}` : ""})`);
+				args.push(
+					pythonCall(
+						"ForeignKey",
+						[
+							py(`${rel.to.name}.${targetPk.name}`),
+							`name=${py(fkName ?? "")}`,
+							...(relationship.onDelete && relationship.onDelete !== "NO ACTION" ? [`ondelete=${py(relationship.onDelete)}`] : []),
+							...(relationship.onUpdate && relationship.onUpdate !== "NO ACTION" ? [`onupdate=${py(relationship.onUpdate)}`] : []),
+						],
+						8,
+					),
+				);
 			}
 			if (column.primaryKey) args.push("primary_key=True");
 			if (column.unique && !column.primaryKey) args.push("unique=True");
 			const defaultSql = defaultExpression(column);
 			if (defaultSql !== null) args.push(`server_default=text(${py(defaultSql)})`);
-			lines.push(`    ${attr}: Mapped[${annotation}] = mapped_column(${args.join(", ")})`);
+			lines.push(`    ${attr}: Mapped[${annotation}] = ${pythonCall("mapped_column", args, 4, `${attr}: Mapped[${annotation}] = `.length)}`);
 		}
 		for (const entry of tableRels) {
 			const relation = entry.relation;
@@ -328,12 +406,14 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const back = forward ? relation.backName : relation.name;
 			const collection = forward ? false : relation.cardinality === "one-to-many";
 			const nullable = relation.column.nullable;
-			const type = collection ? `list[${targetName}]` : `${targetName}${!forward && relation.cardinality === "one-to-one" ? " | None" : forward && nullable ? " | None" : ""}`;
+			const type = collection
+				? `list["${targetName}"]`
+				: `"${targetName}${!forward && relation.cardinality === "one-to-one" ? " | None" : forward && nullable ? " | None" : ""}"`;
 			const args = [py(targetName), `back_populates=${py(back)}`];
 			args.push(`foreign_keys=${py(`[${classNames.get(relation.from.id)}.${fields.get(relation.from.id)!.get(relation.column.id)}]`)}`);
 			if (relation.from.id === relation.to.id && forward) args.push(`remote_side=${py(`[${classNames.get(target.id)}.${fields.get(target.id)!.get(target.columns.find((candidate) => candidate.primaryKey)!.id)}]`)}`);
 			if (!collection && (relation.cardinality === "one-to-one" || forward)) args.push("uselist=False");
-			lines.push(`    ${name}: Mapped[${type}] = relationship(${args.join(", ")})`);
+			lines.push(`    ${name}: Mapped[${type}] = ${pythonCall("relationship", args, 4, `${name}: Mapped[${type}] = `.length)}`);
 		}
 		for (const association of design.manyToManyRelationships ?? []) {
 			const left = design.relationships.find((candidate) => candidate.id === association.leftRelationshipId);
@@ -349,8 +429,50 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const attr = allocate(identifier(plural(singular(other.name))), usedAttrs.get(table.id)!);
 			const otherName = classNames.get(other.id)!;
 			const junctionTable = design.tables.find((candidate) => candidate.id === association.junctionTableId)!;
-			lines.push(`    ${attr}: Mapped[list[${otherName}]] = relationship(${py(otherName)}, secondary=${py(junctionTable.name)}, viewonly=True)`);
+			const annotation = `list["${otherName}"]`;
+			const attrPrefix = `${attr}: Mapped[${annotation}] = `;
+			lines.push(`    ${attrPrefix}${pythonCall("relationship", [py(otherName), `secondary=${py(junctionTable.name)}`, "viewonly=True"], 4, attrPrefix.length)}`);
 		}
 	}
-	return { ok: true, code: `${lines.join("\n")}\n` };
+	const bodyStart = usesPgvector
+		? lines.indexOf("# Install PostgreSQL's vector extension through a migration: CREATE EXTENSION IF NOT EXISTS vector;")
+		: lines.indexOf("class Base(DeclarativeBase):");
+	const body = lines.slice(bodyStart);
+	const bodyText = body.join("\n");
+	const referenced = (name: string) => new RegExp(`\\b${name}\\b`).test(bodyText);
+	const importBlock = (module: string, names: string[]) => {
+		const used = names.filter((name) => referenced(name.split(" as ")[1] ?? name));
+		if (!used.length) return [];
+		const inline = `from ${module} import ${used.join(", ")}`;
+		if (inline.length <= 88) return [inline];
+		return [`from ${module} import (`, ...used.map((name) => `    ${name},`), ")"];
+	};
+	const imports = [
+		...(["enum"].filter(referenced).map((name) => `import ${name}`)),
+		...importBlock("datetime", ["date", "datetime", "time", "timedelta"]),
+		...importBlock("decimal", ["Decimal"]),
+		...importBlock("uuid", ["UUID"]),
+	];
+	const coreImports = [
+		"ARRAY", "CHAR", "DOUBLE_PRECISION", "REAL", "TIMESTAMP",
+		"BigInteger", "Boolean", "Date", "ForeignKey", "Identity", "Index",
+		"Integer", "Interval", "LargeBinary", "Numeric", "SmallInteger",
+		"String", "Text", "Time", "UniqueConstraint", "column", "text",
+	];
+	const dialectImports = ["CIDR", "ENUM", "INET", "JSON", "JSONB", "MACADDR", "MONEY"];
+	if (imports.length) imports.push("");
+	if (usesPgvector) {
+		imports.push(
+			"from pgvector.sqlalchemy import BIT as VectorBit",
+			"from pgvector.sqlalchemy import HALFVEC, SPARSEVEC, Vector",
+		);
+	}
+	imports.push(
+		...importBlock("sqlalchemy", coreImports),
+		...importBlock("sqlalchemy.dialects.postgresql", dialectImports),
+		...importBlock("sqlalchemy.dialects.postgresql", ["UUID as PGUUID"]),
+		...importBlock("sqlalchemy.orm", ["DeclarativeBase", "Mapped", "mapped_column", "relationship"]),
+		...(usesPgvector ? [""] : ["", ""]),
+	);
+	return { ok: true, code: `${[...imports, ...body].join("\n")}\n` };
 }
