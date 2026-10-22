@@ -28,6 +28,7 @@ export const COLUMN_LITERAL_LABELS: Record<ColumnLiteralType, string> = {
 	numeric: "number",
 	boolean: "true or false",
 	date: "date",
+	time: "time",
 	timestamp: "timestamp",
 	json: "JSON value",
 };
@@ -39,6 +40,7 @@ export function isColumnLiteralType(value: unknown): value is ColumnLiteralType 
 		value === "numeric" ||
 		value === "boolean" ||
 		value === "date" ||
+		value === "time" ||
 		value === "timestamp" ||
 		value === "json"
 	);
@@ -155,6 +157,10 @@ function literalProblem(
 			return isCalendarDate(value)
 				? null
 				: `“${value}” is not a valid date; use an ISO date such as 2024-02-29`;
+		case "time":
+			return isTime(value)
+				? null
+				: `“${value}” is not a valid time; use HH:MM:SS, optionally followed by an offset`;
 		case "timestamp":
 			return isTimestamp(value)
 				? null
@@ -222,11 +228,22 @@ function isTimestamp(value: string): boolean {
 	return offsetHours < 14 || offsetMinutes === 0;
 }
 
+function isTime(value: string): boolean {
+	const match = /^(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,6}))?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+	if (!match) return false;
+	if (Number(match[1]) > 23 || Number(match[2]) > 59 || Number(match[3] ?? 0) > 59) return false;
+	const zone = match[5];
+	if (!zone || zone === "Z") return true;
+	const hours = Number(zone.slice(1, 3));
+	const minutes = Number(zone.slice(4, 6));
+	return hours < 14 ? minutes <= 59 : hours === 14 && minutes === 0;
+}
+
 /**
  * Renders the SQL value expression without the `DEFAULT` keyword. Literal
  * content is quoted and its quotes doubled, so it can never become a statement.
  */
-export function renderDefaultExpression(value: ColumnDefault): string | null {
+export function renderDefaultExpression(value: ColumnDefault, columnType?: ColumnType): string | null {
 	switch (value.kind) {
 		case "none":
 			return null;
@@ -245,6 +262,10 @@ export function renderDefaultExpression(value: ColumnDefault): string | null {
 					return value.value;
 				case "date":
 					return `DATE ${quoteStringLiteral(value.value)}`;
+				case "time":
+					return columnType === "timetz"
+						? `TIME WITH TIME ZONE ${quoteStringLiteral(value.value)}`
+						: `TIME ${quoteStringLiteral(value.value)}`;
 				case "timestamp":
 					return `TIMESTAMP WITH TIME ZONE ${quoteStringLiteral(value.value)}`;
 				case "json":

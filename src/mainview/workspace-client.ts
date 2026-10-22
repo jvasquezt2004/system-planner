@@ -13,6 +13,10 @@ import type {
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
 	WorkspaceState,
+	DesignIndex,
+	ReferentialAction,
+	DesignEnumType,
+	DesignUniqueConstraint,
 } from "../shared/design";
 import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
 import { errorMessage } from "../shared/error-message";
@@ -94,6 +98,15 @@ export const workspaceClient = {
 	): Promise<WorkspaceState> {
 		return rpc.request.updateColumn({ tableId, columnId, changes });
 	},
+	updateIndexes(tableId: string, indexes: DesignIndex[]): Promise<WorkspaceState> {
+		return rpc.request.updateIndexes({ tableId, indexes });
+	},
+	updateEnumTypes(enumTypes: DesignEnumType[]): Promise<WorkspaceState> {
+		return rpc.request.updateEnumTypes({ enumTypes });
+	},
+	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
+		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });
+	},
 	removeColumn(
 		tableId: string,
 		columnId: string,
@@ -116,7 +129,7 @@ export const workspaceClient = {
 	},
 	updateRelationship(
 		relationshipId: string,
-		changes: { required?: boolean; cardinality?: RelationshipCardinality },
+		changes: { required?: boolean; cardinality?: RelationshipCardinality; onDelete?: ReferentialAction; onUpdate?: ReferentialAction },
 	): Promise<WorkspaceState> {
 		return rpc.request.updateRelationship({ relationshipId, ...changes });
 	},

@@ -169,9 +169,44 @@ export function relationshipConstraints(
 
 /** Lists the relationships a removal would delete alongside its target. */
 export function removalPlan(design: Design, target: RemovalTarget): RemovalPlan {
+	const affectedIndexes = design.tables.flatMap((table) =>
+		(table.indexes ?? []).flatMap((index) => {
+			const inTargetTable = table.id === target.tableId;
+			const removedKeys = index.keys.filter((key) =>
+				inTargetTable && (target.kind === "table" || key.columnId === target.columnId),
+			).length;
+			const removedIncludes = (index.includeColumnIds ?? []).filter((id) =>
+				inTargetTable && (target.kind === "table" || id === target.columnId),
+			).length;
+			return removedKeys + removedIncludes > 0
+				? [{
+					table: table.name,
+					indexId: index.id,
+					name: index.name?.trim() || `${table.name} index`,
+					removedKeys,
+					removedIncludes,
+				}]
+				: [];
+		}),
+	);
+	const affectedUniqueConstraints = design.tables.flatMap((table) =>
+		(table.uniqueConstraints ?? []).flatMap((constraint) => {
+			const affected = table.id === target.tableId &&
+				(target.kind === "table" || constraint.columnIds.includes(target.columnId));
+			return affected
+				? [{
+					table: table.name,
+					constraintId: constraint.id,
+					name: constraint.name?.trim() || `${table.name} unique constraint`,
+				}]
+				: [];
+		}),
+	);
 	return {
 		target: removalTargetLabel(design, target),
 		relationships: affectedRelationships(design, target),
+		indexes: affectedIndexes,
+		uniqueConstraints: affectedUniqueConstraints,
 	};
 }
 

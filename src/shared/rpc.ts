@@ -9,6 +9,9 @@ import type {
 	RemovalTarget,
 	RemoveRelationshipAction,
 	UpdateRelationshipAction,
+	UpdateIndexesAction,
+	UpdateEnumTypesAction,
+	UpdateUniqueConstraintsAction,
 	DisplayedSqlPreview,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
@@ -71,6 +74,9 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { tableId: string; columnId: string; changes: ColumnChanges };
 				response: WorkspaceState;
 			};
+			updateIndexes: { params: UpdateIndexesAction; response: WorkspaceState };
+			updateEnumTypes: { params: UpdateEnumTypesAction; response: WorkspaceState };
+			updateUniqueConstraints: { params: UpdateUniqueConstraintsAction; response: WorkspaceState };
 			removeColumn: {
 				params: { tableId: string; columnId: string; confirmed?: boolean };
 				response: WorkspaceState;

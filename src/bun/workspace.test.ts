@@ -849,25 +849,48 @@ describe("design workspace", () => {
 				date: "date",
 				timestamptz: "timestamp with time zone",
 				jsonb: "jsonb",
+				varchar: "character varying",
+				char: "character",
+				real: "real",
+				"double precision": "double precision",
+				time: "time without time zone",
+				timetz: "time with time zone",
+				timestamp: "timestamp without time zone",
+				interval: "interval",
+				bytea: "bytea",
+				json: "json",
+				inet: "inet",
+				cidr: "cidr",
+				macaddr: "macaddr",
+				money: "money",
+				vector: "USER-DEFINED",
+				halfvec: "USER-DEFINED",
+				sparsevec: "USER-DEFINED",
+				bit: "bit",
 			};
 
 			let state = withTable;
-			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+			for (const definition of COLUMN_TYPE_DEFINITIONS.filter((candidate) => candidate.type !== "enum")) {
 				state = await workspace.addColumn({
 					tableId: table.id,
 					name: `sample_${definition.type}`,
 					type: definition.type,
 				});
+				if (["vector", "halfvec", "sparsevec"].includes(definition.type)) {
+					const columns = requireTable(state.design?.tables[0]).columns;
+					const column = columns[columns.length - 1];
+					state = await workspace.updateColumn({ tableId: table.id, columnId: column.id, changes: { typeParameters: { dimensions: 3 } } });
+				}
 			}
 
 			expect(Object.keys(catalogDataTypes).sort()).toEqual(
-				COLUMN_TYPE_DEFINITIONS.map((definition) => definition.type).sort(),
+				COLUMN_TYPE_DEFINITIONS.filter((definition) => definition.type !== "enum").map((definition) => definition.type).sort(),
 			);
 			expect(state.sql.status).toBe("current");
 			if (state.sql.status !== "current") {
 				throw new Error(`Expected current SQL, received ${state.sql.status}.`);
 			}
-			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+			for (const definition of COLUMN_TYPE_DEFINITIONS.filter((candidate) => candidate.type !== "enum")) {
 				expect(state.sql.sql).toContain(
 					`"sample_${definition.type}" ${definition.type}`,
 				);
@@ -878,7 +901,7 @@ describe("design workspace", () => {
 				throw new Error("Expected the sandbox to accept every supported type.");
 			}
 			const applied = state.sandbox.tables[0].columns;
-			for (const definition of COLUMN_TYPE_DEFINITIONS) {
+			for (const definition of COLUMN_TYPE_DEFINITIONS.filter((candidate) => candidate.type !== "enum")) {
 				const appliedColumn = applied.find(
 					(candidate) => candidate.name === `sample_${definition.type}`,
 				);
