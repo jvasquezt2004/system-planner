@@ -209,8 +209,12 @@ describe("generateDrizzleSchema", () => {
 
 		  export const commentRelations = relations(comment, ({ one, many }) => ({
 		    post: one(post, { fields: [comment.postId], references: [post.id] }),
-		    parent: one(comment, { fields: [comment.parentId], references: [comment.id] }),
-		    children: many(comment),
+		    parent: one(comment, {
+		      fields: [comment.parentId],
+		      references: [comment.id],
+		      relationName: "comment_parent",
+		    }),
+		    children: many(comment, { relationName: "comment_parent" }),
 		  }));
 
 		  export const tagRelations = relations(tag, ({ many }) => ({
@@ -467,8 +471,8 @@ describe("generateDrizzleSchema", () => {
 			"references: [user.id],",
 			'relationName: "post_author",',
 			"comments: many(comment)",
-			"parent: one(comment, { fields: [comment.parentId], references: [comment.id] })",
-			"children: many(comment)",
+			"parent: one(comment, {",
+			'children: many(comment, { relationName: "comment_parent" })',
 			"postTags: many(postTag)",
 			"post: one(post, { fields: [postTag.postId]",
 			"tag: one(tag, { fields: [postTag.tagId]",
@@ -492,6 +496,27 @@ describe("generateDrizzleSchema", () => {
 		expect(generated.code).toContain('metadata: jsonb("metadata").default({})');
 		expect(generated.code).toContain("({ many })");
 		expect(generated.code).toContain("({ one })");
+	});
+
+	test("assigns a shared relation name to both sides of a self-reference", () => {
+		const generated = generateDrizzleSchema(SCHEMA_CODE_FIXTURES.blog);
+		expect(generated.ok).toBe(true);
+		if (!generated.ok) return;
+
+		for (const fragment of [
+			"parent: one(comment, {",
+			"fields: [comment.parentId],",
+			"references: [comment.id],",
+			'relationName: "comment_parent",',
+		]) {
+			expect(generated.code).toContain(fragment);
+		}
+		expect(generated.code).toContain(
+			'children: many(comment, { relationName: "comment_parent" })',
+		);
+		expect(
+			[...generated.code.matchAll(/relationName: "comment_parent"/g)],
+		).toHaveLength(2);
 	});
 
 	test("preserves index names, access methods, ordering, opclasses, and documents unsupported options", () => {

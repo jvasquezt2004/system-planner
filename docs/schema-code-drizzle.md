@@ -29,9 +29,9 @@ release-candidate channel; it is not the stable API available in drizzle-orm
 
 Model and relation property names come from the shared naming plan in
 `src/shared/schema-code/naming.ts`. A one-to-one back-reference uses `one()`;
-one-to-many back-references use `many()`. Drizzle's `relationName` is emitted
-only for repeated foreign-key pairs, with a readable alias derived from the
-model and forward relation (for example, `post_author`).
+one-to-many back-references use `many()`. Drizzle's `relationName` is emitted for
+repeated foreign-key pairs and self-references, with a readable alias derived
+from the model and forward relation (for example, `post_author` or `comment_parent`).
 
 The stable `relations()` API models many-to-many relationships through the
 visible junction table, so the generated endpoint relations are `postTags`; it

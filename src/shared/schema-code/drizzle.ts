@@ -889,7 +889,7 @@ function planRelations(design: Design): RelationPlan[] {
 		const names = plan.relationships.get(relationship.id);
 		if (!table || !column || !target || !targetKey || !names) continue;
 		const pair = `${table.id}\0${target.id}`;
-		const relationName = pairs.get(pair)! > 1
+		const relationName = pairs.get(pair)! > 1 || table.id === target.id
 			? `${camelCase(modelWords(table))}_${names.forward.join("_")}`
 			: undefined;
 		relationships.push({
