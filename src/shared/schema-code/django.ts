@@ -544,10 +544,10 @@ function formatListAssignment(
 	indentation: number,
 ): string[] {
 	const indent = " ".repeat(indentation);
-	const line = `${indent}${name} = [${values.join(", ")}]  # noqa: RUF012`;
+	const line = `${indent}${name} = [${values.join(", ")}]`;
 	if (line.length <= 88) return [line];
 	return [
-		`${indent}${name} = [  # noqa: RUF012`,
+		`${indent}${name} = [`,
 		...values.flatMap((value) => {
 			const formatted = formatExpression(value, indentation + 4);
 			formatted[formatted.length - 1] += ",";

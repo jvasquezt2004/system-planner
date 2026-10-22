@@ -87,7 +87,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "users"
-	          indexes = [  # noqa: RUF012
+	          indexes = [
 	              BrinIndex(
 	                  fields=["created_at"],
 	                  name="users_created_at_idx",
@@ -151,7 +151,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "posts"
-	          constraints = [  # noqa: RUF012
+	          constraints = [
 	              models.UniqueConstraint(
 	                  fields=["author", "slug"],
 	                  name="posts_author_slug_key",
@@ -162,7 +162,7 @@ describe("generateDjangoModels", () => {
 	                  nulls_distinct=False,
 	              ),
 	          ]
-	          indexes = [  # noqa: RUF012
+	          indexes = [
 	              models.Index(
 	                  models.F("author"),
 	                  models.F("created_at").desc(nulls_last=True),
@@ -230,7 +230,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "post_tags"
-	          constraints = [  # noqa: RUF012
+	          constraints = [
 	              models.UniqueConstraint(fields=["post", "tag"], name="post_tags_pair_key"),
 	          ]
 	  "
@@ -283,7 +283,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "documents"
-	          indexes = [  # noqa: RUF012
+	          indexes = [
 	              HnswIndex(
 	                  OpClass(models.F("embedding"), name="vector_cosine_ops"),
 	                  name="documents_embedding_idx",
