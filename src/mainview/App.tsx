@@ -423,6 +423,7 @@ function App() {
 						{view === "sql" && (
 							<SqlPreviewView
 								key={state.project.id}
+								design={state.design}
 								sql={state.sql}
 								sandbox={state.sandbox}
 								draftRevision={state.revision}

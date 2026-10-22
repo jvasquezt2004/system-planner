@@ -63,8 +63,20 @@ _Avoid_: Group, container, nesting
 
 **SQL preview**:
 The read-only SQL representation generated from a design, shown in its own
-view in place of the canvas, together with the sandbox's result.
+view in place of the canvas, together with the sandbox's result. It can also
+show the same design as schema code for an ORM.
 _Avoid_: SQL editor
+
+**Code format**:
+One way the SQL preview can render a design: PostgreSQL, Prisma, Drizzle,
+SQLAlchemy, or Django ORM. PostgreSQL is the reference; an ORM format is only
+generated from a draft that already produces PostgreSQL.
+_Avoid_: Dialect, export target
+
+**Schema code**:
+The read-only, generated ORM source for one code format. It is derived from
+the design, never edited, and never shown out of date.
+_Avoid_: Migration, ORM model editor
 
 **Structured default**:
 A column's automatic value chosen from the fixed options its type supports:

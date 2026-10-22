@@ -1,22 +1,38 @@
-import { Fragment, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import { Copy, FileDown } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getDisplayedSqlPreview,
 	getLastAppliedSandbox,
 	getSqlValidationErrors,
+	type Design,
 	type SandboxSnapshot,
 	type SandboxState,
 	type SqlPreviewValidationStatus,
 	type SqlState,
 } from "../shared/design";
+import {
+	generateOrmSchema,
+	SCHEMA_CODE_FORMATS,
+	schemaCodeFormat,
+	type OrmTarget,
+	type SchemaCodeGeneration,
+	type SchemaCodeSnapshot,
+	type SchemaCodeTarget,
+} from "../shared/schema-code";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { cn } from "@/lib/utils";
 import { workspaceClient } from "./workspace-client";
 
 type Tone = "ok" | "warn" | "bad" | "muted";
 type Feedback = { tone: "success" | "info" | "error"; message: string };
+
+/** ORM code for the draft, or why none is shown. */
+type OrmCode =
+	| { status: "waiting" }
+	| ({ status: "generated"; revision: number } & SchemaCodeGeneration);
 
 /** One word for the SQL preview's state, shared by the masthead and the view. */
 export function sqlStatusLine(
@@ -39,27 +55,50 @@ export function sqlStatusLine(
 }
 
 /**
- * The SQL preview view, set like a galley proof: the generated PostgreSQL with
- * numbered lines, then the sandbox's verdict on it. It replaces the canvas in
- * the main window, is read-only, and follows the open design live. Copy and
- * export always carry the exact revision on screen, and say how far the
- * sandbox has validated it.
+ * The SQL preview view, set like a galley proof: the generated PostgreSQL — or
+ * the same schema as ORM code — with numbered lines, then the sandbox's verdict
+ * on it. It replaces the canvas in the main window, is read-only, and follows
+ * the open design live. Copy and export always carry the exact revision on
+ * screen, and say how far the sandbox has validated it.
  */
 export function SqlPreviewView({
+	design,
 	sql,
 	sandbox,
 	draftRevision,
 	validationStatus,
 }: {
+	design: Design;
 	sql: SqlState;
 	sandbox: SandboxState;
 	draftRevision: number;
 	validationStatus: SqlPreviewValidationStatus | null;
 }) {
 	const preview = getDisplayedSqlPreview(sql);
-	const [fileName, setFileName] = useState("schema.sql");
+	const [target, setTarget] = useState<SchemaCodeTarget>("sql");
+	const format = schemaCodeFormat(target);
+	const [fileNames, setFileNames] = useState<Record<SchemaCodeTarget, string>>(() =>
+		Object.fromEntries(
+			SCHEMA_CODE_FORMATS.map((candidate) => [candidate.target, candidate.defaultFileName]),
+		) as Record<SchemaCodeTarget, string>,
+	);
+	const fileName = fileNames[target];
 	const [action, setAction] = useState<"copy" | "export" | null>(null);
 	const [feedback, setFeedback] = useState<Feedback | null>(null);
+
+	// ORM code is only derived from a draft PostgreSQL generation accepts, so
+	// it never shows a schema the SQL preview would block.
+	const designAccepted = sql.status === "current" && sql.revision === draftRevision;
+	const ormCode = useMemo<OrmCode | null>(() => {
+		if (target === "sql") return null;
+		if (!designAccepted) return { status: "waiting" };
+		return { status: "generated", revision: draftRevision, ...generateOrmSchema(target, design) };
+	}, [target, designAccepted, draftRevision, design]);
+	const ormSnapshot: SchemaCodeSnapshot | null =
+		target !== "sql" && ormCode?.status === "generated" && ormCode.ok
+			? { target, revision: ormCode.revision, code: ormCode.code }
+			: null;
+	const available = target === "sql" ? preview !== null : ormSnapshot !== null;
 
 	async function runSqlAction(kind: "copy" | "export", operation: () => Promise<void>) {
 		if (action) return;
@@ -80,10 +119,11 @@ export function SqlPreviewView({
 		revision: number,
 		destination?: string,
 	): Feedback {
+		const what = target === "sql" ? "SQL" : format.title;
 		const subject =
 			kind === "copy"
-				? `Copied SQL from revision ${revision}`
-				: `Exported SQL from revision ${revision} to ${destination ?? fileName}`;
+				? `Copied ${what} from revision ${revision}`
+				: `Exported ${what} from revision ${revision} to ${destination ?? fileName}`;
 		const status = validationStatus;
 		if (!status) {
 			return { tone: "info", message: `${subject}; not yet validated by the sandbox.` };
@@ -125,9 +165,14 @@ export function SqlPreviewView({
 	}
 
 	async function copyPreview() {
-		if (!preview) return;
+		if (!available) return;
 		await runSqlAction("copy", async () => {
-			const result = await workspaceClient.copySqlPreview(preview);
+			const result = ormSnapshot
+				? await workspaceClient.copySchemaCode(ormSnapshot)
+				: preview
+					? await workspaceClient.copySqlPreview(preview)
+					: null;
+			if (!result) return;
 			setFeedback(
 				result.status === "copied"
 					? transferFeedback("copy", result.revision)
@@ -137,9 +182,14 @@ export function SqlPreviewView({
 	}
 
 	async function exportPreview() {
-		if (!preview) return;
+		if (!available) return;
 		await runSqlAction("export", async () => {
-			const result = await workspaceClient.exportSqlPreview({ preview, fileName });
+			const result = ormSnapshot
+				? await workspaceClient.exportSchemaCode({ snapshot: ormSnapshot, fileName })
+				: preview
+					? await workspaceClient.exportSqlPreview({ preview, fileName })
+					: null;
+			if (!result) return;
 			setFeedback(
 				result.status === "saved"
 					? transferFeedback("export", result.revision, fileName)
@@ -157,19 +207,52 @@ export function SqlPreviewView({
 					<div className="min-w-0">
 						<p className="kicker">SQL preview</p>
 						<p className="mt-1.5 max-w-md font-display text-[19px] leading-snug text-ink-2 italic">
-							The read-only PostgreSQL generated from this design, and what the
-							sandbox made of it.
+							The read-only PostgreSQL — or ORM schema — generated from this
+							design, and what the sandbox made of it.
 						</p>
+						<ToggleGroup
+							type="single"
+							variant="outline"
+							size="sm"
+							spacing={0}
+							aria-label="Code format"
+							data-testid="code-format-switch"
+							value={target}
+							disabled={action !== null}
+							onValueChange={(next) => {
+								const nextFormat = SCHEMA_CODE_FORMATS.find(
+									(candidate) => candidate.target === next,
+								);
+								if (!nextFormat) return;
+								setTarget(nextFormat.target);
+								setFeedback(null);
+							}}
+							className="mt-4"
+						>
+							{SCHEMA_CODE_FORMATS.map((candidate) => (
+								<ToggleGroupItem
+									key={candidate.target}
+									value={candidate.target}
+									data-testid={`code-format-${candidate.target}`}
+									className="h-7 px-3"
+								>
+									{candidate.label}
+								</ToggleGroupItem>
+							))}
+						</ToggleGroup>
 					</div>
 					<div className="flex flex-col items-end gap-1.5">
 						<div className="flex items-end gap-1.5">
 							<label className="flex flex-col gap-1">
 								<span className="text-[11px] font-medium text-ink-3">File name</span>
 								<Input
-									aria-label="SQL file name"
+									aria-label={`${format.label} file name`}
 									value={fileName}
-									onChange={(event) => setFileName(event.target.value)}
-									disabled={!preview || action !== null}
+									onChange={(event) => {
+										const next = event.target.value;
+										setFileNames((current) => ({ ...current, [target]: next }));
+									}}
+									disabled={!available || action !== null}
 									className="h-7 w-40 font-mono text-[12px]"
 								/>
 							</label>
@@ -178,19 +261,19 @@ export function SqlPreviewView({
 								size="sm"
 								data-testid="copy-sql"
 								onClick={() => void copyPreview()}
-								disabled={!preview || action !== null}
+								disabled={!available || action !== null}
 							>
 								<Copy />
-								{action === "copy" ? "Copying…" : "Copy SQL"}
+								{action === "copy" ? "Copying…" : `Copy ${format.label}`}
 							</Button>
 							<Button
 								size="sm"
 								data-testid="export-sql"
 								onClick={() => void exportPreview()}
-								disabled={!preview || action !== null}
+								disabled={!available || action !== null}
 							>
 								<FileDown />
-								{action === "export" ? "Exporting…" : "Export SQL"}
+								{action === "export" ? "Exporting…" : `Export ${format.label}`}
 							</Button>
 						</div>
 						<p className="text-[11px] text-ink-4">
@@ -213,7 +296,11 @@ export function SqlPreviewView({
 						{feedback.message}
 					</p>
 				)}
-				<SqlPreview sql={sql} validationStatus={validationStatus} />
+				{target === "sql" || !ormCode ? (
+					<SqlPreview sql={sql} validationStatus={validationStatus} />
+				) : (
+					<OrmPreview target={target} sql={sql} code={ormCode} />
+				)}
 				<SandboxReport sandbox={sandbox} draftRevision={draftRevision} />
 			</div>
 		</div>
@@ -271,6 +358,76 @@ function SqlPreview({
 					testId="sql-preview"
 					className={cn("mt-3", sql.status !== "current" && "opacity-70")}
 				/>
+			)}
+		</section>
+	);
+}
+
+/**
+ * One ORM's rendering of the draft. It follows the SQL generator: while the
+ * draft cannot produce PostgreSQL, the validation errors are shown instead of
+ * an older schema, since ORM code is never shown out of date.
+ */
+function OrmPreview({
+	target,
+	sql,
+	code,
+}: {
+	target: OrmTarget;
+	sql: SqlState;
+	code: OrmCode;
+}) {
+	const format = schemaCodeFormat(target);
+	const sqlErrors = getSqlValidationErrors(sql);
+	const status: { label: string; tone: Tone } =
+		code.status === "waiting"
+			? sqlErrors.length > 0
+				? { label: "Blocked", tone: "bad" }
+				: { label: "Checking…", tone: "warn" }
+			: code.ok
+				? { label: "Current", tone: "ok" }
+				: { label: "Unsupported", tone: "bad" };
+	const errors =
+		code.status === "waiting" ? sqlErrors : code.ok ? [] : code.errors;
+	const headingId = `${target}-heading`;
+	return (
+		<section aria-labelledby={headingId} className="pt-8">
+			<SectionHead id={headingId} title={format.title}>
+				<Verdict tone={status.tone}>{status.label}</Verdict>
+			</SectionHead>
+
+			<p className="mt-3 text-[12.5px] text-ink-2">
+				{code.status === "generated"
+					? `Generated from design revision ${code.revision}.`
+					: sqlErrors.length > 0
+						? `No ${format.title} is available until the design generates PostgreSQL.`
+						: "Waiting for the design to generate PostgreSQL."}
+			</p>
+
+			{errors.length > 0 && (
+				<div className="mt-3 border-l-2 border-ochre bg-ochre-wash px-3 py-2.5">
+					<p className="kicker text-ochre!">
+						{code.status === "waiting" ? "Blocked by validation" : `Not representable in ${format.label}`}
+					</p>
+					<ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[12px] text-ink-2">
+						{errors.map((message) => (
+							<li key={message}>{message}</li>
+						))}
+					</ul>
+				</div>
+			)}
+
+			{code.status === "generated" && code.ok ? (
+				<Galley
+					sql={code.code}
+					lineComment={format.lineComment}
+					testId={`${target}-preview`}
+					className="mt-3"
+				/>
+			) : (
+				<p className="mt-4 font-display text-[17px] text-ink-3 italic">
+					{format.title} will appear here when the design can generate it.
+				</p>
 			)}
 		</section>
 	);
@@ -535,10 +692,13 @@ const SQL_KEYWORDS = new Set([
  */
 function Galley({
 	sql,
+	lineComment,
 	testId,
 	className,
 }: {
 	sql: string;
+	/** Set for ORM code, which only sets apart its comments and strings. */
+	lineComment?: string;
 	testId?: string;
 	className?: string;
 }) {
@@ -561,7 +721,9 @@ function Galley({
 						>
 							{index + 1}
 						</span>
-						<span className="pr-5 pl-4 whitespace-pre">{highlight(line)}</span>
+						<span className="pr-5 pl-4 whitespace-pre">
+							{lineComment === undefined ? highlight(line) : highlightCode(line, lineComment)}
+						</span>
 					</Fragment>
 				))}
 			</code>
@@ -610,6 +772,34 @@ function highlight(line: string): React.ReactNode[] {
 			);
 		}
 		last = index + text.length;
+	}
+	if (last < line.length) parts.push(line.slice(last));
+	return parts;
+}
+
+/** ORM code keeps its own syntax, so only comments and strings are set apart. */
+function highlightCode(line: string, lineComment: string): React.ReactNode[] {
+	const parts: React.ReactNode[] = [];
+	const comment = lineComment.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const pattern = new RegExp(`("(?:[^"\\\\]|\\\\.)*")|('(?:[^'\\\\]|\\\\.)*')|(${comment})`, "g");
+	let last = 0;
+	for (const match of line.matchAll(pattern)) {
+		const index = match.index ?? 0;
+		if (index > last) parts.push(line.slice(last, index));
+		if (match[3]) {
+			parts.push(
+				<span key={`${index}-comment`} className="text-ink-4 italic">
+					{line.slice(index)}
+				</span>,
+			);
+			return parts;
+		}
+		parts.push(
+			<span key={`${index}-${match[0]}`} className="text-ink-2">
+				{match[0]}
+			</span>,
+		);
+		last = index + match[0].length;
 	}
 	if (last < line.length) parts.push(line.slice(last));
 	return parts;

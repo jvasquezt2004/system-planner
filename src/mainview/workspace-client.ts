@@ -14,7 +14,12 @@ import type {
 	SqlPreviewExportResult,
 	WorkspaceState,
 } from "../shared/design";
-import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
+import type {
+	AppRPCSchema,
+	SchemaCodeExportRequest,
+	SqlPreviewExportRequest,
+} from "../shared/rpc";
+import type { SchemaCodeSnapshot } from "../shared/schema-code";
 import { errorMessage } from "../shared/error-message";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
@@ -135,20 +140,14 @@ export const workspaceClient = {
 	async exportSqlPreview(request: SqlPreviewExportRequest): Promise<SqlPreviewExportResult> {
 		const { requestId } =
 			await rpc.request.beginSqlPreviewExport(request);
-		const { promise, resolve } =
-			Promise.withResolvers<SqlPreviewExportResult>();
-		pendingSqlExports.set(requestId, resolve);
-		try {
-			await rpc.send.chooseSqlPreviewExportDirectory({ requestId });
-		} catch (cause) {
-			pendingSqlExports.delete(requestId);
-			return {
-				status: "failed",
-				revision: request.preview.revision,
-				error: errorMessage(cause),
-			};
-		}
-		return promise;
+		return chooseExportDirectory(requestId, request.preview.revision);
+	},
+	copySchemaCode(snapshot: SchemaCodeSnapshot): Promise<SqlPreviewCopyResult> {
+		return rpc.request.copySchemaCode({ snapshot });
+	},
+	async exportSchemaCode(request: SchemaCodeExportRequest): Promise<SqlPreviewExportResult> {
+		const { requestId } = await rpc.request.beginSchemaCodeExport(request);
+		return chooseExportDirectory(requestId, request.snapshot.revision);
 	},
 	subscribe(listener: (state: WorkspaceState) => void): () => void {
 		listeners.add(listener);
@@ -156,3 +155,19 @@ export const workspaceClient = {
 		return () => listeners.delete(listener);
 	},
 };
+
+/** Starts the native folder picker for a begun export and awaits its result. */
+async function chooseExportDirectory(
+	requestId: string,
+	revision: number,
+): Promise<SqlPreviewExportResult> {
+	const { promise, resolve } = Promise.withResolvers<SqlPreviewExportResult>();
+	pendingSqlExports.set(requestId, resolve);
+	try {
+		await rpc.send.chooseSqlPreviewExportDirectory({ requestId });
+	} catch (cause) {
+		pendingSqlExports.delete(requestId);
+		return { status: "failed", revision, error: errorMessage(cause) };
+	}
+	return promise;
+}
