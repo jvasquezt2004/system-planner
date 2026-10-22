@@ -1,7 +1,8 @@
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { join } from "node:path";
-import type { AppRPCSchema, SqlPreviewExportRequest } from "../shared/rpc";
+import type { SqlPreviewExportResult } from "../shared/design";
+import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
 
@@ -33,7 +34,8 @@ const databasePath =
 // workspace interface. The view only sees this interface through typed RPC.
 const workspacePromise = createDesignWorkspace({ databasePath });
 
-const pendingSqlExports = new Map<string, SqlPreviewExportRequest>();
+/** Exports waiting for the view to start the folder picker, by request id. */
+const pendingSqlExports = new Map<string, () => Promise<SqlPreviewExportResult>>();
 const sqlPreviewActions = createSqlPreviewActions({
 	writeClipboardText: Utils.clipboardWriteText,
 	// Electrobun has a native folder picker but no native save dialog.
@@ -100,23 +102,31 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).describeRemoval(target),
 			setViewport: async (viewport) => (await workspacePromise).setViewport(viewport),
 			copySqlPreview: ({ preview }) => sqlPreviewActions.copy(preview),
-			beginSqlPreviewExport: (request) => {
+			beginSqlPreviewExport: ({ preview, fileName }) => {
 				const requestId = crypto.randomUUID();
-				pendingSqlExports.set(requestId, request);
+				pendingSqlExports.set(requestId, () =>
+					sqlPreviewActions.export(preview, fileName),
+				);
+				return { requestId };
+			},
+			copySchemaCode: ({ snapshot }) => sqlPreviewActions.copyCode(snapshot),
+			beginSchemaCodeExport: ({ snapshot, fileName }) => {
+				const requestId = crypto.randomUUID();
+				pendingSqlExports.set(requestId, () =>
+					sqlPreviewActions.exportCode(snapshot, fileName),
+				);
 				return { requestId };
 			},
 		},
 		messages: {
 			// Start the native picker from a message, not an awaited RPC request.
 			chooseSqlPreviewExportDirectory: ({ requestId }) => {
-				const pending = pendingSqlExports.get(requestId);
-				if (!pending) return;
+				const runExport = pendingSqlExports.get(requestId);
+				if (!runExport) return;
 				pendingSqlExports.delete(requestId);
-				void sqlPreviewActions
-					.export(pending.preview, pending.fileName)
-					.then((result) => {
-						rpc.send.sqlPreviewExportCompleted({ requestId, result });
-					});
+				void runExport().then((result) => {
+					rpc.send.sqlPreviewExportCompleted({ requestId, result });
+				});
 			},
 		},
 	},

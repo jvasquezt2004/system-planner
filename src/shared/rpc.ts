@@ -17,8 +17,13 @@ import type {
 	SqlPreviewExportResult,
 	WorkspaceState,
 } from "./design";
+import type { SchemaCodeSnapshot } from "./schema-code";
 export type SqlPreviewExportRequest = Readonly<{
 	preview: DisplayedSqlPreview;
+	fileName: string;
+}>;
+export type SchemaCodeExportRequest = Readonly<{
+	snapshot: SchemaCodeSnapshot;
 	fileName: string;
 }>;
 
@@ -107,6 +112,15 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			};
 			beginSqlPreviewExport: {
 				params: SqlPreviewExportRequest;
+				response: { requestId: string };
+			};
+			copySchemaCode: {
+				params: { snapshot: SchemaCodeSnapshot };
+				response: SqlPreviewCopyResult;
+			};
+			/** ORM exports share the SQL export's folder picker and completion message. */
+			beginSchemaCodeExport: {
+				params: SchemaCodeExportRequest;
 				response: { requestId: string };
 			};
 		};
