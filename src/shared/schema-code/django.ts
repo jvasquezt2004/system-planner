@@ -6,9 +6,9 @@ import type {
 	DesignRelationship,
 	DesignTable,
 } from "../design";
+import { modelWords, planRelationshipNames, splitWords } from "./naming";
 import { resolveRelationships } from "../relationships";
 import type { SchemaCodeGeneration } from "./types";
-import { postgresGeneratedObjectName } from "../postgres-identifiers";
 
 type FieldInfo = { column: DesignColumn; name: string; relation?: DesignRelationship };
 
@@ -20,58 +20,162 @@ const RESERVED = new Set((
 /** Generate Django 6.1 models for a design already accepted by PostgreSQL. */
 export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 	const names = planSchemaObjectNames(design);
+	const relationshipNames = planRelationshipNames(design);
 	const classNames = new Set(["PostgreSQLTypeField", "PgSmallAutoField"]);
 	const modelNames = new Map<string, string>();
-	for (const table of design.tables) modelNames.set(table.id, allocateIdentifier(pascal(table.name), classNames));
-	const enumNames = new Map((design.enumTypes ?? []).map((value) => [value.id, allocateIdentifier(pascal(value.name), classNames)]));
+	for (const table of design.tables) {
+		const name = allocateIdentifier(pascalWords(modelWords(table)), classNames);
+		modelNames.set(table.id, name);
+	}
+	const enumNames = new Map(
+		(design.enumTypes ?? []).map((value) => [
+			value.id,
+			allocateIdentifier(pascalWords(splitWords(value.name)), classNames),
+		]),
+	);
 	const relations = resolveRelationships(design);
 	const infos = new Map<string, FieldInfo[]>();
 	const djangoObjectNames = new Set<string>();
 	const comments: string[] = [];
+	const migrationNotes = new Map<
+		string,
+		{ description: string; fields: Set<string> }
+	>();
+	const addMigrationNote = (
+		key: string,
+		description: string,
+		table: string,
+		column: string,
+	) => {
+		const note = migrationNotes.get(key) ?? {
+			description,
+			fields: new Set<string>(),
+		};
+		note.fields.add(`${table}.${column}`);
+		migrationNotes.set(key, note);
+	};
 	for (const table of design.tables) {
 		const used = new Set<string>();
-		const tableRelations = relations.filter((view) => view.referencingTable.id === table.id);
+		const tableRelations = relations.filter(
+			(view) => view.referencingTable.id === table.id,
+		);
 		const fields = table.columns.map((column) => {
-			const relation = tableRelations.find((view) => view.referencingColumn.id === column.id)?.relationship;
-			const base = relation ? relationFieldName(column.name) : snake(column.name);
-			const name = allocateIdentifier(base, used);
+			const relation = tableRelations.find(
+				(view) => view.referencingColumn.id === column.id,
+			)?.relationship;
+			const sharedName = relation
+				? relationshipNames.relationships.get(relation.id)!.forward
+				: splitWords(column.name);
+			const name = allocateIdentifier(snakeWords(sharedName), used);
 			return { column, name, relation };
 		});
 		infos.set(table.id, fields);
 	}
-	for (const table of design.tables) for (const column of table.columns) {
-		if (column.type === "enum" && column.typeParameters?.array) comments.push(`# ${table.name}.${column.name} is rendered as an ArrayField; run SQL to change its element type to the named PostgreSQL enum.`);
-	}
 
 	const imports = new Set<string>(["from django.db import models"]);
 	const fieldsByColumn = new Map<string, FieldInfo>();
-	for (const fields of infos.values()) for (const field of fields) fieldsByColumn.set(field.column.id, field);
-	for (const table of design.tables) for (const column of table.columns) {
-		if (column.typeParameters?.array) imports.add("from django.contrib.postgres.fields import ArrayField");
-		if (["vector", "halfvec", "sparsevec", "bit"].includes(column.type)) imports.add("from pgvector.django import BitField, HalfVectorField, SparseVectorField, VectorField");
-		if (column.default.kind === "currentTimestamp") imports.add("from django.db.models.functions import Now");
-		if (column.default.kind === "literal") imports.add("from django.db.models import Value");
+	for (const fields of infos.values()) {
+		for (const field of fields) {
+			fieldsByColumn.set(field.column.id, field);
+		}
 	}
-	const hasCast = design.tables.some((table) => table.columns.some((column) => column.default.kind === "literal" && ["date", "time", "timetz", "timestamp", "timestamptz", "json", "jsonb", "interval", "money", "inet", "cidr", "macaddr"].includes(column.type)));
-	if (hasCast) imports.add("from django.db.models.functions import Cast");
-	if (design.tables.some((table) => table.columns.some((column) => column.default.kind === "literal" && column.default.literalType === "numeric"))) imports.add("from decimal import Decimal");
-	const hasIndexes = design.tables.some((table) => (table.indexes ?? []).length);
-	if (hasIndexes) imports.add("from django.contrib.postgres.indexes import BTreeIndex, BrinIndex, GinIndex, GistIndex, HashIndex, SpGistIndex");
-	if (design.tables.some((table) => (table.indexes ?? []).some((index) => index.method === "hnsw" || index.method === "ivfflat"))) imports.add("from pgvector.django import HnswIndex, IvfflatIndex");
-	if (design.tables.some((table) => (table.indexes ?? []).some((index) => index.keys.some((key) => key.operatorClass)))) imports.add("from django.contrib.postgres.indexes import OpClass");
-	if (design.tables.some((table) => (table.indexes ?? []).some((index) => index.keys.some((key) => key.order || key.nulls)))) imports.add("from django.db.models import F");
 	const customFields = new Set<string>();
-	const hasSmallIdentity = design.tables.some((table) => table.columns.some((column) => column.identity && column.primaryKey && column.type === "smallint"));
-	for (const table of design.tables) for (const column of table.columns) {
-		if (customType(column)) customFields.add(customType(column)!);
-		if (column.default.kind === "literal" && ["date", "time", "timetz", "timestamp", "timestamptz", "json", "jsonb", "interval", "money", "inet", "cidr", "macaddr"].includes(column.type)) customFields.add("literal cast output fields");
+	const indexClasses = new Set<string>();
+	let hasOpClass = false;
+	for (const table of design.tables) {
+		for (const column of table.columns) {
+			if (column.typeParameters?.array) {
+				imports.add("from django.contrib.postgres.fields import ArrayField");
+			}
+			const vectorClass: Record<string, string> = {
+				vector: "VectorField",
+				halfvec: "HalfVectorField",
+				sparsevec: "SparseVectorField",
+				bit: "BitField",
+			};
+			const vectorImport = vectorClass[column.type];
+			if (vectorImport) {
+				imports.add(`from pgvector.django import ${vectorImport}`);
+				if (column.type !== "bit") {
+					addMigrationNote(
+						"pgvector",
+						"pgvector columns require VectorExtension() in a migration.",
+						table.name,
+						column.name,
+					);
+				}
+			}
+			if (column.default.kind === "currentTimestamp") {
+				imports.add("from django.db.models.functions import Now");
+			}
+			if (column.default.kind === "literal") {
+				if (column.default.literalType === "numeric") {
+					imports.add("from decimal import Decimal");
+				}
+				if (
+					["date", "time", "timestamp"].includes(
+						column.default.literalType,
+					) ||
+					(column.default.literalType === "json" && column.type === "json")
+				) {
+					imports.add("from django.db.models import Value");
+					imports.add("from django.db.models.functions import Cast");
+				}
+			}
+			const type = customType(column);
+			if (type) customFields.add(type);
+		}
+		for (const index of table.indexes ?? []) {
+			const classByMethod: Record<string, string> = {
+				hash: "HashIndex",
+				gin: "GinIndex",
+				gist: "GistIndex",
+				spgist: "SpGistIndex",
+				brin: "BrinIndex",
+				hnsw: "HnswIndex",
+				ivfflat: "IvfflatIndex",
+			};
+			const indexClass = classByMethod[index.method];
+			if (indexClass) indexClasses.add(indexClass);
+			if (index.method === "btree" && index.with?.fillfactor) {
+				indexClasses.add("BTreeIndex");
+			}
+			hasOpClass ||= index.keys.some((key) => Boolean(key.operatorClass));
+		}
 	}
-	if (customFields.size) imports.add("from django.db import models");
+	if (indexClasses.size) {
+		const djangoIndexes = Array.from(indexClasses).filter(
+			(name) => !["HnswIndex", "IvfflatIndex"].includes(name),
+		);
+		const vectorIndexes = Array.from(indexClasses).filter((name) =>
+			["HnswIndex", "IvfflatIndex"].includes(name),
+		);
+		if (djangoIndexes.length) {
+			imports.add(
+				`from django.contrib.postgres.indexes import ${djangoIndexes.sort().join(", ")}`,
+			);
+		}
+		if (vectorIndexes.length) {
+			imports.add(`from pgvector.django import ${vectorIndexes.sort().join(", ")}`);
+		}
+	}
+	if (hasOpClass) {
+		imports.add("from django.contrib.postgres.indexes import OpClass");
+	}
+	const hasSmallIdentity = design.tables.some((table) =>
+		table.columns.some(
+			(column) =>
+				column.identity &&
+				column.primaryKey &&
+				column.type === "smallint",
+		),
+	);
 
+	const importLines = renderImports(imports);
 	const lines: string[] = [
 		"# Generated schema code. Requires Django 6.1 and PostgreSQL.",
-		"# Install pgvector and add pgvector.django.VectorExtension() in a migration when vector types are used.",
-		...Array.from(imports).sort((a, b) => a.localeCompare(b)),
+		...importLines,
+		"",
 		"",
 	];
 	if (customFields.size) {
@@ -86,17 +190,21 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 			"",
 			"    def deconstruct(self):",
 			"        name, path, args, kwargs = super().deconstruct()",
-			"        kwargs['pg_type'] = self.pg_type",
+			"        kwargs[\"pg_type\"] = self.pg_type",
 			"        return name, path, args, kwargs",
+			"",
 			"",
 		);
 	}
-	if (hasSmallIdentity) lines.push(
-		"class PgSmallAutoField(models.AutoField):",
-		"    def db_type(self, connection):",
-		"        return 'smallint'",
-		"",
-	);
+	if (hasSmallIdentity) {
+		lines.push(
+			"class PgSmallAutoField(models.AutoField):",
+			"    def db_type(self, connection):",
+			"        return 'smallint'",
+			"",
+			"",
+		);
+	}
 	for (const enumType of design.enumTypes ?? []) {
 		const className = enumNames.get(enumType.id)!;
 		lines.push(`class ${className}(models.TextChoices):`);
@@ -106,15 +214,22 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 			lines.push(`    ${enumMember(label, index, memberNames)} = ${pyString(label)}`);
 		}
 		lines.push("");
-		lines.push(`# PostgreSQL enum migration: CREATE TYPE ${quoteSql(enumType.name)} AS ENUM (${enumType.labels.map(quoteSqlLiteral).join(", ")});`);
-		for (const table of design.tables) for (const column of table.columns) {
-			if (column.type !== "enum" || column.enumTypeId !== enumType.id) continue;
-			const enumArray = column.typeParameters?.array ? "[]" : "";
-			const enumDbType = `${quoteSql(enumType.name)}${enumArray}`;
-			const using = column.typeParameters?.array ? `${quoteSql(column.name)}::text[]::${enumDbType}` : `${quoteSql(column.name)}::text::${enumDbType}`;
-			const dropDefault = column.default.kind === "none" ? "" : `ALTER TABLE ${quoteSql(table.name)} ALTER COLUMN ${quoteSql(column.name)} DROP DEFAULT; `;
-			const setDefault = column.default.kind === "literal" ? ` ALTER TABLE ${quoteSql(table.name)} ALTER COLUMN ${quoteSql(column.name)} SET DEFAULT ${quoteSqlLiteral(column.default.value)}::${enumDbType};` : "";
-			lines.push(`# Then RunSQL: ${dropDefault}ALTER TABLE ${quoteSql(table.name)} ALTER COLUMN ${quoteSql(column.name)} TYPE ${enumDbType} USING ${using};${setDefault}`);
+		const createType = `CREATE TYPE ${quoteSql(enumType.name)} AS ENUM (${enumType.labels.map(quoteSqlLiteral).join(", ")}).`;
+		for (const table of design.tables) {
+			for (const column of table.columns) {
+				if (column.type !== "enum" || column.enumTypeId !== enumType.id) {
+					continue;
+				}
+				const arrayNote = column.typeParameters?.array
+					? " Enum arrays also need an element-type cast."
+					: "";
+				addMigrationNote(
+					`enum:${enumType.id}`,
+					`${createType} Use RunSQL to alter each listed column to the named enum type.${arrayNote}`,
+					table.name,
+					column.name,
+				);
+			}
 		}
 		lines.push("");
 	}
@@ -124,68 +239,183 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 		const fields = infos.get(table.id)!;
 		for (const field of fields) {
 			const col = field.column;
-			if (col.default.kind === "currentTimestamp") comments.push(`# ${table.name}.${col.name}: Django Now() emits STATEMENT_TIMESTAMP(); PostgreSQL CURRENT_TIMESTAMP is transaction-start time. Use a RunSQL default for exact transaction-time behavior.`);
-			const view = relations.find((candidate) => candidate.relationship.id === field.relation?.id);
+			if (col.unique && !col.primaryKey) {
+				addMigrationNote(
+					"single-column-unique-name",
+					"Django chooses the constraint name for unique=True fields.",
+					table.name,
+					col.name,
+				);
+			}
+			if (
+				col.unique &&
+				["text", "varchar", "char"].includes(col.type)
+			) {
+				addMigrationNote(
+					"unique-text-pattern-index",
+					"Django's PostgreSQL backend adds a pattern_ops index for unique text fields.",
+					table.name,
+					col.name,
+				);
+			}
+			if (col.default.kind === "currentTimestamp") {
+				addMigrationNote(
+					"timestamp",
+					"Django uses STATEMENT_TIMESTAMP(); PostgreSQL CURRENT_TIMESTAMP is transaction-start time.",
+					table.name,
+					col.name,
+				);
+			}
+			const view = relations.find(
+				(candidate) => candidate.relationship.id === field.relation?.id,
+			);
 			const opts: string[] = [];
 			if (view) {
 				const targetClass = modelNames.get(view.referencedTable.id)!;
-				const relatedName = allocateIdentifier(`${snake(table.name)}_${field.name}_set`, new Set());
+				const relationName = relationshipNames.relationships.get(
+					field.relation!.id,
+				)!;
 				const onDelete = deleteAction(field.relation!.onDelete);
-				if (field.relation!.onDelete === "RESTRICT") comments.push(`# ${table.name}.${col.name}: Django has no database DB_RESTRICT; the generated FK defaults to PostgreSQL NO ACTION, so add ON DELETE RESTRICT with RunSQL.`);
-				if (field.relation!.onUpdate && field.relation!.onUpdate !== "NO ACTION") comments.push(`# ${table.name}.${col.name}: Django has no on-update action; add ON UPDATE ${field.relation!.onUpdate} with RunSQL.`);
-				const targetField = view.referencedColumn;
-				const targetPython = targetField ? fieldsByColumn.get(targetField.id)?.name : undefined;
-				const relationType = field.relation!.cardinality === "one-to-one" ? "OneToOneField" : "ForeignKey";
-				const relationArgs = [pyString(targetClass), onDelete, `related_name=${pyString(relatedName)}`, `db_column=${pyString(col.name)}`, `null=${pyBool(col.nullable)}`, "db_index=False", ...(col.primaryKey ? ["primary_key=True"] : [])];
-				const rawSqlName = names.foreignKeys.get(field.relation!.id);
-				if (rawSqlName) comments.push(`# PostgreSQL FK constraint name is ${pyString(rawSqlName)}; Django chooses the physical name. Use RunSQL if that exact name is required.`);
-				comments.push(`# ${table.name}.${col.name}: Django creates this FK DEFERRABLE INITIALLY DEFERRED; the PostgreSQL preview is immediate. Replace it with RunSQL if immediate enforcement is required.`);
-				const effectiveDefault = col.default.kind === "none" ? "" : `, ${defaultOption(col)}`;
-				if (effectiveDefault) relationArgs.push(effectiveDefault.slice(2));
-				lines.push(`    ${field.name} = models.${relationType}(${relationArgs.join(", ")})`);
-				if (col.name !== field.name) comments.push(`# ${table.name}.${col.name} maps to attribute ${field.name}.`);
-				if (targetPython && targetPython !== "id") void targetPython;
+				const relationType =
+					field.relation!.cardinality === "one-to-one"
+						? "OneToOneField"
+						: "ForeignKey";
+				const relationArgs = [
+					pyString(targetClass),
+					onDelete,
+					`related_name=${pyString(snakeWords(relationName.backward))}`,
+					...(col.name !== field.name
+						? [`db_column=${pyString(col.name)}`]
+						: []),
+					...(col.nullable ? ["null=True"] : []),
+					...(relationType === "ForeignKey" ? ["db_index=False"] : []),
+					...(col.primaryKey ? ["primary_key=True"] : []),
+					...(col.unique && relationType !== "OneToOneField"
+						? ["unique=True"]
+						: []),
+				];
+				if (relationType === "ForeignKey") {
+					addMigrationNote(
+						"foreign-key-indexes",
+						"ForeignKey fields disable Django's implicit index because the PostgreSQL preview defines none.",
+						table.name,
+						col.name,
+					);
+				}
+				if (field.relation!.onDelete === "RESTRICT") {
+					addMigrationNote(
+						"restrict",
+						"ON DELETE RESTRICT requires RunSQL; Django's DO_NOTHING emits NO ACTION.",
+						table.name,
+						col.name,
+					);
+				}
+				if (
+					field.relation!.onUpdate &&
+					field.relation!.onUpdate !== "NO ACTION"
+				) {
+					addMigrationNote(
+						"on-update",
+						`ON UPDATE ${field.relation!.onUpdate} requires RunSQL.`,
+						table.name,
+						col.name,
+					);
+				}
+				if (names.foreignKeys.has(field.relation!.id)) {
+					addMigrationNote(
+						"foreign-key-names",
+						"Foreign-key constraint names are chosen by Django, not copied from PostgreSQL.",
+						table.name,
+						col.name,
+					);
+				}
+				addMigrationNote(
+					"foreign-key-deferrability",
+					"Django creates DEFERRABLE INITIALLY DEFERRED foreign keys; the PostgreSQL preview uses immediate enforcement.",
+					table.name,
+					col.name,
+				);
+				if (col.default.kind !== "none") {
+					relationArgs.push(defaultOption(col));
+				}
+				lines.push(
+					...formatAssignment(
+						field.name,
+						`models.${relationType}(${relationArgs.join(", ")})`,
+					),
+				);
 				continue;
 			}
 			if (col.primaryKey) opts.push("primary_key=True");
-			if (!col.primaryKey) opts.push(`null=${pyBool(col.nullable)}`);
+			if (!col.primaryKey && col.nullable) opts.push("null=True");
 			if (col.name !== field.name) opts.push(`db_column=${pyString(col.name)}`);
+			if (col.unique && !col.primaryKey) opts.push("unique=True");
 			if (col.default.kind !== "none") opts.push(defaultOption(col));
 			const fieldExpr = col.identity && col.primaryKey
 				? `${col.type === "bigint" ? "models.BigAutoField" : col.type === "smallint" ? "PgSmallAutoField" : "models.AutoField"}(${opts.join(", ")})`
 				: fieldExpression(col, field.name, design, enumNames, opts);
-			if (col.identity && col.primaryKey) comments.push(`# ${table.name}.${col.name}: Django uses GENERATED BY DEFAULT AS IDENTITY; PostgreSQL uses GENERATED ALWAYS AS IDENTITY here. Use a RunSQL migration if explicit-value inserts must be rejected.`);
-			if (col.identity && !col.primaryKey) comments.push(`# ${table.name}.${col.name}: Django AutoField only supports primary keys; add GENERATED ALWAYS AS IDENTITY with RunSQL.`);
-			lines.push(`    ${field.name} = ${fieldExpr}`);
+			if (col.identity && col.primaryKey) {
+				addMigrationNote(
+					"identity",
+					"Django uses GENERATED BY DEFAULT AS IDENTITY; PostgreSQL uses GENERATED ALWAYS AS IDENTITY.",
+					table.name,
+					col.name,
+				);
+			}
+			if (col.identity && !col.primaryKey) {
+				addMigrationNote(
+					"non-primary-identity",
+					"Non-primary-key identity columns require a raw SQL migration.",
+					table.name,
+					col.name,
+				);
+			}
+			lines.push(...formatAssignment(field.name, fieldExpr));
 		}
 		const memberNames = new Set(fields.map((field) => field.name));
-		for (const association of (design.manyToManyRelationships ?? []).filter((item) => item.leftTableId === table.id)) {
-			const target = design.tables.find((candidate) => candidate.id === association.rightTableId)!;
-			const junction = design.tables.find((candidate) => candidate.id === association.junctionTableId)!;
-			const leftRel = relations.find((view) => view.relationship.id === association.leftRelationshipId)!;
-			const rightRel = relations.find((view) => view.relationship.id === association.rightRelationshipId)!;
-			const name = allocateIdentifier(snake(target.name), memberNames);
-			const leftField = fieldsByColumn.get(leftRel.referencingColumn.id)!.name;
-			const rightField = fieldsByColumn.get(rightRel.referencingColumn.id)!.name;
-			const related = allocateIdentifier(`${snake(table.name)}_${name}_set`, new Set());
-			lines.push(`    ${name} = models.ManyToManyField(${pyString(modelNames.get(target.id)!)}, through=${pyString(modelNames.get(junction.id)!)}, through_fields=(${pyString(leftField)}, ${pyString(rightField)}), related_name=${pyString(related)})`);
+		for (const association of design.manyToManyRelationships ?? []) {
+			if (association.leftTableId !== table.id) continue;
+			const rightTable = design.tables.find(
+				(candidate) => candidate.id === association.rightTableId,
+			)!;
+			const junctionTable = design.tables.find(
+				(candidate) => candidate.id === association.junctionTableId,
+			)!;
+			const leftRelationship = relations.find(
+				(view) => view.relationship.id === association.leftRelationshipId,
+			)!;
+			const rightRelationship = relations.find(
+				(view) => view.relationship.id === association.rightRelationshipId,
+			)!;
+			const sharedNames = relationshipNames.manyToMany.get(association.id)!;
+			const name = allocateIdentifier(snakeWords(sharedNames.left), memberNames);
+			const leftField = fieldsByColumn.get(
+				leftRelationship.referencingColumn.id,
+			)!.name;
+			const rightField = fieldsByColumn.get(
+				rightRelationship.referencingColumn.id,
+			)!.name;
+			const relation = `models.ManyToManyField(${pyString(modelNames.get(rightTable.id)!)}, through=${pyString(modelNames.get(junctionTable.id)!)}, through_fields=(${pyString(leftField)}, ${pyString(rightField)}), related_name=${pyString(snakeWords(sharedNames.right))})`;
+			lines.push(...formatAssignment(name, relation));
 		}
 		const constraints: string[] = [];
-		for (const field of infos.get(table.id)!) {
-			if (!field.column.unique || field.column.primaryKey) continue;
-			const relation = relations.find((view) => view.referencingColumn.id === field.column.id);
-			if (relation?.oneToOne) continue;
-			const constraintName = postgresGeneratedObjectName(table.name, field.column.name, "key");
-			const djangoName = allocateDjangoName(constraintName, djangoObjectNames);
-			if (djangoName !== constraintName) comments.push(`# Unique constraint ${constraintName} exceeds Django's 30-character name limit; Django uses ${djangoName}. Use RunSQL to retain the PostgreSQL name.`);
-			constraints.push(`models.UniqueConstraint(fields=[${pyString(field.name)}], name=${pyString(djangoName)})`);
-		}
 		for (const unique of table.uniqueConstraints ?? []) {
 			const constraintName = names.uniqueConstraints.get(unique.id)!;
 			const djangoName = allocateDjangoName(constraintName, djangoObjectNames);
-			if (djangoName !== constraintName) comments.push(`# Constraint ${constraintName} exceeds Django's 30-character name limit; Django uses ${djangoName}. Use RunSQL to retain the PostgreSQL name.`);
-			const fieldNames = unique.columnIds.map((id) => fieldsByColumn.get(id)!.name);
-			constraints.push(`models.UniqueConstraint(fields=[${fieldNames.map(pyString).join(", ")}], name=${pyString(djangoName)}${unique.nullsNotDistinct ? ", nulls_distinct=False" : ""})`);
+			if (djangoName !== constraintName) {
+				comments.push(
+					`# Constraint ${constraintName} exceeds Django's 30-character name limit; Django uses ${djangoName}. Use RunSQL to retain the PostgreSQL name.`,
+				);
+			}
+			const fieldNames = unique.columnIds.map(
+				(id) => fieldsByColumn.get(id)!.name,
+			);
+			const nullsDistinct = unique.nullsNotDistinct
+				? ", nulls_distinct=False"
+				: "";
+			constraints.push(
+				`models.UniqueConstraint(fields=[${fieldNames.map(pyString).join(", ")}], name=${pyString(djangoName)}${nullsDistinct})`,
+			);
 		}
 		for (const association of design.manyToManyRelationships ?? []) {
 			if (association.junctionTableId !== table.id) continue;
@@ -201,17 +431,196 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 		const renderedIndexes = (table.indexes ?? []).map((index) => renderIndex(index, table, fieldsByColumn, names.indexes.get(index.id)!, comments, djangoObjectNames));
 		const indexes = renderedIndexes.filter((_, index) => !(table.indexes ?? [])[index].unique);
 		constraints.push(...renderedIndexes.filter((_, index) => (table.indexes ?? [])[index].unique));
-		if (indexes.length || constraints.length) {
-			lines.push("", "    class Meta:", `        db_table = ${pyString(table.name)}`);
-			if (constraints.length) lines.push(`        constraints = [${constraints.join(", ")}]`);
-			if (indexes.length) lines.push(`        indexes = [${indexes.join(", ")}]`);
-		} else {
-			lines.push("", "    class Meta:", `        db_table = ${pyString(table.name)}`);
+		lines.push("", "    class Meta:");
+		lines.push(...formatAssignment("db_table", pyString(table.name), 8));
+		if (constraints.length) {
+			lines.push(...formatListAssignment("constraints", constraints, 8));
 		}
-		lines.push("");
+		if (indexes.length) {
+			lines.push(...formatListAssignment("indexes", indexes, 8));
+		}
+		lines.push("", "");
 	}
-	if (comments.length) lines.splice(3, 0, ...Array.from(new Set(comments)), "");
+	const migrationCommentLines = Array.from(migrationNotes.values()).flatMap(
+		(note) => [
+			`# - ${note.description}`,
+			`#   Affected columns: ${Array.from(note.fields).join(", ")}.`,
+		],
+	);
+	if (comments.length) {
+		migrationCommentLines.push(...Array.from(new Set(comments)));
+	}
+	if (migrationCommentLines.length) {
+		migrationCommentLines.unshift("# Migration notes:");
+		lines.splice(
+			1 + importLines.length,
+			2,
+			"",
+			...migrationCommentLines.flatMap((comment) => wrapComment(comment)),
+			"",
+			"",
+		);
+	}
 	return { ok: true, code: `${lines.join("\n").replace(/\n+$/, "")}\n` };
+}
+
+function wrapComment(comment: string, width = 88): string[] {
+	const prefix = /^(#(?: - |   | ))/.exec(comment)?.[1] ?? "# ";
+	const continuation = "#   ";
+	const words = comment.slice(prefix.length).split(/\s+/);
+	const lines: string[] = [];
+	let line = prefix;
+	for (const word of words) {
+		const next = line === prefix ? `${line}${word}` : `${line} ${word}`;
+		if (next.length > width && line !== prefix) {
+			lines.push(line);
+			line = continuation + word;
+		} else {
+			line = next;
+		}
+	}
+	if (line.length > prefix.length) lines.push(line);
+	return lines;
+}
+
+function renderImports(imports: Set<string>): string[] {
+	const importedNames = new Map<string, Set<string>>();
+	const standalone: string[] = [];
+	for (const statement of imports) {
+		const match = /^from (.+) import (.+)$/.exec(statement);
+		if (!match) {
+			standalone.push(statement);
+			continue;
+		}
+		const names = importedNames.get(match[1]) ?? new Set<string>();
+		for (const name of match[2].split(",").map((value) => value.trim())) {
+			names.add(name);
+		}
+		importedNames.set(match[1], names);
+	}
+	const sortedStatements = [
+		...standalone,
+		...Array.from(importedNames, ([module, names]) =>
+			`from ${module} import ${Array.from(names).sort().join(", ")}`,
+		),
+	].sort((left, right) => left.localeCompare(right));
+	const standardLibrary = sortedStatements.filter((statement) =>
+		/^from (collections|datetime|decimal|math|typing|uuid) import /.test(statement),
+	);
+	const thirdParty = sortedStatements.filter(
+		(statement) => !standardLibrary.includes(statement),
+	);
+	const statements = [
+		...standardLibrary,
+		...(standardLibrary.length && thirdParty.length ? [""] : []),
+		...thirdParty,
+	];
+	return statements.flatMap((statement) => {
+		if (statement.length <= 88) return [statement];
+		const [prefix, names] = statement.split(" import ");
+		return [
+			`${prefix} import (`,
+			...names.split(", ").map((name) => `    ${name},`),
+			")",
+		];
+	});
+}
+function formatAssignment(
+	name: string,
+	expression: string,
+	indentation = 4,
+): string[] {
+	const indent = " ".repeat(indentation);
+	const line = `${indent}${name} = ${expression}`;
+	if (line.length <= 88) return [line];
+	const formatted = formatExpression(expression, indentation, true);
+	formatted[0] = `${indent}${name} = ${formatted[0].trimStart()}`;
+	return formatted;
+}
+
+function formatListAssignment(
+	name: string,
+	values: string[],
+	indentation: number,
+): string[] {
+	const indent = " ".repeat(indentation);
+	const line = `${indent}${name} = [${values.join(", ")}]  # noqa: RUF012`;
+	if (line.length <= 88) return [line];
+	return [
+		`${indent}${name} = [  # noqa: RUF012`,
+		...values.flatMap((value) => {
+			const formatted = formatExpression(value, indentation + 4);
+			formatted[formatted.length - 1] += ",";
+			return formatted;
+		}),
+		`${indent}]`,
+	];
+}
+
+function formatExpression(
+	expression: string,
+	indentation: number,
+	force = false,
+): string[] {
+	const indent = " ".repeat(indentation);
+	if (!force && indentation + expression.length <= 88) {
+		return [`${indent}${expression}`];
+	}
+	const openParen = expression.indexOf("(");
+	const closeParen = expression.lastIndexOf(")");
+	if (openParen < 0 || closeParen !== expression.length - 1) {
+		return [`${indent}${expression}`];
+	}
+	const callee = expression.slice(0, openParen);
+	const args = splitArguments(expression.slice(openParen + 1, closeParen));
+	return [
+		`${indent}${callee}(`,
+		...args.flatMap((argument) => {
+			const equals = argument.indexOf("=");
+			const nested = equals < 0 ? argument : argument.slice(equals + 1).trim();
+			const prefix = equals < 0 ? "" : argument.slice(0, equals + 1);
+			const renderedLength = indentation + 4 + argument.length;
+			if (renderedLength <= 88 && nested.length <= 60) {
+				return [`${indent}    ${argument},`];
+			}
+			const wrapped = formatExpression(
+				nested,
+				indentation + 4,
+				indentation + 4 + prefix.length + nested.length > 88,
+			);
+			wrapped[0] = `${indent}    ${prefix}${wrapped[0].trimStart()}`;
+			wrapped[wrapped.length - 1] += ",";
+			return wrapped;
+		}),
+		`${indent})`,
+	];
+}
+
+function splitArguments(value: string): string[] {
+	const argumentsList: string[] = [];
+	let depth = 0;
+	let quote = "";
+	let escaped = false;
+	let start = 0;
+	for (let index = 0; index < value.length; index++) {
+		const character = value[index];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === quote) quote = "";
+		} else if (character === "'" || character === '"') {
+			quote = character;
+		} else if (character === "(" || character === "[" || character === "{") {
+			depth++;
+		} else if (character === ")" || character === "]" || character === "}") {
+			depth--;
+		} else if (character === "," && depth === 0) {
+			argumentsList.push(value.slice(start, index).trim());
+			start = index + 1;
+		}
+	}
+	if (start < value.length) argumentsList.push(value.slice(start).trim());
+	return argumentsList;
 }
 
 function fieldExpression(column: DesignColumn, name: string, design: Design, enumNames: Map<string, string>, options: string[]): string {
@@ -236,7 +645,20 @@ function fieldExpression(column: DesignColumn, name: string, design: Design, enu
 		return `ArrayField(${baseExpr}, ${options.join(", ")})`;
 	}
 	const standard: Record<string, string> = {
-		bigint: "BigIntegerField", integer: "IntegerField", smallint: "SmallIntegerField", text: "TextField", varchar: "CharField", char: "CharField", uuid: "UUIDField", boolean: "BooleanField", numeric: "DecimalField", date: "DateField", jsonb: "JSONField",
+		bigint: "BigIntegerField",
+		integer: "IntegerField",
+		smallint: "SmallIntegerField",
+		text: "TextField",
+		varchar: "CharField",
+		uuid: "UUIDField",
+		boolean: "BooleanField",
+		numeric: "DecimalField",
+		date: "DateField",
+		time: "TimeField",
+		timestamptz: "DateTimeField",
+		"double precision": "FloatField",
+		bytea: "BinaryField",
+		jsonb: "JSONField",
 	};
 	const pgType = customType(column);
 	if (pgType) return `PostgreSQLTypeField(pg_type=${pyString(pgType)}, ${options.join(", ")})`;
@@ -250,31 +672,64 @@ function fieldExpression(column: DesignColumn, name: string, design: Design, enu
 function customType(column: DesignColumn): string | null {
 	const type = column.type;
 	const p = column.typeParameters ?? {};
-	if (["time", "timetz", "interval", "money", "bytea", "timestamp", "timestamptz", "real", "json"].includes(type)) return `${type}${p.precision === undefined ? "" : `(${p.precision})`}`;
+	if (["timetz", "interval", "money", "timestamp", "real", "json"].includes(type)) {
+		return `${type}${p.precision === undefined ? "" : `(${p.precision})`}`;
+	}
+	if (type === "time" && p.precision !== undefined) {
+		return `time(${p.precision})`;
+	}
+	if (type === "timestamptz" && p.precision !== undefined) {
+		return `timestamptz(${p.precision})`;
+	}
 	if (["inet", "cidr", "macaddr"].includes(type)) return type;
-	if (type === "char") return `character${p.length === undefined ? "" : `(${p.length})`}`;
-	if (type === "bit") return `bit${p.length === undefined ? " varying" : `(${p.length})`}`;
+	if (type === "char") {
+		return `character${p.length === undefined ? "" : `(${p.length})`}`;
+	}
+	if (type === "bit") {
+		return `bit${p.length === undefined ? " varying" : `(${p.length})`}`;
+	}
 	if (type === "varchar" && p.length === undefined) return "character varying";
 	if (type === "numeric" && p.precision === undefined) return "numeric";
-	if (type === "double precision") return "double precision";
 	return null;
 }
 
 function defaultOption(column: DesignColumn): string {
 	const value = column.default;
 	if (value.kind === "currentTimestamp") return "db_default=Now()";
-	if (value.kind === "generateUuid") return "db_default=models.Func(function=\"gen_random_uuid\", output_field=models.UUIDField())";
-	if (value.kind === "literal") {
-		const raw = value.literalType === "integer" ? Number(value.value) : value.literalType === "numeric" ? `Decimal(${pyString(value.value)})` : value.literalType === "boolean" ? value.value === "true" : value.literalType === "json" ? JSON.parse(value.value) : value.value;
-		const expr = `Value(${typeof raw === "string" && raw.startsWith("Decimal(") ? raw : pyRepr(raw)})`;
-		if (["date", "time", "timetz", "timestamp", "timestamptz", "json", "jsonb", "interval", "money", "inet", "cidr", "macaddr", "enum"].includes(column.type)) {
-			const targetType = column.type === "timestamptz" ? "timestamp with time zone" : column.type === "timetz" ? "time with time zone" : column.type;
-			if (column.type === "enum") return `db_default=${expr}`;
-			return `db_default=Cast(${expr}, output_field=PostgreSQLTypeField(pg_type=${pyString(targetType)}))`;
-		}
-		return `db_default=${expr}`;
+	if (value.kind === "generateUuid") {
+		return 'db_default=models.Func(function="gen_random_uuid", output_field=models.UUIDField())';
 	}
-	return "";
+	if (value.kind !== "literal") return "";
+	if (value.literalType === "boolean") {
+		return `db_default=${value.value === "true" ? "True" : "False"}`;
+	}
+	if (value.literalType === "json" && column.type === "jsonb") {
+		return `db_default=${pyRepr(JSON.parse(value.value))}`;
+	}
+	if (value.literalType === "json") {
+		return `db_default=Cast(Value(${pyString(value.value)}), output_field=PostgreSQLTypeField(pg_type="json"))`;
+	}
+	if (value.literalType === "numeric") {
+		return `db_default=Decimal(${pyString(value.value)})`;
+	}
+	if (value.literalType === "integer") {
+		return `db_default=${value.value}`;
+	}
+	if (!["date", "time", "timestamp", "json", "enum"].includes(value.literalType)) {
+		return `db_default=${pyString(value.value)}`;
+	}
+	if (column.type === "enum") {
+		return `db_default=${pyString(value.value)}`;
+	}
+	const outputFields: Record<string, string> = {
+		date: "models.DateField()",
+		time: "models.TimeField()",
+		timestamptz: "models.DateTimeField()",
+		jsonb: "models.JSONField()",
+	};
+	const outputField = outputFields[column.type]
+		?? `PostgreSQLTypeField(pg_type=${pyString(customType(column) ?? column.type)})`;
+	return `db_default=Cast(Value(${pyString(value.value)}), output_field=${outputField})`;
 }
 
 function renderIndex(index: DesignIndex, table: DesignTable, fields: Map<string, FieldInfo>, name: string, comments: string[], usedNames: Set<string>): string {
@@ -323,9 +778,6 @@ function renderIndex(index: DesignIndex, table: DesignTable, fields: Map<string,
 		return `models.UniqueConstraint(fields=[${keys.map((key) => pyString(key.field)).join(", ")}], name=${pyString(djangoName)}${index.nullsNotDistinct ? ", nulls_distinct=False" : ""}${include.length ? `, include=[${include.map(pyString).join(", ")}]` : ""}${opclasses})`;
 	}
 	if (index.nullsNotDistinct) comments.push(`# Index ${name}: NULLS NOT DISTINCT is only supported for unique indexes; Django cannot emit it for this index.`);
-	if (["hash", "gin", "gist", "spgist", "brin"].includes(index.method) && index.method !== "gin" && (index.with?.fillfactor || index.with?.fastupdate !== undefined || index.with?.pagesPerRange)) {
-		// Passed below when supported by the field class.
-	}
 	if (index.method === "brin" && index.with?.fillfactor) kwargs.push(`fillfactor=${index.with.fillfactor}`);
 	if (index.method === "gist" && index.with?.fillfactor) kwargs.push(`fillfactor=${index.with.fillfactor}`);
 	if (index.method === "spgist" && index.with?.fillfactor) kwargs.push(`fillfactor=${index.with.fillfactor}`);
@@ -345,16 +797,15 @@ function deleteAction(action: DesignRelationship["onDelete"]): string {
 	}
 }
 
-function relationFieldName(value: string): string {
-	const normalized = snake(value);
-	return normalized.endsWith("_id") ? normalized.slice(0, -3) || "relation" : normalized;
+function snakeWords(words: readonly string[]): string {
+	return words.join("_") || "field";
 }
-function snake(value: string): string {
-	return value.normalize("NFKD").replace(/([a-z0-9])([A-Z])/g, "$1_$2").replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "").toLowerCase() || "field";
-}
-function pascal(value: string): string {
-	const out = snake(value).split("_").filter(Boolean).map((part) => part[0].toUpperCase() + part.slice(1)).join("");
-	return /^[A-Za-z_]/.test(out) ? out : `Model${out}`;
+
+function pascalWords(words: readonly string[]): string {
+	const name = words
+		.map((word) => word[0].toUpperCase() + word.slice(1))
+		.join("");
+	return /^[A-Za-z_]/.test(name) ? name : `Model${name}`;
 }
 function allocateIdentifier(base: string, used: Set<string>): string {
 	let normalized = base.replace(/[^A-Za-z0-9_]/g, "_") || "field";
@@ -367,8 +818,7 @@ function allocateIdentifier(base: string, used: Set<string>): string {
 	return candidate;
 }
 function enumMember(value: string, index: number, used: Set<string>): string {
-	let member = snake(value).toUpperCase() || `VALUE_${index + 1}`;
-	if (!/^[A-Z_]/.test(member)) member = `VALUE_${member}`;
+	const member = snakeWords(splitWords(value)).toUpperCase() || `VALUE_${index + 1}`;
 	return allocateIdentifier(member, used).toUpperCase();
 }
 function allocateDjangoName(value: string, used: Set<string>): string {
@@ -383,8 +833,40 @@ function allocateDjangoName(value: string, used: Set<string>): string {
 	return candidate;
 }
 function fnv1a(value: string): number { let hash = 0x811c9dc5; for (let index = 0; index < value.length; index++) hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193); return hash >>> 0; }
-function pyString(value: string): string { return JSON.stringify(value).replace(/\u2028|\u2029/g, (x) => x === "\u2028" ? "\\u2028" : "\\u2029"); }
-function pyRepr(value: unknown): string { return typeof value === "string" ? pyString(value) : typeof value === "boolean" ? (value ? "True" : "False") : JSON.stringify(value); }
+function pyString(value: string): string {
+	const quote =
+		(value.match(/"/g)?.length ?? 0) > (value.match(/'/g)?.length ?? 0)
+			? "'"
+			: '"';
+	let escaped = "";
+	for (const character of value) {
+		const codePoint = character.codePointAt(0)!;
+		if (character === "\\") escaped += "\\\\";
+		else if (character === quote) escaped += `\\${quote}`;
+		else if (character === "\n") escaped += "\\n";
+		else if (character === "\r") escaped += "\\r";
+		else if (character === "\t") escaped += "\\t";
+		else if (codePoint === 0x2028 || codePoint === 0x2029) {
+			escaped += `\\u${codePoint.toString(16)}`;
+		} else if (codePoint < 0x20) {
+			escaped += `\\x${codePoint.toString(16).padStart(2, "0")}`;
+		} else escaped += character;
+	}
+	return `${quote}${escaped}${quote}`;
+}
+function pyRepr(value: unknown): string {
+	if (value === null) return "None";
+	if (typeof value === "string") return pyString(value);
+	if (typeof value === "boolean") return value ? "True" : "False";
+	if (typeof value === "number") return String(value);
+	if (Array.isArray(value)) return `[${value.map(pyRepr).join(", ")}]`;
+	if (typeof value === "object") {
+		return `{${Object.entries(value)
+			.map(([key, item]) => `${pyString(key)}: ${pyRepr(item)}`)
+			.join(", ")}}`;
+	}
+	return "None";
+}
 function pyBool(value: boolean): string { return value ? "True" : "False"; }
 function quoteSql(value: string): string { return `"${value.replace(/"/g, '""')}"`; }
 function quoteSqlLiteral(value: string): string { return `'${value.replace(/'/g, "''")}'`; }
