@@ -12,7 +12,7 @@ import {
 } from "../shared/schema-code";
 import { SCHEMA_CODE_FIXTURES } from "../shared/schema-code/fixtures";
 import { createPGliteSandbox } from "./sandbox";
-import { generateDesignSql } from "./sql";
+import { generateDesignSql, planSchemaObjectNames } from "./sql";
 import { createSqlPreviewActions } from "./sql-preview";
 
 const temporaryDirectories: string[] = [];
@@ -154,4 +154,28 @@ describe("schema code fixtures", () => {
 			}
 		});
 	}
+});
+
+describe("schema object names", () => {
+	test("match the names in the generated SQL for every fixture", () => {
+		for (const fixture of Object.values(SCHEMA_CODE_FIXTURES)) {
+			const generation = generateDesignSql(fixture);
+			if (!generation.ok) throw new Error(generation.errors.join("\n"));
+			const names = planSchemaObjectNames(fixture);
+			const all = [
+				...names.foreignKeys.values(),
+				...names.relationshipUniques.values(),
+				...names.pairConstraints.values(),
+				...names.indexes.values(),
+				...names.uniqueConstraints.values(),
+			];
+			for (const name of all) expect(generation.sql).toContain(`"${name}"`);
+		}
+		const blog = planSchemaObjectNames(SCHEMA_CODE_FIXTURES.blog);
+		expect(blog.foreignKeys.size).toBe(7);
+		expect(blog.relationshipUniques.size).toBe(1);
+		expect(blog.pairConstraints.get("m_posts_tags")).toBe("post_tags_pair_key");
+		expect(blog.indexes.get("i_posts_keywords")).toBe("posts_keywords_gin");
+		expect(blog.uniqueConstraints.get("u_posts_author_slug")).toBe("posts_author_slug_key");
+	});
 });

@@ -21,7 +21,9 @@ reference) and the ORM formats Prisma, Drizzle, SQLAlchemy, and Django ORM.
 - Generators are deterministic: same design, same text, tables and columns in
   design order, ending with a single newline.
 - Generators run in the view, so they must stay pure TypeScript importing only
-  from `src/shared`.
+  from `src/shared`, plus the pure `planSchemaObjectNames` from `src/bun/sql.ts`
+  (it imports only `src/shared`), which gives the exact foreign-key, unique
+  constraint, and index names the SQL uses, keyed by design object id.
 - Shared sample designs live in `src/shared/schema-code/fixtures.ts`; every
   fixture is checked against the PostgreSQL generator and the sandbox in
   `src/bun/schema-code.test.ts`, so generator tests can rely on them.

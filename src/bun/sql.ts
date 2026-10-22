@@ -48,6 +48,60 @@ export function postgresSchemaRelationNames(design: Design): Set<string> {
 }
 
 /**
+ * The exact constraint and index names the generated SQL uses, keyed by the
+ * design object's id, so ORM schema code can name the same database objects.
+ * Only meaningful for a design `generateDesignSql` accepts.
+ */
+export type SchemaObjectNames = {
+	/** Foreign-key constraint name by relationship id. */
+	foreignKeys: Map<string, string>;
+	/** One-to-one uniqueness constraint name by relationship id. */
+	relationshipUniques: Map<string, string>;
+	/** Endpoint-pair unique constraint name by many-to-many association id. */
+	pairConstraints: Map<string, string>;
+	/** Index name by index id. */
+	indexes: Map<string, string>;
+	/** Composite unique constraint name by constraint id. */
+	uniqueConstraints: Map<string, string>;
+};
+
+export function planSchemaObjectNames(design: Design): SchemaObjectNames {
+	const relationships = resolveRelationships(design);
+	const associations = (design.manyToManyRelationships ?? []).flatMap((association) => {
+		const junction = design.tables.find((table) => table.id === association.junctionTableId);
+		return junction ? [{ association, junction }] : [];
+	});
+	const plan = planPostgresIdentifiers(
+		design,
+		relationships,
+		associations.map(({ junction }) => junction),
+	);
+	const relationshipUniques = new Map<string, string>();
+	for (const { view, uniqueConstraintName } of plan.namedRelationships) {
+		if (uniqueConstraintName) relationshipUniques.set(view.relationship.id, uniqueConstraintName);
+	}
+	return {
+		foreignKeys: new Map(
+			plan.namedRelationships.map(({ view, foreignKeyConstraintName }) => [
+				view.relationship.id,
+				foreignKeyConstraintName,
+			]),
+		),
+		relationshipUniques,
+		pairConstraints: new Map(
+			associations.map(({ association }, index) => [
+				association.id,
+				plan.pairConstraintNames[index] ?? "",
+			]),
+		),
+		indexes: new Map(plan.indexes.map(({ index, name }) => [index.id, name])),
+		uniqueConstraints: new Map(
+			plan.uniqueConstraints.map(({ constraint, name }) => [constraint.id, name]),
+		),
+	};
+}
+
+/**
  * Generates read-only PostgreSQL from the authoritative design. An incomplete
  * draft produces explicit errors instead of partial SQL.
  */
