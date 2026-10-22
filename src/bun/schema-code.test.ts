@@ -10,6 +10,9 @@ import {
 	schemaCodeFormat,
 	type SchemaCodeSnapshot,
 } from "../shared/schema-code";
+import { SCHEMA_CODE_FIXTURES } from "../shared/schema-code/fixtures";
+import { createPGliteSandbox } from "./sandbox";
+import { generateDesignSql } from "./sql";
 import { createSqlPreviewActions } from "./sql-preview";
 
 const temporaryDirectories: string[] = [];
@@ -132,4 +135,23 @@ describe("ORM code transfer", () => {
 			error: "No generated code is available to copy or export.",
 		});
 	});
+});
+
+describe("schema code fixtures", () => {
+	for (const [name, fixture] of Object.entries(SCHEMA_CODE_FIXTURES)) {
+		test(`${name} is a design PostgreSQL accepts`, async () => {
+			const generation = generateDesignSql(fixture);
+			if (!generation.ok) throw new Error(generation.errors.join("\n"));
+			const sandbox = createPGliteSandbox();
+			try {
+				const result = await sandbox.apply(generation.sql);
+				if (!result.ok) throw new Error(`${result.error}\n\n${generation.sql}`);
+				expect(result.tables.map((table) => table.name).sort()).toEqual(
+					fixture.tables.map((table) => table.name).sort(),
+				);
+			} finally {
+				await sandbox.dispose();
+			}
+		});
+	}
 });

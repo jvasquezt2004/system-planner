@@ -22,6 +22,11 @@ reference) and the ORM formats Prisma, Drizzle, SQLAlchemy, and Django ORM.
   design order, ending with a single newline.
 - Generators run in the view, so they must stay pure TypeScript importing only
   from `src/shared`.
+- Shared sample designs live in `src/shared/schema-code/fixtures.ts`; every
+  fixture is checked against the PostgreSQL generator and the sandbox in
+  `src/bun/schema-code.test.ts`, so generator tests can rely on them.
+- Index capabilities and operator classes come from `src/shared/index-methods.ts`;
+  the model itself is documented in `docs/postgres-features.md`.
 
 ## View
 
