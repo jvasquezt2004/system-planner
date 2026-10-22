@@ -55,11 +55,21 @@ export type DesignTable = {
 	indexes?: DesignIndex[];
 	uniqueConstraints?: DesignUniqueConstraint[];
 };
-export type DesignUniqueConstraint = { id: string; name?: string; columnIds: string[]; nullsNotDistinct?: boolean };
+/** A composite uniqueness rule declared independently of a relationship. */
+export type DesignUniqueConstraint = {
+	id: string;
+	name?: string;
+	columnIds: string[];
+	nullsNotDistinct?: boolean;
+};
+/** A named PostgreSQL enum and its ordered labels. */
 export type DesignEnumType = { id: string; name: string; labels: string[] };
 
+/** PostgreSQL access method used by an index. */
 export type IndexAccessMethod = "btree" | "hash" | "gin" | "gist" | "spgist" | "brin" | "hnsw" | "ivfflat";
+/** One ordered index key, addressed by stable column id. */
 export type DesignIndexKey = { columnId: string; order?: "asc" | "desc"; nulls?: "first" | "last"; operatorClass?: string };
+/** A structured PostgreSQL index with optional explicit name and storage options. */
 export type DesignIndex = {
 	id: string;
 	name?: string;
@@ -68,7 +78,7 @@ export type DesignIndex = {
 	unique?: boolean;
 	nullsNotDistinct?: boolean;
 	includeColumnIds?: string[];
-	with?: { fillfactor?: number; fastupdate?: boolean; lists?: number; m?: number; efConstruction?: number };
+	with?: { fillfactor?: number; fastupdate?: boolean; pagesPerRange?: number; lists?: number; m?: number; efConstruction?: number };
 };
 
 /**
@@ -483,4 +493,18 @@ export type AffectedRelationship = {
 export type RemovalPlan = {
 	target: string;
 	relationships: AffectedRelationship[];
+	indexes: AffectedIndex[];
+	uniqueConstraints: AffectedUniqueConstraint[];
 };
+
+/** An index key or INCLUDE entry removed with the referenced column. */
+export type AffectedIndex = {
+	table: string;
+	indexId: string;
+	name: string;
+	removedKeys: number;
+	removedIncludes: number;
+};
+
+/** A composite unique constraint that references a removed column. */
+export type AffectedUniqueConstraint = { table: string; constraintId: string; name: string };

@@ -74,7 +74,7 @@ _Avoid_: Default expression, SQL default
 
 **Typed literal**:
 A default value written in the category of its column's type — text, whole
-number, number, boolean, date, timestamp, or JSON — and encoded as a value in
+number, number, boolean, date, time, timestamp, or JSON — and encoded as a value in
 the generated SQL.
 _Avoid_: Literal SQL
 

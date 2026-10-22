@@ -19,6 +19,11 @@ import {
 	CreateProjectAction,
 	Design,
 	type DesignColumn,
+	type DesignIndex,
+	type DesignIndexKey,
+	type DesignEnumType,
+	type DesignUniqueConstraint,
+	type ReferentialAction,
 	type DesignRelationship,
 	DesignTable,
 	MoveTableAction,
@@ -720,12 +725,7 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
 				const table = requireTable(design, action.tableId);
-				const indexes = action.indexes.map((index) => ({
-					...index,
-					keys: index.keys.map((key) => ({ ...key })),
-					...(index.includeColumnIds ? { includeColumnIds: [...index.includeColumnIds] } : {}),
-					...(index.with ? { with: { ...index.with } } : {}),
-				}));
+				const indexes = normalizeIndexes(action.indexes, table);
 				if (JSON.stringify(indexes) === JSON.stringify(table.indexes ?? [])) return state;
 				return applyStructuralChange(projectId, replaceTable(design, { ...table, indexes }));
 			});
@@ -733,14 +733,30 @@ export async function createDesignWorkspace(
 		updateEnumTypes(action) {
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
-				return applyStructuralChange(projectId, { ...design, enumTypes: action.enumTypes.map((value) => ({ ...value, labels: [...value.labels] })) });
+				const enumTypes = normalizeEnumTypes(action.enumTypes);
+				const removed = (design.enumTypes ?? []).filter((previous) =>
+					!enumTypes.some((candidate) => candidate.id === previous.id),
+				);
+				for (const enumType of removed) {
+					const columns = design.tables.flatMap((table) =>
+						table.columns
+							.filter((column) => column.type === "enum" && column.enumTypeId === enumType.id)
+							.map((column) => `${table.name}.${column.name}`),
+					);
+					if (columns.length > 0) {
+						throw new Error(`Enum type "${enumType.name}" is used by ${columns.join(", ")}.`);
+					}
+				}
+				if (JSON.stringify(enumTypes) === JSON.stringify(design.enumTypes ?? [])) return state;
+				return applyStructuralChange(projectId, { ...design, enumTypes });
 			});
 		},
 		updateUniqueConstraints(action) {
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
 				const table = requireTable(design, action.tableId);
-				const constraints = action.uniqueConstraints.map((constraint) => ({ ...constraint, columnIds: [...constraint.columnIds] }));
+				const constraints = normalizeUniqueConstraints(action.uniqueConstraints, table);
+				if (JSON.stringify(constraints) === JSON.stringify(table.uniqueConstraints ?? [])) return state;
 				return applyStructuralChange(projectId, replaceTable(design, { ...table, uniqueConstraints: constraints }));
 			});
 		},
@@ -908,7 +924,12 @@ export async function createDesignWorkspace(
 						: requireCardinality(action.cardinality);
 				const onDelete = action.onDelete === undefined ? relationship.onDelete ?? "NO ACTION" : requireReferentialAction(action.onDelete);
 				const onUpdate = action.onUpdate === undefined ? relationship.onUpdate ?? "NO ACTION" : requireReferentialAction(action.onUpdate);
-			if (required === undefined && cardinality === relationship.cardinality && onDelete === (relationship.onDelete ?? "NO ACTION") && onUpdate === (relationship.onUpdate ?? "NO ACTION")) {
+			if (
+				required === undefined &&
+				cardinality === relationship.cardinality &&
+				onDelete === (relationship.onDelete ?? "NO ACTION") &&
+				onUpdate === (relationship.onUpdate ?? "NO ACTION")
+			) {
 					return state;
 				}
 
@@ -1145,12 +1166,22 @@ function requireConfirmedRemoval(
 ) {
 	if (confirmed) return;
 	const plan = removalPlan(design, target);
-	if (plan.relationships.length === 0) return;
+	if (
+		plan.relationships.length === 0 &&
+		plan.indexes.length === 0 &&
+		plan.uniqueConstraints.length === 0
+	) return;
 	const label = target.kind === "table" ? `table "${plan.target}"` : `column "${plan.target}"`;
 	const count = plan.relationships.length;
-	const summary = plan.relationships.map(describeAffectedRelationship).join(", ");
+	const summary = [
+		...plan.relationships.map(describeAffectedRelationship),
+		...plan.indexes.map((index) => `index ${index.name}`),
+		...plan.uniqueConstraints.map((constraint) => `unique constraint ${constraint.name}`),
+	].join(", ");
 	throw new Error(
-		`Removing ${label} also removes ${count} ${count === 1 ? "relationship" : "relationships"} (${summary}). Confirm the removal to continue.`,
+		`Removing ${label} also affects ` +
+			`${count + plan.indexes.length + plan.uniqueConstraints.length} schema item(s) ` +
+			`(${summary}). Confirm the removal to continue.`,
 	);
 }
 
@@ -1195,6 +1226,18 @@ function removeColumnAndItsRelationships(
 						...candidate,
 						columns: candidate.columns.filter(
 							(columnCandidate) => columnCandidate.id !== column.id,
+						),
+						indexes: (candidate.indexes ?? []).flatMap((index) => {
+							const keys = index.keys.filter((key) => key.columnId !== column.id);
+							if (keys.length === 0) return [];
+							return [{
+								...index,
+								keys,
+								includeColumnIds: (index.includeColumnIds ?? []).filter((id) => id !== column.id),
+							}];
+						}),
+						uniqueConstraints: (candidate.uniqueConstraints ?? []).filter(
+							(constraint) => !constraint.columnIds.includes(column.id),
 						),
 					}
 				: candidate,
@@ -1256,6 +1299,171 @@ function requireName(value: string, label: string): string {
 	return name;
 }
 
+/** Validates and copies index action data before it enters the design history. */
+function normalizeIndexes(values: unknown, table: DesignTable): DesignIndex[] {
+	if (!Array.isArray(values)) throw new Error("Indexes must be a list.");
+	const methods = [
+		"btree",
+		"hash",
+		"gin",
+		"gist",
+		"spgist",
+		"brin",
+		"hnsw",
+		"ivfflat",
+	];
+	const ids = new Set<string>();
+	return values.map((value) => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new Error("Each index must be a structured value.");
+		}
+		const index = value as DesignIndex;
+		if (typeof index.id !== "string" || !index.id.trim() || ids.has(index.id)) {
+			throw new Error("Index ids must be non-empty and unique.");
+		}
+		ids.add(index.id);
+		if (!methods.includes(index.method)) {
+			throw new Error("That index access method is not supported.");
+		}
+		if (!Array.isArray(index.keys)) {
+			throw new Error("Index keys must be a list.");
+		}
+		const keys: DesignIndexKey[] = index.keys.map((key) => {
+			if (!key || typeof key !== "object" || typeof key.columnId !== "string") {
+				throw new Error("Each index key needs a column id.");
+			}
+			requireColumn(table, key.columnId);
+			if (key.order !== undefined && key.order !== "asc" && key.order !== "desc") {
+				throw new Error("That index key ordering is not supported.");
+			}
+			if (key.nulls !== undefined && key.nulls !== "first" && key.nulls !== "last") {
+				throw new Error("That index NULL ordering is not supported.");
+			}
+			if (key.operatorClass !== undefined && typeof key.operatorClass !== "string") {
+				throw new Error("Index operator classes must be text.");
+			}
+			return { ...key };
+		});
+		const name = index.name === undefined ? undefined : requireName(index.name, "Index name");
+		if (index.unique !== undefined && typeof index.unique !== "boolean") {
+			throw new Error("Index uniqueness must be true or false.");
+		}
+		if (index.nullsNotDistinct !== undefined && typeof index.nullsNotDistinct !== "boolean") {
+			throw new Error("Index NULL treatment must be true or false.");
+		}
+		const includeColumnIds = index.includeColumnIds ?? [];
+		if (!Array.isArray(includeColumnIds)) {
+			throw new Error("Index INCLUDE columns must be a list.");
+		}
+		includeColumnIds.forEach((id) => requireColumn(table, id));
+		const storageOptions = normalizeIndexOptions(index.with);
+		return {
+			...index,
+			...(name ? { name } : {}),
+			keys,
+			...(index.includeColumnIds ? { includeColumnIds: [...includeColumnIds] } : {}),
+			...(storageOptions ? { with: storageOptions } : {}),
+		};
+	});
+}
+
+/** Validates the supported types of structured index storage options. */
+function normalizeIndexOptions(value: unknown): DesignIndex["with"] {
+	if (value === undefined) return undefined;
+	if (!value || typeof value !== "object" || Array.isArray(value)) {
+		throw new Error("Index storage options must be structured values.");
+	}
+	const options: NonNullable<DesignIndex["with"]> = {};
+	for (const [key, option] of Object.entries(value)) {
+		if (![
+			"fillfactor",
+			"fastupdate",
+			"pagesPerRange",
+			"lists",
+			"m",
+			"efConstruction",
+		].includes(key)) {
+			throw new Error(`Index storage option ${key} is not supported.`);
+		}
+		if (key === "fastupdate") {
+			if (typeof option !== "boolean") {
+				throw new Error("Index fastupdate must be true or false.");
+			}
+			options.fastupdate = option;
+			continue;
+		}
+		if (option !== undefined && (typeof option !== "number" || !Number.isFinite(option) || !Number.isInteger(option))) {
+			throw new Error(`Index storage option ${key} must be an integer.`);
+		}
+		if (key === "fillfactor") options.fillfactor = option as number | undefined;
+		if (key === "pagesPerRange") options.pagesPerRange = option as number | undefined;
+		if (key === "lists") options.lists = option as number | undefined;
+		if (key === "m") options.m = option as number | undefined;
+		if (key === "efConstruction") options.efConstruction = option as number | undefined;
+	}
+	return options;
+}
+
+/** Validates and copies enum definitions and their ordered labels. */
+function normalizeEnumTypes(values: unknown): DesignEnumType[] {
+	if (!Array.isArray(values)) throw new Error("Enum types must be a list.");
+	const ids = new Set<string>();
+	return values.map((value) => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new Error("Each enum type must be a structured value.");
+		}
+		const enumType = value as DesignEnumType;
+		if (typeof enumType.id !== "string" || !enumType.id.trim() || ids.has(enumType.id)) {
+			throw new Error("Enum type ids must be non-empty and unique.");
+		}
+		ids.add(enumType.id);
+		const name = requireName(enumType.name, "Enum type name");
+		if (
+			!Array.isArray(enumType.labels) ||
+			enumType.labels.length === 0 ||
+			enumType.labels.some((label) => typeof label !== "string" || !label.trim())
+		) {
+			throw new Error("Enum labels must be a non-empty list of text values.");
+		}
+		return { id: enumType.id, name, labels: [...enumType.labels] };
+	});
+}
+
+/** Validates composite unique constraint references and copies their ids. */
+function normalizeUniqueConstraints(
+	values: unknown,
+	table: DesignTable,
+): DesignUniqueConstraint[] {
+	if (!Array.isArray(values)) throw new Error("Unique constraints must be a list.");
+	const ids = new Set<string>();
+	return values.map((value) => {
+		if (!value || typeof value !== "object" || Array.isArray(value)) {
+			throw new Error("Each unique constraint must be a structured value.");
+		}
+		const constraint = value as DesignUniqueConstraint;
+		if (
+			typeof constraint.id !== "string" ||
+			!constraint.id.trim() ||
+			ids.has(constraint.id)
+		) {
+			throw new Error("Unique constraint ids must be non-empty and unique.");
+		}
+		ids.add(constraint.id);
+		if (!Array.isArray(constraint.columnIds)) {
+			throw new Error("Unique constraint column ids must be a list.");
+		}
+		constraint.columnIds.forEach((id) => requireColumn(table, id));
+		const name = constraint.name === undefined ? undefined : requireName(constraint.name, "Unique constraint name");
+		if (
+			constraint.nullsNotDistinct !== undefined &&
+			typeof constraint.nullsNotDistinct !== "boolean"
+		) {
+			throw new Error("Unique constraint NULL treatment must be true or false.");
+		}
+		return { ...constraint, ...(name ? { name } : {}), columnIds: [...constraint.columnIds] };
+	});
+}
+
 function requireColumnType(value: unknown) {
 	if (!isSupportedColumnType(value)) throw new Error("That column type is not supported.");
 	return value;
@@ -1278,11 +1486,11 @@ function requireRelationshipCreationCardinality(
 	throw new Error("That relationship cardinality is not supported.");
 }
 
-function isReferentialAction(value: unknown): value is import("../shared/design").ReferentialAction {
+function isReferentialAction(value: unknown): value is ReferentialAction {
 	return value === "NO ACTION" || value === "RESTRICT" || value === "CASCADE" || value === "SET NULL" || value === "SET DEFAULT";
 }
 
-function requireReferentialAction(value: unknown): import("../shared/design").ReferentialAction {
+function requireReferentialAction(value: unknown): ReferentialAction {
 	if (!isReferentialAction(value)) throw new Error("That foreign-key referential action is not supported.");
 	return value;
 }
@@ -1294,10 +1502,34 @@ function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {
 	const normalized: ColumnChanges = {};
 	if (changes.name !== undefined) normalized.name = requireName(changes.name, "Column name");
 	if (changes.type !== undefined) normalized.type = requireColumnType(changes.type);
+	if (changes.enumTypeId !== undefined) {
+		if (typeof changes.enumTypeId !== "string" || !changes.enumTypeId.trim()) {
+			throw new Error("Enum type references need an enum type id.");
+		}
+		normalized.enumTypeId = changes.enumTypeId;
+	}
 	if (changes.typeParameters !== undefined) {
-		if (!changes.typeParameters || typeof changes.typeParameters !== "object") throw new Error("Column type parameters must be structured values.");
-		for (const [key, value] of Object.entries(changes.typeParameters)) if (key !== "array" && value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || (key === "scale" ? value < -1000 || value > 1000 : value < 0))) throw new Error("Column type parameters must be valid integers.");
-		if (changes.typeParameters.array !== undefined && typeof changes.typeParameters.array !== "boolean") throw new Error("Array type must be true or false.");
+		if (!changes.typeParameters || typeof changes.typeParameters !== "object") {
+			throw new Error("Column type parameters must be structured values.");
+		}
+		for (const [key, value] of Object.entries(changes.typeParameters)) {
+			if (!["length", "precision", "scale", "dimensions", "array"].includes(key)) {
+				throw new Error("Column type parameters include an unsupported field.");
+			}
+			const invalidNumber =
+				typeof value !== "number" ||
+				!Number.isInteger(value) ||
+				(key === "scale" ? value < -1000 || value > 1000 : value < 0);
+			if (key !== "array" && value !== undefined && invalidNumber) {
+				throw new Error("Column type parameters must be valid integers.");
+			}
+		}
+		if (
+			changes.typeParameters.array !== undefined &&
+			typeof changes.typeParameters.array !== "boolean"
+		) {
+			throw new Error("Array type must be true or false.");
+		}
 		normalized.typeParameters = { ...changes.typeParameters };
 	}
 	for (const key of ["nullable", "primaryKey", "unique"] as const) {
@@ -1332,6 +1564,7 @@ function sameColumn(a: DesignColumn, b: DesignColumn): boolean {
 		a.id === b.id &&
 		a.name === b.name &&
 		a.type === b.type &&
+		a.enumTypeId === b.enumTypeId &&
 		JSON.stringify(a.typeParameters ?? {}) === JSON.stringify(b.typeParameters ?? {}) &&
 		a.nullable === b.nullable &&
 		a.primaryKey === b.primaryKey &&

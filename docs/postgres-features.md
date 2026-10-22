@@ -16,6 +16,11 @@ scale apply to `numeric`; dimensions apply to `vector`, `halfvec`, and
 1–1000 and a scale requires precision; the scale range is -1000–1000. Arrays append PostgreSQL `[]` to the
 element type. Structured defaults on arrays are currently rejected.
 
+Time columns use the `time` literal category with `HH:MM:SS` and an optional
+numeric UTC offset; `time` and `timetz` SQL literals are rendered with their
+matching PostgreSQL type. `interval` uses a quoted text literal, and `money`
+uses a numeric literal.
+
 The registry includes the existing integer, UUID, boolean, date/time and JSON
 types, plus `varchar`, `char`, `real`, `double precision`, `time`, `timetz`,
 `timestamp`, `interval`, `bytea`, `json`, `inet`, `cidr`, `macaddr`, `money`,
@@ -42,10 +47,19 @@ planner and avoid collisions; explicit names are preserved and duplicate names
 are validation errors.
 
 Methods are `btree`, `hash`, `gin`, `gist`, `spgist`, `brin`, `hnsw`, and
-`ivfflat`. Validation checks referenced key and INCLUDE columns, duplicate keys,
-uniqueness support, hash's single non-unique key rule, INCLUDE method support,
-sort-order support, `NULLS NOT DISTINCT` requiring uniqueness, GIN's array/JSONB
-support, and pgvector method/type/operator-class compatibility. HNSW supports
+`ivfflat`. The exported `INDEX_METHOD_DEFINITIONS` registry in
+`src/shared/index-methods.ts` describes method support for uniqueness, INCLUDE,
+key ordering, storage options, supported types and arrays, default operator
+classes, and per-type operator-class alternatives. SQL validation and the
+inspector both read this registry, which is also available to ORM generators.
+It includes B-tree pattern classes (`text_pattern_ops`, `varchar_pattern_ops`,
+`bpchar_pattern_ops`), GIN `jsonb_ops`, `jsonb_path_ops`, and `array_ops`,
+GiST/SP-GiST network `inet_ops`, and method-specific pgvector operator classes.
+Vector methods require an explicit class. Validation checks referenced key and
+INCLUDE columns, duplicate keys, uniqueness support, hash's single non-unique
+key rule, INCLUDE method support, sort-order support,
+`NULLS NOT DISTINCT` requiring uniqueness, and method/type/operator-class
+compatibility. HNSW supports
 `m` and `efConstruction`; IVFFlat supports `lists`; standard methods accept the
 modeled method-specific storage options only. Vector indexing limits are 2000
 dimensions for `vector`, 4000 for `halfvec`, 64000 for `bit`, and sparsevec is
@@ -100,6 +114,12 @@ indexes require pgvector in the target database. Old saved documents may omit
 indexes, unique constraints, enum types, type parameters, or referential
 actions; interpret those as empty/default values. ORM generators should report
 unsupported target features instead of dropping semantics silently.
+
+For access-method capabilities, read `INDEX_METHOD_DEFINITIONS`,
+`findIndexMethod`, and `indexOperatorClasses` from
+`src/shared/index-methods.ts`. The registry describes supported types and
+arrays, default operator-class availability, valid explicit classes,
+uniqueness, INCLUDE, ordering, and the modeled storage options per method.
 
 This implementation intentionally leaves out check constraints, comments,
 partial/expression indexes, composite primary keys, and general composite
