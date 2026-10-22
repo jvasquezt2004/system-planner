@@ -1,15 +1,19 @@
 # Drizzle schema code mapping
 
-The Drizzle generator targets PostgreSQL schemas using drizzle-orm 0.45.4 and
-drizzle-kit 0.31.11. It emits camelCase TypeScript keys while passing each
-design table and column name unchanged to pg-core. It uses the stable
-`relations()` API available in that release; the newer `defineRelations()` API
-is not part of the installed stable package.
+The generator targets drizzle-orm 0.45.4 and drizzle-kit 0.31.11. It uses the
+stable `relations()` API in that release. Current Drizzle documentation describes
+`defineRelations()` as the Relational Queries v2 API and installs it from the
+release-candidate channel; it is not the stable API available in drizzle-orm
+0.45.4.
 
-## Type and value choices
+## Types and defaults
 
-- `bigint` uses `{ mode: "number" }`; `numeric` keeps Drizzle's string mode to
-  avoid losing decimal precision.
+- TypeScript table variables use camel-cased `modelWords`; table and column
+  database names remain unchanged in `pgTable()` and column builder arguments.
+  Column and relation properties use unquoted camelCase keys.
+- `bigint` uses `{ mode: "bigint" }`, preserving PostgreSQL's full signed
+  64-bit range in JavaScript. `numeric` keeps Drizzle's string mode to preserve
+  decimal precision.
 - `date`, `timestamp`, and `timestamptz` use string mode. `time` and `timetz`
   already use string values in pg-core.
 - `bytea` and `money` use `customType` because pg-core 0.45.4 has no native
@@ -17,22 +21,33 @@ is not part of the installed stable package.
   builders, including arrays, enums, and pgvector's `vector`, `halfvec`,
   `sparsevec`, and `bit`.
 - UUID and current-time defaults use `.defaultRandom()` and `.defaultNow()`.
-  Typed literal defaults are rendered by the shared structured-default helper
-  and passed as `sql.raw()`; they cannot contain user-authored SQL expressions.
+  Structured literals are emitted as typed JavaScript values through
+  `.default(value)`, including parsed JSON values; no SQL expressions are
+  generated for literal defaults.
 
-## Relationships and constraints
+## Names, relations, and constraints
 
-The generator emits a named `foreignKey()` for references to tables already
-declared, and uses `.references()` for self-references and forward references.
-Drizzle 0.45.4 does not let `.references()` set the foreign-key name, so those
-columns carry a generated comment with the SQL constraint name to preserve in a
-raw SQL migration. Each relationship also gets both `relations()` directions;
-many-to-many associations use the visible junction table and its named pair
-unique constraint.
+Model and relation property names come from the shared naming plan in
+`src/shared/schema-code/naming.ts`. A one-to-one back-reference uses `one()`;
+one-to-many back-references use `many()`. Drizzle's `relationName` is emitted
+only for repeated foreign-key pairs, with a readable alias derived from the
+model and forward relation (for example, `post_author`).
 
-Drizzle 0.45.4 does not model INCLUDE columns or `NULLS NOT DISTINCT` on unique
-indexes. The generator retains the index and emits an adjacent comment with the
-raw SQL migration change needed to preserve that option. Composite unique
+The stable `relations()` API models many-to-many relationships through the
+visible junction table, so the generated endpoint relations are `postTags`; it
+does not provide the newer v2 `through` API for direct `Post.tags` / `Tag.posts`
+relations.
+
+Foreign keys to earlier-declared tables use a named `foreignKey()` and preserve
+the PostgreSQL constraint name and referential actions. Self-references and
+references to later-declared tables use inline `.references()` to avoid
+initialization-order errors. Drizzle 0.45.4 does not let `.references()` name a
+foreign-key constraint, so one grouped comment above the table lists those
+names for a raw SQL migration.
+
+Drizzle 0.45.4 does not model `INCLUDE` columns or `NULLS NOT DISTINCT` on unique
+indexes. The generator retains the index and places the required raw SQL
+migration follow-up in a comment above that index. Composite unique
 constraints, including `NULLS NOT DISTINCT`, are represented directly.
 
 The schema is code, not a migration. Install the pgvector extension in the

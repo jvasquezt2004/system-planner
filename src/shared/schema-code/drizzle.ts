@@ -1,7 +1,14 @@
-import type { Design, DesignColumn, DesignIndex, DesignRelationship, DesignTable } from "../design";
-import { renderDefaultExpression } from "../column-defaults";
+import type {
+	ColumnType,
+	Design,
+	DesignColumn,
+	DesignIndex,
+	DesignRelationship,
+	DesignTable,
+} from "../design";
 import { planSchemaObjectNames } from "../../bun/sql";
 import { postgresGeneratedObjectName } from "../postgres-identifiers";
+import { modelWords, planRelationshipNames, splitWords, type NameWords } from "./naming";
 import type { SchemaCodeGeneration } from "./types";
 
 type RelationPlan = {
@@ -11,8 +18,14 @@ type RelationPlan = {
 	target: DesignTable;
 	targetKey: DesignColumn;
 	forward: string;
-	inverse: string;
-	relationName: string;
+	backward: string;
+	backwardIsList: boolean;
+	relationName?: string;
+};
+
+type TableExtra = {
+	code: string;
+	comments?: string[];
 };
 
 const RESERVED = new Set(
@@ -29,19 +42,59 @@ const RESERVED = new Set(
 		.split(" "),
 );
 
+const COLUMN_BUILDERS: Record<ColumnType, string> = {
+	bigint: "bigint",
+	integer: "integer",
+	smallint: "smallint",
+	text: "text",
+	varchar: "varchar",
+	char: "char",
+	uuid: "uuid",
+	boolean: "boolean",
+	numeric: "numeric",
+	real: "real",
+	"double precision": "doublePrecision",
+	date: "date",
+	time: "time",
+	timetz: "time",
+	timestamp: "timestamp",
+	timestamptz: "timestamp",
+	interval: "interval",
+	json: "json",
+	jsonb: "jsonb",
+	bytea: "customType",
+	inet: "inet",
+	cidr: "cidr",
+	macaddr: "macaddr",
+	money: "customType",
+	bit: "bit",
+	vector: "vector",
+	halfvec: "halfvec",
+	sparsevec: "sparsevec",
+	enum: "",
+};
+
 /** Generates stable Drizzle PostgreSQL schema code for a PostgreSQL-valid design. */
 export function generateDrizzleSchema(design: Design): SchemaCodeGeneration {
 	const tables = design.tables;
-	const reservedImports = new Set(["pg", "drizzleRelations", "AnyPgColumn", "sql"]);
+	const enumTypes = design.enumTypes ?? [];
+	const relationships = planRelations(design);
+	const objectNames = planSchemaObjectNames(design);
+	const pgImports = requiredPgImports(design, relationships);
+	const reservedNames = new Set(pgImports);
+	if (relationships.length) reservedNames.add("relations");
+	if (relationships.some((item) => item.table.id === item.target.id)) {
+		reservedNames.add("AnyPgColumn");
+	}
+
 	const tableVars = allocateNamed(
-		tables.map((table) => [table.id, table.name] as const),
-		reservedImports,
+		tables.map((table) => [table.id, camelCase(modelWords(table))] as const),
+		reservedNames,
 		"table",
 	);
-	const enumTypes = design.enumTypes ?? [];
 	const enumVars = allocateNamed(
-		enumTypes.map((item) => [item.id, item.name] as const),
-		new Set([...tableVars.values(), ...reservedImports]),
+		enumTypes.map((item) => [item.id, camelCase(splitWords(item.name))] as const),
+		new Set([...tableVars.values(), ...reservedNames]),
 		"enum",
 	);
 	const columnsByTable = new Map<string, Map<string, string>>();
@@ -49,194 +102,547 @@ export function generateDrizzleSchema(design: Design): SchemaCodeGeneration {
 		columnsByTable.set(
 			table.id,
 			allocateNamed(
-				table.columns.map((column) => [column.id, column.name] as const),
+				table.columns.map((column) => [column.id, camelCase(splitWords(column.name))] as const),
 				new Set(),
 				"field",
 			),
 		);
 	}
-
-	const objectNames = planSchemaObjectNames(design);
-	const relationships = planRelations(design);
 	const relationVars = allocateNamed(
 		tables.map((table) => [table.id, `${tableVars.get(table.id)}Relations`] as const),
-		new Set([...tableVars.values(), ...enumVars.values(), ...reservedImports]),
+		new Set([...tableVars.values(), ...enumVars.values(), ...reservedNames]),
 		"relations",
 	);
-	const needsAnyPgColumn = relationships.some((item) => item.table.id === item.target.id);
-	const needsSql = tables.some((table) =>
-		table.columns.some((column) => column.default.kind === "literal"),
-	);
-	const imports = [
-		'import * as pg from "drizzle-orm/pg-core";',
-		...(relationships.length
-			? ['import { relations as drizzleRelations } from "drizzle-orm";']
-			: []),
-		...(needsAnyPgColumn
+
+	const lines = [
+		...(pgImports.size ? renderNamedImport([...pgImports], "drizzle-orm/pg-core") : []),
+		...(relationships.length ? ['import { relations } from "drizzle-orm";'] : []),
+		...(relationships.some((item) => item.table.id === item.target.id)
 			? ['import type { AnyPgColumn } from "drizzle-orm/pg-core";']
 			: []),
-		...(needsSql ? ['import { sql } from "drizzle-orm";'] : []),
+		"",
 	];
-	const lines: string[] = [...imports, ""];
 
 	for (const enumType of enumTypes) {
 		lines.push(
-			`export const ${enumVars.get(enumType.id)} = pg.pgEnum(${JSON.stringify(enumType.name)}, ${JSON.stringify(enumType.labels)});`,
+			...renderEnum(
+				enumVars.get(enumType.id)!,
+				enumType.name,
+				enumType.labels,
+			),
+			"",
 		);
 	}
-	if (enumTypes.length) lines.push("");
 
 	for (const table of tables) {
 		const tableVar = tableVars.get(table.id)!;
 		const columnVars = columnsByTable.get(table.id)!;
-		lines.push(`export const ${tableVar} = pg.pgTable(${JSON.stringify(table.name)}, {`);
-
-		for (const column of table.columns) {
-			const key = columnVars.get(column.id)!;
-			const relationship = relationships.find(
-				(item) => item.table.id === table.id && item.column.id === column.id,
+		const inlineForeignKeys = relationships
+			.filter(
+				(item) =>
+					item.table.id === table.id &&
+					(item.target.id === table.id ||
+						tables.indexOf(item.target) > tables.indexOf(table)),
+			)
+			.map((item) => objectNames.foreignKeys.get(item.relationship.id));
+		if (inlineForeignKeys.length) {
+			lines.push(
+				`// Raw SQL migration: preserve inline foreign-key names ${inlineForeignKeys.map((name) => JSON.stringify(name)).join(", ")}; Drizzle references() does not name constraints.`,
 			);
-			const isForwardOrSelfReference =
-				relationship &&
-				(relationship.table.id === relationship.target.id ||
-					tables.indexOf(relationship.target) > tables.indexOf(table));
-			if (isForwardOrSelfReference) {
+		}
+
+		const columns = table.columns.flatMap((column) =>
+			renderProperty(
+				columnVars.get(column.id)!,
+				columnBuilder(
+					column,
+					table,
+					design,
+					enumVars,
+					tableVars,
+					columnsByTable,
+					relationships,
+					tables.indexOf(table),
+				),
+				"  ",
+				true,
+			),
+		);
+		const extras = tableExtras(
+			design,
+			table,
+			columnVars,
+			columnsByTable,
+			tableVars,
+			relationships,
+			objectNames,
+		);
+
+		if (extras.length === 0) {
+			const start = `export const ${tableVar} = pgTable(${JSON.stringify(table.name)}, {`;
+			if (start.length <= 80) {
+				lines.push(start, ...columns, "});", "");
+			} else {
 				lines.push(
-					`\t// Drizzle assigns inline foreign keys its own name; use a raw SQL migration to preserve ${
-						JSON.stringify(objectNames.foreignKeys.get(relationship.relationship.id))
-					}.`,
+					`export const ${tableVar} = pgTable(`,
+					`  ${JSON.stringify(table.name)},`,
+					"  {",
+					...table.columns.flatMap((column) =>
+						renderProperty(
+							columnVars.get(column.id)!,
+							columnBuilder(
+								column,
+								table,
+								design,
+								enumVars,
+								tableVars,
+								columnsByTable,
+								relationships,
+								tables.indexOf(table),
+							),
+							"    ",
+							true,
+						),
+					),
+					"  },",
+					");",
+					"",
 				);
 			}
-
-			const builder = columnBuilder(
-				column,
-				table,
-				design,
-				enumVars,
-				tableVars,
-				columnsByTable,
-				relationships,
-				tables.indexOf(table),
-			);
-			lines.push(`\t${JSON.stringify(key)}: ${builder},`);
+			continue;
 		}
 
-		lines.push("}, (t) => [");
-		const extras: string[] = [];
-		for (const relationship of relationships.filter(
-			(item) =>
-				item.table.id === table.id &&
-				item.target.id !== table.id &&
-				tables.indexOf(item.target) < tables.indexOf(table),
-		)) {
-			const rel = relationship.relationship;
-			const name = objectNames.foreignKeys.get(rel.id);
-			const columnKey = columnVars.get(relationship.column.id)!;
-			const targetColumns = columnsByTable.get(relationship.target.id)!;
-			const targetKey = targetColumns.get(relationship.targetKey.id)!;
-			const update = (rel.onUpdate ?? "NO ACTION").toLowerCase();
-			const del = (rel.onDelete ?? "NO ACTION").toLowerCase();
-			const actions = [
-				update !== "no action" ? `.onUpdate(${JSON.stringify(update)})` : "",
-				del !== "no action" ? `.onDelete(${JSON.stringify(del)})` : "",
-			].join("");
-			extras.push(
-				`pg.foreignKey({ name: ${JSON.stringify(name)}, columns: [t[${JSON.stringify(columnKey)}]], ` +
-					`foreignColumns: [${tableVars.get(relationship.target.id)}[${JSON.stringify(targetKey)}]] })${actions}`,
-			);
-		}
-		for (const constraint of table.uniqueConstraints ?? []) {
-			const keys = constraint.columnIds.map(
-				(id) => `t[${JSON.stringify(columnVars.get(id) ?? "")}]`,
-			);
-			let value = `pg.unique(${JSON.stringify(objectNames.uniqueConstraints.get(constraint.id))}).on(${keys.join(", ")})`;
-			if (constraint.nullsNotDistinct) value += ".nullsNotDistinct()";
-			extras.push(value);
-		}
-		for (const item of relationships.filter((candidate) => candidate.table.id === table.id)) {
-			if (
-				item.relationship.cardinality !== "one-to-one" ||
-				item.column.unique ||
-				item.column.primaryKey
-			) {
-				continue;
+		lines.push(
+			`export const ${tableVar} = pgTable(`,
+			`  ${JSON.stringify(table.name)},`,
+			"  {",
+			...table.columns.flatMap((column) =>
+				renderProperty(
+					columnVars.get(column.id)!,
+					columnBuilder(
+						column,
+						table,
+						design,
+						enumVars,
+						tableVars,
+						columnsByTable,
+						relationships,
+						tables.indexOf(table),
+					),
+					"    ",
+					true,
+				),
+			),
+			"  },",
+			"  (t) => [",
+		);
+		for (const extra of extras) {
+			for (const comment of extra.comments ?? []) {
+				lines.push(`    // ${comment}`);
 			}
-			const columnKey = columnVars.get(item.column.id)!;
-			extras.push(
-				`pg.unique(${JSON.stringify(objectNames.relationshipUniques.get(item.relationship.id))}).on(t[${JSON.stringify(columnKey)}])`,
-			);
+			lines.push(...renderExpression(extra.code, "    ", "    ", true));
 		}
-		for (const association of design.manyToManyRelationships ?? []) {
-			if (association.junctionTableId !== table.id) continue;
-			const left = design.relationships.find(
-				(item) => item.id === association.leftRelationshipId,
-			);
-			const right = design.relationships.find(
-				(item) => item.id === association.rightRelationshipId,
-			);
-			const leftColumn = left && table.columns.find(
-				(column) => column.id === left.referencingColumnId,
-			);
-			const rightColumn = right && table.columns.find(
-				(column) => column.id === right.referencingColumnId,
-			);
-			if (leftColumn && rightColumn) {
-				extras.push(
-					`pg.unique(${JSON.stringify(objectNames.pairConstraints.get(association.id))}).on(` +
-						`t[${JSON.stringify(columnVars.get(leftColumn.id))}], ` +
-						`t[${JSON.stringify(columnVars.get(rightColumn.id))}])`,
-				);
-			}
-		}
-		for (const index of table.indexes ?? []) {
-			extras.push(
-				renderIndex(table, index, objectNames.indexes.get(index.id)!, columnVars),
-			);
-		}
-		for (const [index, extra] of extras.entries()) {
-			lines.push(`\t${extra}${index < extras.length - 1 ? "," : ""}`);
-		}
-		lines.push("]);", "");
+		lines.push("  ],", ");", "");
 	}
 
 	for (const table of tables) {
 		const tableRelations = relationships.filter(
 			(item) => item.table.id === table.id || item.target.id === table.id,
 		);
-		if (!tableRelations.length) continue;
+		if (tableRelations.length === 0) continue;
 		const fields = [
 			...tableRelations
 				.filter((item) => item.table.id === table.id)
-				.map((item) => {
+				.flatMap((item) => {
 					const column = columnsByTable.get(item.table.id)!.get(item.column.id)!;
 					const targetKey = columnsByTable
 						.get(item.target.id)!
 						.get(item.targetKey.id)!;
-					return (
-						`\t\t${JSON.stringify(item.forward)}: helpers.one(${tableVars.get(item.target.id)}, ` +
-						`{ fields: [${tableVars.get(item.table.id)}[${JSON.stringify(column)}]], ` +
-						`references: [${tableVars.get(item.target.id)}[${JSON.stringify(targetKey)}]], ` +
-						`relationName: ${JSON.stringify(item.relationName)} }),`
+					const relationName = item.relationName
+						? `, relationName: ${JSON.stringify(item.relationName)}`
+						: "";
+					return renderProperty(
+						item.forward,
+						`one(${tableVars.get(item.target.id)}, { fields: [${tableVars.get(item.table.id)}.${column}], references: [${tableVars.get(item.target.id)}.${targetKey}]${relationName} })`,
+						"  ",
+						true,
 					);
 				}),
 			...tableRelations
 				.filter((item) => item.target.id === table.id)
-				.map(
-					(item) =>
-						`\t\t${JSON.stringify(item.inverse)}: helpers.many(${tableVars.get(item.table.id)}, { relationName: ${JSON.stringify(item.relationName)} }),`,
-				),
+				.flatMap((item) => {
+					const relationName = item.relationName
+						? `, { relationName: ${JSON.stringify(item.relationName)} }`
+						: "";
+					const helper = item.backwardIsList ? "many" : "one";
+					return renderProperty(
+						item.backward,
+						`${helper}(${tableVars.get(item.table.id)}${relationName})`,
+						"  ",
+						true,
+					);
+				}),
 		];
+		const helpers = new Set<string>();
+		if (tableRelations.some((item) => item.table.id === table.id)) {
+			helpers.add("one");
+		}
+		for (const relation of tableRelations) {
+			if (relation.target.id === table.id) {
+				helpers.add(relation.backwardIsList ? "many" : "one");
+			}
+		}
 		lines.push(
-			`export const ${relationVars.get(table.id)} = drizzleRelations(${tableVars.get(table.id)}, (helpers) => ({`,
+			`export const ${relationVars.get(table.id)} = relations(${tableVars.get(table.id)}, ({ ${["one", "many"].filter((helper) => helpers.has(helper)).join(", ")} }) => ({`,
 			...fields,
 			"}));",
 			"",
 		);
 	}
-
-	const code = lines.join("\n").replace(/\n+$/, "\n");
-	return { ok: true, code };
+	return { ok: true, code: `${lines.join("\n").replace(/\n+$/, "")}\n` };
 }
+
+function renderNamedImport(names: string[], moduleName: string): string[] {
+	const singleLine = `import { ${names.join(", ")} } from "${moduleName}";`;
+	if (singleLine.length <= 80) return [singleLine];
+	return [
+		"import {",
+		...names.map((name) => `  ${name},`),
+		`} from "${moduleName}";`,
+	];
+}
+
+function renderEnum(name: string, databaseName: string, labels: string[]): string[] {
+	const values = labels.map(jsStringLiteral);
+	const labelArray = `[${values.join(", ")}]`;
+	const singleLine = `export const ${name} = pgEnum(${jsStringLiteral(databaseName)}, ${labelArray});`;
+	if (singleLine.length <= 80) return [singleLine];
+	return [
+		`export const ${name} = pgEnum(${jsStringLiteral(databaseName)}, [`,
+		...values.map((value) => `  ${value},`),
+		"]);",
+	];
+}
+
+function renderProperty(
+	key: string,
+	expression: string,
+	indent: string,
+	trailingComma: boolean,
+): string[] {
+	return renderExpression(expression, `${indent}${key}: `, indent, trailingComma);
+}
+
+function renderExpression(
+	expression: string,
+	prefix: string,
+	indent: string,
+	trailingComma: boolean,
+): string[] {
+	const suffix = trailingComma ? "," : "";
+	if (`${prefix}${expression}${suffix}`.length <= 80) {
+		return [`${prefix}${expression}${suffix}`];
+	}
+
+	const chain = splitMethodChain(expression);
+	const lines = renderCall(chain[0], prefix, indent);
+	for (const method of chain.slice(1)) {
+		const call = `.${method}`;
+		const lastLine = lines[lines.length - 1]!;
+		if (
+			lastLine.endsWith(")") &&
+			`${lastLine}${call}`.length <= 80
+		) {
+			lines[lines.length - 1] += call;
+			continue;
+		}
+		const open = call.indexOf("(");
+		const callHeader = open > 0
+			? `${lastLine}${call.slice(0, open + 1)}`
+			: "";
+		if (
+			open > 0 &&
+			call.slice(open + 1, -1).trim().length > 0 &&
+			callHeader.length <= 80 &&
+			`${lastLine}${call}`.length > 80
+		) {
+			const args = splitTopLevel(call.slice(open + 1, -1));
+			lines[lines.length - 1] = callHeader;
+			lines.push(
+				...args.map((argument) => `${indent}  ${argument},`),
+				`${indent})`,
+			);
+			continue;
+		}
+		lines.push(...renderCall(call, `${indent}  `, `${indent}  `));
+	}
+	lines[lines.length - 1] += suffix;
+	return lines;
+}
+
+function renderCall(call: string, prefix: string, indent: string): string[] {
+	if (`${prefix}${call}`.length <= 80) return [`${prefix}${call}`];
+	const open = call.indexOf("(");
+	if (open < 0 || !call.endsWith(")")) return [`${prefix}${call}`];
+	const callee = call.slice(0, open);
+	const args = splitTopLevel(call.slice(open + 1, -1));
+	const objectIndex = args.findIndex((argument) => argument.startsWith("{") && argument.endsWith("}"));
+	if (objectIndex >= 0 && objectIndex === args.length - 1) {
+		const earlier = args.slice(0, objectIndex);
+		const objectFields = splitTopLevel(args[objectIndex].slice(1, -1));
+		const header = `${prefix}${callee}(${earlier.length ? `${earlier.join(", ")}, ` : ""}{`;
+		return [
+			header,
+			...objectFields.map((field) => `${indent}  ${field},`),
+			`${indent}})`,
+		];
+	}
+	const arrayIndex = args.findIndex((argument) => argument.startsWith("[") && argument.endsWith("]"));
+	if (arrayIndex >= 0 && arrayIndex === args.length - 1) {
+		const earlier = args.slice(0, arrayIndex);
+		const values = splitTopLevel(args[arrayIndex].slice(1, -1));
+		return [
+			`${prefix}${callee}(${earlier.length ? `${earlier.join(", ")}, ` : ""}[`,
+			...values.map((value) => `${indent}  ${value},`),
+			`${indent}])`,
+		];
+	}
+	return [
+		`${prefix}${callee}(`,
+		...args.map((argument) => `${indent}  ${argument},`),
+		`${indent})`,
+	];
+}
+
+function splitMethodChain(expression: string): string[] {
+	const segments: string[] = [];
+	let start = 0;
+	let round = 0;
+	let curly = 0;
+	let square = 0;
+	let quote = "";
+	let escaped = false;
+	for (let index = 0; index < expression.length; index += 1) {
+		const character = expression[index];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === quote) quote = "";
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+		} else if (character === "(") round += 1;
+		else if (character === ")") round -= 1;
+		else if (character === "{") curly += 1;
+		else if (character === "}") curly -= 1;
+		else if (character === "[") square += 1;
+		else if (character === "]") square -= 1;
+		else if (
+			character === "." &&
+			round === 0 &&
+			curly === 0 &&
+			square === 0
+		) {
+			segments.push(expression.slice(start, index));
+			start = index + 1;
+		}
+	}
+	segments.push(expression.slice(start));
+	return segments;
+}
+
+function splitTopLevel(value: string): string[] {
+	const pieces: string[] = [];
+	let start = 0;
+	let round = 0;
+	let curly = 0;
+	let square = 0;
+	let quote = "";
+	let escaped = false;
+	for (let index = 0; index < value.length; index += 1) {
+		const character = value[index];
+		if (quote) {
+			if (escaped) escaped = false;
+			else if (character === "\\") escaped = true;
+			else if (character === quote) quote = "";
+			continue;
+		}
+		if (character === '"' || character === "'" || character === "`") {
+			quote = character;
+		} else if (character === "(") round += 1;
+		else if (character === ")") round -= 1;
+		else if (character === "{") curly += 1;
+		else if (character === "}") curly -= 1;
+		else if (character === "[") square += 1;
+		else if (character === "]") square -= 1;
+		else if (character === "," && round === 0 && curly === 0 && square === 0) {
+			pieces.push(value.slice(start, index).trim());
+			start = index + 1;
+		}
+	}
+	const last = value.slice(start).trim();
+	if (last) pieces.push(last);
+	return pieces;
+}
+function renderJsValue(value: unknown): string {
+	if (typeof value === "string") return jsStringLiteral(value);
+	if (value === null || typeof value === "number" || typeof value === "boolean") {
+		return JSON.stringify(value);
+	}
+	if (Array.isArray(value)) {
+		return `[${value.map(renderJsValue).join(", ")}]`;
+	}
+	if (typeof value === "object") {
+		const entries = Object.entries(value);
+		if (entries.length === 0) return "{}";
+		return `{ ${entries
+			.map(([key, item]) => `${key}: ${renderJsValue(item)}`)
+			.join(", ")} }`;
+	}
+	return "undefined";
+}
+
+function jsStringLiteral(value: string): string {
+	const doubleQuoted = JSON.stringify(value);
+	const singleQuoted = `'${value
+		.replaceAll("\\", "\\\\")
+		.replaceAll("'", "\\'")
+		.replaceAll("\n", "\\n")
+		.replaceAll("\r", "\\r")
+		.replaceAll("\t", "\\t")}'`;
+	return singleQuoted.length < doubleQuoted.length ? singleQuoted : doubleQuoted;
+}
+
+
+function requiredPgImports(
+	design: Design,
+	relationships: RelationPlan[],
+): Set<string> {
+	const imports = new Set<string>();
+	if (design.tables.length) imports.add("pgTable");
+	if (design.enumTypes?.length) imports.add("pgEnum");
+	for (const table of design.tables) {
+		for (const column of table.columns) {
+			if (column.type !== "enum") imports.add(COLUMN_BUILDERS[column.type]);
+		}
+		if ((table.uniqueConstraints ?? []).length) imports.add("unique");
+		if ((table.indexes ?? []).length) {
+			for (const index of table.indexes ?? []) {
+				imports.add(index.unique ? "uniqueIndex" : "index");
+			}
+		}
+	}
+	if (
+		relationships.some(
+			(item) => item.table.id !== item.target.id &&
+				design.tables.indexOf(item.target) < design.tables.indexOf(item.table),
+		)
+	) {
+		imports.add("foreignKey");
+	}
+	if (
+		relationships.some(
+			(item) =>
+				item.relationship.cardinality === "one-to-one" &&
+				!item.column.unique &&
+				!item.column.primaryKey,
+		) || (design.manyToManyRelationships ?? []).length > 0
+	) {
+		imports.add("unique");
+	}
+	return imports;
+}
+
+function tableExtras(
+	design: Design,
+	table: DesignTable,
+	columnVars: Map<string, string>,
+	columnsByTable: Map<string, Map<string, string>>,
+	tableVars: Map<string, string>,
+	relationships: RelationPlan[],
+	objectNames: ReturnType<typeof planSchemaObjectNames>,
+): TableExtra[] {
+	const extras: TableExtra[] = [];
+	for (const relation of relationships) {
+		if (
+			relation.table.id !== table.id ||
+			relation.target.id === table.id ||
+			design.tables.indexOf(relation.target) >= design.tables.indexOf(table)
+		) {
+			continue;
+		}
+		const update = relation.relationship.onUpdate ?? "NO ACTION";
+		const del = relation.relationship.onDelete ?? "NO ACTION";
+		const actions = [
+			...(update === "NO ACTION"
+				? []
+				: [`.onUpdate(${JSON.stringify(update.toLowerCase())})`]),
+			...(del === "NO ACTION"
+				? []
+				: [`.onDelete(${JSON.stringify(del.toLowerCase())})`]),
+		].join("");
+		const targetKey = columnsByTable
+			.get(relation.target.id)!
+			.get(relation.targetKey.id)!;
+		extras.push({
+			code: `foreignKey({ name: ${JSON.stringify(objectNames.foreignKeys.get(relation.relationship.id))}, columns: [t.${columnVars.get(relation.column.id)}], foreignColumns: [${tableVars.get(relation.target.id)}.${targetKey}] })${actions}`,
+		});
+
+	}
+	for (const constraint of table.uniqueConstraints ?? []) {
+		const columns = constraint.columnIds.map((id) => `t.${columnVars.get(id)}`);
+		const nullsNotDistinct = constraint.nullsNotDistinct
+			? ".nullsNotDistinct()"
+			: "";
+		extras.push({
+			code: `unique(${JSON.stringify(objectNames.uniqueConstraints.get(constraint.id))}).on(${columns.join(", ")})${nullsNotDistinct}`,
+		});
+	}
+	for (const relation of relationships) {
+		if (
+			relation.table.id !== table.id ||
+			relation.relationship.cardinality !== "one-to-one" ||
+			relation.column.unique ||
+			relation.column.primaryKey
+		) {
+			continue;
+		}
+		extras.push({
+			code: `unique(${JSON.stringify(objectNames.relationshipUniques.get(relation.relationship.id))}).on(t.${columnVars.get(relation.column.id)})`,
+		});
+	}
+	for (const association of design.manyToManyRelationships ?? []) {
+		if (association.junctionTableId !== table.id) continue;
+		const left = design.relationships.find(
+			(item) => item.id === association.leftRelationshipId,
+		);
+		const right = design.relationships.find(
+			(item) => item.id === association.rightRelationshipId,
+		);
+		const leftColumn = left && table.columns.find(
+			(column) => column.id === left.referencingColumnId,
+		);
+		const rightColumn = right && table.columns.find(
+			(column) => column.id === right.referencingColumnId,
+		);
+		if (!leftColumn || !rightColumn) continue;
+		extras.push({
+			code: `unique(${JSON.stringify(objectNames.pairConstraints.get(association.id))}).on(t.${columnVars.get(leftColumn.id)}, t.${columnVars.get(rightColumn.id)})`,
+		});
+	}
+	for (const index of table.indexes ?? []) {
+		const rendered = renderIndex(
+			table,
+			index,
+			objectNames.indexes.get(index.id)!,
+			columnVars,
+		);
+		extras.push(rendered);
+	}
+	return extras;
+}
+
 
 function columnBuilder(
 	column: DesignColumn,
@@ -248,32 +654,32 @@ function columnBuilder(
 	relationships: RelationPlan[],
 	tablePosition: number,
 ): string {
-	const name = JSON.stringify(column.name);
+	const name = jsStringLiteral(column.name);
 	let expression: string;
 	switch (column.type) {
 		case "bigint":
-			expression = `pg.bigint(${name}, { mode: "number" })`;
+			expression = `bigint(${name}, { mode: "bigint" })`;
 			break;
 		case "integer":
-			expression = `pg.integer(${name})`;
+			expression = `integer(${name})`;
 			break;
 		case "smallint":
-			expression = `pg.smallint(${name})`;
+			expression = `smallint(${name})`;
 			break;
 		case "text":
-			expression = `pg.text(${name})`;
+			expression = `text(${name})`;
 			break;
 		case "varchar":
-			expression = `pg.varchar(${name}${column.typeParameters?.length ? `, { length: ${column.typeParameters.length} }` : ""})`;
+			expression = `varchar(${name}${column.typeParameters?.length ? `, { length: ${column.typeParameters.length} }` : ""})`;
 			break;
 		case "char":
-			expression = `pg.char(${name}, { length: ${column.typeParameters?.length ?? 1} })`;
+			expression = `char(${name}, { length: ${column.typeParameters?.length ?? 1} })`;
 			break;
 		case "uuid":
-			expression = `pg.uuid(${name})`;
+			expression = `uuid(${name})`;
 			break;
 		case "boolean":
-			expression = `pg.boolean(${name})`;
+			expression = `boolean(${name})`;
 			break;
 		case "numeric": {
 			const precision = column.typeParameters?.precision;
@@ -281,68 +687,68 @@ function columnBuilder(
 			const options = precision === undefined
 				? ""
 				: `, { precision: ${precision}${scale === undefined ? "" : `, scale: ${scale}`} }`;
-			expression = `pg.numeric(${name}${options})`;
+			expression = `numeric(${name}${options})`;
 			break;
 		}
 		case "real":
-			expression = `pg.real(${name})`;
+			expression = `real(${name})`;
 			break;
 		case "double precision":
-			expression = `pg.doublePrecision(${name})`;
+			expression = `doublePrecision(${name})`;
 			break;
 		case "date":
-			expression = `pg.date(${name}, { mode: "string" })`;
+			expression = `date(${name}, { mode: "string" })`;
 			break;
 		case "time":
-			expression = `pg.time(${name})`;
+			expression = `time(${name})`;
 			break;
 		case "timetz":
-			expression = `pg.time(${name}, { withTimezone: true })`;
+			expression = `time(${name}, { withTimezone: true })`;
 			break;
 		case "timestamp":
-			expression = `pg.timestamp(${name}, { mode: "string" })`;
+			expression = `timestamp(${name}, { mode: "string" })`;
 			break;
 		case "timestamptz":
-			expression = `pg.timestamp(${name}, { withTimezone: true, mode: "string" })`;
+			expression = `timestamp(${name}, { withTimezone: true, mode: "string" })`;
 			break;
 		case "interval":
-			expression = `pg.interval(${name})`;
+			expression = `interval(${name})`;
 			break;
 		case "json":
-			expression = `pg.json(${name})`;
+			expression = `json(${name})`;
 			break;
 		case "jsonb":
-			expression = `pg.jsonb(${name})`;
+			expression = `jsonb(${name})`;
 			break;
 		case "bytea":
-			expression = `pg.customType({ dataType: () => "bytea" })(${name})`;
+			expression = `customType({ dataType: () => "bytea" })(${name})`;
 			break;
 		case "inet":
-			expression = `pg.inet(${name})`;
+			expression = `inet(${name})`;
 			break;
 		case "cidr":
-			expression = `pg.cidr(${name})`;
+			expression = `cidr(${name})`;
 			break;
 		case "macaddr":
-			expression = `pg.macaddr(${name})`;
+			expression = `macaddr(${name})`;
 			break;
 		case "money":
-			expression = `pg.customType({ dataType: () => "money" })(${name})`;
+			expression = `customType({ dataType: () => "money" })(${name})`;
 			break;
 		case "bit":
-			expression = `pg.bit(${name}, { dimensions: ${column.typeParameters?.length ?? 1} })`;
+			expression = `bit(${name}, { dimensions: ${column.typeParameters?.length ?? 1} })`;
 			break;
 		case "vector":
-			expression = `pg.vector(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
+			expression = `vector(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
 			break;
 		case "halfvec":
-			expression = `pg.halfvec(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
+			expression = `halfvec(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
 			break;
 		case "sparsevec":
-			expression = `pg.sparsevec(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
+			expression = `sparsevec(${name}, { dimensions: ${column.typeParameters?.dimensions ?? 1} })`;
 			break;
 		case "enum":
-			expression = `${enumVars.get(column.enumTypeId ?? "") ?? "pg.text"}(${name})`;
+			expression = `${enumVars.get(column.enumTypeId ?? "") ?? "text"}(${name})`;
 			break;
 	}
 
@@ -352,37 +758,62 @@ function columnBuilder(
 	);
 	if (
 		relation &&
-		(table.id === relation.target.id ||
+		(relation.table.id === relation.target.id ||
 			tablePosition < design.tables.indexOf(relation.target))
 	) {
 		const targetKey = columnsByTable.get(relation.target.id)!.get(relation.targetKey.id)!;
 		const actions = [
-			`onUpdate: ${JSON.stringify((relation.relationship.onUpdate ?? "NO ACTION").toLowerCase())}`,
-			`onDelete: ${JSON.stringify((relation.relationship.onDelete ?? "NO ACTION").toLowerCase())}`,
+			...(relation.relationship.onUpdate && relation.relationship.onUpdate !== "NO ACTION"
+				? [`onUpdate: ${JSON.stringify(relation.relationship.onUpdate.toLowerCase())}`]
+				: []),
+			...(relation.relationship.onDelete && relation.relationship.onDelete !== "NO ACTION"
+				? [`onDelete: ${JSON.stringify(relation.relationship.onDelete.toLowerCase())}`]
+				: []),
 		];
+		const options = actions.length ? `, { ${actions.join(", ")} }` : "";
 		const reference = table.id === relation.target.id
-			? `references((): AnyPgColumn => ${tableVars.get(relation.target.id)}[${JSON.stringify(targetKey)}], { ${actions.join(", ")} })`
-			: `references(() => ${tableVars.get(relation.target.id)}[${JSON.stringify(targetKey)}], { ${actions.join(", ")} })`;
+			? `references((): AnyPgColumn => ${tableVars.get(relation.target.id)}.${targetKey}${options})`
+			: `references(() => ${tableVars.get(relation.target.id)}.${targetKey}${options})`;
 		expression += `.${reference}`;
 	}
 	if (column.primaryKey) expression += ".primaryKey()";
 	if (column.identity) expression += ".generatedAlwaysAsIdentity()";
 	if (column.unique && !column.primaryKey) {
-		const nullsOption = column.nullable ? ', { nulls: "distinct" }' : "";
-		expression += `.unique(${JSON.stringify(uniqueColumnName(table.name, column.name))}${nullsOption})`;
+		expression += `.unique(${JSON.stringify(uniqueColumnName(table.name, column.name))})`;
 	}
 	if (column.default.kind === "generateUuid") {
 		expression += ".defaultRandom()";
 	} else if (column.default.kind === "currentTimestamp") {
 		expression += ".defaultNow()";
 	} else if (column.default.kind === "literal") {
-		const rendered = renderDefaultExpression(column.default, column.type);
-		expression += `.default(sql.raw(${JSON.stringify(rendered ?? "")}))`;
+		expression += `.default(${renderTypedDefault(column)})`;
 	}
 	if (!column.nullable && !column.primaryKey && !column.identity) {
 		expression += ".notNull()";
 	}
 	return expression;
+}
+
+function renderTypedDefault(column: DesignColumn): string {
+	if (column.default.kind !== "literal") return "";
+	const value = column.default.value;
+	switch (column.default.literalType) {
+		case "text":
+		case "date":
+		case "time":
+		case "timestamp":
+			return jsStringLiteral(value);
+		case "integer":
+			return column.type === "bigint"
+				? `BigInt(${jsStringLiteral(value)})`
+				: value;
+		case "numeric":
+			return jsStringLiteral(value);
+		case "boolean":
+			return value;
+		case "json":
+			return renderJsValue(JSON.parse(value));
+	}
 }
 
 function uniqueColumnName(table: string, column: string): string {
@@ -394,10 +825,10 @@ function renderIndex(
 	index: DesignIndex,
 	name: string,
 	vars: Map<string, string>,
-): string {
+): TableExtra {
 	const keys = index.keys.map((key) => {
-		let value = `t[${JSON.stringify(vars.get(key.columnId) ?? "")}]`;
-		if (key.operatorClass) value += `.op(${JSON.stringify(key.operatorClass)})`;
+		let value = `t.${vars.get(key.columnId)}`;
+		if (key.operatorClass) value += `.op(${jsStringLiteral(key.operatorClass)})`;
 		if (key.order) value += `.${key.order}()`;
 		if (key.nulls) {
 			value += `.nulls${key.nulls === "first" ? "First" : "Last"}()`;
@@ -405,105 +836,89 @@ function renderIndex(
 		return value;
 	});
 	const indexFn = index.unique ? "uniqueIndex" : "index";
-	let value = `pg.${indexFn}(${JSON.stringify(name)})`;
-	value += `.using(${JSON.stringify(index.method)}, ${keys.join(", ")})`;
+	let value = `${indexFn}(${jsStringLiteral(name)})`;
+	value += `.using(${jsStringLiteral(index.method)}, ${keys.join(", ")})`;
 
-	const withOptions: Record<string, unknown> = {};
+	const withOptions: string[] = [];
 	for (const [key, option] of Object.entries(index.with ?? {})) {
 		const optionName = key === "efConstruction"
 			? "ef_construction"
 			: key === "pagesPerRange"
 				? "pages_per_range"
 				: key;
-		withOptions[optionName] = option;
+		withOptions.push(`${optionName}: ${renderJsValue(option)}`);
 	}
-	if (Object.keys(withOptions).length) {
-		value += `.with(${JSON.stringify(withOptions)})`;
+	if (withOptions.length) {
+		value += `.with({ ${withOptions.join(", ")} })`;
 	}
 
-	const migrationNotes: string[] = [];
+	const comments: string[] = [];
 	if (index.includeColumnIds?.length) {
 		const columns = index.includeColumnIds
 			.map((id) => table.columns.find((column) => column.id === id)?.name)
 			.filter(Boolean);
-		migrationNotes.push(
-			`add INCLUDE (${columns.join(", ")}); Drizzle ORM does not model INCLUDE columns`,
+		comments.push(
+			`PostgreSQL migration: add INCLUDE (${columns.join(", ")}); Drizzle ORM does not model INCLUDE columns.`,
 		);
 	}
 	if (index.unique && index.nullsNotDistinct) {
-		migrationNotes.push(
-			"add NULLS NOT DISTINCT; Drizzle ORM does not model this index option",
+		comments.push(
+			"PostgreSQL migration: add NULLS NOT DISTINCT; Drizzle ORM does not model this index option.",
 		);
 	}
-	if (!migrationNotes.length) return value;
-
-	const note = migrationNotes
-		.join("; ")
-		.replaceAll("*/", "* /")
-		.replace(/[\r\n]/g, " ");
-	return `${value} /* PostgreSQL migration follow-up: ${note} */`;
+	return { code: value, comments };
 }
 
 function planRelations(design: Design): RelationPlan[] {
+	const plan = planRelationshipNames(design);
+	const tableById = new Map(design.tables.map((table) => [table.id, table]));
+	const pairs = new Map<string, number>();
+	for (const relationship of design.relationships) {
+		const pair = `${relationship.referencingTableId}\0${relationship.referencedTableId}`;
+		pairs.set(pair, (pairs.get(pair) ?? 0) + 1);
+	}
+
 	const relationships: RelationPlan[] = [];
 	for (const relationship of design.relationships) {
-		const table = design.tables.find(
-			(candidate) => candidate.id === relationship.referencingTableId,
-		);
+		const table = tableById.get(relationship.referencingTableId);
 		const column = table?.columns.find(
 			(candidate) => candidate.id === relationship.referencingColumnId,
 		);
-		const target = design.tables.find(
-			(candidate) => candidate.id === relationship.referencedTableId,
-		);
+		const target = tableById.get(relationship.referencedTableId);
 		const targetKey = target?.columns.find((candidate) => candidate.primaryKey);
-		if (!table || !column || !target || !targetKey) continue;
+		const names = plan.relationships.get(relationship.id);
+		if (!table || !column || !target || !targetKey || !names) continue;
+		const pair = `${table.id}\0${target.id}`;
+		const relationName = pairs.get(pair)! > 1
+			? `${camelCase(modelWords(table))}_${names.forward.join("_")}`
+			: undefined;
 		relationships.push({
 			relationship,
 			table,
 			column,
 			target,
 			targetKey,
-			forward: "",
-			inverse: "",
-			relationName: relationship.id,
+			forward: camelCase(names.forward),
+			backward: camelCase(names.backward),
+			backwardIsList: names.backwardIsList,
+			relationName,
 		});
 	}
+
 	for (const table of design.tables) {
-		const used = new Set<string>();
-		allocateRelationFields(
-			relationships.filter((item) => item.table.id === table.id),
-			"forward",
-			used,
-		);
-		allocateRelationFields(
-			relationships.filter((item) => item.target.id === table.id),
-			"inverse",
-			used,
-		);
+		const columns = design.tables.find((candidate) => candidate.id === table.id)?.columns ?? [];
+		const used = new Set(columns.map((column) => camelCase(splitWords(column.name))));
+		for (const relation of relationships) {
+			if (relation.table.id === table.id) {
+				relation.forward = allocateOne(relation.forward, used, "related");
+			}
+			if (relation.target.id === table.id) {
+				relation.backward = allocateOne(relation.backward, used, "related");
+			}
+		}
 	}
 	return relationships;
 }
-
-function allocateRelationFields(
-	relationships: RelationPlan[],
-	direction: "forward" | "inverse",
-	used: Set<string>,
-): void {
-	for (const item of relationships) {
-		const isForward = direction === "forward";
-		const base = isForward
-			? singular(
-					toIdentifier(item.column.name.replace(/_(id|key)$/, "")) ||
-						toIdentifier(item.target.name),
-				)
-			: plural(toIdentifier(item.table.name));
-		const allocated = allocateOne(base, used, "related");
-		if (isForward) item.forward = allocated;
-		else item.inverse = allocated;
-	}
-}
-
 function allocateNamed(
 	entries: readonly (readonly [string, string])[],
 	initial: Set<string>,
@@ -512,7 +927,7 @@ function allocateNamed(
 	const used = new Set(initial);
 	const output = new Map<string, string>();
 	for (const [id, name] of entries) {
-		output.set(id, allocateOne(toIdentifier(name) || fallback, used, fallback));
+		output.set(id, allocateOne(name, used, fallback));
 	}
 	return output;
 }
@@ -528,27 +943,9 @@ function allocateOne(base: string, used: Set<string>, fallback: string): string 
 	return value;
 }
 
-function toIdentifier(value: string): string {
-	return value
-		.replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-		.replace(/[^A-Za-z0-9$]+/g, " ")
-		.trim()
-		.split(/\s+/)
-		.filter(Boolean)
-		.map((part, index) =>
-			index === 0
-				? part[0].toLowerCase() + part.slice(1)
-				: part[0].toUpperCase() + part.slice(1),
-		)
-		.join("");
+function camelCase(words: NameWords): string {
+	const [first, ...rest] = words;
+	if (!first) return "";
+	return [first, ...rest.map((word) => word[0].toUpperCase() + word.slice(1))].join("");
 }
 
-function singular(value: string): string {
-	if (value.endsWith("ies")) return `${value.slice(0, -3)}y`;
-	if (value.endsWith("s")) return value.slice(0, -1);
-	return value;
-}
-
-function plural(value: string): string {
-	return value.endsWith("s") ? value : `${value}s`;
-}
