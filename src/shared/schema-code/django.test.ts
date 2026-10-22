@@ -87,13 +87,13 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "users"
-	          indexes = [
+	          indexes = (
 	              BrinIndex(
 	                  fields=["created_at"],
 	                  name="users_created_at_idx",
 	                  pages_per_range=32,
 	              ),
-	          ]
+	          )
 
 
 	  class Profile(models.Model):
@@ -151,7 +151,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "posts"
-	          constraints = [
+	          constraints = (
 	              models.UniqueConstraint(
 	                  fields=["author", "slug"],
 	                  name="posts_author_slug_key",
@@ -161,8 +161,8 @@ describe("generateDjangoModels", () => {
 	                  name="posts_title_editor_id_idx",
 	                  nulls_distinct=False,
 	              ),
-	          ]
-	          indexes = [
+	          )
+	          indexes = (
 	              models.Index(
 	                  models.F("author"),
 	                  models.F("created_at").desc(nulls_last=True),
@@ -176,7 +176,7 @@ describe("generateDjangoModels", () => {
 	                  fastupdate=False,
 	              ),
 	              HashIndex(fields=["slug"], name="posts_slug_idx"),
-	          ]
+	          )
 
 
 	  class Comment(models.Model):
@@ -230,9 +230,9 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "post_tags"
-	          constraints = [
+	          constraints = (
 	              models.UniqueConstraint(fields=["post", "tag"], name="post_tags_pair_key"),
-	          ]
+	          )
 	  "
 	`); });
 	test("vector fixture snapshot", () => { expect(codeFor(SCHEMA_CODE_FIXTURES.vector)).toMatchInlineSnapshot(`
@@ -283,7 +283,7 @@ describe("generateDjangoModels", () => {
 
 	      class Meta:
 	          db_table = "documents"
-	          indexes = [
+	          indexes = (
 	              HnswIndex(
 	                  OpClass(models.F("embedding"), name="vector_cosine_ops"),
 	                  name="documents_embedding_idx",
@@ -303,7 +303,7 @@ describe("generateDjangoModels", () => {
 	                  OpClass(models.F("signature"), name="bit_hamming_ops"),
 	                  name="documents_signature_idx",
 	              ),
-	          ]
+	          )
 	  "
 	`); });
 	test("typeCatalog fixture snapshot", () => { expect(codeFor(SCHEMA_CODE_FIXTURES.typeCatalog)).toMatchInlineSnapshot(`

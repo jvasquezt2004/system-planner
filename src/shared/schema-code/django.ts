@@ -434,10 +434,10 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 		lines.push("", "    class Meta:");
 		lines.push(...formatAssignment("db_table", pyString(table.name), 8));
 		if (constraints.length) {
-			lines.push(...formatListAssignment("constraints", constraints, 8));
+			lines.push(...formatTupleAssignment("constraints", constraints, 8));
 		}
 		if (indexes.length) {
-			lines.push(...formatListAssignment("indexes", indexes, 8));
+			lines.push(...formatTupleAssignment("indexes", indexes, 8));
 		}
 		lines.push("", "");
 	}
@@ -538,22 +538,22 @@ function formatAssignment(
 	return formatted;
 }
 
-function formatListAssignment(
+function formatTupleAssignment(
 	name: string,
 	values: string[],
 	indentation: number,
 ): string[] {
 	const indent = " ".repeat(indentation);
-	const line = `${indent}${name} = [${values.join(", ")}]`;
+	const line = `${indent}${name} = (${values.join(", ")},)`;
 	if (line.length <= 88) return [line];
 	return [
-		`${indent}${name} = [`,
+		`${indent}${name} = (`,
 		...values.flatMap((value) => {
 			const formatted = formatExpression(value, indentation + 4);
 			formatted[formatted.length - 1] += ",";
 			return formatted;
 		}),
-		`${indent}]`,
+		`${indent})`,
 	];
 }
 
