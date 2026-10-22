@@ -3,6 +3,7 @@ import {
 	renderDefaultExpression,
 } from "../shared/column-defaults";
 import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
+import { renderColumnType } from "../shared/column-types";
 import type {
 	Design,
 	DesignColumn,
@@ -55,7 +56,24 @@ export function generateDesignSql(design: Design): SqlGeneration {
 
 	const tableNames = new Set<string>();
 	for (const table of design.tables) {
-		validateTable(table, tableNames, errors);
+		validateTable(table, tableNames, errors, design.enumTypes ?? []);
+		validateIndexes(table, errors);
+		validateUniqueConstraints(table, errors);
+	}
+	const enumNames = new Set<string>();
+	for (const enumType of design.enumTypes ?? []) {
+		if (!enumType.name.trim() || enumNames.has(enumType.name.trim()) || tableNames.has(enumType.name.trim())) errors.push(`Enum type name "${enumType.name}" is empty or already used in the PostgreSQL schema.`);
+		enumNames.add(enumType.name.trim());
+		if (enumType.name.includes("\u0000") || enumType.labels.length === 0 || enumType.labels.some((label) => !label.trim() || label.includes("\u0000")) || new Set(enumType.labels).size !== enumType.labels.length) errors.push(`Enum type "${enumType.name}" needs non-empty, unique labels.`);
+	}
+	const occupiedNames = initialPostgresRelationNames(design);
+	const explicitSchemaNames = new Set<string>();
+	for (const table of design.tables) {
+		for (const name of [...(table.indexes ?? []).map((index) => index.name?.trim()), ...(table.uniqueConstraints ?? []).map((constraint) => constraint.name?.trim())]) {
+			if (!name) continue;
+			if (occupiedNames.has(truncatePostgresIdentifier(name)) || explicitSchemaNames.has(name)) errors.push(`Index or constraint name "${name}" is already used in the PostgreSQL schema.`);
+			explicitSchemaNames.add(name);
+		}
 	}
 
 	// A relationship that cannot be resolved stays in the saved draft and is
@@ -86,8 +104,12 @@ export function generateDesignSql(design: Design): SqlGeneration {
 			return renderPairConstraint(junction, leftColumn, rightColumn, name);
 		},
 	);
+	const vectorUsed = design.tables.some((table) => table.columns.some((column) => ["vector", "halfvec", "sparsevec"].includes(column.type)) || (table.indexes ?? []).some((index) => index.method === "hnsw" || index.method === "ivfflat"));
 	const statements = [
-		...design.tables.map(renderTable),
+		...(vectorUsed ? ["CREATE EXTENSION IF NOT EXISTS vector;"] : []),
+		...(design.enumTypes ?? []).map((enumType) => `CREATE TYPE ${quoteIdentifier(enumType.name)} AS ENUM (${enumType.labels.map(quoteString).join(", ")});`),
+		...design.tables.map((table) => renderTable(table, design, namePlan.uniqueConstraints.filter((entry) => entry.table.id === table.id))),
+		...namePlan.indexes.map(({ table, index, name }) => renderIndex(table, index, name)),
 		...namePlan.namedRelationships.map(
 			({ view, foreignKeyConstraintName, uniqueConstraintName }) =>
 				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
@@ -120,6 +142,11 @@ function validateRelationship(
 			`${label} needs matching types; "${view.referencingColumn.name}" is ${view.referencingColumn.type} but "${view.referencedTable.name}"."${view.referencedColumn.name}" is ${view.referencedColumn.type}.`,
 		);
 		return null;
+	}
+	for (const [kind, action] of [["delete", relationship.onDelete ?? "NO ACTION"], ["update", relationship.onUpdate ?? "NO ACTION"]] as const) {
+		if (!["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"].includes(action)) errors.push(`${label} has an unsupported ON ${kind.toUpperCase()} action.`);
+		if (action === "SET NULL" && !view.referencingColumn.nullable) errors.push(`${label} uses ON ${kind.toUpperCase()} SET NULL but its foreign-key column is required.`);
+		if (action === "SET DEFAULT" && view.referencingColumn.default.kind === "none") errors.push(`${label} uses ON ${kind.toUpperCase()} SET DEFAULT but its foreign-key column has no default.`);
 	}
 	return view;
 }
@@ -214,7 +241,32 @@ function planPostgresIdentifiers(
 		relationNames.add(name);
 		return name;
 	});
-	return { namedRelationships, pairConstraintNames, relationNames };
+	const indexes = design.tables.flatMap((table) => (table.indexes ?? []).map((index, position) => {
+		const keyNames = index.keys.map((key) => table.columns.find((column) => column.id === key.columnId)?.name ?? "column");
+		const preferred = index.name?.trim() || `${table.name}_${keyNames.join("_")}_idx`;
+		const name = index.name?.trim() || allocateConstraintName(constraintNames, preferred);
+		if (index.name?.trim()) constraintNames.add(name);
+		relationNames.add(name);
+		return { table, index, name, position };
+	}));
+	const uniqueConstraints = design.tables.flatMap((table) => (table.uniqueConstraints ?? []).map((constraint) => {
+		const names = constraint.columnIds.map((id) => table.columns.find((column) => column.id === id)?.name ?? "column");
+		const preferred = constraint.name?.trim() || `${table.name}_${names.join("_")}_key`;
+		const name = allocateConstraintName(constraintNames, preferred);
+		relationNames.add(name);
+		return { table, constraint, name };
+	}));
+	return { namedRelationships, pairConstraintNames, relationNames, indexes, uniqueConstraints };
+}
+
+function validateUniqueConstraints(table: DesignTable, errors: string[]) {
+	const names = new Set<string>();
+	for (const constraint of table.uniqueConstraints ?? []) {
+		if (constraint.columnIds.length < 2) errors.push(`Composite unique constraint on "${table.name}" needs at least two columns.`);
+		if (new Set(constraint.columnIds).size !== constraint.columnIds.length || constraint.columnIds.some((id) => !table.columns.some((column) => column.id === id))) errors.push(`Composite unique constraint on "${table.name}" refers to missing or duplicate columns.`);
+		if (constraint.name && names.has(constraint.name)) errors.push(`Composite unique constraint name "${constraint.name}" is repeated on "${table.name}".`);
+		if (constraint.name) names.add(constraint.name);
+	}
 }
 
 /** Tables, PostgreSQL-generated identity sequences, and indexes. */
@@ -222,6 +274,7 @@ function initialPostgresRelationNames(design: Design): Set<string> {
 	const names = new Set(
 		design.tables.map((table) => truncatePostgresIdentifier(table.name)),
 	);
+	for (const enumType of design.enumTypes ?? []) names.add(truncatePostgresIdentifier(enumType.name));
 	for (const table of design.tables) {
 		const tableName = truncatePostgresIdentifier(table.name);
 		for (const column of table.columns) {
@@ -249,6 +302,63 @@ function initialPostgresRelationNames(design: Design): Set<string> {
 		}
 	}
 	return names;
+}
+
+function validateIndexes(table: DesignTable, errors: string[]) {
+	const indexes = table.indexes ?? [];
+	const names = new Set<string>();
+	for (const index of indexes) {
+		const label = `Index on table "${table.name}"`;
+		if (!["btree", "hash", "gin", "gist", "spgist", "brin", "hnsw", "ivfflat"].includes(index.method)) errors.push(`${label} uses an unsupported access method.`);
+		const explicit = index.name?.trim();
+		if (explicit && names.has(explicit)) errors.push(`${label} name "${explicit}" is used more than once.`);
+		if (explicit) names.add(explicit);
+		if (index.keys.length === 0) errors.push(`${label} needs at least one key column.`);
+		if (new Set(index.keys.map((key) => key.columnId)).size !== index.keys.length) errors.push(`${label} cannot use the same column more than once.`);
+		if (index.keys.some((key) => (key.order !== undefined && key.order !== "asc" && key.order !== "desc") || (key.nulls !== undefined && key.nulls !== "first" && key.nulls !== "last"))) errors.push(`${label} has an unsupported key ordering option.`);
+		const columns = index.keys.map((key) => table.columns.find((column) => column.id === key.columnId));
+		if (columns.some((column) => !column)) errors.push(`${label} refers to a missing key column.`);
+		if (index.method === "hash" && (index.keys.length !== 1 || index.unique)) errors.push(`${label} using hash must have one key and cannot be unique.`);
+		if (index.unique && index.method !== "btree") errors.push(`${label} can be unique only with btree.`);
+		if (index.method !== "btree" && index.keys.some((key) => key.order || key.nulls)) errors.push(`${label} using ${index.method} does not support key sort ordering.`);
+		const noDefaultBtree = new Set(["json", "jsonb", "vector", "halfvec", "sparsevec"]);
+		if (["btree", "hash", "brin"].includes(index.method) && columns.some((column, at) => column && noDefaultBtree.has(column.type) && !index.keys[at]?.operatorClass)) errors.push(`${label} using ${index.method} needs an explicit compatible operator class for this column type.`);
+		if ((index.includeColumnIds?.length ?? 0) > 0 && !["btree", "gist", "spgist"].includes(index.method)) errors.push(`${label} using ${index.method} cannot have INCLUDE columns.`);
+		if ((index.includeColumnIds ?? []).some((id) => index.keys.some((key) => key.columnId === id))) errors.push(`${label} cannot INCLUDE a key column.`);
+		if (index.nullsNotDistinct && !index.unique) errors.push(`${label} can use NULLS NOT DISTINCT only when it is unique.`);
+		if (index.method === "hnsw" || index.method === "ivfflat") {
+			if (index.keys.length !== 1) errors.push(`${label} using ${index.method} must have exactly one key.`);
+			const column = columns[0];
+			const type = column?.type;
+			const opclass = index.keys[0]?.operatorClass;
+			const supported: Record<string, string[]> = {
+				vector: ["vector_l2_ops", "vector_ip_ops", "vector_cosine_ops", ...(index.method === "hnsw" ? ["vector_l1_ops"] : [])],
+				halfvec: ["halfvec_l2_ops", "halfvec_ip_ops", "halfvec_cosine_ops", ...(index.method === "hnsw" ? ["halfvec_l1_ops"] : [])],
+				sparsevec: index.method === "hnsw" ? ["sparsevec_l2_ops", "sparsevec_ip_ops", "sparsevec_cosine_ops", "sparsevec_l1_ops"] : [],
+				bit: ["bit_hamming_ops", ...(index.method === "hnsw" ? ["bit_jaccard_ops"] : [])],
+			};
+			if (!type || !(supported[type] ?? []).includes(opclass ?? "")) errors.push(`${label} using ${index.method} needs a compatible pgvector column and operator class.`);
+			if (opclass && !/^[a-z_][a-z0-9_]*$/.test(opclass)) errors.push(`${label} has an invalid operator class identifier.`);
+			const dimensions = column?.typeParameters?.dimensions;
+			const limit = type === "vector" ? 2000 : type === "halfvec" ? 4000 : type === "bit" ? 64000 : undefined;
+			if (limit && dimensions && dimensions > limit) errors.push(`${label} exceeds the ${type} ${index.method} dimension limit of ${limit}.`);
+			if (type === "sparsevec" && index.method === "ivfflat") errors.push(`${label}: pgvector ivfflat does not support sparsevec.`);
+			if (index.method === "hnsw" && index.with && ((index.with.m !== undefined && (!Number.isInteger(index.with.m) || index.with.m < 2 || index.with.m > 100)) || (index.with.efConstruction !== undefined && (!Number.isInteger(index.with.efConstruction) || index.with.efConstruction < 4)))) errors.push(`${label} has invalid HNSW options.`);
+			if (index.method === "ivfflat" && index.with?.lists !== undefined && (!Number.isInteger(index.with.lists) || index.with.lists < 1)) errors.push(`${label} needs a positive IVFFlat lists value.`);
+		}
+		if (index.method === "gin" && columns.some((column, at) => column && !column.typeParameters?.array && column.type !== "jsonb" && !index.keys[at]?.operatorClass)) errors.push(`${label} using gin needs an array or jsonb column, or a compatible operator class.`);
+		if (["gist", "spgist"].includes(index.method) && index.keys.some((key) => !key.operatorClass)) errors.push(`${label} using ${index.method} needs an explicit operator class.`);
+		if (["btree", "hash", "gin", "gist", "spgist", "brin"].includes(index.method) && index.keys.some((key) => key.operatorClass && !/^[a-z_][a-z0-9_]*$/.test(key.operatorClass))) errors.push(`${label} has an invalid operator class identifier.`);
+		const allowedOptions: Record<string, string[]> = { btree: ["fillfactor"], hash: ["fillfactor"], gin: ["fastupdate"], gist: ["fillfactor"], spgist: ["fillfactor"], brin: ["pagesPerRange"], hnsw: ["m", "efConstruction"], ivfflat: ["lists"] };
+		for (const [key, value] of Object.entries(index.with ?? {})) {
+			if (!(allowedOptions[index.method] ?? []).includes(key)) errors.push(`${label} does not support the ${key} storage option.`);
+			if (key === "fastupdate" && typeof value !== "boolean") errors.push(`${label} fastupdate must be true or false.`);
+			if (key !== "fastupdate" && (!Number.isInteger(value) || Number(value) < 1)) errors.push(`${label} storage options must be positive integers.`);
+			if (key === "fillfactor" && (Number(value) < 10 || Number(value) > 100)) errors.push(`${label} fillfactor must be between 10 and 100.`);
+		}
+		if (new Set(index.includeColumnIds ?? []).size !== (index.includeColumnIds ?? []).length) errors.push(`${label} repeats an INCLUDE column.`);
+		for (const id of index.includeColumnIds ?? []) if (!table.columns.some((column) => column.id === id)) errors.push(`${label} refers to a missing INCLUDE column.`);
+	}
 }
 
 function addPostgresGeneratedRelationName(
@@ -285,7 +395,7 @@ function renderPairConstraint(
 	return `ALTER TABLE ${quoteIdentifier(junction.name)}\n  ADD CONSTRAINT ${quoteIdentifier(constraintName)} UNIQUE (${quoteIdentifier(leftColumn.name)}, ${quoteIdentifier(rightColumn.name)});`;
 }
 
-function validateTable(table: DesignTable, tableNames: Set<string>, errors: string[]) {
+function validateTable(table: DesignTable, tableNames: Set<string>, errors: string[], enumTypes: NonNullable<Design["enumTypes"]>) {
 	const name = table.name.trim();
 	const label = name.length > 0 ? `"${name}"` : "(unnamed table)";
 
@@ -298,7 +408,7 @@ function validateTable(table: DesignTable, tableNames: Set<string>, errors: stri
 	const columnNames = new Set<string>();
 	let primaryKeys = 0;
 	for (const column of table.columns) {
-		validateColumn(table, column, columnNames, errors);
+		validateColumn(table, column, columnNames, errors, enumTypes);
 		if (column.primaryKey) primaryKeys += 1;
 	}
 	if (primaryKeys !== 1) {
@@ -311,6 +421,7 @@ function validateColumn(
 	column: DesignColumn,
 	columnNames: Set<string>,
 	errors: string[],
+	enumTypes: NonNullable<Design["enumTypes"]>,
 ) {
 	const tableLabel = table.name.trim().length > 0 ? `"${table.name.trim()}"` : "(unnamed table)";
 	const name = column.name.trim();
@@ -334,6 +445,11 @@ function validateColumn(
 			);
 		}
 	}
+	if (column.type === "enum" && !enumTypes.some((enumType) => enumType.id === column.enumTypeId)) errors.push(`Column ${label} in table ${tableLabel} needs a valid enum type.`);
+	const parameters = column.typeParameters ?? {};
+	if (["varchar", "char", "bit"].includes(column.type) && parameters.length !== undefined && (!Number.isInteger(parameters.length) || parameters.length < 1 || parameters.length > 10_485_760)) errors.push(`Column ${label} in table ${tableLabel} needs a valid positive length.`);
+	if (column.type === "numeric" && ((parameters.precision !== undefined && (!Number.isInteger(parameters.precision) || parameters.precision < 1 || parameters.precision > 1000)) || (parameters.scale !== undefined && (parameters.precision === undefined || !Number.isInteger(parameters.scale) || parameters.scale < -1000 || parameters.scale > 1000)))) errors.push(`Column ${label} in table ${tableLabel} has invalid numeric precision or scale.`);
+	if (["vector", "halfvec", "sparsevec"].includes(column.type) && (!Number.isInteger(parameters.dimensions) || (parameters.dimensions ?? 0) < 1 || (parameters.dimensions ?? 0) > 1_000_000_000)) errors.push(`Column ${label} in table ${tableLabel} needs a valid positive vector dimension.`);
 
 	// Identity generation and a default both supply a value, so PostgreSQL
 	// cannot accept them together. The draft stays saved until resolved.
@@ -357,15 +473,36 @@ function validateColumn(
 	}
 }
 
-function renderTable(table: DesignTable): string {
+function renderTable(table: DesignTable, design: Design, uniqueConstraints: { constraint: import("../shared/design").DesignUniqueConstraint; name: string }[]): string {
 	const primaryKey = table.columns.find((column) => column.primaryKey);
-	const lines = table.columns.map(renderColumn);
+	const lines = table.columns.map((column) => renderColumn(column, design));
 	if (primaryKey) lines.push(`  PRIMARY KEY (${quoteIdentifier(primaryKey.name)})`);
+	for (const { constraint, name } of uniqueConstraints) {
+		const columns = constraint.columnIds.map((id) => quoteIdentifier(table.columns.find((column) => column.id === id)!.name));
+		lines.push(`  CONSTRAINT ${quoteIdentifier(name)} UNIQUE${constraint.nullsNotDistinct ? " NULLS NOT DISTINCT" : ""} (${columns.join(", ")})`);
+	}
 	return `CREATE TABLE ${quoteIdentifier(table.name)} (\n${lines.join(",\n")}\n);`;
 }
 
-function renderColumn(column: DesignColumn): string {
-	const parts = [`  ${quoteIdentifier(column.name)} ${column.type}`];
+function renderIndex(table: DesignTable, index: import("../shared/design").DesignIndex, name: string): string {
+	const keys = index.keys.map((key) => {
+		const column = table.columns.find((candidate) => candidate.id === key.columnId)!;
+		const ordering = [key.order ? key.order.toUpperCase() : "", key.nulls ? `NULLS ${key.nulls.toUpperCase()}` : ""].filter(Boolean).join(" ");
+		return `${quoteIdentifier(column.name)}${key.operatorClass ? ` ${key.operatorClass}` : ""}${ordering ? ` ${ordering}` : ""}`;
+	}).join(", ");
+	const include = (index.includeColumnIds ?? []).map((id) => table.columns.find((column) => column.id === id)!).map((column) => quoteIdentifier(column.name));
+	const options: string[] = [];
+	for (const [key, value] of Object.entries(index.with ?? {})) if (value !== undefined) options.push(`${key === "efConstruction" ? "ef_construction" : key === "pagesPerRange" ? "pages_per_range" : key} = ${typeof value === "string" ? quoteString(value) : value}`);
+	const clause = [`CREATE ${index.unique ? "UNIQUE " : ""}INDEX ${quoteIdentifier(name)} ON ${quoteIdentifier(table.name)} USING ${index.method} (${keys})`, ...(include.length ? [`INCLUDE (${include.join(", ")})`] : []), ...(index.unique && index.nullsNotDistinct ? ["NULLS NOT DISTINCT"] : []), ...(options.length ? [`WITH (${options.join(", ")})`] : [])].join(" ");
+	return `${clause};`;
+}
+
+function quoteString(value: string) { return `'${value.replace(/'/g, "''")}'`; }
+
+function renderColumn(column: DesignColumn, design: Design): string {
+	const enumName = column.type === "enum" ? design.enumTypes?.find((value) => value.id === column.enumTypeId)?.name : undefined;
+	const sqlType = enumName ? `${quoteIdentifier(enumName)}${column.typeParameters?.array ? "[]" : ""}` : renderColumnType(column.type, column.typeParameters);
+	const parts = [`  ${quoteIdentifier(column.name)} ${sqlType}`];
 	if (column.identity) parts.push("GENERATED ALWAYS AS IDENTITY");
 	const defaultExpression = renderDefaultExpression(column.default);
 	if (defaultExpression !== null) parts.push(`DEFAULT ${defaultExpression}`);
@@ -390,7 +527,7 @@ function renderRelationship(
 		throw new Error("A rendered relationship needs a referenced primary key.");
 	}
 	const statements = [
-		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(foreignKeyConstraintName)} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE NO ACTION ON DELETE NO ACTION;`,
+		`ALTER TABLE ${quoteIdentifier(view.referencingTable.name)}\n  ADD CONSTRAINT ${quoteIdentifier(foreignKeyConstraintName)} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(referencedColumn.name)}) ON UPDATE ${view.relationship.onUpdate ?? "NO ACTION"} ON DELETE ${view.relationship.onDelete ?? "NO ACTION"};`,
 	];
 	// A one-to-one association owns uniqueness on its referencing column. An
 	// independent key or unique setting already supplies uniqueness, so the

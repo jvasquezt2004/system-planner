@@ -97,6 +97,7 @@ type ColumnTypeDefinition = {
 	identity: boolean;
 	/** Structured defaults this type accepts beyond none and identity. */
 	defaults: ColumnDefaultSupport;
+	parameters?: "length" | "numeric" | "dimensions";
 };
 
 export const COLUMN_TYPE_DEFINITIONS = [
@@ -128,6 +129,8 @@ export const COLUMN_TYPE_DEFINITIONS = [
 		identity: false,
 		defaults: { literal: "text", currentTimestamp: false, generateUuid: false },
 	},
+	{ type: "varchar", label: "Variable character", family: "text", identity: false, parameters: "length", defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
+	{ type: "char", label: "Fixed character", family: "text", identity: false, parameters: "length", defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
 	{
 		type: "uuid",
 		label: "UUID",
@@ -147,8 +150,11 @@ export const COLUMN_TYPE_DEFINITIONS = [
 		label: "Numeric",
 		family: "numeric",
 		identity: false,
+		parameters: "numeric",
 		defaults: { literal: "numeric", currentTimestamp: false, generateUuid: false },
 	},
+	{ type: "real", label: "Real", family: "numeric", identity: false, defaults: { literal: "numeric", currentTimestamp: false, generateUuid: false } },
+	{ type: "double precision", label: "Double precision", family: "numeric", identity: false, defaults: { literal: "numeric", currentTimestamp: false, generateUuid: false } },
 	{
 		type: "date",
 		label: "Date",
@@ -156,6 +162,10 @@ export const COLUMN_TYPE_DEFINITIONS = [
 		identity: false,
 		defaults: { literal: "date", currentTimestamp: false, generateUuid: false },
 	},
+	{ type: "time", label: "Time", family: "temporal", identity: false, defaults: { literal: "timestamp", currentTimestamp: false, generateUuid: false } },
+	{ type: "timetz", label: "Time with time zone", family: "temporal", identity: false, defaults: { literal: "timestamp", currentTimestamp: false, generateUuid: false } },
+	{ type: "timestamp", label: "Timestamp", family: "temporal", identity: false, defaults: { literal: "timestamp", currentTimestamp: true, generateUuid: false } },
+	{ type: "interval", label: "Interval", family: "temporal", identity: false, defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
 	{
 		type: "timestamptz",
 		label: "Timestamp with time zone",
@@ -170,9 +180,31 @@ export const COLUMN_TYPE_DEFINITIONS = [
 		identity: false,
 		defaults: { literal: "json", currentTimestamp: false, generateUuid: false },
 	},
+	{ type: "json", label: "JSON", family: "json", identity: false, defaults: { literal: "json", currentTimestamp: false, generateUuid: false } },
+	{ type: "bytea", label: "Binary data", family: "text", identity: false, defaults: { literal: null, currentTimestamp: false, generateUuid: false } },
+	{ type: "inet", label: "IP address", family: "text", identity: false, defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
+	{ type: "cidr", label: "Network range", family: "text", identity: false, defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
+	{ type: "macaddr", label: "MAC address", family: "text", identity: false, defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
+	{ type: "money", label: "Money", family: "numeric", identity: false, defaults: { literal: "numeric", currentTimestamp: false, generateUuid: false } },
+	{ type: "vector", label: "Vector", family: "numeric", identity: false, parameters: "dimensions", defaults: { literal: null, currentTimestamp: false, generateUuid: false } },
+	{ type: "halfvec", label: "Half vector", family: "numeric", identity: false, parameters: "dimensions", defaults: { literal: null, currentTimestamp: false, generateUuid: false } },
+	{ type: "sparsevec", label: "Sparse vector", family: "numeric", identity: false, parameters: "dimensions", defaults: { literal: null, currentTimestamp: false, generateUuid: false } },
+	{ type: "bit", label: "Bit string", family: "text", identity: false, parameters: "length", defaults: { literal: null, currentTimestamp: false, generateUuid: false } },
+	{ type: "enum", label: "Enum type", family: "text", identity: false, defaults: { literal: "text", currentTimestamp: false, generateUuid: false } },
 ] as const satisfies readonly ColumnTypeDefinition[];
 
 export type ColumnType = (typeof COLUMN_TYPE_DEFINITIONS)[number]["type"];
+export type ColumnTypeParameters = { length?: number; precision?: number; scale?: number; dimensions?: number; array?: boolean };
+
+export function renderColumnType(type: ColumnType, parameters?: ColumnTypeParameters): string {
+	let result = type;
+	const kind = definitionsByType.get(type)?.parameters;
+	if (kind === "length" && parameters?.length !== undefined) result += `(${parameters.length})`;
+	else if (kind === "numeric" && parameters?.precision !== undefined) result += `(${parameters.precision}${parameters.scale === undefined ? "" : `,${parameters.scale}`})`;
+	else if (kind === "dimensions" && parameters?.dimensions !== undefined) result += `(${parameters.dimensions})`;
+	if (parameters?.array) result += "[]";
+	return result;
+}
 
 export type ColumnTypeInfo = Omit<ColumnTypeDefinition, "type" | "family"> & {
 	type: ColumnType;

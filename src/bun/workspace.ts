@@ -33,6 +33,9 @@ import {
 	type SetViewportAction,
 	type RelationshipCreationCardinality,
 	type UpdateColumnAction,
+	type UpdateIndexesAction,
+	type UpdateEnumTypesAction,
+	type UpdateUniqueConstraintsAction,
 	type UpdateRelationshipAction,
 	type WorkspaceState,
 } from "../shared/design";
@@ -85,6 +88,9 @@ export interface DesignWorkspace {
 	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
 	addColumn(action: AddColumnAction): Promise<WorkspaceState>;
 	updateColumn(action: UpdateColumnAction): Promise<WorkspaceState>;
+	updateIndexes(action: UpdateIndexesAction): Promise<WorkspaceState>;
+	updateEnumTypes(action: UpdateEnumTypesAction): Promise<WorkspaceState>;
+	updateUniqueConstraints(action: UpdateUniqueConstraintsAction): Promise<WorkspaceState>;
 	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
 	/** Creates the relationship and the foreign-key column it owns. */
 	addRelationship(action: AddRelationshipAction): Promise<WorkspaceState>;
@@ -710,6 +716,34 @@ export async function createDesignWorkspace(
 					: applyNonSchemaChange(projectId, nextDesign);
 			});
 		},
+		updateIndexes(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const indexes = action.indexes.map((index) => ({
+					...index,
+					keys: index.keys.map((key) => ({ ...key })),
+					...(index.includeColumnIds ? { includeColumnIds: [...index.includeColumnIds] } : {}),
+					...(index.with ? { with: { ...index.with } } : {}),
+				}));
+				if (JSON.stringify(indexes) === JSON.stringify(table.indexes ?? [])) return state;
+				return applyStructuralChange(projectId, replaceTable(design, { ...table, indexes }));
+			});
+		},
+		updateEnumTypes(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				return applyStructuralChange(projectId, { ...design, enumTypes: action.enumTypes.map((value) => ({ ...value, labels: [...value.labels] })) });
+			});
+		},
+		updateUniqueConstraints(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const constraints = action.uniqueConstraints.map((constraint) => ({ ...constraint, columnIds: [...constraint.columnIds] }));
+				return applyStructuralChange(projectId, replaceTable(design, { ...table, uniqueConstraints: constraints }));
+			});
+		},
 		removeColumn(action) {
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
@@ -872,7 +906,9 @@ export async function createDesignWorkspace(
 					action.cardinality === undefined
 						? relationship.cardinality
 						: requireCardinality(action.cardinality);
-				if (required === undefined && cardinality === relationship.cardinality) {
+				const onDelete = action.onDelete === undefined ? relationship.onDelete ?? "NO ACTION" : requireReferentialAction(action.onDelete);
+				const onUpdate = action.onUpdate === undefined ? relationship.onUpdate ?? "NO ACTION" : requireReferentialAction(action.onUpdate);
+			if (required === undefined && cardinality === relationship.cardinality && onDelete === (relationship.onDelete ?? "NO ACTION") && onUpdate === (relationship.onUpdate ?? "NO ACTION")) {
 					return state;
 				}
 
@@ -889,13 +925,15 @@ export async function createDesignWorkspace(
 					...replaceTable(design, { ...view.referencingTable, columns }),
 					relationships: design.relationships.map((candidate) =>
 						candidate.id === relationship.id
-							? { ...candidate, cardinality }
+							? { ...candidate, cardinality, onDelete, onUpdate }
 							: candidate,
 					),
 				};
 
 				if (
 					cardinality === relationship.cardinality &&
+					onDelete === (relationship.onDelete ?? "NO ACTION") &&
+					onUpdate === (relationship.onUpdate ?? "NO ACTION") &&
 					nextRequired === view.required
 				) {
 					return state;
@@ -1000,6 +1038,7 @@ function normalizeDesign(design: Design): Design {
 		})),
 		manyToManyRelationships: design.manyToManyRelationships ?? [],
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
+		...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
 	};
 }
 
@@ -1239,6 +1278,15 @@ function requireRelationshipCreationCardinality(
 	throw new Error("That relationship cardinality is not supported.");
 }
 
+function isReferentialAction(value: unknown): value is import("../shared/design").ReferentialAction {
+	return value === "NO ACTION" || value === "RESTRICT" || value === "CASCADE" || value === "SET NULL" || value === "SET DEFAULT";
+}
+
+function requireReferentialAction(value: unknown): import("../shared/design").ReferentialAction {
+	if (!isReferentialAction(value)) throw new Error("That foreign-key referential action is not supported.");
+	return value;
+}
+
 function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {
 	if (!changes || typeof changes !== "object") {
 		throw new Error("Column changes are required.");
@@ -1246,6 +1294,12 @@ function normalizeColumnChanges(changes: ColumnChanges): ColumnChanges {
 	const normalized: ColumnChanges = {};
 	if (changes.name !== undefined) normalized.name = requireName(changes.name, "Column name");
 	if (changes.type !== undefined) normalized.type = requireColumnType(changes.type);
+	if (changes.typeParameters !== undefined) {
+		if (!changes.typeParameters || typeof changes.typeParameters !== "object") throw new Error("Column type parameters must be structured values.");
+		for (const [key, value] of Object.entries(changes.typeParameters)) if (key !== "array" && value !== undefined && (typeof value !== "number" || !Number.isInteger(value) || (key === "scale" ? value < -1000 || value > 1000 : value < 0))) throw new Error("Column type parameters must be valid integers.");
+		if (changes.typeParameters.array !== undefined && typeof changes.typeParameters.array !== "boolean") throw new Error("Array type must be true or false.");
+		normalized.typeParameters = { ...changes.typeParameters };
+	}
 	for (const key of ["nullable", "primaryKey", "unique"] as const) {
 		const value = changes[key];
 		if (value === undefined) continue;
@@ -1278,6 +1332,7 @@ function sameColumn(a: DesignColumn, b: DesignColumn): boolean {
 		a.id === b.id &&
 		a.name === b.name &&
 		a.type === b.type &&
+		JSON.stringify(a.typeParameters ?? {}) === JSON.stringify(b.typeParameters ?? {}) &&
 		a.nullable === b.nullable &&
 		a.primaryKey === b.primaryKey &&
 		a.unique === b.unique &&
