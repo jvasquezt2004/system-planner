@@ -87,7 +87,7 @@ export function singularize(word: string): string {
 	if (UNCOUNTABLE.has(lower)) return lower;
 	if (IRREGULAR_SINGULARS[lower]) return IRREGULAR_SINGULARS[lower];
 	if (/[^aeiou]ies$/.test(lower)) return `${lower.slice(0, -3)}y`;
-	if (/(ss|sh|ch|x|z)es$/.test(lower)) return lower.slice(0, -2);
+	if (/(ss|sh|ch|x|z|us)es$/.test(lower)) return lower.slice(0, -2);
 	if (/(ss|us|is)$/.test(lower)) return lower;
 	if (lower.endsWith("s") && lower.length > 1) return lower.slice(0, -1);
 	return lower;
