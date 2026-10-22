@@ -427,6 +427,10 @@ function SandboxContents({ snapshot }: { snapshot: SandboxSnapshot }) {
 								</div>
 							))}
 						</dl>
+						{(table.indexes?.length ?? 0) > 0 && <div className="mt-2" data-testid="sandbox-indexes">
+							<p className="kicker">Indexes</p>
+							<ul className="mt-1 border-t border-rule-soft">{table.indexes?.map((index) => <li key={index.name} className="truncate border-b border-rule-soft py-1 font-mono text-[10.5px] text-ink-3" title={index.definition}>{index.unique ? "unique " : ""}{index.method} · {index.definition}</li>)}</ul>
+						</div>}
 					</article>
 				))}
 			</div>

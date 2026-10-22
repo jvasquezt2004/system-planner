@@ -14,9 +14,13 @@ import {
 	findColumnTypeInfo,
 	type ColumnLiteralType,
 	type ColumnType,
+	type ColumnTypeParameters,
 } from "../shared/column-types";
 import {
 	getSqlValidationErrors,
+	type DesignIndex,
+	type DesignEnumType,
+	type DesignUniqueConstraint,
 	type ColumnChanges,
 	type DesignColumn,
 	type DesignTable,
@@ -44,6 +48,7 @@ import { ColumnTypeBadge } from "./column-type-badge";
 
 type TableInspectorProps = {
 	table: DesignTable;
+	enumTypes: DesignEnumType[];
 	selectedColumnId: string | null;
 	relationships: RelationshipView[];
 	selectedRelationshipId: string | null;
@@ -54,6 +59,9 @@ type TableInspectorProps = {
 	onSelectColumn: (columnId: string | null) => void;
 	onAddColumn: () => void;
 	onApplyColumn: (columnId: string, changes: ColumnChanges) => void;
+	onUpdateIndexes: (indexes: DesignIndex[]) => void;
+	onUpdateEnumTypes: (enumTypes: DesignEnumType[]) => void;
+	onUpdateUniqueConstraints: (constraints: DesignUniqueConstraint[]) => void;
 	onRemoveColumn: (columnId: string) => void;
 	onSelectRelationship: (relationshipId: string | null) => void;
 	onSetRelationshipRequired: (relationshipId: string, required: boolean) => void;
@@ -61,6 +69,7 @@ type TableInspectorProps = {
 		relationshipId: string,
 		cardinality: RelationshipCardinality,
 	) => void;
+	onSetReferentialAction: (relationshipId: string, action: "onDelete" | "onUpdate", value: import("../shared/design").ReferentialAction) => void;
 	onRemoveRelationship: (relationshipId: string) => void;
 };
 
@@ -72,6 +81,7 @@ type TableInspectorProps = {
  */
 export function TableInspector({
 	table,
+	enumTypes,
 	selectedColumnId,
 	relationships,
 	selectedRelationshipId,
@@ -82,10 +92,14 @@ export function TableInspector({
 	onSelectColumn,
 	onAddColumn,
 	onApplyColumn,
+	onUpdateIndexes,
+	onUpdateEnumTypes,
+	onUpdateUniqueConstraints,
 	onRemoveColumn,
 	onSelectRelationship,
 	onSetRelationshipRequired,
 	onSetRelationshipCardinality,
+	onSetReferentialAction,
 	onRemoveRelationship,
 }: TableInspectorProps) {
 	const [name, setName] = useState(table.name);
@@ -239,8 +253,9 @@ export function TableInspector({
 
 				<div className="px-6 pt-3">
 					{selectedColumn ? (
-						<ColumnEditor
+							<ColumnEditor
 							tableName={table.name}
+								enumTypes={enumTypes}
 							column={selectedColumn}
 							manyToManyReference={manyToManyReference}
 							busy={busy}
@@ -254,6 +269,61 @@ export function TableInspector({
 						</p>
 					)}
 				</div>
+			</Section>
+
+			<Section id="enum-types-heading" title="Enum types" action={<Button variant="ghost" size="xs" disabled={busy} onClick={() => onUpdateEnumTypes([...enumTypes, { id: crypto.randomUUID(), name: "status", labels: ["draft", "active"] }])}><Plus /> Add enum</Button>}>
+				{enumTypes.map((enumType) => <div key={enumType.id} className="flex gap-2 px-6 py-2">
+					<Input aria-label="Enum type name" value={enumType.name} disabled={busy} onChange={(event) => onUpdateEnumTypes(enumTypes.map((value) => value.id === enumType.id ? { ...value, name: event.target.value } : value))} />
+					<Input aria-label="Enum labels" value={enumType.labels.join(", ")} disabled={busy} onChange={(event) => onUpdateEnumTypes(enumTypes.map((value) => value.id === enumType.id ? { ...value, labels: event.target.value.split(",").map((label) => label.trim()) } : value))} />
+					<Button variant="strike" size="xs" aria-label="Remove enum type" disabled={busy} onClick={() => onUpdateEnumTypes(enumTypes.filter((value) => value.id !== enumType.id))}><Trash2 /></Button>
+				</div>)}
+			</Section>
+			<Section id="unique-constraints-heading" title="Unique constraints" action={<Button variant="ghost" size="xs" disabled={busy || table.columns.length < 2} onClick={() => onUpdateUniqueConstraints([...(table.uniqueConstraints ?? []), { id: crypto.randomUUID(), columnIds: table.columns.slice(0, 2).map((column) => column.id) }])}><Plus /> Add composite</Button>}>
+				{(table.uniqueConstraints ?? []).map((constraint) => <div key={constraint.id} className="flex flex-col gap-2 border-y border-rule px-6 py-2">
+					<Input aria-label="Unique constraint name" placeholder="Generated name" value={constraint.name ?? ""} onChange={(event) => onUpdateUniqueConstraints((table.uniqueConstraints ?? []).map((value) => value.id === constraint.id ? { ...value, name: event.target.value || undefined } : value))} />
+					<div className="flex flex-wrap gap-x-3">{table.columns.map((column) => <label key={column.id} className="flex items-center gap-1 text-[11px]"><Checkbox aria-label={`Unique ${column.name}`} checked={constraint.columnIds.includes(column.id)} onCheckedChange={(checked) => onUpdateUniqueConstraints((table.uniqueConstraints ?? []).map((value) => value.id === constraint.id ? { ...value, columnIds: checked ? [...value.columnIds, column.id] : value.columnIds.filter((id) => id !== column.id) } : value))} />{column.name}</label>)}</div>
+					<div className="flex items-center justify-between"><label className="flex items-center gap-1.5 text-[11px]"><Checkbox aria-label="Constraint nulls not distinct" checked={constraint.nullsNotDistinct ?? false} onCheckedChange={(checked) => onUpdateUniqueConstraints((table.uniqueConstraints ?? []).map((value) => value.id === constraint.id ? { ...value, nullsNotDistinct: checked === true } : value))} /> NULLS NOT DISTINCT</label><Button variant="strike" size="xs" aria-label="Remove unique constraint" onClick={() => onUpdateUniqueConstraints((table.uniqueConstraints ?? []).filter((value) => value.id !== constraint.id))}><Trash2 /></Button></div>
+				</div>)}
+			</Section>
+			<Section id="indexes-heading" title="Indexes" action={
+				<Button variant="ghost" size="xs" data-testid="add-index" disabled={busy || table.columns.length === 0} onClick={() => onUpdateIndexes([...(table.indexes ?? []), { id: crypto.randomUUID(), method: "btree", keys: [{ columnId: table.columns[0].id }] }])}>
+					<Plus /> Add index
+				</Button>
+			}>
+				{(table.indexes ?? []).length === 0 ? <p className="px-6 text-[12px] text-ink-3">No indexes configured.</p> : <ul className="border-y border-rule">
+					{(table.indexes ?? []).map((index, indexPosition) => <li key={index.id} className={cn("px-6 py-3", indexPosition > 0 && "border-t border-rule-soft")}>
+						<div className="flex gap-2">
+							<Input aria-label="Index name" placeholder="Generated name" value={index.name ?? ""} disabled={busy} onChange={(event) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, name: event.target.value || undefined } : candidate))} />
+							<Select value={index.method} onValueChange={(value) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, method: value as DesignIndex["method"] } : candidate))}>
+								<SelectTrigger aria-label="Index access method" className="w-28"><SelectValue /></SelectTrigger><SelectContent>{["btree", "hash", "gin", "gist", "spgist", "brin", "hnsw", "ivfflat"].map((method) => <SelectItem key={method} value={method}>{method}</SelectItem>)}</SelectContent>
+							</Select>
+						</div>
+						{index.keys.map((key, keyPosition) => <div key={`${index.id}-${keyPosition}`} className="mt-2 flex gap-2">
+							<Select value={key.columnId} onValueChange={(columnId) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, keys: candidate.keys.map((part, at) => at === keyPosition ? { ...part, columnId } : part) } : candidate))}>
+								<SelectTrigger aria-label="Index key column" className="min-w-0 flex-1"><SelectValue /></SelectTrigger><SelectContent>{table.columns.map((column) => <SelectItem key={column.id} value={column.id}>{column.name} · {column.type}</SelectItem>)}</SelectContent>
+							</Select>
+							<Select value={key.operatorClass ?? "default"} onValueChange={(value) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, keys: candidate.keys.map((part, at) => at === keyPosition ? { ...part, operatorClass: value === "default" ? undefined : value } : part) } : candidate))}>
+								<SelectTrigger aria-label="Operator class" className="w-36"><SelectValue /></SelectTrigger><SelectContent>{["default", "vector_l2_ops", "vector_ip_ops", "vector_cosine_ops", "vector_l1_ops", "halfvec_l2_ops", "halfvec_ip_ops", "halfvec_cosine_ops", "sparsevec_l2_ops", "bit_hamming_ops", "bit_jaccard_ops"].map((opclass) => <SelectItem key={opclass} value={opclass}>{opclass}</SelectItem>)}</SelectContent>
+							</Select>
+							<Select value={key.order ?? "default"} onValueChange={(value) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, keys: candidate.keys.map((part, at) => at === keyPosition ? { ...part, order: value === "default" ? undefined : value as "asc" | "desc" } : part) } : candidate))}>
+								<SelectTrigger aria-label="Index key order" className="w-20"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="default">default</SelectItem><SelectItem value="asc">ASC</SelectItem><SelectItem value="desc">DESC</SelectItem></SelectContent>
+							</Select>
+							<Select value={key.nulls ?? "default"} onValueChange={(value) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, keys: candidate.keys.map((part, at) => at === keyPosition ? { ...part, nulls: value === "default" ? undefined : value as "first" | "last" } : part) } : candidate))}>
+								<SelectTrigger aria-label="Index null ordering" className="w-24"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="default">NULLS default</SelectItem><SelectItem value="first">NULLS FIRST</SelectItem><SelectItem value="last">NULLS LAST</SelectItem></SelectContent>
+							</Select>
+						</div>)}
+						<Button type="button" variant="ghost" size="xs" className="mt-1" disabled={busy || (index.keys.length >= table.columns.length)} onClick={() => { const column = table.columns.find((candidate) => !index.keys.some((key) => key.columnId === candidate.id)); if (column) onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, keys: [...candidate.keys, { columnId: column.id }] } : candidate)); }}><Plus /> Add key column</Button>
+						<div className="mt-2 flex items-center justify-between gap-2 text-[11px]">
+							<label className="flex items-center gap-1.5"><Checkbox checked={index.unique ?? false} disabled={busy} onCheckedChange={(checked) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, unique: checked === true, nullsNotDistinct: checked === true ? candidate.nullsNotDistinct : false } : candidate))} /> Unique</label>
+							{index.unique && <label className="flex items-center gap-1.5"><Checkbox aria-label="Nulls not distinct" checked={index.nullsNotDistinct ?? false} disabled={busy} onCheckedChange={(checked) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, nullsNotDistinct: checked === true } : candidate))} /> NULLS NOT DISTINCT</label>}
+							<div className="flex gap-1"><Button size="xs" variant="ghost" aria-label="Move index up" disabled={busy || indexPosition === 0} onClick={() => reorderIndex(indexPosition, indexPosition - 1, table.indexes ?? [], onUpdateIndexes)}><ArrowLeft /></Button><Button size="xs" variant="ghost" aria-label="Move index down" disabled={busy || indexPosition === (table.indexes?.length ?? 0) - 1} onClick={() => reorderIndex(indexPosition, indexPosition + 1, table.indexes ?? [], onUpdateIndexes)}><ArrowRight /></Button><Button size="xs" variant="strike" aria-label="Remove index" disabled={busy} onClick={() => onUpdateIndexes((table.indexes ?? []).filter((candidate) => candidate.id !== index.id))}><Trash2 /></Button></div>
+						</div>
+						<details className="mt-2 text-[11px] text-ink-3"><summary className="cursor-pointer">Include columns and storage options</summary>
+							<div className="mt-2 flex flex-wrap gap-x-3 gap-y-1">{table.columns.filter((column) => !index.keys.some((key) => key.columnId === column.id)).map((column) => <label key={column.id} className="flex items-center gap-1"><Checkbox aria-label={`Include ${column.name}`} checked={index.includeColumnIds?.includes(column.id) ?? false} onCheckedChange={(checked) => onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, includeColumnIds: checked ? [...(candidate.includeColumnIds ?? []), column.id] : (candidate.includeColumnIds ?? []).filter((id) => id !== column.id) } : candidate))} />{column.name}</label>)}</div>
+							{["hnsw", "ivfflat"].includes(index.method) && <div className="mt-2 flex gap-2">{(index.method === "hnsw" ? [["m", "m"], ["efConstruction", "ef_construction"]] : [["lists", "lists"]]).map(([key, label]) => <label key={key} className="flex flex-1 flex-col gap-1">{label}<Input aria-label={`Index ${label}`} type="number" min={1} value={(index.with as Record<string, number> | undefined)?.[key] ?? ""} onChange={(event) => { const value = event.target.value === "" ? undefined : Number(event.target.value); onUpdateIndexes((table.indexes ?? []).map((candidate) => candidate.id === index.id ? { ...candidate, with: { ...candidate.with, [key]: value } } : candidate)); }} /></label>)}</div>}
+						</details>
+					</li>)}
+				</ul>}
 			</Section>
 
 			<Section
@@ -286,6 +356,7 @@ export function TableInspector({
 								onSelect={onSelectRelationship}
 								onSetRequired={onSetRelationshipRequired}
 								onSetCardinality={onSetRelationshipCardinality}
+								onSetAction={onSetReferentialAction}
 								onRemove={onRemoveRelationship}
 							/>
 						))}
@@ -329,6 +400,13 @@ export function TableInspector({
 	);
 }
 
+function reorderIndex(from: number, to: number, indexes: DesignIndex[], update: (indexes: DesignIndex[]) => void) {
+	const next = [...indexes];
+	const [item] = next.splice(from, 1);
+	next.splice(to, 0, item);
+	update(next);
+}
+
 /** A titled run of content under a kicker and hairline, like a page section. */
 function Section({
 	id,
@@ -363,6 +441,7 @@ function RelationshipRow({
 	onSelect,
 	onSetRequired,
 	onSetCardinality,
+	onSetAction,
 	onRemove,
 }: {
 	view: RelationshipView;
@@ -373,6 +452,7 @@ function RelationshipRow({
 	onSelect: (relationshipId: string | null) => void;
 	onSetRequired: (relationshipId: string, required: boolean) => void;
 	onSetCardinality: (relationshipId: string, cardinality: RelationshipCardinality) => void;
+	onSetAction: (relationshipId: string, action: "onDelete" | "onUpdate", value: import("../shared/design").ReferentialAction) => void;
 	onRemove: (relationshipId: string) => void;
 }) {
 	const relationshipId = view.relationship.id;
@@ -476,6 +556,11 @@ function RelationshipRow({
 						</ToggleGroupItem>
 					</ToggleGroup>
 				)}
+			<div className="flex gap-2 pl-5">
+				{(["onDelete", "onUpdate"] as const).map((action) => <Select key={action} value={view.relationship[action] ?? "NO ACTION"} onValueChange={(value) => onSetAction(relationshipId, action, value as import("../shared/design").ReferentialAction)}>
+					<SelectTrigger aria-label={action === "onDelete" ? "On delete action" : "On update action"} className="h-7 flex-1 text-[10.5px]" disabled={busy}><SelectValue /></SelectTrigger><SelectContent>{["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"].map((value) => <SelectItem key={value} value={value}>{action === "onDelete" ? "delete" : "update"}: {value}</SelectItem>)}</SelectContent>
+				</Select>)}
+			</div>
 				<Button
 					variant="strike"
 					size="xs"
@@ -501,6 +586,8 @@ function RelationshipRow({
 type ColumnDraft = {
 	name: string;
 	type: ColumnType;
+	typeParameters?: ColumnTypeParameters;
+	enumTypeId?: string;
 	nullable: boolean;
 	primaryKey: boolean;
 	unique: boolean;
@@ -513,6 +600,8 @@ function draftFrom(column: DesignColumn): ColumnDraft {
 	return {
 		name: column.name,
 		type: column.type,
+		typeParameters: column.typeParameters,
+		enumTypeId: column.enumTypeId,
 		nullable: column.nullable,
 		primaryKey: column.primaryKey,
 		unique: column.unique,
@@ -526,6 +615,8 @@ function changesFrom(column: DesignColumn, draft: ColumnDraft): ColumnChanges {
 	const changes: ColumnChanges = {};
 	if (draft.name.trim() !== column.name) changes.name = draft.name.trim();
 	if (draft.type !== column.type) changes.type = draft.type;
+	if (JSON.stringify(draft.typeParameters ?? {}) !== JSON.stringify(column.typeParameters ?? {})) changes.typeParameters = draft.typeParameters;
+	if (draft.enumTypeId !== column.enumTypeId) changes.enumTypeId = draft.enumTypeId;
 	if (draft.nullable !== column.nullable) changes.nullable = draft.nullable;
 	if (draft.primaryKey !== column.primaryKey) changes.primaryKey = draft.primaryKey;
 	if (draft.unique !== column.unique) changes.unique = draft.unique;
@@ -570,6 +661,7 @@ function capitalize(value: string): string {
 
 function ColumnEditor({
 	tableName,
+	enumTypes,
 	column,
 	manyToManyReference,
 	busy,
@@ -577,6 +669,7 @@ function ColumnEditor({
 	onRemove,
 }: {
 	tableName: string;
+	enumTypes: DesignEnumType[];
 	column: DesignColumn;
 	manyToManyReference: boolean;
 	busy: boolean;
@@ -593,6 +686,7 @@ function ColumnEditor({
 		column.id,
 		column.name,
 		column.type,
+		column.typeParameters,
 		column.nullable,
 		column.primaryKey,
 		column.unique,
@@ -746,6 +840,15 @@ function ColumnEditor({
 					</SelectContent>
 				</Select>
 			</Field>
+			{draft.type === "enum" && <Field label="Enum type">
+				<Select value={draft.enumTypeId ?? ""} onValueChange={(enumTypeId) => setDraft({ ...draft, enumTypeId })}>
+					<SelectTrigger aria-label="Enum type"><SelectValue placeholder="Choose enum type" /></SelectTrigger><SelectContent>{enumTypes.map((enumType) => <SelectItem key={enumType.id} value={enumType.id}>{enumType.name}</SelectItem>)}</SelectContent>
+				</Select>
+			</Field>}
+			{(["varchar", "char", "bit"].includes(draft.type) || draft.type === "numeric" || ["vector", "halfvec", "sparsevec"].includes(draft.type)) && <Field label={draft.type === "numeric" ? "Precision and scale" : ["vector", "halfvec", "sparsevec"].includes(draft.type) ? "Dimensions" : "Length"}>
+				<div className="flex gap-2"><Input aria-label="Type length or precision" type="number" min={1} value={draft.typeParameters?.dimensions ?? draft.typeParameters?.length ?? draft.typeParameters?.precision ?? ""} onChange={(event) => { const value = event.target.value === "" ? undefined : Number(event.target.value); const key = ["vector", "halfvec", "sparsevec"].includes(draft.type) ? "dimensions" : ["varchar", "char", "bit"].includes(draft.type) ? "length" : "precision"; setDraft({ ...draft, typeParameters: { ...draft.typeParameters, [key]: value } }); }} />{draft.type === "numeric" && <Input aria-label="Numeric scale" type="number" min={-1000} max={1000} value={draft.typeParameters?.scale ?? ""} onChange={(event) => setDraft({ ...draft, typeParameters: { ...draft.typeParameters, scale: event.target.value === "" ? undefined : Number(event.target.value) } })} />}</div>
+			</Field>}
+			<label className="mt-2 flex items-center gap-1.5 text-[12px]"><Checkbox aria-label="Array type" checked={draft.typeParameters?.array ?? false} onCheckedChange={(checked) => setDraft({ ...draft, typeParameters: { ...draft.typeParameters, array: checked === true } })} /> Array</label>
 			{dropsIdentity && (
 				<Hint>Identity generation will be cleared because it only applies to integer types.</Hint>
 			)}

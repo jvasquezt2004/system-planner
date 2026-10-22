@@ -469,6 +469,7 @@ function App() {
 							<ScrollArea className="min-h-0 flex-1">
 								<TableInspector
 									table={selectedTable}
+									enumTypes={state.design?.enumTypes ?? []}
 									selectedColumnId={selectedColumnId}
 									relationships={inspectorRelationships}
 									selectedRelationshipId={selectedRelationshipId}
@@ -483,10 +484,14 @@ function App() {
 									onSelectColumn={setSelectedColumnId}
 									onAddColumn={handleAddColumn}
 									onApplyColumn={handleApplyColumn}
+									onUpdateIndexes={(indexes) => void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))}
+									onUpdateEnumTypes={(enumTypes) => void run(() => workspaceClient.updateEnumTypes(enumTypes))}
+									onUpdateUniqueConstraints={(uniqueConstraints) => void run(() => workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints))}
 									onRemoveColumn={handleRemoveColumn}
 									onSelectRelationship={handleSelectRelationship}
 									onSetRelationshipRequired={handleSetRelationshipRequired}
 									onSetRelationshipCardinality={handleSetRelationshipCardinality}
+									onSetReferentialAction={(relationshipId, action, value) => void run(() => workspaceClient.updateRelationship(relationshipId, { [action]: value }))}
 									onRemoveRelationship={handleRemoveRelationship}
 								/>
 							</ScrollArea>
