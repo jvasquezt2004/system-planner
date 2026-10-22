@@ -35,10 +35,31 @@ function identifier(value: string): string {
 	return name;
 }
 
+function singular(value: string): string {
+	const lower = value.toLowerCase();
+	if (["status", "data"].includes(lower)) return value;
+	if (/ies$/i.test(value) && value.length > 3) return `${value.slice(0, -3)}y`;
+	if (/(sses|shes|ches|xes|zes)$/i.test(value)) return value.slice(0, -2);
+	if (/s$/i.test(value) && !/(ss|us|is)$/i.test(value)) return value.slice(0, -1);
+	return value;
+}
+
 function pascal(value: string): string {
-	const parts = value.match(/[A-Za-z0-9]+/g) ?? [];
+	const parts = singular(value).match(/[A-Za-z0-9]+/g) ?? [];
 	const name = parts.map((part) => part[0]!.toUpperCase() + part.slice(1)).join("") || "Table";
 	return /^\d/.test(name) ? `Table${name}` : name;
+}
+
+function plural(value: string): string {
+	if (/(s|x|z|ch|sh)$/i.test(value)) return `${value}es`;
+	if (/[^aeiou]y$/i.test(value)) return `${value.slice(0, -1)}ies`;
+	return `${value}s`;
+}
+
+function relationshipBase(column: string, table: string): string {
+	const name = snake(column);
+	if (name.endsWith("_id") && name.length > 3) return identifier(name.slice(0, -3));
+	return identifier(singular(table));
 }
 
 function allocate(base: string, used: Set<string>): string {
@@ -131,22 +152,32 @@ function storageOptions(index: DesignIndex): string {
 function indexExpression(table: DesignTable, index: DesignIndex): string[] {
 	return index.keys.map((key) => {
 		const column = table.columns.find((candidate) => candidate.id === key.columnId)!;
-		const ordering = [key.order?.toUpperCase(), key.nulls ? `NULLS ${key.nulls.toUpperCase()}` : undefined].filter(Boolean).join(" ");
-		return `text(${py(`\"${column.name.replace(/\"/g, '\"\"')}\"${key.operatorClass ? ` ${key.operatorClass}` : ""}${ordering ? ` ${ordering}` : ""}`)})`;
+		let expression = `column(${py(column.name)})`;
+		if (key.order?.toUpperCase() === "DESC") expression += ".desc()";
+		if (key.nulls?.toUpperCase() === "LAST") expression += ".nulls_last()";
+		if (key.nulls?.toUpperCase() === "FIRST") expression += ".nulls_first()";
+		return expression;
 	});
 }
 
 function renderIndex(table: DesignTable, index: DesignIndex, name: string): string {
 	const keys = indexExpression(table, index).join(", ");
 	const options = [
-		`unique=${index.unique ? "True" : "False"}`,
+		...(index.unique ? ["unique=True"] : []),
 		`postgresql_using=${py(index.method)}`,
 		...(index.includeColumnIds?.length ? [`postgresql_include=[${index.includeColumnIds.map((id) => py(table.columns.find((column) => column.id === id)!.name)).join(", ")}]`] : []),
 		...(index.unique && index.nullsNotDistinct ? ["postgresql_nulls_not_distinct=True"] : []),
 	];
+	const operatorClasses = index.keys.flatMap((key) => {
+		if (!key.operatorClass) return [];
+		const column = table.columns.find((candidate) => candidate.id === key.columnId)!;
+		return [`${py(column.name)}: ${py(key.operatorClass)}`];
+	});
+	if (operatorClasses.length) options.push(`postgresql_ops={${operatorClasses.join(", ")}}`);
 	const withOptions = storageOptions(index);
 	return `Index(${py(name)}, ${keys}, ${options.join(", ")}${withOptions})`;
 }
+
 
 export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 	const names = planSchemaObjectNames(design);
@@ -154,7 +185,7 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 	const usedDeclarations = new Set([
 		"Base", "enum", "date", "datetime", "time", "timedelta", "Decimal", "UUID",
 		"ARRAY", "BigInteger", "Boolean", "CHAR", "Date", "DOUBLE_PRECISION", "ForeignKey", "Identity", "Index", "Integer",
-		"Interval", "LargeBinary", "Numeric", "REAL", "SmallInteger", "String", "Text", "Time", "TIMESTAMP", "UniqueConstraint", "text",
+		"Interval", "LargeBinary", "Numeric", "REAL", "SmallInteger", "String", "Text", "Time", "TIMESTAMP", "UniqueConstraint", "text", "column",
 		"CIDR", "ENUM", "INET", "JSONB", "MACADDR", "MONEY", "PGUUID", "JSON", "DeclarativeBase", "Mapped", "mapped_column", "relationship",
 		"HALFVEC", "SPARSEVEC", "Vector", "VectorBit",
 	]);
@@ -180,16 +211,20 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		if (!view || !view.referencedColumn) continue;
 		const fieldSet = usedAttrs.get(view.referencingTable.id)!;
 		const backSet = usedAttrs.get(view.referencedTable.id)!;
-		const base = identifier(`${view.referencedTable.name}_${view.referencingColumn.name}`);
-		const backBase = identifier(`${view.referencingTable.name}_${view.referencingColumn.name}_items`);
+		const self = view.referencingTable.id === view.referencedTable.id;
+		const base = self ? "parent" : relationshipBase(view.referencingColumn.name, view.referencedTable.name);
+		const relationCount = design.relationships.filter((candidate) => candidate.referencedTableId === view.referencedTable.id && candidate.referencingTableId === view.referencingTable.id).length;
+		const cardinality = relationship.cardinality ?? "one-to-many";
+		const role = singular(view.referencingTable.name);
+		const backBase = self ? "replies" : cardinality === "one-to-one" ? role : relationCount > 1 ? `${base}_${plural(role)}` : plural(role);
 		const relation: Relation = {
 			id: relationship.id,
 			from: view.referencingTable,
 			to: view.referencedTable,
 			column: view.referencingColumn,
 			name: allocate(base, fieldSet),
-			backName: allocate(backBase, backSet),
-			cardinality: relationship.cardinality ?? "one-to-many",
+			backName: allocate(identifier(backBase), backSet),
+			cardinality,
 		};
 		relations.push(relation);
 	}
@@ -206,7 +241,7 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		"from sqlalchemy import (",
 		"    ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,",
 		"    Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,",
-		"    text,",
+		"    column, text,",
 		")",
 		"from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON",
 		"from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship",
@@ -241,7 +276,8 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		for (const constraint of table.uniqueConstraints ?? []) {
 			const columns = constraint.columnIds.map((id) => py(tableFields.get(id)!)).join(", ");
 			const name = names.uniqueConstraints.get(constraint.id);
-			constraints.push(`UniqueConstraint(${columns}, name=${py(name ?? constraint.name ?? `${table.name}_key`)}, postgresql_nulls_not_distinct=${constraint.nullsNotDistinct ? "True" : "False"})`);
+			const nullsNotDistinct = constraint.nullsNotDistinct ? ", postgresql_nulls_not_distinct=True" : "";
+			constraints.push(`UniqueConstraint(${columns}, name=${py(name ?? constraint.name ?? `${table.name}_key`)}${nullsNotDistinct})`);
 		}
 		for (const relation of relations.filter((candidate) => candidate.from.id === table.id && candidate.cardinality === "one-to-one")) {
 			const view = resolveRelationship(design, design.relationships.find((candidate) => candidate.id === relation.id)!);
@@ -264,20 +300,23 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const type = mappedType(design, column, enumNames);
 			const nullable = column.nullable && !column.primaryKey && !column.identity;
 			const annotation = nullable ? `${type.annotation} | None` : type.annotation;
-			const args: string[] = [py(column.name), type.expression];
+			const args: string[] = attr === column.name ? [type.expression] : [py(column.name), type.expression];
 			if (column.identity) args.push("Identity(always=True)");
 			const relationship = design.relationships.find((candidate) => candidate.referencingTableId === table.id && candidate.referencingColumnId === column.id);
 			if (relationship) {
 				const rel = relations.find((candidate) => candidate.id === relationship.id)!;
 				const targetPk = rel.to.columns.find((candidate) => candidate.primaryKey)!;
 				const fkName = names.foreignKeys.get(rel.id);
-				args.push(`ForeignKey(${py(`${rel.to.name}.${targetPk.name}`)}, name=${py(fkName ?? "")}, ondelete=${py(relationship.onDelete ?? "NO ACTION")}, onupdate=${py(relationship.onUpdate ?? "NO ACTION")})`);
+				const actions = [
+					...(relationship.onDelete && relationship.onDelete !== "NO ACTION" ? [`ondelete=${py(relationship.onDelete)}`] : []),
+					...(relationship.onUpdate && relationship.onUpdate !== "NO ACTION" ? [`onupdate=${py(relationship.onUpdate)}`] : []),
+				];
+				args.push(`ForeignKey(${py(`${rel.to.name}.${targetPk.name}`)}, name=${py(fkName ?? "")}${actions.length ? `, ${actions.join(", ")}` : ""})`);
 			}
 			if (column.primaryKey) args.push("primary_key=True");
 			if (column.unique && !column.primaryKey) args.push("unique=True");
 			const defaultSql = defaultExpression(column);
 			if (defaultSql !== null) args.push(`server_default=text(${py(defaultSql)})`);
-			if (!column.primaryKey) args.push(`nullable=${nullable ? "True" : "False"}`);
 			lines.push(`    ${attr}: Mapped[${annotation}] = mapped_column(${args.join(", ")})`);
 		}
 		for (const entry of tableRels) {
@@ -287,8 +326,7 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			const target = forward ? relation.to : relation.from;
 			const targetName = classNames.get(target.id)!;
 			const back = forward ? relation.backName : relation.name;
-			const forwardMany = relation.cardinality === "one-to-many";
-			const collection = forward ? false : forwardMany;
+			const collection = forward ? false : relation.cardinality === "one-to-many";
 			const nullable = relation.column.nullable;
 			const type = collection ? `list[${targetName}]` : `${targetName}${!forward && relation.cardinality === "one-to-one" ? " | None" : forward && nullable ? " | None" : ""}`;
 			const args = [py(targetName), `back_populates=${py(back)}`];
@@ -296,6 +334,22 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 			if (relation.from.id === relation.to.id && forward) args.push(`remote_side=${py(`[${classNames.get(target.id)}.${fields.get(target.id)!.get(target.columns.find((candidate) => candidate.primaryKey)!.id)}]`)}`);
 			if (!collection && (relation.cardinality === "one-to-one" || forward)) args.push("uselist=False");
 			lines.push(`    ${name}: Mapped[${type}] = relationship(${args.join(", ")})`);
+		}
+		for (const association of design.manyToManyRelationships ?? []) {
+			const left = design.relationships.find((candidate) => candidate.id === association.leftRelationshipId);
+			const right = design.relationships.find((candidate) => candidate.id === association.rightRelationshipId);
+			if (!left || !right) continue;
+			const lv = resolveRelationship(design, left);
+			const rv = resolveRelationship(design, right);
+			if (!lv || !rv) continue;
+			const isLeft = lv.referencedTable.id === table.id;
+			const isRight = rv.referencedTable.id === table.id;
+			if (!isLeft && !isRight) continue;
+			const other = isLeft ? rv.referencedTable : lv.referencedTable;
+			const attr = allocate(identifier(plural(singular(other.name))), usedAttrs.get(table.id)!);
+			const otherName = classNames.get(other.id)!;
+			const junctionTable = design.tables.find((candidate) => candidate.id === association.junctionTableId)!;
+			lines.push(`    ${attr}: Mapped[list[${otherName}]] = relationship(${py(otherName)}, secondary=${py(junctionTable.name)}, viewonly=True)`);
 		}
 	}
 	return { ok: true, code: `${lines.join("\n")}\n` };

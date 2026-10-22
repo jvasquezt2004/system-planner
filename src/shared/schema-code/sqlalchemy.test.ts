@@ -22,7 +22,7 @@ describe("SQLAlchemy schema code", () => {
 		  from sqlalchemy import (
 		      ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,
 		      Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,
-		      text,
+		      column, text,
 		  )
 		  from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON
 		  from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -31,11 +31,11 @@ describe("SQLAlchemy schema code", () => {
 		  class Base(DeclarativeBase):
 		      pass
 
-		  class Users(Base):
+		  class User(Base):
 		      __tablename__ = "users"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      email: Mapped[str] = mapped_column("email", Text(), unique=True, nullable=False)
-		      display_name: Mapped[str | None] = mapped_column("display_name", Text(), nullable=True)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      email: Mapped[str] = mapped_column(Text(), unique=True)
+		      display_name: Mapped[str | None] = mapped_column(Text())
 		  "
 		`);
 		expect(generatedCode(blogDesign)).toMatchInlineSnapshot(`
@@ -49,7 +49,7 @@ describe("SQLAlchemy schema code", () => {
 		  from sqlalchemy import (
 		      ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,
 		      Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,
-		      text,
+		      column, text,
 		  )
 		  from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON
 		  from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -65,84 +65,86 @@ describe("SQLAlchemy schema code", () => {
 
 		  UserRoleType = ENUM(UserRole, name="user_role", create_type=True, values_callable=lambda members: [member.value for member in members])
 
-		  class Users(Base):
+		  class User(Base):
 		      __tablename__ = "users"
 		      __table_args__ = (
-		          Index("users_created_at_idx", text("\\"created_at\\""), unique=False, postgresql_using="brin", postgresql_with={"pages_per_range": 32}),
+		          Index("users_created_at_idx", column("created_at"), postgresql_using="brin", postgresql_with={"pages_per_range": 32}),
 		      )
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      email: Mapped[str] = mapped_column("email", String(255), unique=True, nullable=False)
-		      display_name: Mapped[str | None] = mapped_column("display_name", Text(), nullable=True)
-		      role: Mapped[UserRole] = mapped_column("role", UserRoleType, server_default=text("'member'"), nullable=False)
-		      created_at: Mapped[datetime] = mapped_column("created_at", TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-		      posts_author_id_items: Mapped[list[Posts]] = relationship("Posts", back_populates="users_author_id", foreign_keys="[Posts.author_id]")
-		      posts_editor_id_items: Mapped[list[Posts]] = relationship("Posts", back_populates="users_editor_id", foreign_keys="[Posts.editor_id]")
-		      profiles_user_id_items: Mapped[Profiles | None] = relationship("Profiles", back_populates="users_user_id", foreign_keys="[Profiles.user_id]", uselist=False)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      email: Mapped[str] = mapped_column(String(255), unique=True)
+		      display_name: Mapped[str | None] = mapped_column(Text())
+		      role: Mapped[UserRole] = mapped_column(UserRoleType, server_default=text("'member'"))
+		      created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+		      author_posts: Mapped[list[Post]] = relationship("Post", back_populates="author", foreign_keys="[Post.author_id]")
+		      editor_posts: Mapped[list[Post]] = relationship("Post", back_populates="editor", foreign_keys="[Post.editor_id]")
+		      profile: Mapped[Profile | None] = relationship("Profile", back_populates="user", foreign_keys="[Profile.user_id]", uselist=False)
 
-		  class Profiles(Base):
+		  class Profile(Base):
 		      __tablename__ = "profiles"
 		      __table_args__ = (
 		          UniqueConstraint("user_id", name="profiles_user_id_key"),
 		      )
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      user_id: Mapped[int] = mapped_column("user_id", BigInteger(), ForeignKey("users.id", name="profiles_user_id_fkey", ondelete="CASCADE", onupdate="NO ACTION"), nullable=False)
-		      bio: Mapped[str | None] = mapped_column("bio", Text(), nullable=True)
-		      birthday: Mapped[date | None] = mapped_column("birthday", Date(), nullable=True)
-		      users_user_id: Mapped[Users] = relationship("Users", back_populates="profiles_user_id_items", foreign_keys="[Profiles.user_id]", uselist=False)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      user_id: Mapped[int] = mapped_column(BigInteger(), ForeignKey("users.id", name="profiles_user_id_fkey", ondelete="CASCADE"))
+		      bio: Mapped[str | None] = mapped_column(Text())
+		      birthday: Mapped[date | None] = mapped_column(Date())
+		      user: Mapped[User] = relationship("User", back_populates="profile", foreign_keys="[Profile.user_id]", uselist=False)
 
-		  class Posts(Base):
+		  class Post(Base):
 		      __tablename__ = "posts"
 		      __table_args__ = (
-		          UniqueConstraint("author_id", "slug", name="posts_author_slug_key", postgresql_nulls_not_distinct=False),
-		          Index("posts_author_id_created_at_idx", text("\\"author_id\\""), text("\\"created_at\\" DESC NULLS LAST"), unique=False, postgresql_using="btree", postgresql_include=["title"]),
-		          Index("posts_keywords_gin", text("\\"keywords\\""), unique=False, postgresql_using="gin"),
-		          Index("posts_metadata_idx", text("\\"metadata\\" jsonb_path_ops"), unique=False, postgresql_using="gin", postgresql_with={"fastupdate": False}),
-		          Index("posts_slug_idx", text("\\"slug\\""), unique=False, postgresql_using="hash"),
-		          Index("posts_title_editor_id_idx", text("\\"title\\""), text("\\"editor_id\\""), unique=True, postgresql_using="btree", postgresql_nulls_not_distinct=True),
+		          UniqueConstraint("author_id", "slug", name="posts_author_slug_key"),
+		          Index("posts_author_id_created_at_idx", column("author_id"), column("created_at").desc().nulls_last(), postgresql_using="btree", postgresql_include=["title"]),
+		          Index("posts_keywords_gin", column("keywords"), postgresql_using="gin"),
+		          Index("posts_metadata_idx", column("metadata"), postgresql_using="gin", postgresql_ops={"metadata": "jsonb_path_ops"}, postgresql_with={"fastupdate": False}),
+		          Index("posts_slug_idx", column("slug"), postgresql_using="hash"),
+		          Index("posts_title_editor_id_idx", column("title"), column("editor_id"), unique=True, postgresql_using="btree", postgresql_nulls_not_distinct=True),
 		      )
-		      id: Mapped[UUID] = mapped_column("id", PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
-		      author_id: Mapped[int] = mapped_column("author_id", BigInteger(), ForeignKey("users.id", name="posts_author_id_fkey", ondelete="CASCADE", onupdate="NO ACTION"), nullable=False)
-		      editor_id: Mapped[int | None] = mapped_column("editor_id", BigInteger(), ForeignKey("users.id", name="posts_editor_id_fkey", ondelete="SET NULL", onupdate="NO ACTION"), nullable=True)
-		      title: Mapped[str] = mapped_column("title", Text(), nullable=False)
-		      slug: Mapped[str] = mapped_column("slug", String(120), nullable=False)
-		      body: Mapped[str | None] = mapped_column("body", Text(), nullable=True)
-		      keywords: Mapped[list[str] | None] = mapped_column("keywords", ARRAY(Text()), nullable=True)
-		      published: Mapped[bool] = mapped_column("published", Boolean(), server_default=text("false"), nullable=False)
-		      rating: Mapped[Decimal | None] = mapped_column("rating", Numeric(3, 1), nullable=True)
-		      metadata_: Mapped[dict] = mapped_column("metadata", JSONB(), server_default=text("JSONB '{}'"), nullable=False)
-		      created_at: Mapped[datetime] = mapped_column("created_at", TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-		      users_author_id: Mapped[Users] = relationship("Users", back_populates="posts_author_id_items", foreign_keys="[Posts.author_id]", uselist=False)
-		      users_editor_id: Mapped[Users | None] = relationship("Users", back_populates="posts_editor_id_items", foreign_keys="[Posts.editor_id]", uselist=False)
-		      comments_post_id_items: Mapped[list[Comments]] = relationship("Comments", back_populates="posts_post_id", foreign_keys="[Comments.post_id]")
-		      post_tags_post_id_items: Mapped[list[PostTags]] = relationship("PostTags", back_populates="posts_post_id", foreign_keys="[PostTags.post_id]")
+		      id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), primary_key=True, server_default=text("gen_random_uuid()"))
+		      author_id: Mapped[int] = mapped_column(BigInteger(), ForeignKey("users.id", name="posts_author_id_fkey", ondelete="CASCADE"))
+		      editor_id: Mapped[int | None] = mapped_column(BigInteger(), ForeignKey("users.id", name="posts_editor_id_fkey", ondelete="SET NULL"))
+		      title: Mapped[str] = mapped_column(Text())
+		      slug: Mapped[str] = mapped_column(String(120))
+		      body: Mapped[str | None] = mapped_column(Text())
+		      keywords: Mapped[list[str] | None] = mapped_column(ARRAY(Text()))
+		      published: Mapped[bool] = mapped_column(Boolean(), server_default=text("false"))
+		      rating: Mapped[Decimal | None] = mapped_column(Numeric(3, 1))
+		      metadata_: Mapped[dict] = mapped_column("metadata", JSONB(), server_default=text("JSONB '{}'"))
+		      created_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+		      author: Mapped[User] = relationship("User", back_populates="author_posts", foreign_keys="[Post.author_id]", uselist=False)
+		      editor: Mapped[User | None] = relationship("User", back_populates="editor_posts", foreign_keys="[Post.editor_id]", uselist=False)
+		      comments: Mapped[list[Comment]] = relationship("Comment", back_populates="post", foreign_keys="[Comment.post_id]")
+		      post_tags: Mapped[list[PostTag]] = relationship("PostTag", back_populates="post", foreign_keys="[PostTag.post_id]")
+		      tags: Mapped[list[Tag]] = relationship("Tag", secondary="post_tags", viewonly=True)
 
-		  class Comments(Base):
+		  class Comment(Base):
 		      __tablename__ = "comments"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      post_id: Mapped[UUID] = mapped_column("post_id", PGUUID(as_uuid=True), ForeignKey("posts.id", name="comments_post_id_fkey", ondelete="CASCADE", onupdate="CASCADE"), nullable=False)
-		      parent_id: Mapped[int | None] = mapped_column("parent_id", BigInteger(), ForeignKey("comments.id", name="comments_parent_id_fkey", ondelete="SET NULL", onupdate="NO ACTION"), nullable=True)
-		      body: Mapped[str] = mapped_column("body", Text(), nullable=False)
-		      posts_post_id: Mapped[Posts] = relationship("Posts", back_populates="comments_post_id_items", foreign_keys="[Comments.post_id]", uselist=False)
-		      comments_parent_id: Mapped[Comments | None] = relationship("Comments", back_populates="comments_parent_id_items", foreign_keys="[Comments.parent_id]", remote_side="[Comments.id]", uselist=False)
-		      comments_parent_id_items: Mapped[list[Comments]] = relationship("Comments", back_populates="comments_parent_id", foreign_keys="[Comments.parent_id]")
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      post_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("posts.id", name="comments_post_id_fkey", ondelete="CASCADE", onupdate="CASCADE"))
+		      parent_id: Mapped[int | None] = mapped_column(BigInteger(), ForeignKey("comments.id", name="comments_parent_id_fkey", ondelete="SET NULL"))
+		      body: Mapped[str] = mapped_column(Text())
+		      post: Mapped[Post] = relationship("Post", back_populates="comments", foreign_keys="[Comment.post_id]", uselist=False)
+		      parent: Mapped[Comment | None] = relationship("Comment", back_populates="replies", foreign_keys="[Comment.parent_id]", remote_side="[Comment.id]", uselist=False)
+		      replies: Mapped[list[Comment]] = relationship("Comment", back_populates="parent", foreign_keys="[Comment.parent_id]")
 
-		  class Tags(Base):
+		  class Tag(Base):
 		      __tablename__ = "tags"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      name: Mapped[str] = mapped_column("name", String(64), unique=True, nullable=False)
-		      post_tags_tag_id_items: Mapped[list[PostTags]] = relationship("PostTags", back_populates="tags_tag_id", foreign_keys="[PostTags.tag_id]")
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      name: Mapped[str] = mapped_column(String(64), unique=True)
+		      post_tags: Mapped[list[PostTag]] = relationship("PostTag", back_populates="tag", foreign_keys="[PostTag.tag_id]")
+		      posts: Mapped[list[Post]] = relationship("Post", secondary="post_tags", viewonly=True)
 
-		  class PostTags(Base):
+		  class PostTag(Base):
 		      __tablename__ = "post_tags"
 		      __table_args__ = (
 		          UniqueConstraint("post_id", "tag_id", name="post_tags_pair_key"),
 		      )
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      post_id: Mapped[UUID] = mapped_column("post_id", PGUUID(as_uuid=True), ForeignKey("posts.id", name="post_tags_post_id_fkey", ondelete="CASCADE", onupdate="NO ACTION"), nullable=False)
-		      tag_id: Mapped[int] = mapped_column("tag_id", BigInteger(), ForeignKey("tags.id", name="post_tags_tag_id_fkey", ondelete="RESTRICT", onupdate="NO ACTION"), nullable=False)
-		      added_at: Mapped[datetime] = mapped_column("added_at", TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"), nullable=False)
-		      posts_post_id: Mapped[Posts] = relationship("Posts", back_populates="post_tags_post_id_items", foreign_keys="[PostTags.post_id]", uselist=False)
-		      tags_tag_id: Mapped[Tags] = relationship("Tags", back_populates="post_tags_tag_id_items", foreign_keys="[PostTags.tag_id]", uselist=False)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      post_id: Mapped[UUID] = mapped_column(PGUUID(as_uuid=True), ForeignKey("posts.id", name="post_tags_post_id_fkey", ondelete="CASCADE"))
+		      tag_id: Mapped[int] = mapped_column(BigInteger(), ForeignKey("tags.id", name="post_tags_tag_id_fkey", ondelete="RESTRICT"))
+		      added_at: Mapped[datetime] = mapped_column(TIMESTAMP(timezone=True), server_default=text("CURRENT_TIMESTAMP"))
+		      post: Mapped[Post] = relationship("Post", back_populates="post_tags", foreign_keys="[PostTag.post_id]", uselist=False)
+		      tag: Mapped[Tag] = relationship("Tag", back_populates="post_tags", foreign_keys="[PostTag.tag_id]", uselist=False)
 		  "
 		`);
 		expect(generatedCode(vectorDesign)).toMatchInlineSnapshot(`
@@ -156,7 +158,7 @@ describe("SQLAlchemy schema code", () => {
 		  from sqlalchemy import (
 		      ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,
 		      Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,
-		      text,
+		      column, text,
 		  )
 		  from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON
 		  from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -168,20 +170,20 @@ describe("SQLAlchemy schema code", () => {
 		  class Base(DeclarativeBase):
 		      pass
 
-		  class Documents(Base):
+		  class Document(Base):
 		      __tablename__ = "documents"
 		      __table_args__ = (
-		          Index("documents_embedding_idx", text("\\"embedding\\" vector_cosine_ops"), unique=False, postgresql_using="hnsw", postgresql_with={"m": 16, "ef_construction": 64}),
-		          Index("documents_summary_ivfflat", text("\\"summary_embedding\\" halfvec_l2_ops"), unique=False, postgresql_using="ivfflat", postgresql_with={"lists": 100}),
-		          Index("documents_keywords_embedding_idx", text("\\"keywords_embedding\\" sparsevec_ip_ops"), unique=False, postgresql_using="hnsw"),
-		          Index("documents_signature_idx", text("\\"signature\\" bit_hamming_ops"), unique=False, postgresql_using="hnsw"),
+		          Index("documents_embedding_idx", column("embedding"), postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"}, postgresql_with={"m": 16, "ef_construction": 64}),
+		          Index("documents_summary_ivfflat", column("summary_embedding"), postgresql_using="ivfflat", postgresql_ops={"summary_embedding": "halfvec_l2_ops"}, postgresql_with={"lists": 100}),
+		          Index("documents_keywords_embedding_idx", column("keywords_embedding"), postgresql_using="hnsw", postgresql_ops={"keywords_embedding": "sparsevec_ip_ops"}),
+		          Index("documents_signature_idx", column("signature"), postgresql_using="hnsw", postgresql_ops={"signature": "bit_hamming_ops"}),
 		      )
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      content: Mapped[str] = mapped_column("content", Text(), nullable=False)
-		      embedding: Mapped[list[float]] = mapped_column("embedding", Vector(1536), nullable=False)
-		      summary_embedding: Mapped[list[float] | None] = mapped_column("summary_embedding", HALFVEC(768), nullable=True)
-		      keywords_embedding: Mapped[object | None] = mapped_column("keywords_embedding", SPARSEVEC(30000), nullable=True)
-		      signature: Mapped[str | None] = mapped_column("signature", VectorBit(256), nullable=True)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      content: Mapped[str] = mapped_column(Text())
+		      embedding: Mapped[list[float]] = mapped_column(Vector(1536))
+		      summary_embedding: Mapped[list[float] | None] = mapped_column(HALFVEC(768))
+		      keywords_embedding: Mapped[object | None] = mapped_column(SPARSEVEC(30000))
+		      signature: Mapped[str | None] = mapped_column(VectorBit(256))
 		  "
 		`);
 		expect(generatedCode(typeCatalogDesign)).toMatchInlineSnapshot(`
@@ -195,7 +197,7 @@ describe("SQLAlchemy schema code", () => {
 		  from sqlalchemy import (
 		      ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,
 		      Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,
-		      text,
+		      column, text,
 		  )
 		  from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON
 		  from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -216,44 +218,44 @@ describe("SQLAlchemy schema code", () => {
 
 		  class TypeCatalog(Base):
 		      __tablename__ = "type_catalog"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      integer_value: Mapped[int | None] = mapped_column("integer_value", Integer(), nullable=True)
-		      smallint_value: Mapped[int | None] = mapped_column("smallint_value", SmallInteger(), nullable=True)
-		      text_value: Mapped[str | None] = mapped_column("text_value", Text(), nullable=True)
-		      varchar_value: Mapped[str | None] = mapped_column("varchar_value", String(40), nullable=True)
-		      varchar_unbounded: Mapped[str | None] = mapped_column("varchar_unbounded", String(), nullable=True)
-		      char_value: Mapped[str | None] = mapped_column("char_value", CHAR(2), nullable=True)
-		      uuid_value: Mapped[UUID | None] = mapped_column("uuid_value", PGUUID(as_uuid=True), nullable=True)
-		      boolean_value: Mapped[bool | None] = mapped_column("boolean_value", Boolean(), nullable=True)
-		      numeric_value: Mapped[Decimal | None] = mapped_column("numeric_value", Numeric(None), nullable=True)
-		      money_amount: Mapped[Decimal | None] = mapped_column("money_amount", Numeric(12, 2), nullable=True)
-		      real_value: Mapped[float | None] = mapped_column("real_value", REAL(), nullable=True)
-		      double_value: Mapped[float | None] = mapped_column("double_value", DOUBLE_PRECISION(), nullable=True)
-		      date_value: Mapped[date | None] = mapped_column("date_value", Date(), nullable=True)
-		      time_value: Mapped[time | None] = mapped_column("time_value", Time(timezone=False), nullable=True)
-		      timetz_value: Mapped[time | None] = mapped_column("timetz_value", Time(timezone=True), nullable=True)
-		      timestamp_value: Mapped[datetime | None] = mapped_column("timestamp_value", TIMESTAMP(timezone=False), nullable=True)
-		      timestamptz_value: Mapped[datetime | None] = mapped_column("timestamptz_value", TIMESTAMP(timezone=True), nullable=True)
-		      interval_value: Mapped[timedelta | None] = mapped_column("interval_value", Interval(), nullable=True)
-		      json_value: Mapped[dict | None] = mapped_column("json_value", JSON(), nullable=True)
-		      jsonb_value: Mapped[dict | None] = mapped_column("jsonb_value", JSONB(), nullable=True)
-		      bytea_value: Mapped[bytes | None] = mapped_column("bytea_value", LargeBinary(), nullable=True)
-		      inet_value: Mapped[str | None] = mapped_column("inet_value", INET(), nullable=True)
-		      cidr_value: Mapped[str | None] = mapped_column("cidr_value", CIDR(), nullable=True)
-		      macaddr_value: Mapped[str | None] = mapped_column("macaddr_value", MACADDR(), nullable=True)
-		      money_value: Mapped[Decimal | None] = mapped_column("money_value", MONEY(), nullable=True)
-		      bit_value: Mapped[str | None] = mapped_column("bit_value", VectorBit(8), nullable=True)
-		      vector_value: Mapped[list[float] | None] = mapped_column("vector_value", Vector(3), nullable=True)
-		      halfvec_value: Mapped[list[float] | None] = mapped_column("halfvec_value", HALFVEC(3), nullable=True)
-		      sparsevec_value: Mapped[object | None] = mapped_column("sparsevec_value", SPARSEVEC(3), nullable=True)
-		      mood_value: Mapped[Mood | None] = mapped_column("mood_value", MoodType, nullable=True)
-		      mood_history: Mapped[list[Mood] | None] = mapped_column("mood_history", ARRAY(MoodType), nullable=True)
-		      integer_list: Mapped[list[int] | None] = mapped_column("integer_list", ARRAY(Integer()), nullable=True)
-		      uuid_list: Mapped[list[UUID] | None] = mapped_column("uuid_list", ARRAY(PGUUID(as_uuid=True)), nullable=True)
-		      integer_default: Mapped[int] = mapped_column("integer_default", Integer(), server_default=text("42"), nullable=False)
-		      numeric_default: Mapped[Decimal] = mapped_column("numeric_default", Numeric(None), server_default=text("1.50"), nullable=False)
-		      text_default: Mapped[str] = mapped_column("text_default", Text(), server_default=text("'it''s \\"quoted\\"'"), nullable=False)
-		      date_default: Mapped[date] = mapped_column("date_default", Date(), server_default=text("DATE '2024-01-31'"), nullable=False)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      integer_value: Mapped[int | None] = mapped_column(Integer())
+		      smallint_value: Mapped[int | None] = mapped_column(SmallInteger())
+		      text_value: Mapped[str | None] = mapped_column(Text())
+		      varchar_value: Mapped[str | None] = mapped_column(String(40))
+		      varchar_unbounded: Mapped[str | None] = mapped_column(String())
+		      char_value: Mapped[str | None] = mapped_column(CHAR(2))
+		      uuid_value: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True))
+		      boolean_value: Mapped[bool | None] = mapped_column(Boolean())
+		      numeric_value: Mapped[Decimal | None] = mapped_column(Numeric(None))
+		      money_amount: Mapped[Decimal | None] = mapped_column(Numeric(12, 2))
+		      real_value: Mapped[float | None] = mapped_column(REAL())
+		      double_value: Mapped[float | None] = mapped_column(DOUBLE_PRECISION())
+		      date_value: Mapped[date | None] = mapped_column(Date())
+		      time_value: Mapped[time | None] = mapped_column(Time(timezone=False))
+		      timetz_value: Mapped[time | None] = mapped_column(Time(timezone=True))
+		      timestamp_value: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=False))
+		      timestamptz_value: Mapped[datetime | None] = mapped_column(TIMESTAMP(timezone=True))
+		      interval_value: Mapped[timedelta | None] = mapped_column(Interval())
+		      json_value: Mapped[dict | None] = mapped_column(JSON())
+		      jsonb_value: Mapped[dict | None] = mapped_column(JSONB())
+		      bytea_value: Mapped[bytes | None] = mapped_column(LargeBinary())
+		      inet_value: Mapped[str | None] = mapped_column(INET())
+		      cidr_value: Mapped[str | None] = mapped_column(CIDR())
+		      macaddr_value: Mapped[str | None] = mapped_column(MACADDR())
+		      money_value: Mapped[Decimal | None] = mapped_column(MONEY())
+		      bit_value: Mapped[str | None] = mapped_column(VectorBit(8))
+		      vector_value: Mapped[list[float] | None] = mapped_column(Vector(3))
+		      halfvec_value: Mapped[list[float] | None] = mapped_column(HALFVEC(3))
+		      sparsevec_value: Mapped[object | None] = mapped_column(SPARSEVEC(3))
+		      mood_value: Mapped[Mood | None] = mapped_column(MoodType)
+		      mood_history: Mapped[list[Mood] | None] = mapped_column(ARRAY(MoodType))
+		      integer_list: Mapped[list[int] | None] = mapped_column(ARRAY(Integer()))
+		      uuid_list: Mapped[list[UUID] | None] = mapped_column(ARRAY(PGUUID(as_uuid=True)))
+		      integer_default: Mapped[int] = mapped_column(Integer(), server_default=text("42"))
+		      numeric_default: Mapped[Decimal] = mapped_column(Numeric(None), server_default=text("1.50"))
+		      text_default: Mapped[str] = mapped_column(Text(), server_default=text("'it''s \\"quoted\\"'"))
+		      date_default: Mapped[date] = mapped_column(Date(), server_default=text("DATE '2024-01-31'"))
 		  "
 		`);
 		expect(generatedCode(awkwardNamesDesign)).toMatchInlineSnapshot(`
@@ -267,7 +269,7 @@ describe("SQLAlchemy schema code", () => {
 		  from sqlalchemy import (
 		      ARRAY, BigInteger, Boolean, CHAR, Date, DOUBLE_PRECISION, ForeignKey, Identity, Index, Integer,
 		      Interval, LargeBinary, Numeric, REAL, SmallInteger, String, Text, Time, TIMESTAMP, UniqueConstraint,
-		      text,
+		      column, text,
 		  )
 		  from sqlalchemy.dialects.postgresql import CIDR, ENUM, INET, JSONB, MACADDR, MONEY, UUID as PGUUID, JSON
 		  from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -286,26 +288,26 @@ describe("SQLAlchemy schema code", () => {
 
 		  class Class(Base):
 		      __tablename__ = "class"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      from_: Mapped[str] = mapped_column("from", Text(), nullable=False)
-		      import_: Mapped[str | None] = mapped_column("import", Text(), nullable=True)
-		      type: Mapped[str | None] = mapped_column("type", Text(), nullable=True)
-		      _2fa_secret: Mapped[str | None] = mapped_column("2fa_secret", Text(), nullable=True)
-		      display_name: Mapped[str | None] = mapped_column("Display Name", Text(), nullable=True)
-		      user_id: Mapped[int | None] = mapped_column("user_id", Integer(), nullable=True)
-		      user_id_2: Mapped[int | None] = mapped_column("userId", Integer(), nullable=True)
-		      order_items_class_id_items: Mapped[list[OrderItems]] = relationship("OrderItems", back_populates="class_class_id", foreign_keys="[OrderItems.class_id]")
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      from_: Mapped[str] = mapped_column("from", Text())
+		      import_: Mapped[str | None] = mapped_column("import", Text())
+		      type: Mapped[str | None] = mapped_column(Text())
+		      _2fa_secret: Mapped[str | None] = mapped_column("2fa_secret", Text())
+		      display_name: Mapped[str | None] = mapped_column("Display Name", Text())
+		      user_id: Mapped[int | None] = mapped_column(Integer())
+		      user_id_2: Mapped[int | None] = mapped_column("userId", Integer())
+		      order_items: Mapped[list[OrderItem]] = relationship("OrderItem", back_populates="class_", foreign_keys="[OrderItem.class_id]")
 
-		  class OrderItems(Base):
+		  class OrderItem(Base):
 		      __tablename__ = "order_items"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
-		      class_id: Mapped[int] = mapped_column("class_id", BigInteger(), ForeignKey("class.id", name="order_items_class_id_fkey", ondelete="NO ACTION", onupdate="NO ACTION"), nullable=False)
-		      status: Mapped[OrderStatus] = mapped_column("status", OrderStatusType, nullable=False)
-		      class_class_id: Mapped[Class] = relationship("Class", back_populates="order_items_class_id_items", foreign_keys="[OrderItems.class_id]", uselist=False)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
+		      class_id: Mapped[int] = mapped_column(BigInteger(), ForeignKey("class.id", name="order_items_class_id_fkey"))
+		      status: Mapped[OrderStatus] = mapped_column(OrderStatusType)
+		      class_: Mapped[Class] = relationship("Class", back_populates="order_items", foreign_keys="[OrderItem.class_id]", uselist=False)
 
-		  class OrderItems_2(Base):
+		  class OrderItem_2(Base):
 		      __tablename__ = "OrderItems"
-		      id: Mapped[int] = mapped_column("id", BigInteger(), Identity(always=True), primary_key=True)
+		      id: Mapped[int] = mapped_column(BigInteger(), Identity(always=True), primary_key=True)
 		  "
 		`);
 	});
@@ -315,14 +317,18 @@ describe("SQLAlchemy schema code", () => {
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
 		expect(result.code).toContain("ForeignKey(\"users.id\", name=\"posts_author_id_fkey\"");
-		expect(result.code).toContain("remote_side=\"[Comments.id]\"");
+		expect(result.code).toContain("remote_side=\"[Comment.id]\"");
 		expect(result.code).toContain("uselist=False");
 		expect(result.code).toContain("UniqueConstraint(\"post_id\", \"tag_id\"");
-		expect(result.code).toContain("Mapped[list[Posts]] = relationship(\"Posts\"");
-		expect(result.code).toContain("foreign_keys=\"[Posts.author_id]\"");
-		expect(result.code).toContain("foreign_keys=\"[Posts.editor_id]\"");
-		expect(result.code).toContain("class PostTags(Base):");
+		expect(result.code).toContain("Mapped[list[Post]] = relationship(\"Post\"");
+		expect(result.code).toContain("foreign_keys=\"[Post.author_id]\"");
+		expect(result.code).toContain("foreign_keys=\"[Post.editor_id]\"");
+		expect(result.code).toContain("class PostTag(Base):");
 		expect(result.code).toContain("back_populates=");
+		expect(result.code).toContain("secondary=\"post_tags\", viewonly=True");
+		expect(result.code).toContain("author_posts: Mapped[list[Post]]");
+		expect(result.code).toContain("editor_posts: Mapped[list[Post]]");
+		expect(result.code).toContain("replies: Mapped[list[Comment]]");
 	});
 
 	test("maps the full PostgreSQL type catalog and defaults", () => {
@@ -347,7 +353,7 @@ describe("SQLAlchemy schema code", () => {
 		const result = generateSqlAlchemyModels(blogDesign);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		for (const fragment of ["postgresql_using=\"gin\"", "DESC NULLS LAST", "jsonb_path_ops", "postgresql_include=[\"title\"]", "postgresql_nulls_not_distinct=True", "pages_per_range", "fastupdate"]) {
+		for (const fragment of ["postgresql_using=\"gin\"", ".desc().nulls_last()", "postgresql_ops={\"metadata\": \"jsonb_path_ops\"}", "postgresql_include=[\"title\"]", "postgresql_nulls_not_distinct=True", "pages_per_range", "fastupdate"]) {
 			expect(result.code).toContain(fragment);
 		}
 	});
@@ -356,7 +362,7 @@ describe("SQLAlchemy schema code", () => {
 		const result = generateSqlAlchemyModels(vectorDesign);
 		expect(result.ok).toBe(true);
 		if (!result.ok) return;
-		for (const fragment of ["Vector(1536)", "HALFVEC(768)", "SPARSEVEC(30000)", "VectorBit(256)", "postgresql_using=\"hnsw\"", "vector_cosine_ops", "halfvec_l2_ops"]) {
+		for (const fragment of ["Vector(1536)", "HALFVEC(768)", "SPARSEVEC(30000)", "VectorBit(256)", "postgresql_using=\"hnsw\"", "postgresql_ops={\"embedding\": \"vector_cosine_ops\"}", "postgresql_ops={\"summary_embedding\": \"halfvec_l2_ops\"}"]) {
 			expect(result.code).toContain(fragment);
 		}
 		expect(result.code).toContain("CREATE EXTENSION IF NOT EXISTS vector");
