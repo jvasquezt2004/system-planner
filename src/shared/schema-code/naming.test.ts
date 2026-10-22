@@ -25,6 +25,9 @@ describe("schema code naming", () => {
 		expect(singularize("addresses")).toBe("address");
 		expect(singularize("boxes")).toBe("box");
 		expect(singularize("status")).toBe("status");
+		expect(singularize("statuses")).toBe("status");
+		expect(singularize("buses")).toBe("bus");
+		expect(pluralize("statuses")).toBe("statuses");
 		expect(singularize("people")).toBe("person");
 		expect(singularize("data")).toBe("data");
 		expect(pluralize("user")).toBe("users");
