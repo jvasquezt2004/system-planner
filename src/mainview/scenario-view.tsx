@@ -1,8 +1,7 @@
 /// <reference types="vite/client" />
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
-import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
-import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
+import "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { DesignEnumType, DesignFunction, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
@@ -25,13 +24,6 @@ const allSupabaseTypeDeclarations = {
 	...supabaseTypeDeclarations,
 	...otherSupabaseTypeDeclarations,
 	...phoenixTypeDeclarations,
-};
-const scenarioMonacoEnvironment = globalThis as typeof globalThis & {
-	MonacoEnvironment?: { getWorker: (_moduleId: string, label: string) => Worker };
-};
-scenarioMonacoEnvironment.MonacoEnvironment = {
-	getWorker: (_moduleId, label) =>
-		label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
 };
 
 type Props = {

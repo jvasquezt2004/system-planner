@@ -1,8 +1,7 @@
 /// <reference types="vite/client" />
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
-import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
-import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
+import "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { EdgeFunction, EdgeFunctionSaveState, DesignEnumType, DesignFunction, SandboxAppliedTable } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioTypeLibraryUri } from "../shared/scenario-types";
@@ -27,15 +26,6 @@ const allSupabaseTypeDeclarations = {
 	...otherSupabaseTypeDeclarations,
 	...phoenixTypeDeclarations,
 };
-const monacoEnvironment = globalThis as typeof globalThis & {
-	MonacoEnvironment?: { getWorker: (_moduleId: string, label: string) => Worker };
-};
-monacoEnvironment.MonacoEnvironment = {
-	getWorker: (_moduleId, label) =>
-		label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
-};
-
-
 type Props = {
 	edgeFunctions: EdgeFunction[];
 	save: EdgeFunctionSaveState;
@@ -47,6 +37,8 @@ type Props = {
 	onRemove: (edgeFunctionId: string) => void;
 	onUpdateSource: (edgeFunctionId: string, source: string) => void;
 };
+
+
 
 /** Manage project Edge functions as saved source, separate from design history. */
 export function EdgeFunctionsView({
