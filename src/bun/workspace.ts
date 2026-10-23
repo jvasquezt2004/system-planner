@@ -102,7 +102,7 @@ export interface DesignWorkspace {
 	updateScenarioSource(action: UpdateScenarioSourceAction): Promise<WorkspaceState>;
 	beginScenarioRun(action: { scenarioId: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
-	finishScenarioRun(action: { runId: string; status: "passed" | "errored"; console: string[]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
+	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
@@ -750,6 +750,7 @@ export async function createDesignWorkspace(
 							requests: [],
 							console: [],
 							grids: [],
+							expectations: [],
 						},
 					},
 				});
@@ -840,6 +841,7 @@ export async function createDesignWorkspace(
 								status,
 								console: output,
 								grids,
+								expectations: action.expectations ?? [],
 								...(reason ? { reason } : {}),
 							},
 						},

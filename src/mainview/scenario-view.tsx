@@ -197,6 +197,16 @@ export function ScenarioView({
 									{selectedRun.console.length > 0 && (
 										<pre aria-label="Scenario console output" className="mt-2 whitespace-pre-wrap font-mono text-[12px]">{selectedRun.console.join("\n")}</pre>
 									)}
+									{selectedRun.expectations.length > 0 && (
+										<ol aria-label="Scenario expectations" className="mt-3 space-y-2">
+											{selectedRun.expectations.map((expectation, index) => (
+												<li key={`${index}-${expectation.description}`} className="border-t border-rule pt-2 text-[12px]">
+													<div className="font-medium">{expectation.passed ? "Met" : "Unmet"}: {expectation.description}</div>
+													<p className="text-ink-3">{expectation.message}</p>
+												</li>
+											))}
+										</ol>
+									)}
 									<ol aria-label="Sandbox API request log" className="mt-3 space-y-2">
 										{selectedRun.requests.map((entry) => (
 											<li key={entry.order} className="border-t border-rule pt-2 font-mono text-[11px]">

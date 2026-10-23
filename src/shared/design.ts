@@ -16,6 +16,11 @@ export type ProjectSummary = {
 /** Saved TypeScript source managed independently from the design history. */
 export type Scenario = { id: string; name: string; source: string };
 
+export type ScenarioExpectationResult = {
+	description: string;
+	passed: boolean;
+	message: string;
+};
 export type ScenarioRunStatus = "running" | "passed" | "failed" | "errored";
 export type ScenarioResultGrid = {
 	table: string;
@@ -31,6 +36,7 @@ export type ScenarioRun = {
 	requests: ScenarioRequestLogEntry[];
 	console: string[];
 	grids: ScenarioResultGrid[];
+	expectations: ScenarioExpectationResult[];
 	reason?: "exception" | "stopped" | "timed out";
 };
 
