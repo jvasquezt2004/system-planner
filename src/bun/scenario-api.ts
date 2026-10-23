@@ -67,7 +67,7 @@ export async function handleSandboxApiRequest(
 	const tableName = segments.length === 3 && segments[0] === "rest" && segments[1] === "v1"
 		? decodeURIComponent(segments[2])
 		: "";
-	const filters = Object.fromEntries([...url.searchParams.entries()].filter(([key]) => key !== "select"));
+	const filters = Object.fromEntries([...url.searchParams.entries()].filter(([key]) => key !== "select" && key !== "columns"));
 	const identity = identityFromHeaders(request.headers);
 	let response: SandboxApiResponse;
 	let table = tableName;
@@ -160,21 +160,99 @@ export async function handleSandboxApiRequest(
 						body: records,
 					};
 				}
-			} else if (request.method === "POST") {
-				if ([...url.searchParams.keys()].some((key) => key !== "select")) throw unsupported("insert query options");
-				if (select !== null && select !== "*") throw unsupported("insert representation columns other than *");
-				if (preferences.length !== 1 || preferences[0] !== "return=representation") {
-					throw unsupported("insert requires only Prefer: return=representation");
+			} else if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
+				if ([...url.searchParams.keys()].some((key) =>
+					key !== "select" && key !== "on_conflict" && key !== "columns" && key !== "or" && key !== "and" && !columns.has(key)
+				)) {
+					throw unsupported("write query options");
 				}
-				const record = request.body ? JSON.parse(request.body) : null;
-				if (!record || typeof record !== "object" || Array.isArray(record)) throw unsupported("insert requires one JSON record");
-				const fields = Object.keys(record);
-				if (fields.length === 0 || fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
-				const params = fields.map((field) => (record as Record<string, unknown>)[field]);
-				const values = params.map((_, index) => `$${index + 1}`).join(", ");
-				const names = fields.map(quoteIdentifier).join(", ");
-				const result = await transaction.query(`INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES (${values}) RETURNING *`, params);
-				transactionResponse = { status: 201, headers: { "content-type": "application/json", "content-range": `0-${Math.max(0, result.rows.length - 1)}/*` }, body: result.rows };
+				const selected = select === null ? [...columns] : parseSelection(select, columns);
+				const returnPreference = preferences.find((value) => value.startsWith("return="))?.slice(7) ?? "minimal";
+				if (preferences.some((value) => value.startsWith("return=") && value !== "return=minimal" && value !== "return=representation")) {
+					throw unsupported("write return preference");
+				}
+				const representation = returnPreference === "representation";
+				const resolution = preferences.find((value) => value.startsWith("resolution="));
+				if (resolution && resolution !== "resolution=merge-duplicates" && resolution !== "resolution=ignore-duplicates") {
+					throw unsupported("upsert resolution preference");
+				}
+				if (request.method !== "POST" && (resolution || url.searchParams.has("on_conflict"))) {
+					throw unsupported("upsert options on non-POST write");
+				}
+				const missingDefault = preferences.includes("missing=default");
+				const where: string[] = [];
+				const filterParams: unknown[] = [];
+				for (const [key, value] of url.searchParams.entries()) {
+					if (key === "select" || key === "on_conflict" || key === "columns") continue;
+					if (key === "or") where.push(parseOr(value, columns, filterParams));
+					else {
+						if (!columns.has(key)) throw unsupported(`filter column ${key}`);
+						where.push(parseFilter(key, value, filterParams));
+					}
+				}
+				if (request.method === "POST") {
+					const body: unknown = request.body ? JSON.parse(request.body) : null;
+					const records = Array.isArray(body) ? body : [body];
+					if (!records.length || records.some((record) => !record || typeof record !== "object" || Array.isArray(record))) {
+						throw unsupported("insert requires one or more JSON records");
+					}
+					const fields = [...new Set(records.flatMap((record) => Object.keys(record as object)))];
+					if (fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
+					const names = fields.map(quoteIdentifier).join(", ");
+					const params: unknown[] = [];
+					const values = records.map((record) => `(${fields.map((field) => {
+						const item = record as Record<string, unknown>;
+						if (!(field in item) && missingDefault) return "DEFAULT";
+						params.push(item[field] ?? null);
+						return `$${params.length}`;
+					}).join(", ")})`).join(", ");
+					let conflict = "";
+					if (resolution || url.searchParams.has("on_conflict")) {
+						const target = (url.searchParams.get("on_conflict") ?? schemaTable.columns.filter((column) => column.primaryKey).map((column) => column.name).join(",")).split(",").filter(Boolean);
+						if (!target.length || target.some((column) => !columns.has(column))) throw unsupported("upsert on_conflict columns");
+						conflict = resolution === "resolution=ignore-duplicates"
+							? ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO NOTHING`
+							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
+					}
+					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
+					if (representation) {
+						const result = await queryWriteRepresentation(transaction, statement, selected, params);
+						transactionResponse = writeResponse(201, result, true);
+					} else {
+						await transaction.query(statement, params);
+						transactionResponse = writeResponse(201, null, false);
+					}
+				} else {
+					if (!where.length) throw unsupported("update or delete without filters");
+					const clause = ` WHERE ${where.join(" AND ")}`;
+					if (request.method === "PATCH") {
+						const body: unknown = request.body ? JSON.parse(request.body) : null;
+						if (!body || typeof body !== "object" || Array.isArray(body)) throw unsupported("update requires a JSON object");
+						const entries = Object.entries(body as Record<string, unknown>);
+						if (!entries.length || entries.some(([field]) => !columns.has(field))) throw unsupported("update columns outside the applied table");
+						const params = entries.map(([, value]) => value);
+						const assignments = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
+						const filters = where.map((part) => part.replace(/\$(\d+)/g, (_, n: string) => `$${Number(n) + params.length}`));
+						const statement = `UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}`;
+						if (representation) {
+							const result = await queryWriteRepresentation(transaction, statement, selected, [...params, ...filterParams]);
+							transactionResponse = writeResponse(200, result, true);
+						} else {
+							await transaction.query(statement, [...params, ...filterParams]);
+							transactionResponse = writeResponse(200, null, false);
+						}
+					} else {
+						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
+						if (representation) {
+							const result = await queryWriteRepresentation(transaction, statement, selected, filterParams);
+							transactionResponse = writeResponse(200, result, true);
+						} else {
+							await transaction.query(statement, filterParams);
+							transactionResponse = writeResponse(200, null, false);
+						}
+					}
+				}
+				if (!representation && request.method !== "POST") transactionResponse.status = 204;
 			} else {
 				throw unsupported(`HTTP ${request.method}`);
 			}
@@ -242,6 +320,28 @@ function parseOrder(value: string, columns: Set<string>): string {
 		if (nulls && nulls !== "nullsfirst" && nulls !== "nullslast") throw unsupported("order null placement");
 		return `${quoteIdentifier(column)} ${direction.toUpperCase()}${nulls ? ` ${nulls === "nullsfirst" ? "NULLS FIRST" : "NULLS LAST"}` : ""}`;
 	}).join(", ");
+}
+
+async function queryWriteRepresentation(
+	transaction: { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> },
+	statement: string,
+	selected: string[],
+	params: unknown[],
+): Promise<unknown[]> {
+	const projection = selected.flatMap((column, index) => [`$${params.length + index + 1}::text`, `written.${quoteIdentifier(column)}`]).join(", ");
+	const result = await transaction.query<{ result: unknown }>(
+		`WITH written AS (${statement} RETURNING *) SELECT jsonb_build_object(${projection}) AS result FROM written`,
+		[...params, ...selected],
+	);
+	return result.rows.map((row) => row.result);
+}
+
+function writeResponse(status: number, rows: unknown[] | null, representation: boolean): SandboxApiResponse {
+	return {
+		status,
+		headers: representation ? { "content-type": "application/json" } : {},
+		body: representation ? rows ?? [] : null,
+	};
 }
 
 function parseFilter(column: string, expression: string, params: unknown[]): string {

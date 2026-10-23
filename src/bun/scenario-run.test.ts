@@ -86,6 +86,146 @@ describe("Scenario runs", () => {
 		await workspace.finishScenarioRun({ runId, status: "passed", console: ["inserted one record"] });
 		expect(workspace.getState().scenarioRuns[scenarioId]).toMatchObject({ status: "passed", console: ["inserted one record"] });
 	}, 60_000);
+	test("the real supabase-js client performs bulk insert, filtered update, upsert, and delete", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		const idColumn = books?.columns.find((column) => column.name === "id");
+		if (!books || !idColumn) throw new Error("Expected Books primary key.");
+		await workspace.updateColumn({ tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+
+		const inserted = await supabase.from("Books").insert([
+			{ id: 1, title: "First" },
+			{ id: 2, title: "Second" },
+		]).select("id,title");
+		const rolledBack = await supabase.from("Books").insert([
+			{ id: 3, title: "Must roll back" },
+			{ id: 4, title: null },
+		]).select("*");
+		expect(rolledBack.error?.code).toBe("23502");
+		const afterRollback = await supabase.from("Books").select("id").eq("id", 3);
+		expect(afterRollback.data).toEqual([]);
+		expect(inserted.error).toBeNull();
+		expect(inserted.data).toEqual([{ id: 1, title: "First" }, { id: 2, title: "Second" }]);
+
+		const updated = await supabase.from("Books").update({ title: "Changed" }).eq("id", 2).select("title");
+		expect(updated.error).toBeNull();
+		expect(updated.data).toEqual([{ title: "Changed" }]);
+
+		const upserted = await supabase.from("Books").upsert({ id: 2, title: "Merged" }, { onConflict: "id" }).select("*");
+		expect(upserted.error).toBeNull();
+		expect(upserted.data).toEqual([{ id: 2, title: "Merged" }]);
+
+		const deleted = await supabase.from("Books").delete().eq("id", 1).select("*");
+		expect(deleted.error).toBeNull();
+		expect(deleted.data).toEqual([{ id: 1, title: "First" }]);
+		const remaining = await supabase.from("Books").select("id,title");
+		expect(remaining.data).toEqual([{ id: 2, title: "Merged" }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("write representations match read serialization for PostgreSQL value types", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
+		if (!table) throw new Error("Expected Books table.");
+		for (const [name, type] of [
+			["recorded_at", "timestamptz"],
+			["amount", "numeric"],
+			["sequence", "bigint"],
+			["payload", "jsonb"],
+			["event_date", "date"],
+		] as const) {
+			await workspace.addColumn({ tableId: table.id, name, type });
+		}
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const values = {
+			title: "Serialized",
+			recorded_at: "2025-01-02T03:04:05.123456Z",
+			amount: "123456789012345.6789",
+			sequence: "9007199254740993",
+			payload: { nested: [1, "value"] },
+			event_date: "2025-01-02",
+		};
+		const inserted = await supabase.from("Books").insert(values).select("*");
+		expect(inserted.error).toBeNull();
+		if (!inserted.data?.length) throw new Error("Expected inserted representation.");
+		const selected = await supabase.from("Books").select("*").eq("id", inserted.data[0]!.id);
+		expect(selected.error).toBeNull();
+		expect(inserted.data!).toEqual(selected.data!);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("bulk inserts honor defaultToNull for heterogeneous record keys", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const itemsState = await workspace.addTable({ name: "Items" });
+		const items = itemsState.design?.tables.find((table) => table.name === "Items");
+		if (!items) throw new Error("Expected Items table.");
+		const addedA = await workspace.addColumn({ tableId: items.id, name: "a", type: "text" });
+		const columnA = addedA.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "a");
+		const addedB = await workspace.addColumn({ tableId: items.id, name: "b", type: "text" });
+		const columnB = addedB.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "b");
+		if (!columnA || !columnB) throw new Error("Expected heterogeneous payload columns.");
+		await workspace.updateColumn({
+			tableId: items.id,
+			columnId: columnA.id,
+			changes: { default: { kind: "literal", literalType: "text", value: "default-a" } },
+		});
+		await workspace.updateColumn({
+			tableId: items.id,
+			columnId: columnB.id,
+			changes: { default: { kind: "literal", literalType: "text", value: "default-b" } },
+		});
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const useDefaults = await supabase.from("Items").insert([{ a: "first" }, { b: "second" }], { defaultToNull: false }).select("a,b");
+		expect(useDefaults.error).toBeNull();
+		expect(useDefaults.data).toEqual([{ a: "first", b: "default-b" }, { a: "default-a", b: "second" }]);
+		const useNulls = await supabase.from("Items").insert([{ a: "third" }, { b: "fourth" }]).select("a,b");
+		expect(useNulls.error).toBeNull();
+		expect(useNulls.data).toEqual([{ a: "third", b: null }, { a: null, b: "fourth" }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("the real supabase-js client reports foreign-key, one-to-one, and NO ACTION violations", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-relational-writes-"));
+		directories.push(directory);
+		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
+		workspaces.push(workspace);
+		await workspace.createProject({ name: "Relationship writes" });
+		const authorsState = await workspace.addTable({ name: "Authors" });
+		const booksState = await workspace.addTable({ name: "Books" });
+		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
+		const books = booksState.design?.tables.find((table) => table.name === "Books");
+		if (!authors || !books) throw new Error("Expected relationship tables.");
+		const authorIdColumn = authors.columns.find((column) => column.name === "id");
+		const bookIdColumn = books.columns.find((column) => column.name === "id");
+		if (!authorIdColumn || !bookIdColumn) throw new Error("Expected primary-key columns.");
+		await workspace.updateColumn({ tableId: authors.id, columnId: authorIdColumn.id, changes: { identity: false } });
+		await workspace.updateColumn({ tableId: books.id, columnId: bookIdColumn.id, changes: { identity: false } });
+		const relationshipState = await workspace.addRelationship({
+			referencingTableId: books.id,
+			referencedTableId: authors.id,
+			cardinality: "one-to-one",
+		});
+		const relationship = relationshipState.design?.relationships[0];
+		if (!relationship) throw new Error("Expected one-to-one relationship.");
+		const authorId = relationshipState.design?.tables.find((table) => table.id === books.id)?.columns
+			.find((column) => column.id === relationship.referencingColumnId)?.name;
+		if (!authorId) throw new Error("Expected relationship-owned foreign key column.");
+		const scenario = await workspace.createScenario({ name: "Relationship violations" });
+		const run = await workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0]!.id });
+		const supabase = clientFor(workspace, run.runId);
+		const author = await supabase.from("Authors").insert({ id: 1 }).select("id").single();
+		expect(author.error).toBeNull();
+		const orphan = await supabase.from("Books").insert({ id: 1, [authorId]: 999 }).select("*");
+		expect(orphan.error).toMatchObject({ code: "23503" });
+		const firstBook = await supabase.from("Books").insert({ id: 1, [authorId]: 1 }).select("*");
+		expect(firstBook.error).toBeNull();
+		const duplicatePair = await supabase.from("Books").insert({ id: 2, [authorId]: 1 }).select("*");
+		expect(duplicatePair.error).toMatchObject({ code: "23505" });
+		const referencedDelete = await supabase.from("Authors").delete().eq("id", 1).select("*");
+		expect(referencedDelete.error).toMatchObject({ code: "23503" });
+		await workspace.finishScenarioRun({ runId: run.runId, status: "passed", console: [] });
+	}, 60_000);
 	test("finishing captures every table in primary-key order with a 500-row cap and total", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		await workspace.addTable({ name: "EmptyRecords" });
