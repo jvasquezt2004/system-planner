@@ -1,12 +1,42 @@
-import { useEffect, useState, type FormEvent } from "react";
+/// <reference types="vite/client" />
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
+import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
+import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
-import type { Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import type { DesignEnumType, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+const supabaseTypeDeclarations = import.meta.glob(
+	"../../node_modules/@supabase/{supabase-js,postgrest-js,auth-js,functions-js,realtime-js,storage-js}/dist/**/*.d.{ts,mts,cts}",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const otherSupabaseTypeDeclarations = import.meta.glob(
+	"../../node_modules/{iceberg-js}/dist/**/*.d.{ts,mts,cts}",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const phoenixTypeDeclarations = import.meta.glob(
+	"../../node_modules/@supabase/phoenix/priv/static/types/**/*.d.ts",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const allSupabaseTypeDeclarations = {
+	...supabaseTypeDeclarations,
+	...otherSupabaseTypeDeclarations,
+	...phoenixTypeDeclarations,
+};
+const scenarioMonacoEnvironment = globalThis as typeof globalThis & {
+	MonacoEnvironment?: { getWorker: (_moduleId: string, label: string) => Worker };
+};
+scenarioMonacoEnvironment.MonacoEnvironment = {
+	getWorker: (_moduleId, label) =>
+		label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
+};
 
 type Props = {
 	scenarios: Scenario[];
+	appliedTables: SandboxAppliedTable[];
+	appliedEnums: DesignEnumType[];
 	save: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	revision: number;
@@ -22,6 +52,8 @@ type Props = {
 /** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
 	scenarios,
+	appliedTables,
+	appliedEnums,
 	save,
 	scenarioRuns,
 	revision,
@@ -39,6 +71,12 @@ export function ScenarioView({
 	const [sourceDraft, setSourceDraft] = useState(scenarios[0]?.source ?? "");
 	const selected = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
 	const selectedRun = selected ? scenarioRuns[selected.id] : null;
+	const pendingSourceSave = useRef<{ scenarioId: string; source: string } | null>(null);
+	const sourceSaveCallback = useRef(onUpdateSource);
+	sourceSaveCallback.current = onUpdateSource;
+	const monacoApi = useRef<Monaco | null>(null);
+	const monacoEditor = useRef<Parameters<OnMount>[0] | null>(null);
+
 
 	useEffect(() => {
 		if (!selected || !scenarios.some((scenario) => scenario.id === selectedId)) {
@@ -52,7 +90,30 @@ export function ScenarioView({
 	useEffect(() => {
 		setSourceDraft(selected?.source ?? "");
 	}, [selected?.id]);
-
+	useEffect(() => {
+		if (!selected || sourceDraft === selected.source) {
+			if (pendingSourceSave.current?.scenarioId === selected?.id) {
+				pendingSourceSave.current = null;
+			}
+			return;
+		}
+		const pending = { scenarioId: selected.id, source: sourceDraft };
+		pendingSourceSave.current = pending;
+		const timer = setTimeout(() => {
+			if (pendingSourceSave.current === pending) pendingSourceSave.current = null;
+			sourceSaveCallback.current(pending.scenarioId, pending.source);
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [selected?.id, selected?.source, sourceDraft]);
+	useEffect(
+		() => () => {
+			const pending = pendingSourceSave.current;
+			if (!pending) return;
+			pendingSourceSave.current = null;
+			sourceSaveCallback.current(pending.scenarioId, pending.source);
+		},
+		[selected?.id],
+	);
 	function createScenario(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		const name = newName.trim();
@@ -147,7 +208,7 @@ export function ScenarioView({
 									size="sm"
 									disabled={Boolean(runDisabledReason) || selectedRun?.status === "running"}
 									title={runDisabledReason ?? undefined}
-									onClick={() => onRun(selected)}
+									onClick={() => onRun({ ...selected, source: sourceDraft })}
 								>
 									Run
 								</Button>
@@ -170,17 +231,64 @@ export function ScenarioView({
 								<label htmlFor="scenario-source" className="kicker">TypeScript source</label>
 								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
 							</div>
-							<Textarea
-								id="scenario-source"
-								aria-label="Scenario TypeScript source"
+							<Editor
+								key={generateScenarioDatabaseTypes(appliedTables, appliedEnums)}
+								height="min(60vh, 640px)"
+								language="typescript"
 								value={sourceDraft}
-								onChange={(event) => {
-									const source = event.target.value;
-									setSourceDraft(source);
-									onUpdateSource(selected.id, source);
+								onChange={(source) => setSourceDraft(source ?? "")}
+								onMount={(instance, monaco) => {
+									monacoEditor.current = instance;
+									monacoApi.current = monaco;
 								}}
-								spellCheck={false}
-								className="min-h-[min(60vh,640px)] flex-1 resize-y rounded-none border-0 bg-paper-raised px-5 py-4 font-mono text-[12.5px] leading-6 focus-visible:ring-0"
+								onValidate={(markers) => {
+									const monaco = monacoApi.current;
+									const model = monacoEditor.current?.getModel();
+									if (
+										!monaco ||
+										!model ||
+										!markers.some((marker) => marker.severity === monaco.MarkerSeverity.Error)
+									) {
+										return;
+									}
+									monaco.editor.setModelMarkers(
+										model,
+										"typescript",
+										markers.map((marker) => ({
+											...marker,
+											severity: monaco.MarkerSeverity.Warning,
+										})),
+									);
+								}}
+								beforeMount={(monaco) => {
+									monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+										target: monaco.languages.typescript.ScriptTarget.ES2022,
+										module: monaco.languages.typescript.ModuleKind.ESNext,
+										moduleResolution: monaco.languages.typescript.ModuleResolutionKind.Bundler,
+										baseUrl: "/",
+										paths: scenarioSupabaseTypePaths,
+										strict: true,
+										noEmit: true,
+									});
+									monaco.languages.typescript.typescriptDefaults.addExtraLib(
+										generateScenarioDatabaseTypes(appliedTables, appliedEnums),
+										"file:///scenario-globals.d.ts",
+									);
+									for (const [filename, contents] of Object.entries(allSupabaseTypeDeclarations)) {
+										monaco.languages.typescript.typescriptDefaults.addExtraLib(
+											contents,
+											scenarioTypeLibraryUri(filename),
+										);
+									}
+								}}
+								options={{
+									ariaLabel: "Scenario TypeScript source",
+									fontFamily: "IBM Plex Mono, monospace",
+									fontSize: 13,
+									minimap: { enabled: false },
+									scrollBeyondLastLine: false,
+									wordWrap: "on",
+								}}
 							/>
 							{runDisabledReason && (
 								<p className="border-t border-rule px-5 py-2 text-[12px] text-ink-3" role="status">

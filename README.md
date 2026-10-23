@@ -37,13 +37,14 @@ own foreign key and uniqueness. Removing a many-to-many association keeps its
 junction and all columns and drops both foreign keys and pair uniqueness. The
 generated SQL and sandbox check live in the SQL preview view, switched in place
 of the canvas by the masthead. The masthead also opens Scenarios, where each
-project can keep named TypeScript source independently of design undo/redo and
-sandbox rebuilds. Scenario names and source autosave, with save status shown in
-the editor; Scenarios are saved source only and have no run controls. The SQL
-preview holds generated SQL and its status, Copy SQL, an export action with a
-file-name field, and the sandbox check, including the last successful sandbox
-when the current draft is not yet accepted. Undo and Redo buttons sit in the
-masthead next to the project name and revision (`undo-button` and `redo-button`).
+project keeps named TypeScript source and disposable Scenario runs separately
+from design undo/redo. The bundled Monaco editor uses the TypeScript language
+service and types generated from the last successfully applied revision;
+diagnostics are warnings and never prevent a run. Scenario names and source
+autosave with visible save status. The SQL preview includes Copy SQL, export,
+and the last successful sandbox when the current draft is not yet accepted.
+Undo and Redo buttons sit in the masthead next to the project name and revision
+(`undo-button` and `redo-button`).
 
 ## Commands
 

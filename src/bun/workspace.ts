@@ -359,9 +359,18 @@ export async function createDesignWorkspace(
 					? {
 							status: "applied",
 							revision,
-							tables: result.tables,
+							tables: result.tables.map((table) => ({
+								...table,
+								columns: table.columns.map((column) => {
+									const designTable = design.tables.find((candidate) => candidate.name === table.name);
+									const designColumn = designTable?.columns.find((candidate) => candidate.name === column.name);
+									const enumType = design.enumTypes?.find((candidate) => candidate.id === designColumn?.enumTypeId);
+									return enumType ? { ...column, enumTypeName: enumType.name } : column;
+								}),
+							})),
 							relationships: result.relationships,
 							sql: generation.sql,
+							...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
 						}
 					: result.failure === "sql-rejected"
 						? {

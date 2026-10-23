@@ -265,6 +265,8 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 export type SandboxAppliedColumn = {
 	name: string;
 	dataType: string;
+	/** The applied enum type, when this is a user-defined enum column. */
+	enumTypeName?: string;
 	isIdentity: boolean;
 	/** PostgreSQL's own default expression, or null when the column has none. */
 	defaultExpression: string | null;
@@ -298,6 +300,7 @@ export type SandboxSnapshot = {
 	tables: SandboxAppliedTable[];
 	relationships: SandboxAppliedRelationship[];
 	sql: string;
+	enumTypes?: DesignEnumType[];
 };
 
 export type SandboxFailure = "sql-rejected" | "sandbox-error";

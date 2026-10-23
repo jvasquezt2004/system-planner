@@ -537,6 +537,8 @@ function App() {
 							<ScenarioView
 								key={state.project.id}
 								scenarios={state.scenarios}
+								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
+								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
 								save={state.scenarioSave}
 								scenarioRuns={state.scenarioRuns}
 								revision={state.revision}
