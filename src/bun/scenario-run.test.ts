@@ -142,12 +142,66 @@ describe("Scenario runs", () => {
 		await workspace.finishScenarioRun({ runId: first.runId, status: "passed", console: [] });
 	}, 60_000);
 
+	test("expectations report every outcome, fail the run when unmet, and keep exceptions errored", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const runScenario = async (source: string) => {
+			const { runId } = await workspace.beginScenarioRun({ scenarioId });
+			const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+			const { promise, resolve, reject } = Promise.withResolvers<{
+				status: string;
+				console: string[];
+				expectations: { description: string; passed: boolean; message: string }[];
+			}>();
+			worker.onerror = (event) => reject(new Error(event.message));
+			worker.onmessage = async ({ data }: MessageEvent) => {
+				if (data.type === "request") {
+					const response = await workspace.handleSandboxApiRequest({ runId, request: data.request });
+					worker.postMessage({ type: "response", requestId: data.requestId, response });
+				} else if (data.type === "finished") resolve(data);
+			};
+			worker.postMessage({ type: "start", runId, source });
+			try {
+				const result = await promise;
+				const state = await workspace.finishScenarioRun({
+					runId,
+					status: result.status as "passed" | "failed" | "errored",
+					console: result.console,
+					expectations: result.expectations,
+				});
+				return { result, run: state.scenarioRuns[scenarioId] };
+			} finally {
+				worker.terminate();
+			}
+		};
+
+		const met = await runScenario(`
+			const inserted = await supabase.from("Books").insert({ title: "expected" }).select("*");
+			expect(inserted).succeeds();
+			expect(inserted).returnsDataEqual([{ id: 1, title: "expected" }]);
+			const rejected = await supabase.from("Books").insert({ title: null }).select("*");
+			expect(rejected).fails("23502");
+		`);
+		expect(met.result).toMatchObject({ status: "passed", expectations: [{ passed: true }, { passed: true }, { passed: true }] });
+		expect(met.run?.status).toBe("passed");
+
+		const unmet = await runScenario(`
+			const result = await supabase.from("Books").insert({ title: "actual" }).select("*");
+			expect(result).fails("23505");
+			expect(result).returnsDataEqual([]);
+		`);
+		expect(unmet.result).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
+		expect(unmet.run).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
+
+		const exception = await runScenario(`throw new Error("scenario broke");`);
+		expect(exception.result.status).toBe("errored");
+		expect(exception.run?.status).toBe("errored");
+	}, 30_000);
+
 	test("scenario source executes inside a real Worker and transports requests through the workspace", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const { runId } = await workspace.beginScenarioRun({ scenarioId });
 		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
 		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; console: string[] }>();
-		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
 		worker.onerror = (event) => reject(new Error(event.message));
 		worker.onmessage = async ({ data }: MessageEvent) => {
 			if (data.type === "request") {
@@ -161,7 +215,6 @@ describe("Scenario runs", () => {
 			expect(result).toMatchObject({ status: "passed", console: ['worker [{"id":1,"title":"from worker"}]'] });
 			expect(workspace.getState().scenarioRuns[scenarioId]?.requests).toHaveLength(1);
 		} finally {
-			clearTimeout(timeout);
 			worker.terminate();
 			await workspace.finishScenarioRun({ runId, status: "passed", console: ["worker completed"] });
 		}

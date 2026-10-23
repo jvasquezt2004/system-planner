@@ -8,6 +8,8 @@ const scope = self as unknown as {
 let requestSequence = 0;
 const pending = new Map<string, (response: { status: number; headers: Record<string, string>; body: unknown }) => void>();
 const output: string[] = [];
+type ExpectationResult = { description: string; passed: boolean; message: string };
+const expectations: ExpectationResult[] = [];
 
 scope.onmessage = async (event: MessageEvent) => {
 	const message = event.data as
@@ -18,9 +20,11 @@ scope.onmessage = async (event: MessageEvent) => {
 		pending.delete(message.requestId);
 		return;
 	}
+	expectations.length = 0;
+	output.length = 0;
 	const runId = message.runId;
-	const report = (status: "passed" | "errored", reason?: "exception") =>
-		scope.postMessage({ type: "finished", runId, status, reason, console: output });
+	const report = (status: "passed" | "failed" | "errored", reason?: "exception") =>
+		scope.postMessage({ type: "finished", runId, status: status === "passed" && expectations.some((item) => !item.passed) ? "failed" : status, reason, console: output, expectations: [...expectations] });
 	try {
 		const file = ts.createSourceFile("scenario.ts", message.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
 		const hasRuntimeImport = (node: ts.Node): boolean => {
@@ -56,6 +60,27 @@ scope.onmessage = async (event: MessageEvent) => {
 			auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
 			global: { fetch: requestFetch },
 		});
+		const recordExpectation = (description: string, passed: boolean, message: string) => {
+			expectations.push({ description, passed, message });
+		};
+		const expectResult = (result: { data?: unknown; error?: { code?: string; message?: string } | null }) => ({
+			succeeds() {
+				const passed = !result.error;
+				recordExpectation("request succeeds", passed, passed ? "Request succeeded." : `Request failed: ${result.error?.message ?? result.error?.code ?? "unknown error"}`);
+			},
+			fails(code?: string) {
+				const matchesFailure = Boolean(result.error) && (!code || result.error?.code === code);
+				recordExpectation(
+					code ? `request fails with ${code}` : "request fails",
+					matchesFailure,
+					matchesFailure ? `Request failed${code ? ` with ${code}` : ""}.` : result.error ? `Expected error ${code}, received ${result.error.code ?? "unknown error"}.` : "Expected request to fail, but it succeeded.",
+				);
+			},
+			returnsDataEqual(expected: unknown) {
+				const passed = deepEqual(result.data, expected);
+				recordExpectation("request returns expected data", passed, passed ? "Returned data matched." : `Expected ${stringify(expected)}, received ${stringify(result.data)}.`);
+			},
+		});
 		const capturedConsole = {
 			log: (...values: unknown[]) => output.push(values.map(stringify).join(" ")),
 			info: (...values: unknown[]) => output.push(values.map(stringify).join(" ")),
@@ -69,13 +94,22 @@ scope.onmessage = async (event: MessageEvent) => {
 			importScripts: undefined,
 			console: capturedConsole,
 		});
-		await new Function("supabase", "console", `return (async () => { ${source}\n })()`)(supabase, capturedConsole);
+		await new Function("supabase", "console", "expect", `return (async () => { ${source}\n })()`)(supabase, capturedConsole, expectResult);
 		report("passed");
 	} catch (error) {
 		output.push(error instanceof Error ? error.message : String(error));
 		report("errored", "exception");
 	}
 };
+function deepEqual(actual: unknown, expected: unknown): boolean {
+	if (Object.is(actual, expected)) return true;
+	if (typeof actual !== "object" || actual === null || typeof expected !== "object" || expected === null) return false;
+	if (Array.isArray(actual) !== Array.isArray(expected)) return false;
+	const actualKeys = Object.keys(actual);
+	const expectedKeys = Object.keys(expected);
+	return actualKeys.length === expectedKeys.length
+		&& expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(actual, key) && deepEqual((actual as Record<string, unknown>)[key], (expected as Record<string, unknown>)[key]));
+}
 
 function stringify(value: unknown): string {
 	if (typeof value === "string") return value;

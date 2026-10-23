@@ -21,6 +21,7 @@ import type {
 	SqlPreviewExportResult,
 	SandboxApiRequest,
 	SandboxApiResponse,
+	ScenarioRun,
 	WorkspaceState,
 } from "./design";
 import type { SchemaCodeSnapshot } from "./schema-code";
@@ -59,7 +60,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			updateScenarioSource: { params: UpdateScenarioSourceAction; response: WorkspaceState };
 			beginScenarioRun: { params: { scenarioId: string }; response: { runId: string; state: WorkspaceState } };
 			handleSandboxApiRequest: { params: { runId: string; request: SandboxApiRequest }; response: SandboxApiResponse };
-			finishScenarioRun: { params: { runId: string; status: "passed" | "errored"; console: string[]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };
+			finishScenarioRun: { params: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };
 			undo: {
 				params: Record<string, never>;
 				response: WorkspaceState;

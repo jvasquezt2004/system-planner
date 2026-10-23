@@ -12,6 +12,7 @@ import type {
 	RemovalTarget,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
+	ScenarioRun,
 	WorkspaceState,
 	DesignIndex,
 	ReferentialAction,
@@ -87,7 +88,7 @@ export const workspaceClient = {
 	handleSandboxApiRequest(runId: string, request: SandboxApiRequest) {
 		return rpc.request.handleSandboxApiRequest({ runId, request });
 	},
-	finishScenarioRun(input: { runId: string; status: "passed" | "errored"; console: string[]; reason?: "exception" | "stopped" | "timed out" }) {
+	finishScenarioRun(input: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }) {
 		return rpc.request.finishScenarioRun(input);
 	},
 	openProject(projectId: string): Promise<WorkspaceState> {

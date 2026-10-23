@@ -186,6 +186,7 @@ function App() {
 					status: message.status,
 					reason: message.reason,
 					console: message.console,
+					expectations: message.expectations,
 				}).then((finished) => {
 					setState((current) => current?.project?.id === finished.project?.id ? finished : current);
 				});
