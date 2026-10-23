@@ -244,7 +244,7 @@ export async function handleSandboxApiRequest(
 					if (fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
 					const names = fields.map(quoteIdentifier).join(", ");
 					const params: unknown[] = [];
-					const values = records.map((record) => `(${fields.map((field) => {
+					const values = records.map((record) => fields.length === 0 ? "(DEFAULT)" : `(${fields.map((field) => {
 						const item = record as Record<string, unknown>;
 						if (!(field in item) && missingDefault) return "DEFAULT";
 						params.push(item[field] ?? null);
@@ -258,7 +258,11 @@ export async function handleSandboxApiRequest(
 							? ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO NOTHING`
 							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
 					}
-					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
+					const statement = fields.length === 0
+						? records.length === 1
+							? `INSERT INTO ${quoteIdentifier(tableName)} DEFAULT VALUES${conflict}`
+							: `INSERT INTO ${quoteIdentifier(tableName)} VALUES ${values}${conflict}`
+						: `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
 					let result: unknown[] | null = null;
 					let count: number | null = null;
 					if (representation) {
@@ -269,7 +273,7 @@ export async function handleSandboxApiRequest(
 					} else {
 						await transaction.query(statement, params);
 					}
-					transactionResponse = writeResponse(201, result, representation, count);
+					transactionResponse = writeResponse(201, result, representation, count, request.headers.accept);
 				} else {
 					if (!where.length) throw unsupported("update or delete without filters");
 					const clause = ` WHERE ${where.join(" AND ")}`;
@@ -293,7 +297,7 @@ export async function handleSandboxApiRequest(
 						} else {
 							await transaction.query(statement, writeParams);
 						}
-						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
+						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count, request.headers.accept);
 					} else {
 						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
 						let result: unknown[] | null = null;
@@ -306,7 +310,7 @@ export async function handleSandboxApiRequest(
 						} else {
 							await transaction.query(statement, filterParams);
 						}
-						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
+						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count, request.headers.accept);
 					}
 					}
 			} else {
@@ -332,7 +336,7 @@ export async function handleSandboxApiRequest(
 			const pgError = error as { code?: string; message?: string; detail?: string; hint?: string };
 			const code = pgError.code ?? "XX000";
 			response = {
-				status: statusForSqlState(code),
+				status: statusForSqlState(code, identity.role),
 				headers: { "content-type": "application/json" },
 				body: { code, message: pgError.message ?? String(error), details: pgError.detail ?? null, hint: pgError.hint ?? null },
 			};
@@ -492,37 +496,91 @@ function parseProjection(selection: string, columns: Set<string>, tables: Sandbo
 	const tokens = splitSelection(selection);
 	const projection: Projection = { columns: [], embeds: [] };
 	for (const token of tokens) {
-		if (token.includes(":")) throw unsupported("aliased selects");
-		if (token.includes("->")) throw unsupported("JSON-path selects");
 		if (token === "*") {
 			projection.columns.push(...columns);
 			continue;
 		}
-		const match = /^([^():!]+)(?:!([^():]+))?\((.*)\)$/.exec(token);
-		if (match) {
-			const resource = match[1]!;
-			const hint = match[2];
-			const inner = hint === "inner" || hint?.endsWith("!inner") === true;
-			const foreignKeyHint = inner && hint === "inner" ? undefined : hint?.replace(/!inner$/, "");
-			const target = resource;
-			const targetTable = tables.find((candidate) => candidate.name === target);
-			if (!targetTable) throw missingRelationship(tableName, resource);
-			const targetColumns = new Set(targetTable.columns.map((column) => column.name));
-			const child = match[3] === "*" ? { columns: [...targetColumns], embeds: [] as EmbedSelection[] } : parseProjection(match[3]!, targetColumns, tables, target);
-			projection.embeds.push({
-				resource,
-				...(foreignKeyHint ? { hint: foreignKeyHint } : {}),
-				inner,
-				columns: child.columns,
-				embeds: child.embeds,
-				filters: [],
-			});
+		const parsed = parseProjectionToken(token);
+		if (!parsed) {
+			if (token.includes(":")) throw unsupported("aliased selects");
+			if (token.includes("->")) throw unsupported("JSON-path selects");
+			throw unsupported("select projection");
+		}
+		const { resource, hint, nested } = parsed;
+		if (nested === null) {
+			if (!columns.has(resource)) throw unsupported("select projection");
+			projection.columns.push(resource);
 			continue;
 		}
-		if (!columns.has(token)) throw unsupported(token.includes(":") ? "aliased selects" : token.includes("->") ? "JSON-path selects" : "select projection");
-		projection.columns.push(token);
+		const inner = hint === "inner" || hint?.endsWith("!inner") === true;
+		const foreignKeyHint = inner && hint === "inner" ? undefined : hint?.replace(/!inner$/, "");
+		const targetTable = tables.find((candidate) => candidate.name === resource);
+		if (!targetTable) throw missingRelationship(tableName, resource);
+		const targetColumns = new Set(targetTable.columns.map((column) => column.name));
+		const child = nested === "*" ? { columns: [...targetColumns], embeds: [] as EmbedSelection[] } : parseProjection(nested, targetColumns, tables, resource);
+		projection.embeds.push({
+			resource,
+			...(foreignKeyHint ? { hint: foreignKeyHint } : {}),
+			inner,
+			columns: child.columns,
+			embeds: child.embeds,
+			filters: [],
+		});
 	}
 	return projection;
+}
+
+function parseProjectionToken(token: string): { resource: string; hint?: string; nested: string | null } | null {
+	let index = 0;
+	const readIdentifier = (): string | null => {
+		if (token[index] === '"') {
+			index += 1;
+			let value = "";
+			while (index < token.length) {
+				const character = token[index++]!;
+				if (character !== '"') value += character;
+				else if (token[index] === '"') {
+					value += '"';
+					index += 1;
+				} else return value;
+			}
+			return null;
+		}
+		const start = index;
+		while (index < token.length && !["!", "(", ")"].includes(token[index]!)) index += 1;
+		return index > start ? token.slice(start, index) : null;
+	};
+	const resource = readIdentifier();
+	if (!resource) return null;
+	let hint: string | undefined;
+	if (token[index] === "!") {
+		index += 1;
+		hint = readIdentifier() ?? undefined;
+		if (!hint) return null;
+		while (token[index] === "!") {
+			index += 1;
+			const modifier = readIdentifier();
+			if (!modifier) return null;
+			hint += `!${modifier}`;
+		}
+	}
+	let nested: string | null = null;
+	if (token[index] === "(") {
+		const start = ++index;
+		let depth = 1;
+		let quoted = false;
+		while (index < token.length && depth) {
+			const character = token[index]!;
+			if (character === '"' && token[index + 1] === '"' && quoted) index += 1;
+			else if (character === '"') quoted = !quoted;
+			else if (!quoted && character === "(") depth += 1;
+			else if (!quoted && character === ")") depth -= 1;
+			index += 1;
+		}
+		if (depth !== 0) return null;
+		nested = token.slice(start, index - 1);
+	}
+	return index === token.length ? { resource, ...(hint ? { hint } : {}), nested } : null;
 }
 function applyEmbeddedOptions(
 	projection: Projection,
@@ -559,16 +617,22 @@ function splitSelection(value: string): string[] {
 	const parts: string[] = [];
 	let start = 0;
 	let depth = 0;
+	let quoted = false;
 	for (let index = 0; index < value.length; index += 1) {
-		if (value[index] === "(") depth += 1;
-		else if (value[index] === ")") depth -= 1;
-		else if (value[index] === "," && depth === 0) {
+		if (value[index] === '"' && value[index + 1] === '"' && quoted) {
+			index += 1;
+			continue;
+		}
+		if (value[index] === '"') quoted = !quoted;
+		else if (!quoted && value[index] === "(") depth += 1;
+		else if (!quoted && value[index] === ")") depth -= 1;
+		else if (!quoted && value[index] === "," && depth === 0) {
 			parts.push(value.slice(start, index));
 			start = index + 1;
 		}
 		if (depth < 0) throw unsupported("select syntax");
 	}
-	if (depth !== 0) throw unsupported("select syntax");
+	if (depth !== 0 || quoted) throw unsupported("select syntax");
 	parts.push(value.slice(start));
 	return parts;
 }
@@ -748,11 +812,21 @@ async function queryWriteCount(
 	return Number(result.rows[0]?.total ?? 0);
 }
 
-function writeResponse(status: number, rows: unknown[] | null, representation: boolean, count: number | null): SandboxApiResponse {
+function writeResponse(
+	status: number,
+	rows: unknown[] | null,
+	representation: boolean,
+	count: number | null,
+	accept = "application/json",
+): SandboxApiResponse {
+	const singular = accept.includes("vnd.pgrst.object");
+	if (representation && singular && rows?.length !== 1) {
+		throw new PostgrestError("PGRST116", "JSON object requested, multiple (or no) rows returned", `The result contains ${rows?.length ?? 0} rows`);
+	}
 	const headers: Record<string, string> = {};
-	if (representation) headers["content-type"] = "application/json";
+	if (representation) headers["content-type"] = singular ? "application/vnd.pgrst.object+json" : "application/json";
 	if (count !== null) headers["content-range"] = rows?.length ? `0-${rows.length - 1}/${count}` : `*/${count}`;
-	return { status, headers, body: representation ? rows ?? [] : null };
+	return { status, headers, body: representation ? singular ? rows![0] : rows ?? [] : null };
 }
 
 function parseFilter(column: string, expression: string, params: unknown[]): string {
@@ -824,12 +898,16 @@ class UnsupportedError extends Error {}
 function unsupported(feature: string): UnsupportedError {
 	return new UnsupportedError(`not supported by the sandbox: ${feature}`);
 }
-function statusForSqlState(code: string): number {
+function statusForSqlState(code: string, role: string): number {
+	if (/^PT\d{3}$/.test(code)) return Number(code.slice(2));
+	if (code.startsWith("08")) return 503;
+	if (code === "42501") return role === "anon" ? 401 : 403;
+	if (code === "25006") return 405;
+	if (code === "42P01" || code === "42883") return 404;
 	if (code === "23505" || code === "23503") return 409;
-	if (code === "23502" || code === "23514") return 400;
-	if (code.startsWith("23")) return 409;
-	if (code.startsWith("42")) return 404;
-	return 500;
+	if (code === "23502" || code === "23514" || code === "P0001" || code === "42601") return 400;
+	if (code.startsWith("22")) return 400;
+	return 400;
 }
 
 export function quoteIdentifier(identifier: string): string {

@@ -208,6 +208,115 @@ describe("Scenario runs", () => {
 		expect(deletedRepresentation.status).toBe(200);
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
+	test("single and maybeSingle shape write representations and reject the wrong cardinality", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+
+		const inserted = await supabase.from("Books").insert({ title: "One" }).select("*").single();
+		expect(inserted.error).toBeNull();
+		expect(inserted.data).toEqual({ id: 1, title: "One" });
+		await supabase.from("Books").insert({ title: "Two" });
+
+		const absent = await supabase.from("Books").update({ title: "Absent" }).eq("id", 99).select("*").maybeSingle();
+		expect(absent.error).toBeNull();
+		expect(absent.data).toBeNull();
+
+		const updated = await supabase.from("Books").update({ title: "Updated" }).eq("id", 1).select("*").single();
+		expect(updated.error).toBeNull();
+		expect(updated.data).toEqual({ id: 1, title: "Updated" });
+		const upserted = await supabase.from("Books").upsert({ title: "Upserted" }).select("*").single();
+		expect(upserted.error).toBeNull();
+		expect(upserted.data).toEqual({ id: 3, title: "Upserted" });
+		const deleted = await supabase.from("Books").delete().eq("id", 1).select("*").single();
+		expect(deleted.error).toBeNull();
+		expect(deleted.data).toEqual({ id: 1, title: "Updated" });
+		const absentDelete = await supabase.from("Books").delete().eq("id", 99).select("*").maybeSingle();
+		expect(absentDelete.error).toBeNull();
+		expect(absentDelete.data).toBeNull();
+		const multiple = await supabase.from("Books").update({ title: "Many" }).in("id", [2, 3]).select("*").single();
+		expect(multiple.error?.code).toBe("PGRST116");
+		expect(multiple.status).toBe(406);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("quoted identifiers select columns and embed related resources with spaces and capitals", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		if (!books) throw new Error("Expected Books table.");
+		await workspace.renameTable({ tableId: books.id, name: "Table test 1" });
+		const renamed = workspace.getState().design?.tables.find((table) => table.name === "Table test 1");
+		const nameColumn = renamed?.columns.find((column) => column.name === "title");
+		if (!renamed || !nameColumn) throw new Error("Expected renamed table and column.");
+		await workspace.updateColumn({ tableId: renamed.id, columnId: nameColumn.id, changes: { name: "Name" } });
+		const childState = await workspace.addTable({ name: "test 2" });
+		const child = childState.design?.tables.find((table) => table.name === "test 2");
+		if (!child) throw new Error("Expected test 2 table.");
+		await workspace.addRelationship({ referencingTableId: child.id, referencedTableId: renamed.id });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const parent = await supabase.from("Table test 1").insert({ Name: "Parent" }).select('"Name"').single();
+		const childRecord = await supabase.from("test 2").insert({ table_test_1_id: 1 }).select("*").single();
+		expect(parent.data).toEqual({ Name: "Parent" });
+		expect(childRecord.error).toBeNull();
+		const embeddedChild = await supabase.from("Table test 1").select('"Name", "test 2"(*)');
+		expect(embeddedChild.error).toBeNull();
+		expect(embeddedChild.data).toEqual([{ Name: "Parent", "test 2": [{ id: 1, table_test_1_id: 1 }] }]);
+		const embeddedParent = await supabase.from("test 2").select('*, "Table test 1"(*)');
+		expect(embeddedParent.error).toBeNull();
+		expect(embeddedParent.data).toEqual([{ id: 1, table_test_1_id: 1, "Table test 1": { id: 1, Name: "Parent" } }]);
+		const hintedChild = await supabase.from("Table test 1").select('"Name", "test 2"!"table_test_1_id"(*)');
+		expect(hintedChild.error).toBeNull();
+		expect(hintedChild.data).toEqual([{ Name: "Parent", "test 2": [{ id: 1, table_test_1_id: 1 }] }]);
+		const hintedParent = await supabase.from("test 2").select('*, "Table test 1"!"table_test_1_id"(*)');
+		expect(hintedParent.error).toBeNull();
+		expect(hintedParent.data).toEqual([{ id: 1, table_test_1_id: 1, "Table test 1": { id: 1, Name: "Parent" } }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("empty inserts use database defaults for one row and bulk rows", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		await workspace.addTable({ name: "DefaultRows" });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const one = await supabase.from("DefaultRows").insert({}).select("*").single();
+		expect(one.error).toBeNull();
+		expect(one.data).toEqual({ id: 1 });
+		const many = await supabase.from("DefaultRows").insert([{}, {}]).select("*");
+		expect(many.error).toBeNull();
+		expect(many.data).toEqual([{ id: 2 }, { id: 3 }]);
+		const required = await supabase.from("Books").insert({}).select("*");
+		expect(required.error?.code).toBe("23502");
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("PostgreSQL SQLSTATE statuses follow the PostgREST v14 mapping through supabase-js", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		if (!books) throw new Error("Expected Books table.");
+		await workspace.updateFunctions({ functions: [{
+			id: "raise-status", name: "raise_status", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker",
+			body: "BEGIN RAISE EXCEPTION 'forced status' USING ERRCODE = NEW.title; END;",
+		}] });
+		await workspace.updateTriggers({ triggers: [{
+			id: "raise-status-before-insert", name: "raise_status_before_insert", tableId: books.id, timing: "BEFORE",
+			events: [{ event: "INSERT" }], level: "ROW", functionId: "raise-status", when: "",
+		}] });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const cases: [string, number][] = [
+			["22P02", 400], ["42601", 400], ["42P01", 404], ["42883", 404], ["23000", 400],
+			["23503", 409], ["23505", 409], ["23502", 400], ["23514", 400],
+			["P0001", 400], ["25006", 405],
+		];
+		for (const [code, status] of cases) {
+			const result = await clientFor(workspace, runId).from("Books").insert({ title: code });
+			expect([code, result.status]).toEqual([code, status]);
+			expect(result.error?.code).toBe(code);
+		}
+		const anon = await clientFor(workspace, runId).from("Books").insert({ title: "42501" });
+		const authenticated = await clientFor(workspace, runId, { identity: { role: "authenticated", userId: "u1" } }).from("Books").insert({ title: "42501" });
+		expect(anon.status).toBe(401);
+		expect(authenticated.status).toBe(403);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 	test("write representations match read serialization for PostgreSQL value types", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
