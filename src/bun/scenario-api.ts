@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
-import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
+import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedRelationship, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
 import { SUPABASE_SANDBOX_BOOTSTRAP, SUPABASE_SANDBOX_GRANTS } from "./sandbox";
 export type ScenarioRunDatabase = PGliteInstance;
 
@@ -61,6 +61,7 @@ export async function handleSandboxApiRequest(
 	database: PGlite,
 	tables: SandboxAppliedTable[],
 	request: SandboxApiRequest,
+	relationships: SandboxAppliedRelationship[] = [],
 ): Promise<{ response: SandboxApiResponse; entry: Omit<ScenarioRequestLogEntry, "order"> }> {
 	const url = new URL(request.path + (request.query ? `?${request.query}` : ""), "http://sandbox.local");
 	const segments = url.pathname.split("/").filter(Boolean);
@@ -99,14 +100,21 @@ export async function handleSandboxApiRequest(
 					throw unsupported(accept.includes("csv") ? "CSV responses" : accept.includes("plan") ? "explain responses" : "response media type");
 				}
 				const exactCount = countPreferences.includes("count=exact");
-				const selected = select === null ? [...columns] : parseSelection(select, columns);
-				const params: unknown[] = [...selected];
-				const where: string[] = [];
+				const projection = select === null
+					? { columns: [...columns], embeds: [] as EmbedSelection[] }
+					: parseProjection(select, columns, tables, tableName);
+				const embeddedOptions = applyEmbeddedOptions(projection, url.searchParams, tables);
+				const params: unknown[] = [];
+				const projectionSql = buildProjection(tableName, "sandbox_table", projection, tables, relationships, params);
+				const countParams: unknown[] = [];
+				const innerEmbeds = projection.embeds.filter((embed) => embed.inner);
+				const where = innerEmbeds.map((embed) => buildInnerCondition(tableName, "sandbox_table", embed, relationships, params));
+				const countWhere = innerEmbeds.map((embed) => buildInnerCondition(tableName, "sandbox_table", embed, relationships, countParams));
 				let orderBy = "";
 				let offset = 0;
 				let limit: number | null = null;
 				for (const [key, value] of url.searchParams.entries()) {
-					if (key === "select") continue;
+					if (key === "select" || embeddedOptions.has(key)) continue;
 					if (key === "order") {
 						if (orderBy) throw unsupported("multiple order clauses");
 						orderBy = parseOrder(value, columns);
@@ -118,11 +126,13 @@ export async function handleSandboxApiRequest(
 						else offset = number;
 					} else if (key === "or") {
 						where.push(parseOr(value, columns, params));
+						countWhere.push(parseOr(value, columns, countParams));
 					} else if (key === "and") {
 						throw unsupported("and filters");
 					} else {
 						if (!columns.has(key)) throw unsupported(`filter column ${key}`);
 						where.push(parseFilter(key, value, params));
+						countWhere.push(parseFilter(key, value, countParams));
 					}
 				}
 				const rangeHeader = request.headers.range;
@@ -138,22 +148,17 @@ export async function handleSandboxApiRequest(
 					offset = start;
 					limit = end === null ? null : end - start + 1;
 				}
-				const jsonProjection = selected.map((column, index) => `$${index + 1}::text, sandbox_table.${quoteIdentifier(column)}`).join(", ");
 				const sql = [
-					`SELECT jsonb_build_object(${jsonProjection}) AS result FROM ${quoteIdentifier(tableName)} AS sandbox_table`,
+					`SELECT ${projectionSql} AS result FROM ${quoteIdentifier(tableName)} AS sandbox_table`,
 					where.length ? `WHERE ${where.join(" AND ")}` : "",
 					orderBy ? `ORDER BY ${orderBy}` : "",
 					limit === null ? "" : `LIMIT ${limit}`,
 					offset ? `OFFSET ${offset}` : "",
 				].filter(Boolean).join(" ");
-				const filterParams = params.slice(selected.length);
-				const countWhere = where.map((part) =>
-					part.replace(/\$(\d+)/g, (_, index: string) => `$${Number(index) - selected.length}`),
-				);
 				const total = exactCount
 					? Number((await transaction.query<{ total: number }>(
-						`SELECT count(*)::int AS total FROM ${quoteIdentifier(tableName)}${countWhere.length ? ` WHERE ${countWhere.join(" AND ")}` : ""}`,
-						filterParams,
+						`SELECT count(*)::int AS total FROM ${quoteIdentifier(tableName)} AS sandbox_table${countWhere.length ? ` WHERE ${countWhere.join(" AND ")}` : ""}`,
+						countParams,
 					)).rows[0]?.total ?? 0)
 					: null;
 				const result = await transaction.query<{ result: unknown }>(sql, params);
@@ -191,7 +196,7 @@ export async function handleSandboxApiRequest(
 					throw unsupported("planned and estimated row counts");
 				}
 				const exactCount = countPreferences.includes("count=exact");
-				const selected = select === null ? [...columns] : parseSelection(select, columns);
+				const selected = select === null ? { columns: [...columns], embeds: [] as EmbedSelection[] } : parseProjection(select, columns, tables, tableName);
 				const returnPreference = preferences.find((value) => value.startsWith("return="))?.slice(7) ?? "minimal";
 				if (preferences.some((value) => value.startsWith("return=") && value !== "return=minimal" && value !== "return=representation")) {
 					throw unsupported("write return preference");
@@ -240,12 +245,16 @@ export async function handleSandboxApiRequest(
 							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
 					}
 					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
-					const result = representation
-						? await queryWriteRepresentation(transaction, statement, selected, params)
-						: null;
-					const count = exactCount
-						? result?.length ?? await queryWriteCount(transaction, statement, params)
-						: null;
+					let result: unknown[] | null = null;
+					let count: number | null = null;
+					if (representation) {
+						result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, params);
+						if (exactCount) count = result.length;
+					} else if (exactCount) {
+						count = await queryWriteCount(transaction, statement, params);
+					} else {
+						await transaction.query(statement, params);
+					}
 					transactionResponse = writeResponse(201, result, representation, count);
 				} else {
 					if (!where.length) throw unsupported("update or delete without filters");
@@ -259,21 +268,30 @@ export async function handleSandboxApiRequest(
 						const assignments = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
 						const filters = where.map((part) => part.replace(/\$(\d+)/g, (_, n: string) => `$${Number(n) + params.length}`));
 						const statement = `UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}`;
-						const result = representation
-							? await queryWriteRepresentation(transaction, statement, selected, [...params, ...filterParams])
-							: null;
-						const count = exactCount
-							? result?.length ?? await queryWriteCount(transaction, statement, [...params, ...filterParams])
-							: null;
+						const writeParams = [...params, ...filterParams];
+						let result: unknown[] | null = null;
+						let count: number | null = null;
+						if (representation) {
+							result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, writeParams);
+							if (exactCount) count = result.length;
+						} else if (exactCount) {
+							count = await queryWriteCount(transaction, statement, writeParams);
+						} else {
+							await transaction.query(statement, writeParams);
+						}
 						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					} else {
 						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
-						const result = representation
-							? await queryWriteRepresentation(transaction, statement, selected, filterParams)
-							: null;
-						const count = exactCount
-							? result?.length ?? await queryWriteCount(transaction, statement, filterParams)
-							: null;
+						let result: unknown[] | null = null;
+						let count: number | null = null;
+						if (representation) {
+							result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, filterParams);
+							if (exactCount) count = result.length;
+						} else if (exactCount) {
+							count = await queryWriteCount(transaction, statement, filterParams);
+						} else {
+							await transaction.query(statement, filterParams);
+						}
 						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					}
 					}
@@ -286,9 +304,14 @@ export async function handleSandboxApiRequest(
 	} catch (error) {
 		if (error instanceof UnsupportedError || error instanceof PostgrestError) {
 			response = {
-				status: error instanceof UnsupportedError ? 501 : 406,
+				status: error instanceof UnsupportedError ? 501 : error.code === "PGRST201" ? 300 : error.code === "PGRST200" ? 400 : 406,
 				headers: { "content-type": "application/json" },
-				body: { code: error instanceof PostgrestError ? error.code : UNSUPPORTED_CODE, message: error.message, details: error instanceof PostgrestError ? error.details : null, hint: null },
+				body: {
+					code: error instanceof PostgrestError ? error.code : UNSUPPORTED_CODE,
+					message: error.message,
+					details: error instanceof PostgrestError ? error.details : null,
+					hint: error instanceof PostgrestError ? error.hint : null,
+				},
 			};
 		} else {
 			const pgError = error as { code?: string; message?: string; detail?: string; hint?: string };
@@ -318,20 +341,252 @@ function identityFromHeaders(headers: Record<string, string>): ScenarioIdentity 
 	}
 }
 class PostgrestError extends Error {
-	constructor(readonly code: string, message: string, readonly details: string | null) {
+	constructor(
+		readonly code: string,
+		message: string,
+		readonly details: unknown,
+		readonly hint: string | null = null,
+	) {
 		super(message);
 	}
 }
-
-function parseSelection(selection: string | null, columns: Set<string>): string[] {
-	if (selection === null) throw unsupported("missing select projection");
-	if (selection === "*") return [...columns];
-	const selected = selection.split(",");
-	if (selected.some((column) => !column || column.trim() !== column || !columns.has(column))) {
-		throw unsupported(selection.includes("(") ? "embedded resource selects" : selection.includes(":") ? "aliased selects" : selection.includes("->") ? "JSON-path selects" : "select projection");
-	}
-	return selected;
+function missingRelationship(source: string, target: string): PostgrestError {
+	return new PostgrestError(
+		"PGRST200",
+		`Could not find a relationship between '${source}' and '${target}' in the schema cache`,
+		null,
+		`Verify that '${source}' and '${target}' exist in the schema 'public' and that a foreign key relationship exists between them. If a new relationship was created, try reloading the schema cache.`,
+	);
 }
+
+type EmbedSelection = {
+	resource: string;
+	hint?: string;
+	inner: boolean;
+	columns: string[];
+	embeds: EmbedSelection[];
+	filters: [string, string][];
+	orderBy?: string;
+	limit?: number;
+};
+type Projection = { columns: string[]; embeds: EmbedSelection[] };
+
+function parseProjection(selection: string, columns: Set<string>, tables: SandboxAppliedTable[], tableName: string): Projection {
+	const tokens = splitSelection(selection);
+	const projection: Projection = { columns: [], embeds: [] };
+	for (const token of tokens) {
+		if (token.includes(":")) throw unsupported("aliased selects");
+		if (token.includes("->")) throw unsupported("JSON-path selects");
+		if (token === "*") {
+			projection.columns.push(...columns);
+			continue;
+		}
+		const match = /^([^():!]+)(?:!([^():]+))?\((.*)\)$/.exec(token);
+		if (match) {
+			const resource = match[1]!;
+			const hint = match[2];
+			const inner = hint === "inner" || hint?.endsWith("!inner") === true;
+			const foreignKeyHint = inner && hint === "inner" ? undefined : hint?.replace(/!inner$/, "");
+			const target = resource;
+			const targetTable = tables.find((candidate) => candidate.name === target);
+			if (!targetTable) throw missingRelationship(tableName, resource);
+			const targetColumns = new Set(targetTable.columns.map((column) => column.name));
+			const child = match[3] === "*" ? { columns: [...targetColumns], embeds: [] as EmbedSelection[] } : parseProjection(match[3]!, targetColumns, tables, target);
+			projection.embeds.push({
+				resource,
+				...(foreignKeyHint ? { hint: foreignKeyHint } : {}),
+				inner,
+				columns: child.columns,
+				embeds: child.embeds,
+				filters: [],
+			});
+			continue;
+		}
+		if (!columns.has(token)) throw unsupported(token.includes(":") ? "aliased selects" : token.includes("->") ? "JSON-path selects" : "select projection");
+		projection.columns.push(token);
+	}
+	return projection;
+}
+function applyEmbeddedOptions(
+	projection: Projection,
+	query: URLSearchParams,
+	tables: SandboxAppliedTable[],
+): Set<string> {
+	const handled = new Set<string>();
+	for (const embed of projection.embeds) {
+		const table = tables.find((candidate) => candidate.name === embed.resource);
+		if (!table) continue;
+		const columns = new Set(table.columns.map((column) => column.name));
+		for (const [key, value] of query.entries()) {
+			const prefix = `${embed.resource}.`;
+			if (!key.startsWith(prefix)) continue;
+			const option = key.slice(prefix.length);
+			if (option === "limit") {
+				if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value))) throw unsupported("embedded limit value");
+				embed.limit = Number(value);
+			} else if (option === "order") {
+				if (embed.orderBy) throw unsupported("multiple embedded order clauses");
+				embed.orderBy = parseOrder(value, columns);
+			} else {
+				if (!columns.has(option)) throw unsupported(`embedded filter column ${option}`);
+				embed.filters.push([option, value]);
+			}
+			handled.add(key);
+		}
+	}
+	return handled;
+}
+
+
+function splitSelection(value: string): string[] {
+	const parts: string[] = [];
+	let start = 0;
+	let depth = 0;
+	for (let index = 0; index < value.length; index += 1) {
+		if (value[index] === "(") depth += 1;
+		else if (value[index] === ")") depth -= 1;
+		else if (value[index] === "," && depth === 0) {
+			parts.push(value.slice(start, index));
+			start = index + 1;
+		}
+		if (depth < 0) throw unsupported("select syntax");
+	}
+	if (depth !== 0) throw unsupported("select syntax");
+	parts.push(value.slice(start));
+	return parts;
+}
+
+function buildProjection(
+	tableName: string,
+	alias: string,
+	projection: Projection,
+	tables: SandboxAppliedTable[],
+	relationships: SandboxAppliedRelationship[],
+	params: unknown[],
+): string {
+	const expressions = projection.columns.map((column) => {
+		params.push(column);
+		return `$${params.length}::text, ${alias}.${quoteIdentifier(column)}`;
+	});
+	for (const embed of projection.embeds) {
+		const candidates: {
+			relationship: SandboxAppliedRelationship;
+			side: "to-one" | "to-many" | "many-to-many";
+			through?: SandboxAppliedRelationship;
+		}[] = [];
+		for (const relationship of relationships) {
+			if (relationship.referencingTable === tableName && relationship.referencedTable === embed.resource) {
+				candidates.push({ relationship, side: "to-one" });
+			} else if (relationship.referencedTable === tableName && relationship.referencingTable === embed.resource) {
+				candidates.push({ relationship, side: "to-many" });
+			}
+		}
+		if (!candidates.length) {
+			for (const fromParent of relationships.filter((relationship) => relationship.referencedTable === tableName)) {
+				for (const toTarget of relationships.filter((relationship) =>
+					relationship.referencingTable === fromParent.referencingTable && relationship.referencedTable === embed.resource
+				)) {
+					candidates.push({ relationship: fromParent, through: toTarget, side: "many-to-many" });
+				}
+			}
+		}
+		const matching = candidates.filter(({ relationship, through }) =>
+			!embed.hint || relationship.name === embed.hint || relationship.referencingColumn === embed.hint ||
+			through?.name === embed.hint || through?.referencingColumn === embed.hint
+		);
+		if (!matching.length) {
+			throw missingRelationship(tableName, embed.resource);
+		}
+		if (matching.length > 1) {
+			const message = `Could not embed because more than one relationship was found for '${tableName}' and '${embed.resource}'`;
+			const details = matching.map(({ relationship, side, through }) => {
+				const target = tables.find((candidate) => candidate.name === embed.resource);
+				const unique = side === "to-many" && target?.columns.some((column) => column.name === relationship.referencingColumn && column.unique);
+				const cardinality = side === "to-one" ? "many-to-one" : side === "many-to-many" ? "many-to-many" : unique ? "one-to-one" : "one-to-many";
+				const reference = through ?? relationship;
+				return {
+					cardinality,
+					embedding: `${tableName} with ${embed.resource}`,
+					relationship: `${reference.name} using ${reference.referencingTable}(${reference.referencingColumn}) and ${reference.referencedTable}(${reference.referencedColumn})`,
+				};
+			});
+			const hint = `Try changing '${embed.resource}' to one of the following: ${matching.map(({ relationship, through }) => `'${embed.resource}!${through?.name ?? relationship.name}'`).join(", ")}. Find the desired relationship in the 'details' key.`;
+			throw new PostgrestError("PGRST201", message, details, hint);
+		}
+		const { relationship, side, through } = matching[0]!;
+		const target = tables.find((table) => table.name === embed.resource);
+		if (!target) throw new PostgrestError("PGRST200", `Could not find table '${embed.resource}' in the schema cache`, null);
+		const childAlias = `embed_${params.length}`;
+		const junctionAlias = `junction_${params.length}`;
+		const selected = embed.columns.length ? embed.columns : target.columns.map((column) => column.name);
+		const childProjection = buildProjection(embed.resource, childAlias, { columns: selected, embeds: embed.embeds }, tables, relationships, params);
+		params.push(embed.resource);
+		const label = `$${params.length}::text`;
+		const unique = side === "to-one" || (side === "to-many" && target.columns.some((column) => column.name === relationship.referencingColumn && column.unique));
+		const from = side === "many-to-many"
+			? `${quoteIdentifier(embed.resource)} AS ${childAlias} JOIN ${quoteIdentifier(relationship.referencingTable)} AS ${junctionAlias} ON ${junctionAlias}.${quoteIdentifier(through!.referencingColumn)} = ${childAlias}.${quoteIdentifier(through!.referencedColumn)}`
+			: `${quoteIdentifier(embed.resource)} AS ${childAlias}`;
+		const link = side === "to-one"
+			? `${alias}.${quoteIdentifier(relationship.referencingColumn)} = ${childAlias}.${quoteIdentifier(relationship.referencedColumn)}`
+			: side === "many-to-many"
+				? `${junctionAlias}.${quoteIdentifier(relationship.referencingColumn)} = ${alias}.${quoteIdentifier(relationship.referencedColumn)}`
+				: `${childAlias}.${quoteIdentifier(relationship.referencingColumn)} = ${alias}.${quoteIdentifier(relationship.referencedColumn)}`;
+		const childWhere = [link, ...embed.filters.map(([column, value]) => parseFilter(column, value, params))].join(" AND ");
+		const order = embed.orderBy ? ` ORDER BY ${embed.orderBy}` : "";
+		const rowLimit = embed.limit === undefined ? "" : ` LIMIT ${embed.limit}`;
+		const subquery = unique
+			? `(SELECT ${childProjection} FROM ${from} WHERE ${childWhere}${order}${rowLimit})`
+			: `(SELECT COALESCE(jsonb_agg(embed_rows.payload), '[]'::jsonb) FROM (SELECT ${childProjection} AS payload FROM ${from} WHERE ${childWhere}${order}${rowLimit}) AS embed_rows)`;
+		expressions.push(`${label}, ${unique ? `COALESCE(${subquery}, 'null'::jsonb)` : subquery}`);
+	}
+	if (!expressions.length) throw unsupported("empty select projection");
+	return `jsonb_build_object(${expressions.join(", ")})`;
+}
+function buildInnerCondition(
+	tableName: string,
+	alias: string,
+	embed: EmbedSelection,
+	relationships: SandboxAppliedRelationship[],
+	params: unknown[],
+): string {
+	const direct = relationships.filter((relationship) =>
+		(relationship.referencingTable === tableName && relationship.referencedTable === embed.resource) ||
+		(relationship.referencedTable === tableName && relationship.referencingTable === embed.resource)
+	).filter((relationship) =>
+		!embed.hint || relationship.name === embed.hint || relationship.referencingColumn === embed.hint
+	);
+	if (direct.length === 1) {
+		const relationship = direct[0]!;
+		const sourceReferencesTarget = relationship.referencingTable === tableName;
+		const targetAlias = "inner_embed";
+		const link = sourceReferencesTarget
+			? `${alias}.${quoteIdentifier(relationship.referencingColumn)} = ${targetAlias}.${quoteIdentifier(relationship.referencedColumn)}`
+			: `${targetAlias}.${quoteIdentifier(relationship.referencingColumn)} = ${alias}.${quoteIdentifier(relationship.referencedColumn)}`;
+		const filters = embed.filters.map(([column, value]) => parseFilter(column, value, params));
+		return `EXISTS (SELECT 1 FROM ${quoteIdentifier(embed.resource)} AS ${targetAlias} WHERE ${[link, ...filters].join(" AND ")})`;
+	}
+	if (direct.length > 1) throw new PostgrestError("PGRST201", `Could not embed because more than one relationship was found for '${tableName}' and '${embed.resource}'`, direct.map((relationship) => relationship.name).join(", "));
+	const junctionCandidates = relationships.flatMap((fromParent) =>
+		relationships.filter((toTarget) => fromParent.referencingTable === toTarget.referencingTable &&
+			fromParent.referencedTable === tableName && toTarget.referencedTable === embed.resource)
+			.map((toTarget) => ({ fromParent, toTarget }))
+	).filter(({ fromParent, toTarget }) =>
+		!embed.hint || fromParent.name === embed.hint || fromParent.referencingColumn === embed.hint ||
+		toTarget.name === embed.hint || toTarget.referencingColumn === embed.hint
+	);
+	if (junctionCandidates.length === 1) {
+		const { fromParent, toTarget } = junctionCandidates[0]!;
+		const junctionAlias = "inner_junction";
+		const targetAlias = "inner_target";
+		const filters = embed.filters.map(([column, value]) => parseFilter(column, value, params));
+		return `EXISTS (SELECT 1 FROM ${quoteIdentifier(fromParent.referencingTable)} AS ${junctionAlias} JOIN ${quoteIdentifier(embed.resource)} AS ${targetAlias} ON ${junctionAlias}.${quoteIdentifier(toTarget.referencingColumn)} = ${targetAlias}.${quoteIdentifier(toTarget.referencedColumn)} WHERE ${junctionAlias}.${quoteIdentifier(fromParent.referencingColumn)} = ${alias}.${quoteIdentifier(fromParent.referencedColumn)}${filters.length ? ` AND ${filters.join(" AND ")}` : ""})`;
+	}
+	if (junctionCandidates.length > 1) {
+		throw new PostgrestError("PGRST201", `Could not embed because more than one relationship was found for '${tableName}' and '${embed.resource}'`, junctionCandidates.map(({ fromParent }) => fromParent.name).join(", "));
+	}
+	throw missingRelationship(tableName, embed.resource);
+}
+
 
 function parseOrder(value: string, columns: Set<string>): string {
 	const terms = value.split(",");
@@ -349,13 +604,17 @@ function parseOrder(value: string, columns: Set<string>): string {
 async function queryWriteRepresentation(
 	transaction: { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> },
 	statement: string,
-	selected: string[],
+	projection: Projection,
+	tableName: string,
+	tables: SandboxAppliedTable[],
+	relationships: SandboxAppliedRelationship[],
 	params: unknown[],
 ): Promise<unknown[]> {
-	const projection = selected.flatMap((column, index) => [`$${params.length + index + 1}::text`, `written.${quoteIdentifier(column)}`]).join(", ");
+	const queryParams = [...params];
+	const jsonProjection = buildProjection(tableName, "written", projection, tables, relationships, queryParams);
 	const result = await transaction.query<{ result: unknown }>(
-		`WITH written AS (${statement} RETURNING *) SELECT jsonb_build_object(${projection}) AS result FROM written`,
-		[...params, ...selected],
+		`WITH written AS (${statement} RETURNING *) SELECT ${jsonProjection} AS result FROM written AS written`,
+		queryParams,
 	);
 	return result.rows.map((row) => row.result);
 }

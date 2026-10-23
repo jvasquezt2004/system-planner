@@ -265,9 +265,117 @@ describe("Scenario runs", () => {
 		const firstBook = await supabase.from("Books").insert({ id: 1, [authorId]: 1 }).select("*");
 		expect(firstBook.error).toBeNull();
 		const duplicatePair = await supabase.from("Books").insert({ id: 2, [authorId]: 1 }).select("*");
+		const withAuthor = await supabase.from("Books").select(`id,Authors!${authorId}!inner(id)`).eq("id", 1).single();
+		expect(withAuthor.error).toBeNull();
+		expect(JSON.stringify(withAuthor.data)).toBe('{"id":1,"Authors":{"id":1}}');
+		const updatedWithAuthor = await supabase.from("Books").update({ [authorId]: 1 }).eq("id", 1).select("id,Authors(id)");
+		expect(updatedWithAuthor.error).toBeNull();
+		expect(JSON.stringify(updatedWithAuthor.data)).toBe('[{"id":1,"Authors":{"id":1}}]');
 		expect(duplicatePair.error).toMatchObject({ code: "23505" });
 		const referencedDelete = await supabase.from("Authors").delete().eq("id", 1).select("*");
 		expect(referencedDelete.error).toMatchObject({ code: "23503" });
+		await workspace.finishScenarioRun({ runId: run.runId, status: "passed", console: [] });
+	}, 60_000);
+	test("the real supabase-js client embeds filtered and limited one-to-many resources", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		const authorsState = await workspace.addTable({ name: "Authors" });
+		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
+		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
+		await workspace.addColumn({ tableId: authors.id, name: "name", type: "text" });
+		const relationState = await workspace.addRelationship({
+			referencingTableId: books.id,
+			referencedTableId: authors.id,
+			cardinality: "one-to-many",
+		});
+		const relationship = relationState.design?.relationships[0];
+		const authorColumn = relationState.design?.tables.find((table) => table.id === books.id)?.columns
+			.find((column) => column.id === relationship?.referencingColumnId)?.name;
+		if (!relationship || !authorColumn) throw new Error("Expected a foreign-key column.");
+		const run = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, run.runId);
+		const authorInsert = await supabase.from("Authors").insert([{ name: "First" }, { name: "Second" }]);
+		const bookInsert = await supabase.from("Books").insert([
+			{ title: "First", [authorColumn]: 1 },
+			{ title: "Second", [authorColumn]: 1 },
+			{ title: "Third", [authorColumn]: 1 },
+		]);
+		expect(authorInsert.error).toBeNull();
+		expect(bookInsert.error).toBeNull();
+		const result = await supabase.from("Authors")
+			.select("id,Books(id,title)")
+			.filter("Books.title", "eq", "Second")
+			.order("title", { referencedTable: "Books", ascending: false })
+			.limit(1, { referencedTable: "Books" })
+			.order("id")
+			.eq("id", 1)
+			.single();
+		expect(result.error).toBeNull();
+		expect(JSON.stringify(result.data)).toBe('{"id":1,"Books":[{"id":2,"title":"Second"}]}');
+		const inner = await supabase.from("Authors").select("id,Books!inner(id)").order("id");
+		expect(JSON.stringify(inner.data)).toBe('[{"id":1,"Books":[{"id":1},{"id":2},{"id":3}]}]');
+		const counted = await supabase.from("Authors").select("id,Books(id)", { count: "exact" }).order("id");
+		expect(counted.error).toBeNull();
+		expect(counted.count).toBe(2);
+		expect(counted.data?.[0]?.Books).toHaveLength(3);
+		const innerCounted = await supabase.from("Authors").select("id,Books!inner(id)", { count: "exact" });
+		expect(innerCounted.error).toBeNull();
+		expect(innerCounted.count).toBe(1);
+	}, 60_000);
+	test("the real supabase-js client embeds visible many-to-many related records", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((item) => item.name === "Books");
+		const catalogState = await workspace.addTable({ name: "Catalog" });
+		const catalog = catalogState.design?.tables.find((item) => item.name === "Catalog");
+		if (!books || !catalog) throw new Error("Expected endpoint tables.");
+		await workspace.addColumn({ tableId: catalog.id, name: "name", type: "text" });
+		const relationState = await workspace.addRelationship({
+			referencingTableId: books.id,
+			referencedTableId: catalog.id,
+			cardinality: "many-to-many",
+		});
+		const association = relationState.design?.manyToManyRelationships[0];
+		const junction = relationState.design?.tables.find((table) => table.id === association?.junctionTableId);
+		if (!association || !junction) throw new Error("Expected a visible junction table.");
+		const junctionColumns = relationState.design!.relationships
+			.filter((relationship) => relationship.referencingTableId === junction.id)
+			.map((relationship) => junction.columns.find((column) => column.id === relationship.referencingColumnId)?.name);
+		if (junctionColumns.length !== 2 || junctionColumns.some((column) => !column)) {
+			throw new Error("Expected junction endpoint columns.");
+		}
+		expect(junction.name).toBe("BooksCatalog");
+		expect(junctionColumns).toEqual(["book_id", "catalog_id"]);
+		const run = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, run.runId);
+		const book = await supabase.from("Books").insert({ title: "Related" }).select("id").single();
+		const item = await supabase.from("Catalog").insert({ name: "Reference" }).select("id").single();
+		if (!book.data || !item.data) throw new Error("Expected endpoint records.");
+		const linked = await supabase.from("BooksCatalog").insert({ book_id: 1, catalog_id: 1 });
+		expect(linked.error).toBeNull();
+		const embedded = await supabase.from("Books").select("id,Catalog(id,name)").eq("id", 1).single();
+		expect(embedded.error).toBeNull();
+		expect(JSON.stringify(embedded.data)).toBe('{"id":1,"Catalog":[{"id":1,"name":"Reference"}]}');
+		const inner = await supabase.from("Books").select("id,Catalog!inner(id)").eq("id", 1).single();
+		expect(JSON.stringify(inner.data)).toBe('{"id":1,"Catalog":[{"id":1}]}');
+		await workspace.finishScenarioRun({ runId: run.runId, status: "passed", console: [] });
+	}, 60_000);
+	test("ambiguous embeds return the PostgREST PGRST201 response and foreign-key hints resolve it", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		const authorsState = await workspace.addTable({ name: "Authors" });
+		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
+		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
+		await workspace.addRelationship({ referencingTableId: books.id, referencedTableId: authors.id });
+		await workspace.addRelationship({ referencingTableId: books.id, referencedTableId: authors.id });
+		const run = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, run.runId);
+		const ambiguous = await supabase.from("Books").select("id,Authors(id)");
+		expect(ambiguous.error?.code).toBe("PGRST201");
+		expect(ambiguous.status).toBe(300);
+		expect(Array.isArray(ambiguous.error?.details)).toBe(true);
+		const disambiguated = await supabase.from("Books").select("id,Authors!Books_author_id_fkey(id)");
+		expect(disambiguated.error).toBeNull();
+		expect(disambiguated.data).toEqual([]);
 		await workspace.finishScenarioRun({ runId: run.runId, status: "passed", console: [] });
 	}, 60_000);
 	test("finishing captures every table in primary-key order with a 500-row cap and total", async () => {
@@ -647,7 +755,7 @@ describe("Scenario runs", () => {
 		expect(workspace.getState().scenarioRuns[scenarioId]?.requests.slice(1).map((request) => request.status)).toEqual([200, 200, 406, 201, 406]);
 	}, 30_000);
 
-	test("unsupported read projections and query features identify the unsupported feature", async () => {
+	test("unsupported read projections are refused and missing embeds return PGRST200", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const { runId } = await workspace.beginScenarioRun({ scenarioId });
 		const supabase = clientFor(workspace, runId);
@@ -656,7 +764,10 @@ describe("Scenario runs", () => {
 			supabase.from("Books").select("label:title"),
 			supabase.from("Books").select("metadata->name"),
 		]);
-		for (const result of [embedding, alias, jsonPath]) {
+		expect(embedding.error?.code).toBe("PGRST200");
+		expect(embedding.status).toBe(400);
+		expect(embedding.error?.hint).toContain("foreign key relationship");
+		for (const result of [alias, jsonPath]) {
 			expect(result.error?.code).toBe("PGRST_SANDBOX_UNSUPPORTED");
 			expect(result.error?.message).toContain("not supported by the sandbox");
 		}
