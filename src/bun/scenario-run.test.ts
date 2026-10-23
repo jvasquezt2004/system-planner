@@ -124,6 +124,66 @@ describe("Scenario runs", () => {
 		expect(remaining.data).toEqual([{ id: 2, title: "Merged" }]);
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
+	test("write representations match read serialization for PostgreSQL value types", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
+		if (!table) throw new Error("Expected Books table.");
+		for (const [name, type] of [
+			["recorded_at", "timestamptz"],
+			["amount", "numeric"],
+			["sequence", "bigint"],
+			["payload", "jsonb"],
+			["event_date", "date"],
+		] as const) {
+			await workspace.addColumn({ tableId: table.id, name, type });
+		}
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const values = {
+			title: "Serialized",
+			recorded_at: "2025-01-02T03:04:05.123456Z",
+			amount: "123456789012345.6789",
+			sequence: "9007199254740993",
+			payload: { nested: [1, "value"] },
+			event_date: "2025-01-02",
+		};
+		const inserted = await supabase.from("Books").insert(values).select("*");
+		expect(inserted.error).toBeNull();
+		const selected = await supabase.from("Books").select("*").eq("id", inserted.data[0]!.id);
+		expect(selected.error).toBeNull();
+		expect(inserted.data).toEqual(selected.data);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("bulk inserts honor defaultToNull for heterogeneous record keys", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const itemsState = await workspace.addTable({ name: "Items" });
+		const items = itemsState.design?.tables.find((table) => table.name === "Items");
+		if (!items) throw new Error("Expected Items table.");
+		const addedA = await workspace.addColumn({ tableId: items.id, name: "a", type: "text" });
+		const columnA = addedA.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "a");
+		const addedB = await workspace.addColumn({ tableId: items.id, name: "b", type: "text" });
+		const columnB = addedB.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "b");
+		if (!columnA || !columnB) throw new Error("Expected heterogeneous payload columns.");
+		await workspace.updateColumn({
+			tableId: items.id,
+			columnId: columnA.id,
+			changes: { default: { kind: "literal", literalType: "text", value: "default-a" } },
+		});
+		await workspace.updateColumn({
+			tableId: items.id,
+			columnId: columnB.id,
+			changes: { default: { kind: "literal", literalType: "text", value: "default-b" } },
+		});
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const useDefaults = await supabase.from("Items").insert([{ a: "first" }, { b: "second" }], { defaultToNull: false }).select("a,b");
+		expect(useDefaults.error).toBeNull();
+		expect(useDefaults.data).toEqual([{ a: "first", b: "default-b" }, { a: "default-a", b: "second" }]);
+		const useNulls = await supabase.from("Items").insert([{ a: "third" }, { b: "fourth" }]).select("a,b");
+		expect(useNulls.error).toBeNull();
+		expect(useNulls.data).toEqual([{ a: "third", b: null }, { a: null, b: "fourth" }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 	test("the real supabase-js client reports foreign-key, one-to-one, and NO ACTION violations", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-relational-writes-"));
 		directories.push(directory);

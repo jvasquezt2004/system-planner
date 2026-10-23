@@ -199,12 +199,13 @@ export async function handleSandboxApiRequest(
 					const fields = [...new Set(records.flatMap((record) => Object.keys(record as object)))];
 					if (fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
 					const names = fields.map(quoteIdentifier).join(", ");
-					const values = records.map((record, rowIndex) => `(${fields.map((field, fieldIndex) => {
+					const params: unknown[] = [];
+					const values = records.map((record) => `(${fields.map((field) => {
 						const item = record as Record<string, unknown>;
 						if (!(field in item) && missingDefault) return "DEFAULT";
-						return `$${rowIndex * fields.length + fieldIndex + 1}`;
+						params.push(item[field] ?? null);
+						return `$${params.length}`;
 					}).join(", ")})`).join(", ");
-					const params = records.flatMap((record) => fields.map((field) => (record as Record<string, unknown>)[field] ?? null));
 					let conflict = "";
 					if (resolution || url.searchParams.has("on_conflict")) {
 						const target = (url.searchParams.get("on_conflict") ?? schemaTable.columns.filter((column) => column.primaryKey).map((column) => column.name).join(",")).split(",").filter(Boolean);
@@ -213,9 +214,14 @@ export async function handleSandboxApiRequest(
 							? ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO NOTHING`
 							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
 					}
-					const returning = representation ? ` RETURNING ${selected.map(quoteIdentifier).join(", ")}` : "";
-					const result = await transaction.query(`INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}${returning}`, params);
-					transactionResponse = writeResponse(201, representation ? result.rows : null, representation);
+					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
+					if (representation) {
+						const result = await queryWriteRepresentation(transaction, statement, selected, params);
+						transactionResponse = writeResponse(201, result, true);
+					} else {
+						await transaction.query(statement, params);
+						transactionResponse = writeResponse(201, null, false);
+					}
 				} else {
 					if (!where.length) throw unsupported("update or delete without filters");
 					const clause = ` WHERE ${where.join(" AND ")}`;
@@ -227,11 +233,23 @@ export async function handleSandboxApiRequest(
 						const params = entries.map(([, value]) => value);
 						const assignments = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
 						const filters = where.map((part) => part.replace(/\$(\d+)/g, (_, n: string) => `$${Number(n) + params.length}`));
-						const result = await transaction.query(`UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}${representation ? ` RETURNING ${selected.map(quoteIdentifier).join(", ")}` : ""}`, [...params, ...filterParams]);
-						transactionResponse = writeResponse(200, representation ? result.rows : null, representation);
+						const statement = `UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}`;
+						if (representation) {
+							const result = await queryWriteRepresentation(transaction, statement, selected, [...params, ...filterParams]);
+							transactionResponse = writeResponse(200, result, true);
+						} else {
+							await transaction.query(statement, [...params, ...filterParams]);
+							transactionResponse = writeResponse(200, null, false);
+						}
 					} else {
-						const result = await transaction.query(`DELETE FROM ${quoteIdentifier(tableName)}${clause}${representation ? ` RETURNING ${selected.map(quoteIdentifier).join(", ")}` : ""}`, filterParams);
-						transactionResponse = writeResponse(200, representation ? result.rows : null, representation);
+						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
+						if (representation) {
+							const result = await queryWriteRepresentation(transaction, statement, selected, filterParams);
+							transactionResponse = writeResponse(200, result, true);
+						} else {
+							await transaction.query(statement, filterParams);
+							transactionResponse = writeResponse(200, null, false);
+						}
 					}
 				}
 				if (!representation && request.method !== "POST") transactionResponse.status = 204;
@@ -302,6 +320,20 @@ function parseOrder(value: string, columns: Set<string>): string {
 		if (nulls && nulls !== "nullsfirst" && nulls !== "nullslast") throw unsupported("order null placement");
 		return `${quoteIdentifier(column)} ${direction.toUpperCase()}${nulls ? ` ${nulls === "nullsfirst" ? "NULLS FIRST" : "NULLS LAST"}` : ""}`;
 	}).join(", ");
+}
+
+async function queryWriteRepresentation(
+	transaction: { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> },
+	statement: string,
+	selected: string[],
+	params: unknown[],
+): Promise<unknown[]> {
+	const projection = selected.flatMap((column, index) => [`$${params.length + index + 1}::text`, `written.${quoteIdentifier(column)}`]).join(", ");
+	const result = await transaction.query<{ result: unknown }>(
+		`WITH written AS (${statement} RETURNING *) SELECT jsonb_build_object(${projection}) AS result FROM written`,
+		[...params, ...selected],
+	);
+	return result.rows.map((row) => row.result);
 }
 
 function writeResponse(status: number, rows: unknown[] | null, representation: boolean): SandboxApiResponse {
