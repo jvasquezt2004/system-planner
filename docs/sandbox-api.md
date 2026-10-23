@@ -6,14 +6,14 @@ The Sandbox API is the in-process PostgREST-compatible interface used by Scenari
 
 | Feature | Supported form | Notes |
 | --- | --- | --- |
-| Projection | `select=*`, a comma-separated list of applied column names, nested related-resource embeds, or an omitted `select` parameter | Embeds resolve against applied foreign keys. Many-to-one and one-to-one embeds return an object or `null`; one-to-many and many-to-many embeds return arrays. `!<foreign-key-or-column>` disambiguates relationships; `!inner` excludes parent records without a match. Missing relationships return PostgREST-shaped `PGRST200` (400); ambiguous embeds return `PGRST201` (300), relationship candidates, and disambiguation hints. |
+| Projection | `select=*`, a comma-separated list of applied column names, nested related-resource embeds, or an omitted `select` parameter | Supports double-quoted column, resource, and relationship-hint identifiers, including names with spaces or capitals. Embeds resolve against applied foreign keys. Many-to-one and one-to-one embeds return an object or `null`; one-to-many and many-to-many embeds return arrays. `!<foreign-key-or-column>` disambiguates relationships; `!inner` excludes parent records without a match. Missing relationships return PostgREST-shaped `PGRST200` (400); ambiguous embeds return `PGRST201` (300), relationship candidates, and disambiguation hints. |
 | Filters | `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `is`, `in`, `not`, `or`; `resource.column=operator.value` for embedded filters | Filter columns must exist in the applied table or embedded resource. `or` supports comma-separated simple filter expressions; `*` is an alias for `%` in `like` and `ilike` patterns. |
 | Ordering | `order=column.asc` or `resource.order=column.desc`; multiple columns and `nullsfirst`/`nullslast` | Embedded ordering applies to that resource's records. |
 | Limit and offset | Non-negative integer `limit`/`offset`; `resource.limit` limits embedded records | Exact-count responses include the top-level filtered total; HTTP 206 indicates that the returned page is partial. |
 | Range | Inclusive `Range: start-end` with the `items` range unit | Returns `Content-Range` as `start-end/total` when exact count is requested, otherwise `start-end/*`; empty results use `*/total` or `*/*`. Exact-count responses use HTTP 206 when the requested page is partial. |
 | Count | `.select(columns, { count: "exact" })` and `head: true` | Counts matching top-level rows, not embedded records. Exact counts are computed under the request identity, so row-level security applies. HEAD returns no body. `planned` and `estimated` counts are unsupported. |
-| Single row | `single()` | Returns one JSON object. Zero or multiple records produce `PGRST116` with HTTP 406. |
-| Maybe single row | `maybeSingle()` | Returns one JSON object or `null` for no records; multiple records produce the normal cardinality error. |
+| Single row | `.single()` | Applies to reads and returned write representations. Returns one JSON object. Zero or multiple records produce `PGRST116` with HTTP 406. |
+| Maybe single row | `.maybeSingle()` | Returns one JSON object or `null` for no records; multiple records produce the normal cardinality error. Applies to reads and returned write representations. |
 
 Selected values are serialized by PostgreSQL into JSONB before the Sandbox API returns them, preserving PostgreSQL's JSON representation for the applied column types. All identifiers are quoted; filter values are bound parameters.
 
@@ -21,12 +21,15 @@ Selected values are serialized by PostgreSQL into JSONB before the Sandbox API r
 
 | Feature | Supported form | Notes |
 | --- | --- | --- |
-| Insert | `POST` with one record or an array of records | Bulk inserts use the union of record keys. Omitted keys become `NULL` by default; `Prefer: missing=default` uses database defaults. |
+| Insert | `POST` with one record or an array of records | Bulk inserts use the union of record keys. Omitted keys become `NULL` by default; `Prefer: missing=default` uses database defaults. Empty objects insert rows with `DEFAULT VALUES`; a missing required value without a default surfaces the PostgreSQL `23502` constraint error. |
 | Update | `PATCH` with supported filters | Update filters use the same operators as reads. |
 | Delete | `DELETE` with supported filters | |
 | Upsert | `POST` with `Prefer: resolution=merge-duplicates` or `resolution=ignore-duplicates`; optional `on_conflict=column[,column]` | Without `on_conflict`, the applied table's primary key is used. Conflict targets must identify an applicable unique constraint. |
 | Return | `Prefer: return=minimal` or `return=representation`; `.select(columns)` requests a projected representation, including related-resource embeds | Minimal is the default. Insert/upsert responses use HTTP 201; update/delete use 204 when minimal and 200 with representation. `count: "exact"` on writes reports the affected top-level row count in `Content-Range`. |
-| Constraint errors | PostgreSQL constraint errors retain SQLSTATE and PostgREST status mapping | Requests are transactional: any error rolls back every row in that request. |
+| Constraint errors | PostgreSQL constraint errors retain SQLSTATE and PostgREST v14 HTTP status mapping | Requests are transactional: any error rolls back every row in that request. PostgreSQL class 22 and `23502`/`23514`/`P0001` map to 400; `23503`/`23505` map to 409; `42P01`/`42883` map to 404; `25006` maps to 405; class 08 maps to 503. `42501` maps to 401 for `anon`, otherwise 403. `PTxyz` codes select the corresponding HTTP status. Other PostgreSQL errors map to 400. |
+Single-object `Accept: application/vnd.pgrst.object+json` also applies to
+write representations requested with `.select()`. Exactly one affected row
+returns an object; zero or multiple affected rows return `PGRST116` (406).
 
 Triggers in the applied design execute during supported writes according to
 their configured timing, events, and row or statement level. BEFORE row
