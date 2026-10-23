@@ -20,7 +20,9 @@ import {
 	type SqlState,
 	type WorkspaceState,
 	type Scenario,
+	type ScenarioRun,
 } from "../shared/design";
+import { runAllScenarios, type RunAllResult } from "../shared/run-all";
 import { relationshipsForTable } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
 import {
@@ -55,6 +57,26 @@ import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
 import { ScenarioView } from "./scenario-view";
 
+type FinishedScenarioRun = {
+	status: "passed" | "failed" | "errored";
+	console: string[];
+	expectations?: ScenarioRun["expectations"];
+	reason?: ScenarioRun["reason"];
+};
+
+type ActiveScenarioWorker = {
+	worker: Worker;
+	timer: ReturnType<typeof setTimeout> | undefined;
+	projectId: string;
+	generation: number;
+	resolve: (run: ScenarioRun | null) => void;
+	finishing: boolean;
+	finish: (result: FinishedScenarioRun) => void;
+};
+
+type RunAllOperation = { projectId: string; generation: number };
+
+
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
 type WorkspaceView = "canvas" | "sql" | "scenarios";
 
@@ -72,16 +94,52 @@ function App() {
 		target: RemovalTarget;
 		plan: RemovalPlan;
 	} | null>(null);
+	const [runAllActive, setRunAllActive] = useState(false);
+	const [runAllResults, setRunAllResults] = useState<RunAllResult[]>([]);
+	const [scenarioStarting, setScenarioStarting] = useState(false);
+	const projectIdRef = useRef<string | null>(null);
+	const projectGeneration = useRef(0);
+	const scenarioWorkers = useRef(new Map<string, ActiveScenarioWorker>());
+	const runAllOperation = useRef<RunAllOperation | null>(null);
+	const scenarioStartOperation = useRef<object | null>(null);
+	const pendingScenarioFinishes = useRef(new Map<string, Promise<ScenarioRun | null>>());
+
+	const cancelScenarioWorkers = useCallback(() => {
+		for (const active of scenarioWorkers.current.values()) {
+			clearTimeout(active.timer);
+			active.worker.terminate();
+			active.resolve(null);
+		}
+		scenarioWorkers.current.clear();
+	}, []);
+	const resetScenarioExecution = useCallback(() => {
+		cancelScenarioWorkers();
+		runAllOperation.current = null;
+		scenarioStartOperation.current = null;
+		pendingScenarioFinishes.current.clear();
+		setRunAllActive(false);
+		setScenarioStarting(false);
+		setRunAllResults([]);
+	}, [cancelScenarioWorkers]);
+	const receiveWorkspaceState = useCallback((next: WorkspaceState) => {
+		const nextProjectId = next.project?.id ?? null;
+		if (projectIdRef.current !== nextProjectId) {
+			projectIdRef.current = nextProjectId;
+			projectGeneration.current += 1;
+			resetScenarioExecution();
+		}
+		setState(next);
+	}, [resetScenarioExecution]);
 
 	useEffect(() => {
 		let active = true;
 		const unsubscribe = workspaceClient.subscribe((next) => {
-			if (active) setState(next);
+			if (active) receiveWorkspaceState(next);
 		});
 		workspaceClient
 			.load()
 			.then((next) => {
-				if (active) setState(next);
+				if (active) receiveWorkspaceState(next);
 			})
 			.catch((cause: unknown) => {
 				if (active) setError(errorMessage(cause));
@@ -90,29 +148,43 @@ function App() {
 			active = false;
 			unsubscribe();
 		};
-	}, []);
+	}, [receiveWorkspaceState]);
+
 
 	const run = useCallback(async (action: () => Promise<WorkspaceState>) => {
+		const requestProjectId = projectIdRef.current;
+		const requestGeneration = projectGeneration.current;
 		setBusy(true);
 		setError(null);
 		try {
-			setState(await action());
+			const next = await action();
+			if (
+				projectGeneration.current !== requestGeneration &&
+				next.project?.id === requestProjectId
+			) return;
+			receiveWorkspaceState(next);
 		} catch (cause) {
-			setError(errorMessage(cause));
+			if (projectGeneration.current === requestGeneration) setError(errorMessage(cause));
 		} finally {
 			setBusy(false);
 		}
-	}, []);
+	}, [receiveWorkspaceState]);
 
 	/** Layout saves never change the schema, so they skip the busy state. */
 	const applyLayout = useCallback(async (action: () => Promise<WorkspaceState>) => {
+		const requestProjectId = projectIdRef.current;
 		setError(null);
 		try {
-			setState(await action());
+			const next = await action();
+			if (
+				projectIdRef.current === requestProjectId &&
+				next.project?.id === requestProjectId
+			) setState(next);
 		} catch (cause) {
 			setError(errorMessage(cause));
 		}
 	}, []);
+
 	const applyScenario = useCallback(
 		async (action: () => Promise<WorkspaceState>) => {
 			const requestProjectId = state?.project?.id;
@@ -132,89 +204,294 @@ function App() {
 		[state?.project?.id],
 	);
 	const projectId = state?.project?.id ?? null;
-	const scenarioWorkers = useRef(new Map<string, { worker: Worker; timer: ReturnType<typeof setTimeout> }>());
+	const activeScenarioRun = state
+		? Object.values(state.scenarioRuns).find((run) => run?.status === "running") ?? null
+		: null;
+	const scenarioIsRunning = activeScenarioRun !== null;
 	const scenarioRunDisabledReason = !state || !getLastAppliedSandbox(state.sandbox)
 		? "Apply a valid design revision before running a Scenario."
-		: Object.values(state.scenarioRuns).some((run) => run?.status === "running")
+		: scenarioIsRunning || scenarioStarting
 			? "Another Scenario run is already active."
-			: null;
+			: runAllActive
+				? "Run all is already active."
+				: null;
 	const stopScenario = useCallback((runId: string) => {
-		const current = scenarioWorkers.current.get(runId);
-		if (current) {
-			clearTimeout(current.timer);
-			current.worker.terminate();
-			scenarioWorkers.current.delete(runId);
+		const active = scenarioWorkers.current.get(runId);
+		if (active) {
+			active.finish({ status: "errored", reason: "stopped", console: [] });
+			return;
 		}
-		void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "stopped", console: [] }).then((finished) => {
-			setState((current) => current?.project?.id === finished.project?.id ? finished : current);
+		if (pendingScenarioFinishes.current.has(runId)) return;
+		const currentProjectId = projectIdRef.current;
+		if (!state || !currentProjectId || state.project?.id !== currentProjectId) return;
+		const entry = Object.entries(state.scenarioRuns).find(
+			([, run]) => run?.id === runId && run.status === "running",
+		);
+		if (!entry) return;
+		const [scenarioId] = entry;
+		const generation = projectGeneration.current;
+		const stopping = workspaceClient.finishScenarioRun({
+			runId,
+			status: "errored",
+			reason: "stopped",
+			console: [],
+		}).then((finished) => {
+			if (
+				projectIdRef.current !== currentProjectId ||
+				projectGeneration.current !== generation ||
+				finished.project?.id !== currentProjectId
+			) return null;
+			setState((current) =>
+				current?.project?.id === currentProjectId ? finished : current,
+			);
+			const completedRun = finished.scenarioRuns[scenarioId];
+			return completedRun?.id === runId && completedRun.status !== "running"
+				? completedRun
+				: null;
+		}).catch((cause: unknown) => {
+			if (
+				projectIdRef.current === currentProjectId &&
+				projectGeneration.current === generation
+			) setError(errorMessage(cause));
+			return null;
 		});
-	}, []);
-	const runScenario = useCallback(async (scenario: Scenario) => {
-		try {
-			const { runId, state: begun } = await workspaceClient.beginScenarioRun(scenario.id);
-			setState((current) => current?.project?.id === begun.project?.id ? begun : current);
-			const worker = new Worker(new URL("./scenario-worker.ts", import.meta.url), { type: "module" });
-			const timer = setTimeout(() => {
-				worker.terminate();
-				scenarioWorkers.current.delete(runId);
-				void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] }).then((finished) => {
-					setState((current) => current?.project?.id === finished.project?.id ? finished : current);
-				});
-			}, 30_000);
-			scenarioWorkers.current.set(runId, { worker, timer });
-			worker.onmessage = (event: MessageEvent) => {
-				const message = event.data;
-				if (message.type === "request" && message.runId === runId) {
-					void workspaceClient.handleSandboxApiRequest(runId, message.request).then((response) => {
-						worker.postMessage({ type: "response", requestId: message.requestId, response });
-					}).catch((cause: unknown) => {
-						worker.postMessage({
-							type: "response",
-							requestId: message.requestId,
-							response: { status: 500, headers: { "content-type": "application/json" }, body: { code: "XX000", message: errorMessage(cause), details: null, hint: null } },
-						});
-					});
-					return;
+		pendingScenarioFinishes.current.set(runId, stopping);
+	}, [state]);
+	const runScenario = useCallback((scenario: Scenario): Promise<ScenarioRun | null> => {
+		const startedProjectId = projectIdRef.current;
+		const startedGeneration = projectGeneration.current;
+		const isProjectCurrent = () =>
+			projectIdRef.current === startedProjectId &&
+			projectGeneration.current === startedGeneration;
+		if (!startedProjectId) return Promise.resolve(null);
+
+		return (async () => {
+			try {
+				const { runId, state: begun } = await workspaceClient.beginScenarioRun(scenario.id);
+				if (!isProjectCurrent() || begun.project?.id !== startedProjectId) return null;
+				const pendingStop = pendingScenarioFinishes.current.get(runId);
+				if (pendingStop) {
+					const stoppedRun = await pendingStop;
+					if (pendingScenarioFinishes.current.get(runId) === pendingStop) {
+						pendingScenarioFinishes.current.delete(runId);
+					}
+					return isProjectCurrent() ? stoppedRun : null;
 				}
-				if (message.type !== "finished" || message.runId !== runId) return;
-				const active = scenarioWorkers.current.get(runId);
-				if (active) clearTimeout(active.timer);
-				scenarioWorkers.current.delete(runId);
-				worker.terminate();
-				void workspaceClient.finishScenarioRun({
-					runId,
-					status: message.status,
-					reason: message.reason,
-					console: message.console,
-					expectations: message.expectations,
-				}).then((finished) => {
-					setState((current) => current?.project?.id === finished.project?.id ? finished : current);
-				});
-			};
-			worker.onerror = (event) => {
-				const active = scenarioWorkers.current.get(runId);
-				if (active) clearTimeout(active.timer);
-				scenarioWorkers.current.delete(runId);
-				worker.terminate();
-				void workspaceClient.finishScenarioRun({
-					runId,
-					status: "errored",
-					reason: "exception",
-					console: [event.message],
-				});
-			};
-			worker.postMessage({ type: "start", runId, source: scenario.source });
-		} catch (cause) {
-			setError(errorMessage(cause));
-		}
+				setState((current) =>
+					current?.project?.id === startedProjectId ? begun : current,
+				);
+
+				let worker: Worker;
+				try {
+					worker = new Worker(new URL("./scenario-worker.ts", import.meta.url), {
+						type: "module",
+					});
+				} catch (cause) {
+					const finished = await workspaceClient.finishScenarioRun({
+						runId,
+						status: "errored",
+						reason: "exception",
+						console: [errorMessage(cause)],
+					});
+					if (!isProjectCurrent() || finished.project?.id !== startedProjectId) return null;
+					setState((current) =>
+						current?.project?.id === startedProjectId ? finished : current,
+					);
+					const run = finished.scenarioRuns[scenario.id];
+					return run?.id === runId && run.status !== "running" ? run : null;
+				}
+
+				const completion = Promise.withResolvers<ScenarioRun | null>();
+				const record: ActiveScenarioWorker = {
+					worker,
+					timer: undefined,
+					projectId: startedProjectId,
+					generation: startedGeneration,
+					resolve: completion.resolve,
+					finishing: false,
+					finish: (result) => {
+						if (record.finishing) return;
+						record.finishing = true;
+						clearTimeout(record.timer);
+						worker.terminate();
+						void workspaceClient.finishScenarioRun({ runId, ...result }).then((finished) => {
+							if (scenarioWorkers.current.get(runId) === record) {
+								scenarioWorkers.current.delete(runId);
+							}
+							const isCurrent =
+								projectIdRef.current === record.projectId &&
+								projectGeneration.current === record.generation &&
+								finished.project?.id === record.projectId;
+							if (!isCurrent) {
+								record.resolve(null);
+								return;
+							}
+							setState((current) =>
+								current?.project?.id === record.projectId ? finished : current,
+							);
+							const completedRun = finished.scenarioRuns[scenario.id];
+							record.resolve(
+								completedRun?.id === runId && completedRun.status !== "running"
+									? completedRun
+									: null,
+							);
+						}).catch((cause: unknown) => {
+							if (
+								projectIdRef.current === record.projectId &&
+								projectGeneration.current === record.generation
+							) setError(errorMessage(cause));
+							if (scenarioWorkers.current.get(runId) === record) {
+								scenarioWorkers.current.delete(runId);
+							}
+							record.resolve(null);
+						});
+					},
+				};
+				scenarioWorkers.current.set(runId, record);
+				record.timer = setTimeout(() => {
+					if (scenarioWorkers.current.get(runId) !== record) return;
+					record.finish({
+						status: "errored",
+						reason: "timed out",
+						console: [],
+					});
+				}, 30_000);
+				worker.onmessage = (event: MessageEvent) => {
+					const message = event.data;
+					if (
+						record.finishing ||
+						scenarioWorkers.current.get(runId) !== record
+					) return;
+					if (message.type === "request" && message.runId === runId) {
+						void workspaceClient.handleSandboxApiRequest(runId, message.request).then((response) => {
+							if (
+								record.finishing ||
+								scenarioWorkers.current.get(runId) !== record ||
+								projectIdRef.current !== record.projectId ||
+								projectGeneration.current !== record.generation
+							) return;
+							worker.postMessage({ type: "response", requestId: message.requestId, response });
+						}).catch((cause: unknown) => {
+							if (
+								record.finishing ||
+								scenarioWorkers.current.get(runId) !== record ||
+								projectIdRef.current !== record.projectId ||
+								projectGeneration.current !== record.generation
+							) return;
+							worker.postMessage({
+								type: "response",
+								requestId: message.requestId,
+								response: {
+									status: 500,
+									headers: { "content-type": "application/json" },
+									body: {
+										code: "XX000",
+										message: errorMessage(cause),
+										details: null,
+										hint: null,
+									},
+								},
+							});
+						});
+						return;
+					}
+					if (message.type !== "finished" || message.runId !== runId) return;
+					record.finish({
+						status: message.status,
+						reason: message.reason,
+						console: message.console,
+						expectations: message.expectations,
+					});
+				};
+				worker.onerror = (event) => {
+					if (
+						record.finishing ||
+						scenarioWorkers.current.get(runId) !== record
+					) return;
+					record.finish({
+						status: "errored",
+						reason: "exception",
+						console: [event.message],
+					});
+				};
+				try {
+					worker.postMessage({ type: "start", runId, source: scenario.source });
+				} catch (cause) {
+					record.finish({
+						status: "errored",
+						reason: "exception",
+						console: [errorMessage(cause)],
+					});
+				}
+				return completion.promise;
+			} catch (cause) {
+				if (isProjectCurrent()) setError(errorMessage(cause));
+				return null;
+			}
+		})();
 	}, []);
-	useEffect(() => {
-		for (const { worker, timer } of scenarioWorkers.current.values()) {
-			clearTimeout(timer);
-			worker.terminate();
+
+	const runSingleScenario = useCallback(async (scenario: Scenario) => {
+		if (
+			!state ||
+			state.project?.id !== projectIdRef.current ||
+			!getLastAppliedSandbox(state.sandbox) ||
+			scenarioIsRunning ||
+			scenarioStartOperation.current ||
+			runAllOperation.current
+		) return;
+		const operation = {};
+		scenarioStartOperation.current = operation;
+		setScenarioStarting(true);
+		try {
+			await runScenario(scenario);
+		} finally {
+			if (scenarioStartOperation.current === operation) {
+				scenarioStartOperation.current = null;
+				setScenarioStarting(false);
+			}
 		}
-		scenarioWorkers.current.clear();
-	}, [projectId]);
+	}, [runScenario, scenarioIsRunning, state]);
+
+	const runAll = useCallback(async () => {
+		const currentProjectId = projectIdRef.current;
+		if (
+			!state ||
+			!currentProjectId ||
+			state.project?.id !== currentProjectId ||
+			!getLastAppliedSandbox(state.sandbox) ||
+			scenarioIsRunning ||
+			scenarioStarting ||
+			scenarioStartOperation.current ||
+			runAllOperation.current ||
+			state.scenarios.length === 0
+		) return;
+		const operation: RunAllOperation = {
+			projectId: currentProjectId,
+			generation: projectGeneration.current,
+		};
+		const snapshot = state.scenarios.map((scenario) => ({ ...scenario }));
+		runAllOperation.current = operation;
+		setRunAllActive(true);
+		setRunAllResults([]);
+		try {
+			const results = await runAllScenarios(snapshot, runScenario, () =>
+				runAllOperation.current === operation &&
+				projectIdRef.current === operation.projectId &&
+				projectGeneration.current === operation.generation,
+			);
+			if (runAllOperation.current === operation) setRunAllResults(results);
+		} catch (cause) {
+			if (runAllOperation.current === operation) setError(errorMessage(cause));
+		} finally {
+			if (runAllOperation.current === operation) {
+				runAllOperation.current = null;
+				setRunAllActive(false);
+			}
+		}
+	}, [runScenario, scenarioIsRunning, scenarioStarting, state]);
+
+	useEffect(() => () => cancelScenarioWorkers(), [cancelScenarioWorkers]);
 
 	// Selection belongs to the open project, never to a previously open one.
 	useEffect(() => {
@@ -543,7 +820,11 @@ function App() {
 								scenarioRuns={state.scenarioRuns}
 								revision={state.revision}
 								runDisabledReason={scenarioRunDisabledReason}
-								onRun={(scenario) => void runScenario(scenario)}
+								runAllActive={runAllActive}
+								runAllResults={runAllResults}
+								activeRunId={activeScenarioRun?.id ?? null}
+								onRunAll={() => void runAll()}
+								onRun={(scenario) => void runSingleScenario(scenario)}
 								onStop={stopScenario}
 								onCreate={(name) =>
 									void applyScenario(() => workspaceClient.createScenario({ name }))

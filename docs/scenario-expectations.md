@@ -19,3 +19,9 @@ The supported checks are:
 - `returnsDataEqual(expected)` — the request's returned data deeply equals the expected value.
 
 The Scenarios view lists every expectation's description, whether it was met, and its result message. A failed request does not itself fail a Scenario run; only an unmet expectation does. An uncaught exception remains an errored run even if expectations were already recorded.
+
+## Run all Scenarios
+
+Run all executes the project's saved Scenarios in order. Each Scenario run starts only after the previous one finishes and receives its own empty Sandbox. The summary reports passed, failed, and errored runs; choose a Scenario in the summary to open its latest run.
+
+Stop ends the current Scenario run as errored with reason `stopped` and prevents the remaining Scenarios from starting. Switching projects cancels the remaining sequence and ignores results from the project that is no longer open.

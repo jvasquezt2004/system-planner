@@ -6,6 +6,7 @@ import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescrip
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { DesignEnumType, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
+import type { RunAllResult } from "../shared/run-all";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 const supabaseTypeDeclarations = import.meta.glob(
@@ -41,6 +42,10 @@ type Props = {
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	revision: number;
 	runDisabledReason: string | null;
+	runAllActive: boolean;
+	runAllResults: RunAllResult[];
+	activeRunId: string | null;
+	onRunAll: () => void;
 	onCreate: (name: string) => void;
 	onRename: (scenarioId: string, name: string) => void;
 	onRemove: (scenarioId: string) => void;
@@ -48,7 +53,6 @@ type Props = {
 	onRun: (scenario: Scenario) => void;
 	onStop: (runId: string) => void;
 };
-
 /** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
 	scenarios,
@@ -58,6 +62,10 @@ export function ScenarioView({
 	scenarioRuns,
 	revision,
 	runDisabledReason,
+	runAllActive,
+	runAllResults,
+	activeRunId,
+	onRunAll,
 	onCreate,
 	onRename,
 	onRemove,
@@ -76,7 +84,13 @@ export function ScenarioView({
 	sourceSaveCallback.current = onUpdateSource;
 	const monacoApi = useRef<Monaco | null>(null);
 	const monacoEditor = useRef<Parameters<OnMount>[0] | null>(null);
-
+	const runAllCounts = runAllResults.reduce(
+		(counts, { run }) => {
+			if (run.status !== "running") counts[run.status] += 1;
+			return counts;
+		},
+		{ passed: 0, failed: 0, errored: 0 },
+	);
 
 	useEffect(() => {
 		if (!selected || !scenarios.some((scenario) => scenario.id === selectedId)) {
@@ -140,20 +154,102 @@ export function ScenarioView({
 							Saved TypeScript source, kept separate from the design history.
 						</p>
 					</div>
-					<form onSubmit={createScenario} className="flex items-center gap-2">
-						<Input
-							aria-label="New Scenario name"
-							placeholder="Scenario name"
-							value={newName}
-							onChange={(event) => setNewName(event.target.value)}
-							className="h-8 w-52"
-						/>
-						<Button type="submit" disabled={!newName.trim()}>
-							<Plus />
-							New Scenario
+					<div className="flex flex-wrap items-center justify-end gap-2">
+						<Button
+							type="button"
+							aria-label="Run all Scenarios"
+							aria-busy={runAllActive}
+							disabled={
+								Boolean(runDisabledReason) ||
+								runAllActive ||
+								scenarios.length === 0
+							}
+							title={
+								runDisabledReason ??
+								(scenarios.length === 0 ? "Create a Scenario before running all." : undefined)
+							}
+							onClick={onRunAll}
+						>
+							{runAllActive ? "Running all…" : "Run all"}
 						</Button>
-					</form>
+						{runAllActive && activeRunId && selectedRun?.id !== activeRunId && (
+							<Button
+								type="button"
+								variant="strike"
+								aria-label="Stop the active Scenario run"
+								onClick={() => onStop(activeRunId)}
+							>
+								Stop
+							</Button>
+						)}
+						<form onSubmit={createScenario} className="flex items-center gap-2">
+							<Input
+								aria-label="New Scenario name"
+								placeholder="Scenario name"
+								value={newName}
+								onChange={(event) => setNewName(event.target.value)}
+								className="h-8 w-52"
+							/>
+							<Button type="submit" disabled={!newName.trim()}>
+								<Plus />
+								New Scenario
+							</Button>
+						</form>
+					</div>
 				</header>
+				{runDisabledReason && !selected && (
+					<p role="status" className="mt-3 text-right text-[12px] text-ink-3">
+						{runDisabledReason}
+					</p>
+				)}
+				{runAllResults.length > 0 && (
+					<section
+						aria-labelledby="run-all-results-title"
+						className="mt-6 border-y border-rule-strong bg-paper-tint/40"
+					>
+						<div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-2 px-4 py-3">
+							<h3 id="run-all-results-title" className="font-display text-[17px] font-medium">
+								Run all results
+							</h3>
+							<p role="status" aria-live="polite" aria-atomic="true" className="figures text-[12px] text-ink-2">
+								{runAllCounts.passed} passed, {runAllCounts.failed} failed, {runAllCounts.errored} errored
+							</p>
+						</div>
+						<ul aria-label="Run all Scenario outcomes" className="divide-y divide-rule">
+							{runAllResults.map(({ scenario, run }) => {
+								const isSaved = scenarios.some((item) => item.id === scenario.id);
+								const outcome =
+									run.reason === "stopped" ? "errored (stopped)" : run.status;
+								return (
+									<li
+										key={run.id}
+										className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2.5"
+									>
+										<span className="min-w-28 font-mono text-[11px] capitalize text-ink-2">
+											{outcome}
+										</span>
+										<span className="min-w-40 flex-1 font-display text-[14px]">
+											{scenario.name}
+										</span>
+										{isSaved ? (
+											<button
+												type="button"
+												aria-label={`Open Scenario ${scenario.name}`}
+												aria-pressed={selected?.id === scenario.id}
+												onClick={() => setSelectedId(scenario.id)}
+												className="rounded-sm text-[12px] font-medium text-ink underline decoration-ink-3 underline-offset-4 outline-none hover:text-pencil focus-visible:ring-2 focus-visible:ring-pencil/40"
+											>
+												Open {scenario.name}
+											</button>
+										) : (
+											<span className="text-[12px] text-ink-3">Scenario removed</span>
+										)}
+									</li>
+								);
+							})}
+						</ul>
+					</section>
+				)}
 
 				<div className="mt-8 grid min-h-[min(68vh,720px)] grid-cols-1 border-y border-rule-strong sm:grid-cols-[220px_minmax(0,1fr)]">
 					<aside className="border-b border-rule bg-paper-tint/50 sm:border-r sm:border-b-0">
