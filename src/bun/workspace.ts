@@ -53,6 +53,7 @@ import {
 	type SandboxAppliedTable,
 	type SandboxApiRequest,
 	type SandboxApiResponse,
+	type SandboxSnapshot,
 	type WorkspaceState,
 } from "../shared/design";
 import type { ScenarioRunDatabase } from "./scenario-api";
@@ -205,6 +206,7 @@ export async function createDesignWorkspace(
 		revision: number;
 		database: ScenarioRunDatabase | null;
 		tables: SandboxAppliedTable[];
+		relationships: SandboxSnapshot["relationships"];
 	} | null = null;
 	let previewRequestId = 0;
 	let scheduledPreview: {
@@ -749,6 +751,7 @@ export async function createDesignWorkspace(
 					revision: snapshot.revision,
 					database: null as ScenarioRunDatabase | null,
 					tables: snapshot.tables,
+					relationships: snapshot.relationships,
 				};
 				activeScenarioRun = run;
 				setState({
@@ -808,7 +811,7 @@ export async function createDesignWorkspace(
 						body: { code: "PGRST_SANDBOX_UNSUPPORTED", message: "not supported by the sandbox: expired Scenario run", details: null, hint: null },
 					};
 				}
-				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request);
+				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request, run.relationships);
 				if (activeScenarioRun !== run || activeProjectId !== run.projectId) return response;
 				const previous = state.scenarioRuns[run.scenarioId];
 				if (!previous || previous.id !== run.id) return response;
