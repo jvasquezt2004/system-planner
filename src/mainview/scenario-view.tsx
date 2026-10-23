@@ -1,12 +1,23 @@
 import { useEffect, useState, type FormEvent } from "react";
+import Editor from "@monaco-editor/react";
+import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
+import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
-import type { Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import type { SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import { generateScenarioDatabaseTypes } from "../shared/scenario-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
+const scenarioMonacoEnvironment = globalThis as typeof globalThis & {
+	MonacoEnvironment?: { getWorker: (_moduleId: string, label: string) => Worker };
+};
+scenarioMonacoEnvironment.MonacoEnvironment = {
+	getWorker: (_moduleId, label) =>
+		label === "typescript" || label === "javascript" ? new TsWorker() : new EditorWorker(),
+};
 
 type Props = {
 	scenarios: Scenario[];
+	appliedTables: SandboxAppliedTable[];
 	save: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	revision: number;
@@ -22,6 +33,7 @@ type Props = {
 /** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
 	scenarios,
+	appliedTables,
 	save,
 	scenarioRuns,
 	revision,
@@ -40,6 +52,7 @@ export function ScenarioView({
 	const selected = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
 	const selectedRun = selected ? scenarioRuns[selected.id] : null;
 
+
 	useEffect(() => {
 		if (!selected || !scenarios.some((scenario) => scenario.id === selectedId)) {
 			setSelectedId(scenarios[0]?.id ?? null);
@@ -52,7 +65,12 @@ export function ScenarioView({
 	useEffect(() => {
 		setSourceDraft(selected?.source ?? "");
 	}, [selected?.id]);
-
+	useEffect(() => {
+		if (!selected || sourceDraft === selected.source) return;
+		const scenarioId = selected.id;
+		const timer = setTimeout(() => onUpdateSource(scenarioId, sourceDraft), 300);
+		return () => clearTimeout(timer);
+	}, [onUpdateSource, selected?.id, selected?.source, sourceDraft]);
 	function createScenario(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		const name = newName.trim();
@@ -170,17 +188,33 @@ export function ScenarioView({
 								<label htmlFor="scenario-source" className="kicker">TypeScript source</label>
 								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
 							</div>
-							<Textarea
-								id="scenario-source"
-								aria-label="Scenario TypeScript source"
+							<Editor
+								key={generateScenarioDatabaseTypes(appliedTables)}
+								height="min(60vh, 640px)"
+								language="typescript"
 								value={sourceDraft}
-								onChange={(event) => {
-									const source = event.target.value;
-									setSourceDraft(source);
-									onUpdateSource(selected.id, source);
+								onChange={(source) => setSourceDraft(source ?? "")}
+								beforeMount={(monaco) => {
+									monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
+										target: monaco.languages.typescript.ScriptTarget.ES2022,
+										module: monaco.languages.typescript.ModuleKind.ESNext,
+										moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+										strict: true,
+										noEmit: true,
+									});
+									monaco.languages.typescript.typescriptDefaults.addExtraLib(
+										generateScenarioDatabaseTypes(appliedTables),
+										"file:///scenario-globals.d.ts",
+									);
 								}}
-								spellCheck={false}
-								className="min-h-[min(60vh,640px)] flex-1 resize-y rounded-none border-0 bg-paper-raised px-5 py-4 font-mono text-[12.5px] leading-6 focus-visible:ring-0"
+								options={{
+									ariaLabel: "Scenario TypeScript source",
+									fontFamily: "IBM Plex Mono, monospace",
+									fontSize: 13,
+									minimap: { enabled: false },
+									scrollBeyondLastLine: false,
+									wordWrap: "on",
+								}}
 							/>
 							{runDisabledReason && (
 								<p className="border-t border-rule px-5 py-2 text-[12px] text-ink-3" role="status">
