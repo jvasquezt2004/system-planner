@@ -165,5 +165,93 @@ describe("Scenario runs", () => {
 			worker.terminate();
 			await workspace.finishScenarioRun({ runId, status: "passed", console: ["worker completed"] });
 		}
-		}, 60_000);
+	}, 60_000);
+	test("the runner permits type-only imports and removes worker network primitives", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; console: string[] }>();
+		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
+		worker.onerror = (event) => reject(new Error(event.message));
+		worker.onmessage = ({ data }: MessageEvent) => {
+			if (data.type === "finished") resolve(data);
+		};
+		worker.postMessage({
+			type: "start",
+			runId,
+			source: 'import type { Missing } from "missing-package"; console.log(typeof fetch, typeof XMLHttpRequest, typeof WebSocket, typeof importScripts);',
+		});
+		try {
+			expect(await promise).toMatchObject({ status: "passed", console: ["undefined undefined undefined undefined"] });
+		} finally {
+			clearTimeout(timeout);
+			worker.terminate();
+			await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+		}
+	}, 60_000);
+
+	test("the runner refuses runtime imports before executing scenario code", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; reason: string; console: string[] }>();
+		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
+		worker.onerror = (event) => reject(new Error(event.message));
+		worker.onmessage = ({ data }: MessageEvent) => {
+			if (data.type === "finished") resolve(data);
+		};
+		worker.postMessage({
+			type: "start",
+			runId,
+			source: 'import { something } from "missing-package"; console.log("must not execute");',
+		});
+		try {
+			expect(await promise).toMatchObject({
+				status: "errored",
+				reason: "exception",
+				console: ["Scenarios may only import types; runtime imports are not supported."],
+			});
+		} finally {
+			clearTimeout(timeout);
+			worker.terminate();
+			await workspace.finishScenarioRun({ runId, status: "errored", reason: "exception", console: [] });
+		}
+	}, 60_000);
+
+	test("terminating a runaway Scenario ends the run errored and releases its sandbox", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+		// A real worker must enter the infinite loop before it can be terminated.
+		const { promise: enteredPromise, resolve: entered } = Promise.withResolvers<void>();
+		worker.onmessage = ({ data }: MessageEvent) => {
+			if (data.type === "started") entered();
+		};
+		worker.postMessage({ type: "start", runId, source: 'postMessage({ type: "started" }); while (true) {}' });
+		await enteredPromise;
+		worker.terminate();
+		const stopped = await workspace.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] });
+		expect(stopped.scenarioRuns[scenarioId]).toMatchObject({ status: "errored", reason: "timed out" });
+		const next = await workspace.beginScenarioRun({ scenarioId });
+		expect(next.runId).not.toBe(runId);
+		const stopWorker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+		const { promise: startedPromise, resolve: started } = Promise.withResolvers<void>();
+		stopWorker.onmessage = ({ data }: MessageEvent) => {
+			if (data.type === "started") started();
+		};
+		stopWorker.postMessage({
+			type: "start",
+			runId: next.runId,
+			source: 'postMessage({ type: "started" }); while (true) {}',
+		});
+		await startedPromise;
+		stopWorker.terminate();
+		const stoppedByUser = await workspace.finishScenarioRun({
+			runId: next.runId,
+			status: "errored",
+			reason: "stopped",
+			console: [],
+		});
+		expect(stoppedByUser.scenarioRuns[scenarioId]).toMatchObject({ status: "errored", reason: "stopped" });
+	}, 60_000);
 });

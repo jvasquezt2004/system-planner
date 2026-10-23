@@ -145,7 +145,9 @@ function App() {
 			current.worker.terminate();
 			scenarioWorkers.current.delete(runId);
 		}
-		void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "stopped", console: [] });
+		void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "stopped", console: [] }).then((finished) => {
+			setState((current) => current?.project?.id === finished.project?.id ? finished : current);
+		});
 	}, []);
 	const runScenario = useCallback(async (scenario: Scenario) => {
 		try {
@@ -155,7 +157,9 @@ function App() {
 			const timer = setTimeout(() => {
 				worker.terminate();
 				scenarioWorkers.current.delete(runId);
-				void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] });
+				void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] }).then((finished) => {
+					setState((current) => current?.project?.id === finished.project?.id ? finished : current);
+				});
 			}, 30_000);
 			scenarioWorkers.current.set(runId, { worker, timer });
 			worker.onmessage = (event: MessageEvent) => {
