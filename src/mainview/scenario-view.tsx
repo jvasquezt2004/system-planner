@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor from "@monaco-editor/react";
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
@@ -51,6 +51,9 @@ export function ScenarioView({
 	const [sourceDraft, setSourceDraft] = useState(scenarios[0]?.source ?? "");
 	const selected = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
 	const selectedRun = selected ? scenarioRuns[selected.id] : null;
+	const pendingSourceSave = useRef<{ scenarioId: string; source: string } | null>(null);
+	const sourceSaveCallback = useRef(onUpdateSource);
+	sourceSaveCallback.current = onUpdateSource;
 
 
 	useEffect(() => {
@@ -66,11 +69,29 @@ export function ScenarioView({
 		setSourceDraft(selected?.source ?? "");
 	}, [selected?.id]);
 	useEffect(() => {
-		if (!selected || sourceDraft === selected.source) return;
-		const scenarioId = selected.id;
-		const timer = setTimeout(() => onUpdateSource(scenarioId, sourceDraft), 300);
+		if (!selected || sourceDraft === selected.source) {
+			if (pendingSourceSave.current?.scenarioId === selected?.id) {
+				pendingSourceSave.current = null;
+			}
+			return;
+		}
+		const pending = { scenarioId: selected.id, source: sourceDraft };
+		pendingSourceSave.current = pending;
+		const timer = setTimeout(() => {
+			if (pendingSourceSave.current === pending) pendingSourceSave.current = null;
+			sourceSaveCallback.current(pending.scenarioId, pending.source);
+		}, 300);
 		return () => clearTimeout(timer);
-	}, [onUpdateSource, selected?.id, selected?.source, sourceDraft]);
+	}, [selected?.id, selected?.source, sourceDraft]);
+	useEffect(
+		() => () => {
+			const pending = pendingSourceSave.current;
+			if (!pending) return;
+			pendingSourceSave.current = null;
+			sourceSaveCallback.current(pending.scenarioId, pending.source);
+		},
+		[selected?.id],
+	);
 	function createScenario(event: FormEvent<HTMLFormElement>) {
 		event.preventDefault();
 		const name = newName.trim();
@@ -165,7 +186,7 @@ export function ScenarioView({
 									size="sm"
 									disabled={Boolean(runDisabledReason) || selectedRun?.status === "running"}
 									title={runDisabledReason ?? undefined}
-									onClick={() => onRun(selected)}
+									onClick={() => onRun({ ...selected, source: sourceDraft })}
 								>
 									Run
 								</Button>
