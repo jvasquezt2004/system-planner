@@ -72,97 +72,114 @@ export async function handleSandboxApiRequest(
 	let response: SandboxApiResponse;
 	let table = tableName;
 	try {
-		if (segments.length !== 3 || segments[0] !== "rest" || segments[1] !== "v1") {
-			throw unsupported("endpoint");
-		}
-		const schemaTable = tables.find((candidate) => candidate.name === tableName);
-		if (!schemaTable) throw unsupported("unknown table");
-		const columns = new Set(schemaTable.columns.map((column) => column.name));
-		const select = url.searchParams.get("select");
-		const preferences = (request.headers.prefer ?? "").split(",").map((value) => value.trim()).filter(Boolean);
-		if (request.method === "GET" || request.method === "HEAD") {
-			if (request.method === "HEAD") throw unsupported("HEAD requests");
-			const accept = request.headers.accept ?? "application/json";
-			if (preferences.length > 0) {
-				if (preferences.some((preference) => preference.startsWith("count="))) throw unsupported("row counts");
-				throw unsupported("Prefer options on reads");
+		response = await database.transaction(async (transaction) => {
+			await transaction.query("SELECT set_config('request.jwt.claims', $1, true)", [JSON.stringify(identity.claims)]);
+			await transaction.query("SELECT set_config('request.jwt.claim.role', $1, true)", [identity.role]);
+			await transaction.query("SELECT set_config('request.jwt.claim.sub', $1, true)", [identity.userId ?? ""]);
+			await transaction.query(`SET LOCAL ROLE ${identity.role}`);
+			if (segments.length !== 3 || segments[0] !== "rest" || segments[1] !== "v1") {
+				throw unsupported("endpoint");
 			}
-			if (!accept.includes("application/json") && !accept.includes("vnd.pgrst.object")) {
-				throw unsupported(accept.includes("csv") ? "CSV responses" : accept.includes("plan") ? "explain responses" : "response media type");
-			}
-			const selected = select === null ? [...columns] : parseSelection(select, columns);
-			const params: unknown[] = [...selected];
-			const where: string[] = [];
-			let orderBy = "";
-			let offset = 0;
-			let limit: number | null = null;
-			for (const [key, value] of url.searchParams.entries()) {
-				if (key === "select") continue;
-				if (key === "order") {
-					if (orderBy) throw unsupported("multiple order clauses");
-					orderBy = parseOrder(value, columns);
-				} else if (key === "limit" || key === "offset") {
-					if (!/^\d+$/.test(value)) throw unsupported(`${key} value`);
-					const number = Number(value);
-					if (!Number.isSafeInteger(number)) throw unsupported(`${key} value`);
-					if (key === "limit") limit = number;
-					else offset = number;
-				} else if (key === "or") {
-					where.push(parseOr(value, columns, params));
-				} else if (key === "and") {
-					throw unsupported("and filters");
+			const schemaTable = tables.find((candidate) => candidate.name === tableName);
+			if (!schemaTable) throw unsupported("unknown table");
+			const columns = new Set(schemaTable.columns.map((column) => column.name));
+			const select = url.searchParams.get("select");
+			const preferences = (request.headers.prefer ?? "").split(",").map((value) => value.trim()).filter(Boolean);
+			let transactionResponse: SandboxApiResponse | null = null;
+			if (request.method === "GET" || request.method === "HEAD") {
+				if (request.method === "HEAD") throw unsupported("HEAD requests");
+				const accept = request.headers.accept ?? "application/json";
+				if (preferences.length > 0) {
+					if (preferences.some((preference) => preference.startsWith("count="))) throw unsupported("row counts");
+					throw unsupported("Prefer options on reads");
+				}
+				if (!accept.includes("application/json") && !accept.includes("vnd.pgrst.object")) {
+					throw unsupported(accept.includes("csv") ? "CSV responses" : accept.includes("plan") ? "explain responses" : "response media type");
+				}
+				const selected = select === null ? [...columns] : parseSelection(select, columns);
+				const params: unknown[] = [...selected];
+				const where: string[] = [];
+				let orderBy = "";
+				let offset = 0;
+				let limit: number | null = null;
+				for (const [key, value] of url.searchParams.entries()) {
+					if (key === "select") continue;
+					if (key === "order") {
+						if (orderBy) throw unsupported("multiple order clauses");
+						orderBy = parseOrder(value, columns);
+					} else if (key === "limit" || key === "offset") {
+						if (!/^\d+$/.test(value)) throw unsupported(`${key} value`);
+						const number = Number(value);
+						if (!Number.isSafeInteger(number)) throw unsupported(`${key} value`);
+						if (key === "limit") limit = number;
+						else offset = number;
+					} else if (key === "or") {
+						where.push(parseOr(value, columns, params));
+					} else if (key === "and") {
+						throw unsupported("and filters");
+					} else {
+						if (!columns.has(key)) throw unsupported(`filter column ${key}`);
+						where.push(parseFilter(key, value, params));
+					}
+				}
+				const rangeHeader = request.headers.range;
+				if (rangeHeader) {
+					if (request.headers["range-unit"] && request.headers["range-unit"] !== "items") throw unsupported("range unit");
+					const match = /^(\d+)-(\d*)$/.exec(rangeHeader);
+					if (!match) throw unsupported("range header");
+					const start = Number(match[1]);
+					const end = match[2] === "" ? null : Number(match[2]);
+					if (!Number.isSafeInteger(start) || (end !== null && (!Number.isSafeInteger(end) || end < start))) {
+						throw unsupported("range header");
+					}
+					offset = start;
+					limit = end === null ? null : end - start + 1;
+				}
+				const jsonProjection = selected.map((column, index) => `$${index + 1}::text, sandbox_table.${quoteIdentifier(column)}`).join(", ");
+				const sql = [
+					`SELECT jsonb_build_object(${jsonProjection}) AS result FROM ${quoteIdentifier(tableName)} AS sandbox_table`,
+					where.length ? `WHERE ${where.join(" AND ")}` : "",
+					orderBy ? `ORDER BY ${orderBy}` : "",
+					limit === null ? "" : `LIMIT ${limit}`,
+					offset ? `OFFSET ${offset}` : "",
+				].filter(Boolean).join(" ");
+				const result = await transaction.query<{ result: unknown }>(sql, params);
+				const records = result.rows.map((row) => row.result);
+				const start = offset;
+				const end = records.length ? start + records.length - 1 : start;
+				const contentRange = records.length ? `${start}-${end}/*` : "*/*";
+				if (request.headers.accept?.includes("vnd.pgrst.object")) {
+					if (records.length !== 1) {
+						throw new PostgrestError("PGRST116", "JSON object requested, multiple (or no) rows returned", `The result contains ${records.length} rows`);
+					}
+					transactionResponse = { status: 200, headers: { "content-type": "application/vnd.pgrst.object+json", "content-range": contentRange }, body: records[0] };
 				} else {
-					const column = key;
-					if (!columns.has(column)) throw unsupported(`filter column ${column}`);
-					where.push(parseFilter(column, value, params));
+					transactionResponse = {
+						status: 200,
+						headers: { "content-type": "application/json", "content-range": contentRange },
+						body: records,
+					};
 				}
-			}
-			const rangeHeader = request.headers.range;
-			if (rangeHeader) {
-				if (request.headers["range-unit"] && request.headers["range-unit"] !== "items") throw unsupported("range unit");
-				const match = /^(\d+)-(\d*)$/.exec(rangeHeader);
-				if (!match) throw unsupported("range header");
-				const start = Number(match[1]);
-				const end = match[2] === "" ? null : Number(match[2]);
-				if (!Number.isSafeInteger(start) || (end !== null && (!Number.isSafeInteger(end) || end < start))) {
-					throw unsupported("range header");
+			} else if (request.method === "POST") {
+				if ([...url.searchParams.keys()].some((key) => key !== "select")) throw unsupported("insert query options");
+				if (select !== null && select !== "*") throw unsupported("insert representation columns other than *");
+				if (preferences.length !== 1 || preferences[0] !== "return=representation") {
+					throw unsupported("insert requires only Prefer: return=representation");
 				}
-				offset = start;
-				limit = end === null ? null : end - start + 1;
-			}
-			const jsonProjection = selected.map((column, index) => `$${index + 1}::text, sandbox_table.${quoteIdentifier(column)}`).join(", ");
-			const sql = [
-				`SELECT jsonb_build_object(${jsonProjection}) AS result FROM ${quoteIdentifier(tableName)} AS sandbox_table`,
-				where.length ? `WHERE ${where.join(" AND ")}` : "",
-				orderBy ? `ORDER BY ${orderBy}` : "",
-				limit === null ? "" : `LIMIT ${limit}`,
-				offset ? `OFFSET ${offset}` : "",
-			].filter(Boolean).join(" ");
-			const result = await database.query<{ result: unknown }>(sql, params);
-			const records = result.rows.map((row) => row.result);
-			const start = offset;
-			const end = records.length ? start + records.length - 1 : start;
-			const contentRange = records.length ? `${start}-${end}/*` : "*/*";
-			if (request.headers.accept?.includes("vnd.pgrst.object")) {
-				if (records.length !== 1) {
-					const count = records.length;
-					throw new PostgrestError("PGRST116", "JSON object requested, multiple (or no) rows returned", `The result contains ${count} rows`);
-				}
-				response = { status: 200, headers: { "content-type": "application/vnd.pgrst.object+json", "content-range": contentRange }, body: records[0] };
+				const record = request.body ? JSON.parse(request.body) : null;
+				if (!record || typeof record !== "object" || Array.isArray(record)) throw unsupported("insert requires one JSON record");
+				const fields = Object.keys(record);
+				if (fields.length === 0 || fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
+				const params = fields.map((field) => (record as Record<string, unknown>)[field]);
+				const values = params.map((_, index) => `$${index + 1}`).join(", ");
+				const names = fields.map(quoteIdentifier).join(", ");
+				const result = await transaction.query(`INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES (${values}) RETURNING *`, params);
+				transactionResponse = { status: 201, headers: { "content-type": "application/json", "content-range": `0-${Math.max(0, result.rows.length - 1)}/*` }, body: result.rows };
 			} else {
-				response = {
-					status: 200,
-					headers: { "content-type": "application/json", "content-range": contentRange },
-					body: records,
-				};
+				throw unsupported(`HTTP ${request.method}`);
 			}
-		} else if (request.method === "POST") {
-			if ([...url.searchParams.keys()].some((key) => key !== "select")) throw unsupported("insert query options");
-			if (select !== null && select !== "*") throw unsupported("insert representation columns other than *");
-			if (preferences.length !== 1 || preferences[0] !== "return=representation") {
-				throw unsupported("insert requires only Prefer: return=representation");
-			}
-			throw unsupported(`HTTP ${request.method}`);
+			if (!transactionResponse) throw unsupported("request returned no response");
+			return transactionResponse;
 		});
 	} catch (error) {
 		if (error instanceof UnsupportedError || error instanceof PostgrestError) {
