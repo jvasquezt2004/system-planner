@@ -17,6 +17,12 @@ export type ProjectSummary = {
 export type Scenario = { id: string; name: string; source: string };
 
 export type ScenarioRunStatus = "running" | "passed" | "failed" | "errored";
+export type ScenarioResultGrid = {
+	table: string;
+	columns: string[];
+	rows: Record<string, unknown>[];
+	total: number;
+};
 export type ScenarioRun = {
 	id: string;
 	status: ScenarioRunStatus;
@@ -24,6 +30,7 @@ export type ScenarioRun = {
 	stale: boolean;
 	requests: ScenarioRequestLogEntry[];
 	console: string[];
+	grids: ScenarioResultGrid[];
 	reason?: "exception" | "stopped" | "timed out";
 };
 

@@ -205,6 +205,48 @@ export function ScenarioView({
 											</li>
 										))}
 									</ol>
+									{selectedRun.grids.length > 0 && (
+										<section aria-label="Scenario result grids" className="mt-5 space-y-5">
+											{selectedRun.grids.map((grid) => (
+												<section key={grid.table} aria-label={`${grid.table} result grid`}>
+													<div className="mb-2 flex flex-wrap items-baseline gap-x-3">
+														<h4 className="font-display text-[15px] font-medium">{grid.table}</h4>
+														<span className="text-[11px] text-ink-3">
+															{grid.total > grid.rows.length
+																? `Showing ${grid.rows.length} of ${grid.total} records`
+																: `${grid.total} ${grid.total === 1 ? "record" : "records"}`}
+														</span>
+													</div>
+													<div className="overflow-x-auto border border-rule">
+														<table className="min-w-full border-collapse text-left font-mono text-[11px]">
+															<thead className="bg-paper-tint">
+																<tr>
+																	{grid.columns.map((column) => (
+																		<th key={column} scope="col" className="border-b border-rule px-3 py-2 font-medium">{column}</th>
+																	))}
+																</tr>
+															</thead>
+															<tbody>
+																{grid.rows.length > 0 ? grid.rows.map((row, index) => (
+																	<tr key={index} className="border-b border-rule last:border-b-0">
+																		{grid.columns.map((column) => (
+																			<td key={column} className="max-w-80 whitespace-pre-wrap break-words px-3 py-2">
+																				{row[column] === null ? "null" : typeof row[column] === "object" ? JSON.stringify(row[column]) : String(row[column])}
+																			</td>
+																		))}
+																	</tr>
+																)) : (
+																	<tr>
+																		<td colSpan={Math.max(grid.columns.length, 1)} className="px-3 py-3 text-ink-3">No records</td>
+																	</tr>
+																)}
+															</tbody>
+														</table>
+													</div>
+												</section>
+											))}
+										</section>
+									)}
 								</section>
 							)}
 						</section>

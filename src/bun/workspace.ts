@@ -54,7 +54,7 @@ import {
 	type WorkspaceState,
 } from "../shared/design";
 import type { ScenarioRunDatabase } from "./scenario-api";
-import { createScenarioRunDatabase, handleSandboxApiRequest } from "./scenario-api";
+import { captureScenarioResultGrids, createScenarioRunDatabase, handleSandboxApiRequest } from "./scenario-api";
 import { uniquePostgresIdentifier } from "../shared/postgres-identifiers";
 import {
 	foreignKeyColumnName,
@@ -749,6 +749,7 @@ export async function createDesignWorkspace(
 							stale: run.revision < state.revision,
 							requests: [],
 							console: [],
+							grids: [],
 						},
 					},
 				});
@@ -814,8 +815,21 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const run = activeScenarioRun;
 				if (!run || run.id !== action.runId || run.projectId !== activeProjectId) return state;
-				activeScenarioRun = null;
 				const previous = state.scenarioRuns[run.scenarioId];
+				let grids = previous?.id === run.id ? previous.grids : [];
+				let status = action.status;
+				let reason = action.reason;
+				let output = [...action.console];
+				try {
+					if (run.database) grids = await captureScenarioResultGrids(run.database, run.tables);
+				} catch (error) {
+					status = "errored";
+					reason = "exception";
+					output = [...output, error instanceof Error ? error.message : String(error)];
+				} finally {
+					activeScenarioRun = null;
+					if (run.database) await run.database.close();
+				}
 				if (previous?.id === run.id) {
 					setState({
 						...state,
@@ -823,14 +837,14 @@ export async function createDesignWorkspace(
 							...state.scenarioRuns,
 							[run.scenarioId]: {
 								...previous,
-								status: action.status,
-								console: [...action.console],
-								...(action.reason ? { reason: action.reason } : {}),
+								status,
+								console: output,
+								grids,
+								...(reason ? { reason } : {}),
 							},
 						},
 					});
 				}
-				if (run.database) await run.database.close();
 				return state;
 			});
 		},

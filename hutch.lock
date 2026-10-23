@@ -10,6 +10,7 @@
         "@fontsource-variable/ibm-plex-sans": "^5.3.0",
         "@fontsource-variable/newsreader": "^5.3.0",
         "@fontsource/ibm-plex-mono": "^5.3.0",
+        "@supabase/supabase-js": "^2.118.0",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "lucide-react": "^1.60.0",
@@ -325,6 +326,20 @@
 
     "@rollup/rollup-win32-x64-msvc": ["@rollup/rollup-win32-x64-msvc@4.62.4", "https://registry.npmjs.org/@rollup/rollup-win32-x64-msvc/-/rollup-win32-x64-msvc-4.62.4.tgz", {"os": ["win32"], "cpu": ["x64"]}, "sha512-zD6NdeWEByGE9QF9vCrlJ5YQB4oq9q91kPZS37Jwj5hOkvR1lTBSpsKhKDw4IJtbQ35LsTS1HD9DZYGKIshU1Q=="],
 
+    "@supabase/auth-js": ["@supabase/auth-js@2.118.0", "", {"dependencies": {"tslib": "2.8.1"}}, ""],
+
+    "@supabase/functions-js": ["@supabase/functions-js@2.118.0", "", {"dependencies": {"tslib": "2.8.1"}}, ""],
+
+    "@supabase/phoenix": ["@supabase/phoenix@0.4.5", "", {}, ""],
+
+    "@supabase/postgrest-js": ["@supabase/postgrest-js@2.118.0", "", {"dependencies": {"tslib": "2.8.1"}}, ""],
+
+    "@supabase/realtime-js": ["@supabase/realtime-js@2.118.0", "", {"dependencies": {"@supabase/phoenix": "0.4.5", "tslib": "2.8.1"}}, ""],
+
+    "@supabase/storage-js": ["@supabase/storage-js@2.118.0", "", {"dependencies": {"iceberg-js": "^0.8.1", "tslib": "2.8.1"}}, ""],
+
+    "@supabase/supabase-js": ["@supabase/supabase-js@2.118.0", "", {"dependencies": {"@supabase/auth-js": "2.118.0", "@supabase/functions-js": "2.118.0", "@supabase/postgrest-js": "2.118.0", "@supabase/realtime-js": "2.118.0", "@supabase/storage-js": "2.118.0"}, "peerDependencies": {"@opentelemetry/api": ">=1.0.0"}, "optionalPeers": ["@opentelemetry/api"]}, ""],
+
     "@tailwindcss/node": ["@tailwindcss/node@4.3.3", "", {"dependencies": {"@jridgewell/remapping": "^2.3.5", "enhanced-resolve": "^5.24.1", "jiti": "^2.7.0", "lightningcss": "1.32.0", "magic-string": "^0.30.21", "source-map-js": "^1.2.1", "tailwindcss": "4.3.3"}}, ""],
 
     "@tailwindcss/oxide": ["@tailwindcss/oxide@4.3.3", "", {"optionalDependencies": {"@tailwindcss/oxide-darwin-arm64": "4.3.3", "@tailwindcss/oxide-linux-arm64-musl": "4.3.3", "@tailwindcss/oxide-linux-arm64-gnu": "4.3.3", "@tailwindcss/oxide-linux-x64-musl": "4.3.3", "@tailwindcss/oxide-linux-x64-gnu": "4.3.3", "@tailwindcss/oxide-wasm32-wasi": "4.3.3", "@tailwindcss/oxide-freebsd-x64": "4.3.3", "@tailwindcss/oxide-win32-arm64-msvc": "4.3.3", "@tailwindcss/oxide-win32-x64-msvc": "4.3.3", "@tailwindcss/oxide-linux-arm-gnueabihf": "4.3.3", "@tailwindcss/oxide-darwin-x64": "4.3.3", "@tailwindcss/oxide-android-arm64": "4.3.3"}}, ""],
@@ -440,6 +455,8 @@
     "graceful-fs": ["graceful-fs@4.2.11", "", {}, ""],
 
     "has-flag": ["has-flag@4.0.0", "https://registry.npmjs.org/has-flag/-/has-flag-4.0.0.tgz", {}, "sha512-EykJT/Q1KjTWctppgIAgfSO0tKVuZUjhgMr17kqTumMl6Afv3EISleU7qZUzoXDFTAHTDC4NOoG/ZxU3EvlMPQ=="],
+
+    "iceberg-js": ["iceberg-js@0.8.1", "", {}, ""],
 
     "is-fullwidth-code-point": ["is-fullwidth-code-point@3.0.0", "https://registry.npmjs.org/is-fullwidth-code-point/-/is-fullwidth-code-point-3.0.0.tgz", {}, "sha512-zymm5+u+sCsSWyD9qNaejV3DFvhCKclKdizYaJUuHA83RLjb7nSuGnddCHGv0hk+KY7BMAlsWeK4Ueg6EV6XQg=="],
 
