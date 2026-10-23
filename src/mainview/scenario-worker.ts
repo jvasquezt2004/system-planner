@@ -5,6 +5,7 @@ const scope = self as unknown as {
 	onmessage: ((event: MessageEvent) => void) | null;
 	postMessage(message: unknown): void;
 };
+const realtimeWebSocket = globalThis.WebSocket;
 let requestSequence = 0;
 const pending = new Map<string, (response: { status: number; headers: Record<string, string>; body: unknown }) => void>();
 const output: string[] = [];
@@ -56,10 +57,25 @@ scope.onmessage = async (event: MessageEvent) => {
 			const response = await promise;
 			return new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
 		}) as typeof fetch;
-		const supabase = createClient("http://scenario.local", "scenario-anon-key", {
-			auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
-			global: { fetch: requestFetch },
-		});
+		const createIdentityClient = (role: "anon" | "authenticated" | "service_role", claims: Record<string, unknown>) => {
+			const payload = btoa(String.fromCharCode(...new TextEncoder().encode(JSON.stringify({ ...claims, role }))))
+				.replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+			const token = `eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${payload}.`;
+			const previousWebSocket = globalThis.WebSocket;
+			if (realtimeWebSocket) globalThis.WebSocket = realtimeWebSocket;
+			try {
+				return createClient("http://scenario.local", "scenario-anon-key", {
+					auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
+					global: { fetch: requestFetch, headers: { Authorization: `Bearer ${token}` } },
+				});
+			} finally {
+				globalThis.WebSocket = previousWebSocket;
+			}
+		};
+		const supabase = createIdentityClient("anon", {});
+		const asUser = (userId: string, claims: Record<string, unknown> = {}) =>
+			createIdentityClient("authenticated", { ...claims, sub: userId, user_id: userId });
+		const asServiceRole = () => createIdentityClient("service_role", {});
 		const recordExpectation = (description: string, passed: boolean, message: string) => {
 			expectations.push({ description, passed, message });
 		};
@@ -110,7 +126,7 @@ scope.onmessage = async (event: MessageEvent) => {
 			importScripts: undefined,
 			console: capturedConsole,
 		});
-		await new Function("supabase", "console", "expect", `return (async () => { ${source}\n })()`)(supabase, capturedConsole, expectResult);
+		await new Function("supabase", "asUser", "asServiceRole", "console", "expect", `return (async () => { ${source}\n })()`)(supabase, asUser, asServiceRole, capturedConsole, expectResult);
 		report("passed");
 	} catch (error) {
 		output.push(error instanceof Error ? error.message : String(error));

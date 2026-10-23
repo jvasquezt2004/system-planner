@@ -210,7 +210,7 @@ export function ScenarioView({
 									<ol aria-label="Sandbox API request log" className="mt-3 space-y-2">
 										{selectedRun.requests.map((entry) => (
 											<li key={entry.order} className="border-t border-rule pt-2 font-mono text-[11px]">
-												<div>{entry.order}. {entry.method} /rest/v1/{entry.table}{Object.keys(entry.filters).length > 0 ? `?${new URLSearchParams(entry.filters).toString()}` : ""} — {entry.status}</div>
+												<div>{entry.order}. {entry.method} /rest/v1/{entry.table}{Object.keys(entry.filters).length > 0 ? `?${new URLSearchParams(entry.filters).toString()}` : ""} as {entry.identity.role}{entry.identity.userId ? ` (${entry.identity.userId})` : ""} — {entry.status}</div>
 												<pre className="whitespace-pre-wrap">{JSON.stringify(entry.result, null, 2)}</pre>
 											</li>
 										))}

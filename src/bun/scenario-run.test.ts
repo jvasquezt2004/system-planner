@@ -225,6 +225,75 @@ describe("Scenario runs", () => {
 		});
 		expect(invalidInputs.run).toMatchObject({ status: "failed", expectations: expect.any(Array) });
 	}, 30_000);
+	test("identity clients retain runner lockdown, expectations, and public grants", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
+		const { promise, resolve, reject } = Promise.withResolvers<{
+			status: string;
+			console: string[];
+			expectations: { description: string; passed: boolean; message: string }[];
+		}>();
+		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
+		worker.onerror = (event) => reject(new Error(event.message));
+		worker.onmessage = async ({ data }: MessageEvent) => {
+			if (data.type === "request") {
+				const response = await workspace.handleSandboxApiRequest({ runId, request: data.request });
+				worker.postMessage({ type: "response", requestId: data.requestId, response });
+			} else if (data.type === "finished") resolve(data);
+		};
+		worker.postMessage({
+			type: "start",
+			runId,
+			source: `
+				console.log(typeof fetch, typeof WebSocket, typeof expect);
+				const anonymous = await supabase.from("Books").insert({ title: "anonymous" }).select("*");
+				expect(anonymous).succeeds();
+				const member = await asUser("9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14", { app_metadata: { plan: "pro" } })
+					.from("Books").insert({ title: "member" }).select("*");
+				expect(member).succeeds();
+				const privileged = await asServiceRole().from("Books").insert({ title: "service" }).select("*");
+				expect(privileged).succeeds();
+				console.log(typeof fetch, typeof WebSocket);
+			`,
+		});
+		try {
+			const result = await promise;
+			expect(result).toMatchObject({
+				status: "passed",
+				console: ["undefined undefined function", "undefined undefined"],
+				expectations: [{ passed: true }, { passed: true }, { passed: true }],
+			});
+			const identities = workspace.getState().scenarioRuns[scenarioId]?.requests.map(({ identity }) => identity);
+			expect(identities).toEqual([
+				{ role: "anon", claims: { role: "anon" } },
+				{
+					role: "authenticated",
+					userId: "9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14",
+					claims: {
+						app_metadata: { plan: "pro" },
+						role: "authenticated",
+						sub: "9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14",
+						user_id: "9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14",
+					},
+				},
+				{ role: "service_role", claims: { role: "service_role" } },
+			]);
+			await workspace.finishScenarioRun({
+				runId,
+				status: "passed",
+				console: result.console,
+				expectations: result.expectations,
+			});
+		} finally {
+			clearTimeout(timeout);
+			worker.terminate();
+			if (workspace.getState().scenarioRuns[scenarioId]?.status === "running") {
+				await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+			}
+		}
+	}, 60_000);
+
 
 	test("scenario source executes inside a real Worker and transports requests through the workspace", async () => {
 		const { workspace, scenarioId } = await openWorkspace();

@@ -117,6 +117,37 @@ const REFERENTIAL_ACTIONS: Record<string, string> = {
 	d: "SET DEFAULT",
 };
 
+/** Sandbox environment installed before design SQL; never generated from the Design. */
+export const SUPABASE_SANDBOX_BOOTSTRAP = `
+CREATE ROLE anon NOLOGIN;
+CREATE ROLE authenticated NOLOGIN;
+CREATE ROLE service_role NOLOGIN BYPASSRLS;
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON TABLES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL PRIVILEGES ON SEQUENCES TO anon, authenticated, service_role;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT EXECUTE ON FUNCTIONS TO anon, authenticated, service_role;
+CREATE SCHEMA auth;
+GRANT USAGE ON SCHEMA auth TO anon, authenticated, service_role;
+CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(current_setting('request.jwt.claim.sub', true), '')::uuid
+$$;
+CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql STABLE AS $$
+  SELECT NULLIF(current_setting('request.jwt.claim.role', true), '')
+$$;
+CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql STABLE AS $$
+  SELECT COALESCE(NULLIF(current_setting('request.jwt.claims', true), '')::jsonb, '{}'::jsonb)
+$$;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA auth TO anon, authenticated, service_role;
+`;
+
+/** Existing public objects get the same grants as objects covered by defaults. */
+export const SUPABASE_SANDBOX_GRANTS = `
+GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA public TO anon, authenticated, service_role;
+`;
+
 export function createPGliteSandbox(): SchemaSandbox {
 	let database: PGlite | null = null;
 
@@ -127,9 +158,11 @@ export function createPGliteSandbox(): SchemaSandbox {
 			let failure: SandboxFailure = "sandbox-error";
 			try {
 				await instance.waitReady;
+				await instance.exec(SUPABASE_SANDBOX_BOOTSTRAP);
 				failure = "sql-rejected";
 				await instance.exec(sql);
 				failure = "sandbox-error";
+				await instance.exec(SUPABASE_SANDBOX_GRANTS);
 				const result = await instance.query<CatalogRow>(CATALOG_QUERY);
 				const relationships = await instance.query<RelationshipRow>(
 					RELATIONSHIP_QUERY,
