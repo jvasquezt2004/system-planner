@@ -24,6 +24,7 @@ import {
 	type ColumnChanges,
 	type DesignColumn,
 	type DesignTable,
+	type DesignPolicy,
 	type ReferentialAction,
 	type RelationshipCardinality,
 	type SqlState,
@@ -66,6 +67,7 @@ type TableInspectorProps = {
 	onUpdateIndexes: (indexes: DesignIndex[]) => void;
 	onUpdateEnumTypes: (enumTypes: DesignEnumType[]) => void;
 	onUpdateUniqueConstraints: (constraints: DesignUniqueConstraint[]) => void;
+	onUpdatePolicies: (rowLevelSecurity: boolean, policies: DesignPolicy[]) => void;
 	onRemoveColumn: (columnId: string) => void;
 	onSelectRelationship: (relationshipId: string | null) => void;
 	onSetRelationshipRequired: (relationshipId: string, required: boolean) => void;
@@ -105,6 +107,7 @@ export function TableInspector({
 	onSetRelationshipCardinality,
 	onSetReferentialAction,
 	onRemoveRelationship,
+	onUpdatePolicies,
 }: TableInspectorProps) {
 	const [name, setName] = useState(table.name);
 
@@ -296,6 +299,7 @@ export function TableInspector({
 				busy={busy}
 				onChange={onUpdateIndexes}
 			/>
+			<PolicyEditor table={table} busy={busy} onApply={onUpdatePolicies} />
 
 			<Section
 				id="relationships-heading"
@@ -368,6 +372,58 @@ export function TableInspector({
 				</Button>
 			</footer>
 		</section>
+	);
+}
+
+function PolicyEditor({
+	table,
+	busy,
+	onApply,
+}: {
+	table: DesignTable;
+	busy: boolean;
+	onApply: (rowLevelSecurity: boolean, policies: DesignPolicy[]) => void;
+}) {
+	const [enabled, setEnabled] = useState(table.rowLevelSecurity ?? false);
+	const [policies, setPolicies] = useState<DesignPolicy[]>(table.policies ?? []);
+	useEffect(() => {
+		setEnabled(table.rowLevelSecurity ?? false);
+		setPolicies(table.policies ?? []);
+	}, [table.id, table.rowLevelSecurity, table.policies]);
+	const dirty = enabled !== (table.rowLevelSecurity ?? false) ||
+		JSON.stringify(policies) !== JSON.stringify(table.policies ?? []);
+	const patch = (id: string, changes: Partial<DesignPolicy>) =>
+		setPolicies((current) => current.map((policy) => policy.id === id ? { ...policy, ...changes } : policy));
+	return (
+		<Section id="policies-heading" title="Row-level security">
+			<div className="space-y-3 px-6">
+				<label className="flex items-center gap-2 text-[12px]">
+					<Checkbox checked={enabled} onCheckedChange={(value) => setEnabled(value === true)} />
+					Enable row-level security
+				</label>
+				{policies.map((policy) => (
+					<fieldset key={policy.id} className="space-y-2 border-y border-rule py-3">
+						<Input aria-label="Policy name" value={policy.name} onChange={(event) => patch(policy.id, { name: event.target.value })} />
+						<div className="grid grid-cols-2 gap-2">
+							<select aria-label="Policy command" value={policy.command} onChange={(event) => patch(policy.id, { command: event.target.value as DesignPolicy["command"] })}>
+								{["ALL", "SELECT", "INSERT", "UPDATE", "DELETE"].map((command) => <option key={command}>{command}</option>)}
+							</select>
+							<select aria-label="Policy mode" value={policy.mode} onChange={(event) => patch(policy.id, { mode: event.target.value as DesignPolicy["mode"] })}>
+								<option value="permissive">Permissive</option><option value="restrictive">Restrictive</option>
+							</select>
+						</div>
+						<Input aria-label="Policy roles" value={policy.roles.join(", ")} onChange={(event) => patch(policy.id, { roles: event.target.value.split(",").map((role) => role.trim()).filter(Boolean) })} placeholder="anon, authenticated" />
+						<Textarea aria-label="Policy USING" value={policy.using} onChange={(event) => patch(policy.id, { using: event.target.value })} placeholder="USING condition" />
+						<Textarea aria-label="Policy WITH CHECK" value={policy.withCheck} onChange={(event) => patch(policy.id, { withCheck: event.target.value })} placeholder="WITH CHECK condition" />
+						<Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => setPolicies((current) => current.filter((entry) => entry.id !== policy.id))}><Trash2 /> Remove policy</Button>
+					</fieldset>
+				))}
+				<div className="flex gap-2">
+					<Button type="button" variant="ghost" size="xs" disabled={busy} onClick={() => setPolicies((current) => [...current, { id: crypto.randomUUID(), name: "new_policy", command: "SELECT", roles: ["authenticated"], mode: "permissive", using: "", withCheck: "" }])}><Plus /> Add policy</Button>
+					<Button type="button" size="xs" disabled={busy || !dirty} onClick={() => onApply(enabled, policies)}>Apply policies</Button>
+				</div>
+			</div>
+		</Section>
 	);
 }
 

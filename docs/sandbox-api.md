@@ -20,6 +20,16 @@ Selected values are serialized by PostgreSQL into JSONB before the Sandbox API r
 
 A single-record `insert` with `Prefer: return=representation` and `select=*` is supported. Other write forms remain unsupported.
 
+## Row-level security
+
+Scenario requests execute in a transaction under the request's `anon`,
+`authenticated`, or `service_role` database role with the request's JWT claims.
+PostgreSQL policies therefore apply to reads and writes exactly as they do in
+the design-check sandbox. `auth.uid()`, `auth.role()`, and `auth.jwt()` read
+those transaction-local claims. The Supabase-compatible `service_role` bypasses
+row-level security; tables with RLS disabled are unaffected by their policies.
+Result grids continue to use the privileged role and include all rows.
+
 ## Unsupported read features
 
 The Sandbox API refuses embedding, aliases, JSON-path projections, CSV and explain responses, count preferences, unsupported filter operators or syntax, and unimplemented query options. The error names the unsupported feature and uses the `PGRST_SANDBOX_UNSUPPORTED` code.

@@ -34,7 +34,7 @@ function requireState(state: WorkspaceState) {
 function clientFor(
 	workspace: DesignWorkspace,
 	runId: string,
-	options: { responses?: Response[]; stripSelect?: boolean; offset?: number } = {},
+	options: { responses?: Response[]; stripSelect?: boolean; offset?: number; identity?: Record<string, unknown> } = {},
 ) {
 	const transport = async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
@@ -55,9 +55,14 @@ function clientFor(
 		options.responses?.push(httpResponse.clone());
 		return httpResponse;
 	};
+	const identity = options.identity ?? { role: "anon" };
+	const payload = Buffer.from(JSON.stringify(identity)).toString("base64url");
 	return createClient("http://scenario.local", "local-anon-key", {
 		auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
-		global: { fetch: transport as typeof fetch },
+		global: {
+			fetch: transport as typeof fetch,
+			headers: { Authorization: `Bearer local.${payload}.signature` },
+		},
 	});
 }
 
@@ -132,6 +137,72 @@ describe("Scenario runs", () => {
 		expect(empty.data).toEqual([]);
 		expect(second.state.scenarioRuns[scenarioId]?.revision).toBe(first.state.scenarioRuns[scenarioId]?.revision);
 		await workspace.finishScenarioRun({ runId: second.runId, status: "passed", console: [] });
+	}, 60_000);
+	test("RLS policies filter rows by auth.uid(), reject other owners, and service_role bypasses RLS", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		if (!books) throw new Error("Expected Books table.");
+		await workspace.addColumn({ tableId: books.id, name: "owner_id", type: "uuid" });
+		const enabled = await workspace.updatePolicies({
+			tableId: books.id,
+			rowLevelSecurity: true,
+			policies: [{
+				id: "owner-policy",
+				name: "owner_access",
+				command: "ALL",
+				roles: ["authenticated"],
+				mode: "permissive",
+				using: "owner_id = auth.uid()",
+				withCheck: "owner_id = auth.uid()",
+			}],
+		});
+		expect(enabled.sandbox.status).toBe("applied");
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const alice = clientFor(workspace, runId, { identity: { role: "authenticated", sub: "11111111-1111-4111-8111-111111111111" } });
+		const bob = clientFor(workspace, runId, { identity: { role: "authenticated", sub: "22222222-2222-4222-8222-222222222222" } });
+		const service = clientFor(workspace, runId, { identity: { role: "service_role" } });
+		const inserted = await alice.from("Books").insert({
+			title: "Alice's book",
+			owner_id: "11111111-1111-4111-8111-111111111111",
+		}).select("*");
+		expect(inserted.error).toBeNull();
+		expect((await alice.from("Books").select("*")).data).toHaveLength(1);
+		expect((await bob.from("Books").select("*")).data).toEqual([]);
+		const refused = await bob.from("Books").insert({
+			title: "Not Bob's",
+			owner_id: "11111111-1111-4111-8111-111111111111",
+		}).select("*");
+		expect(refused.error?.code).toBe("42501");
+		expect((await service.from("Books").select("*")).data).toHaveLength(1);
+		const anonymous = clientFor(workspace, runId);
+		expect((await anonymous.from("Books").select("*")).data).toEqual([]);
+		const deniedAnonInsert = await anonymous.from("Books").insert({
+			title: "Anonymous",
+			owner_id: "11111111-1111-4111-8111-111111111111",
+		}).select("*");
+		expect(deniedAnonInsert.error?.code).toBe("42501");
+		expect(workspace.getState().scenarioRuns[scenarioId]?.requests.map((entry) => entry.identity.role))
+			.toEqual(["authenticated", "authenticated", "authenticated", "authenticated", "service_role", "anon", "anon"]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("policies are inert until row-level security is enabled", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const table = workspace.getState().design?.tables.find((candidate) => candidate.name === "Books");
+		if (!table) throw new Error("Expected Books table.");
+		await workspace.updatePolicies({
+			tableId: table.id,
+			rowLevelSecurity: false,
+			policies: [{
+				id: "deny-everything", name: "deny_everything", command: "ALL", roles: ["anon"],
+				mode: "permissive", using: "false", withCheck: "false",
+			}],
+		});
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const anonymous = clientFor(workspace, runId);
+		const inserted = await anonymous.from("Books").insert({ title: "Still public" }).select("*");
+		expect(inserted.error).toBeNull();
+		expect(inserted.data).toEqual([{ id: 1, title: "Still public" }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
 	test("runs require an applied revision, reject overlap, and turn stale as the draft advances", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-unapplied-scenario-"));

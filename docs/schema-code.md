@@ -30,6 +30,14 @@ reference) and the ORM formats Prisma, Drizzle, SQLAlchemy, and Django ORM.
 - Index capabilities and operator classes come from `src/shared/index-methods.ts`;
   the model itself is documented in `docs/postgres-features.md`.
 
+## PostgreSQL-only row-level security
+
+The ORM formats do not emit row-level security enablement or policy definitions.
+When a table has RLS enabled or at least one policy, every generated ORM schema
+includes a visible comment directing the user to preserve the RLS configuration
+in PostgreSQL migrations. The generated ORM code is not a substitute for those
+database-side policies.
+
 ## View
 
 `src/mainview/sql-preview.tsx` adds a code-format switch. An ORM format shows

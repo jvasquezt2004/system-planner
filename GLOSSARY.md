@@ -116,6 +116,14 @@ number, number, boolean, date, time, timestamp, or JSON — and encoded as a val
 the generated SQL.
 _Avoid_: Literal SQL
 
+**Row-level security**:
+A PostgreSQL table feature that filters which rows a database role may read or modify, according to policies attached to the table.
+_Avoid_: Row permissions
+
+**Policy**:
+A named PostgreSQL rule on a table that permits or restricts rows for selected roles, commands, and handwritten conditions.
+_Avoid_: Access control list
+
 **Index**:
 A table-level PostgreSQL access structure over ordered column keys, optionally
 unique, covering additional columns, and using a selected access method.

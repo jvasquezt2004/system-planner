@@ -13,6 +13,8 @@ import {
 	splitWords,
 } from "./naming";
 import type { SchemaCodeGeneration } from "./types";
+import { hasUnrepresentedRowLevelSecurity } from "./rls-notice";
+
 
 type RelationshipFields = {
 	forward: string;
@@ -69,6 +71,9 @@ export function generatePrismaSchema(design: Design): SchemaCodeGeneration {
 		lines.push(...renderModel(design, table, names, objectNames), "");
 	}
 	const comments = renderMigrationNotes(design, names, objectNames);
+	if (hasUnrepresentedRowLevelSecurity(design)) {
+		comments.push("// Row-level security and policies are not represented; preserve them in PostgreSQL migrations.");
+	}
 	if (comments.length) lines.push(...comments, "");
 	while (lines[lines.length - 1] === "") lines.pop();
 	return { ok: true, code: formatSchema(`${lines.join("\n")}\n`) };

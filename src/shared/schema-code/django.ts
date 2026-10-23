@@ -9,6 +9,8 @@ import type {
 import { modelWords, planRelationshipNames, splitWords } from "./naming";
 import { resolveRelationships } from "../relationships";
 import type { SchemaCodeGeneration } from "./types";
+import { hasUnrepresentedRowLevelSecurity } from "./rls-notice";
+
 
 type FieldInfo = { column: DesignColumn; name: string; relation?: DesignRelationship };
 
@@ -449,6 +451,9 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 	);
 	if (comments.length) {
 		migrationCommentLines.push(...Array.from(new Set(comments)));
+	}
+	if (hasUnrepresentedRowLevelSecurity(design)) {
+		migrationCommentLines.push("# Row-level security and policies are not represented; preserve them in PostgreSQL migrations.");
 	}
 	if (migrationCommentLines.length) {
 		migrationCommentLines.unshift("# Migration notes:");
