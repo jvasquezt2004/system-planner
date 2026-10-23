@@ -157,7 +157,7 @@ export async function handleSandboxApiRequest(
 				].filter(Boolean).join(" ");
 				const total = exactCount
 					? Number((await transaction.query<{ total: number }>(
-						`SELECT count(*)::int AS total FROM ${quoteIdentifier(tableName)}${countWhere.length ? ` WHERE ${countWhere.join(" AND ")}` : ""}`,
+						`SELECT count(*)::int AS total FROM ${quoteIdentifier(tableName)} AS sandbox_table${countWhere.length ? ` WHERE ${countWhere.join(" AND ")}` : ""}`,
 						countParams,
 					)).rows[0]?.total ?? 0)
 					: null;
@@ -245,12 +245,16 @@ export async function handleSandboxApiRequest(
 							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
 					}
 					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
-					const result = representation
-						? await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, params)
-						: null;
-					const count = exactCount
-						? result?.length ?? await queryWriteCount(transaction, statement, params)
-						: null;
+					let result: unknown[] | null = null;
+					let count: number | null = null;
+					if (representation) {
+						result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, params);
+						if (exactCount) count = result.length;
+					} else if (exactCount) {
+						count = await queryWriteCount(transaction, statement, params);
+					} else {
+						await transaction.query(statement, params);
+					}
 					transactionResponse = writeResponse(201, result, representation, count);
 				} else {
 					if (!where.length) throw unsupported("update or delete without filters");
@@ -264,21 +268,30 @@ export async function handleSandboxApiRequest(
 						const assignments = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
 						const filters = where.map((part) => part.replace(/\$(\d+)/g, (_, n: string) => `$${Number(n) + params.length}`));
 						const statement = `UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}`;
-						const result = representation
-							? await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, [...params, ...filterParams])
-							: null;
-						const count = exactCount
-							? result?.length ?? await queryWriteCount(transaction, statement, [...params, ...filterParams])
-							: null;
+						const writeParams = [...params, ...filterParams];
+						let result: unknown[] | null = null;
+						let count: number | null = null;
+						if (representation) {
+							result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, writeParams);
+							if (exactCount) count = result.length;
+						} else if (exactCount) {
+							count = await queryWriteCount(transaction, statement, writeParams);
+						} else {
+							await transaction.query(statement, writeParams);
+						}
 						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					} else {
 						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
-						const result = representation
-							? await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, filterParams)
-							: null;
-						const count = exactCount
-							? result?.length ?? await queryWriteCount(transaction, statement, filterParams)
-							: null;
+						let result: unknown[] | null = null;
+						let count: number | null = null;
+						if (representation) {
+							result = await queryWriteRepresentation(transaction, statement, selected, tableName, tables, relationships, filterParams);
+							if (exactCount) count = result.length;
+						} else if (exactCount) {
+							count = await queryWriteCount(transaction, statement, filterParams);
+						} else {
+							await transaction.query(statement, filterParams);
+						}
 						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					}
 					}
