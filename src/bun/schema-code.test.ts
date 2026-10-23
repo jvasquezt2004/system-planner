@@ -64,43 +64,63 @@ describe("schema code formats", () => {
 			expect(typeof result.ok).toBe("boolean");
 		}
 	});
-	test("every ORM format visibly omits project Functions", () => {
-		const design: Design = {
-			...SCHEMA_CODE_FIXTURES.minimal,
-			tables: SCHEMA_CODE_FIXTURES.minimal.tables.map((table) => ({
-				...table,
-				rowLevelSecurity: true,
-				policies: [{
-					id: "read-rows",
-					name: "read_rows",
-					command: "SELECT",
-					roles: ["anon"],
-					mode: "permissive",
-					using: "true",
-					withCheck: "",
-				}],
-			})),
-			functions: [{
-				id: "get-books",
-				name: "get_books",
-				arguments: [],
-				returnType: "integer",
-				returnsSet: false,
-				language: "sql",
-				volatility: "stable",
-				security: "invoker",
-				body: "SELECT 1",
-			}],
+	test("every ORM format names each omitted PostgreSQL logic category and stays silent when none apply", () => {
+		const minimal = structuredClone(SCHEMA_CODE_FIXTURES.minimal);
+		const tables = (rowLevelSecurity: boolean, includePolicy: boolean) => minimal.tables.map((table) => ({
+			...table,
+			rowLevelSecurity,
+			policies: includePolicy ? [{
+				id: "read-rows",
+				name: "read_rows",
+				command: "SELECT" as const,
+				roles: ["anon"],
+				mode: "permissive" as const,
+				using: "true",
+				withCheck: "",
+			}] : [],
+		}));
+		const fn: NonNullable<Design["functions"]>[number] = {
+			id: "get-books",
+			name: "get_books",
+			arguments: [],
+			returnType: "integer",
+			returnsSet: false,
+			language: "sql",
+			volatility: "stable",
+			security: "invoker",
+			body: "SELECT 1",
 		};
+		const cases: { name: string; design: Design; expected: string | null }[] = [
+			{
+				name: "row-level security only",
+				design: { ...minimal, tables: tables(true, false), functions: [] },
+				expected: "row-level security is not represented",
+			},
+			{
+				name: "policies only",
+				design: { ...minimal, tables: tables(false, true), functions: [] },
+				expected: "policies are not represented",
+			},
+			{
+				name: "functions only",
+				design: { ...minimal, tables: tables(false, false), functions: [fn] },
+				expected: "functions are not represented",
+			},
+			{
+				name: "no omitted PostgreSQL logic",
+				design: { ...minimal, tables: tables(false, false), functions: [] },
+				expected: null,
+			},
+		];
 		for (const format of SCHEMA_CODE_FORMATS) {
 			if (!isOrmTarget(format.target)) continue;
-			const result = generateOrmSchema(format.target, design);
-			expect(result.ok).toBe(true);
-			if (result.ok) {
-				const notice = result.code.toLowerCase();
-				expect(notice).toContain("row-level security");
-				expect(notice).toContain("policies");
-				expect(notice).toContain("functions are not represented");
+			for (const scenario of cases) {
+				const result = generateOrmSchema(format.target, scenario.design);
+				expect(result.ok).toBe(true);
+				if (!result.ok) continue;
+				const code = result.code.toLowerCase();
+				if (scenario.expected) expect(code).toContain(scenario.expected);
+				else expect(code).not.toContain("not represented; preserve them in postgresql migrations.");
 			}
 		}
 	});

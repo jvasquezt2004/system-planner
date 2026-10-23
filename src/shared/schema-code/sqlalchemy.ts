@@ -3,7 +3,7 @@ import { resolveRelationship } from "../relationships";
 import type { Design, DesignColumn, DesignIndex, DesignTable } from "../design";
 import type { SchemaCodeGeneration } from "./types";
 import { modelWords, planRelationshipNames, splitWords } from "./naming";
-import { hasUnrepresentedRowLevelSecurity } from "./rls-notice";
+import { unrepresentedPostgresqlLogicNotice } from "./postgresql-logic-notice";
 
 
 type Relation = {
@@ -451,12 +451,11 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		...importBlock("sqlalchemy.orm", ["DeclarativeBase", "Mapped", "mapped_column", "relationship"]),
 		...(usesPgvector ? [""] : ["", ""]),
 	);
+	const omissionNotice = unrepresentedPostgresqlLogicNotice(design);
 	return {
 		ok: true,
 		code: `${[
-			...(hasUnrepresentedRowLevelSecurity(design)
-				? ["# Row-level security, policies, and functions are not represented; preserve them in PostgreSQL migrations.", ""]
-				: []),
+			...(omissionNotice ? [`# ${omissionNotice}`, ""] : []),
 			...imports,
 			...body,
 		].join("\n")}\n`,
