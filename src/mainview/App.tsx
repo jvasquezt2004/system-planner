@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, FileCode2, PenTool, Plus, Redo2, Undo2, X } from "lucide-react";
+import { ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getSqlPreviewValidationStatus,
@@ -51,9 +51,10 @@ import { TableCanvas } from "./canvas";
 import { SqlPreviewView, sqlStatusLine } from "./sql-preview";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
+import { ScenarioView } from "./scenario-view";
 
-/** The main window shows either the design canvas or its SQL preview. */
-type WorkspaceView = "canvas" | "sql";
+/** The main window shows the canvas, SQL preview, or saved Scenarios. */
+type WorkspaceView = "canvas" | "sql" | "scenarios";
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -110,7 +111,24 @@ function App() {
 			setError(errorMessage(cause));
 		}
 	}, []);
-
+	const applyScenario = useCallback(
+		async (action: () => Promise<WorkspaceState>) => {
+			const requestProjectId = state?.project?.id;
+			try {
+				const next = await action();
+				setState((current) =>
+					requestProjectId &&
+					current?.project?.id === requestProjectId &&
+					next.project?.id === requestProjectId
+						? next
+						: current,
+				);
+			} catch (cause) {
+				setError(errorMessage(cause));
+			}
+		},
+		[state?.project?.id],
+	);
 	const projectId = state?.project?.id ?? null;
 
 	// Selection belongs to the open project, never to a previously open one.
@@ -430,6 +448,29 @@ function App() {
 								validationStatus={getSqlPreviewValidationStatus(state)}
 							/>
 						)}
+						{view === "scenarios" && (
+							<ScenarioView
+								key={state.project.id}
+								scenarios={state.scenarios}
+								save={state.scenarioSave}
+								onCreate={(name) =>
+									void applyScenario(() => workspaceClient.createScenario({ name }))
+								}
+								onRename={(scenarioId, name) =>
+									void applyScenario(() =>
+										workspaceClient.renameScenario({ scenarioId, name }),
+									)
+								}
+								onRemove={(scenarioId) =>
+									void applyScenario(() => workspaceClient.removeScenario({ scenarioId }))
+								}
+								onUpdateSource={(scenarioId, source) =>
+									void applyScenario(() =>
+										workspaceClient.updateScenarioSource({ scenarioId, source }),
+									)
+								}
+							/>
+						)}
 					</>
 				) : (
 					<ProjectIndex
@@ -678,7 +719,9 @@ function Masthead({
 					value={project ? view : ""}
 					disabled={!project}
 					onValueChange={(next) => {
-						if (next === "canvas" || next === "sql") onViewChange(next);
+						if (next === "canvas" || next === "sql" || next === "scenarios") {
+							onViewChange(next);
+						}
 					}}
 				>
 					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
@@ -688,6 +731,10 @@ function Masthead({
 					<ToggleGroupItem value="sql" data-testid="view-sql" className="h-7 px-3">
 						<FileCode2 />
 						SQL preview
+					</ToggleGroupItem>
+					<ToggleGroupItem value="scenarios" data-testid="view-scenarios" className="h-7 px-3">
+						<ScrollText />
+						Scenarios
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>

@@ -42,6 +42,11 @@ import {
 	type UpdateEnumTypesAction,
 	type UpdateUniqueConstraintsAction,
 	type UpdateRelationshipAction,
+	type CreateScenarioAction,
+	type RenameScenarioAction,
+	type RemoveScenarioAction,
+	type UpdateScenarioSourceAction,
+	type Scenario,
 	type WorkspaceState,
 } from "../shared/design";
 import { uniquePostgresIdentifier } from "../shared/postgres-identifiers";
@@ -85,6 +90,10 @@ export interface DesignWorkspace {
 	listProjects(): ProjectSummary[];
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
+	createScenario(action: CreateScenarioAction): Promise<WorkspaceState>;
+	renameScenario(action: RenameScenarioAction): Promise<WorkspaceState>;
+	removeScenario(action: RemoveScenarioAction): Promise<WorkspaceState>;
+	updateScenarioSource(action: UpdateScenarioSourceAction): Promise<WorkspaceState>;
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
@@ -165,11 +174,14 @@ export async function createDesignWorkspace(
 		save: { status: "idle" },
 		sql: { status: "empty", draftRevision: 0, errors: [] },
 		sandbox: { status: "idle" },
+		scenarios: [],
+		scenarioSave: { status: "idle" },
 		undoRedo: { canUndo: false, canRedo: false },
 	};
 	let activeProjectId: string | null = null;
 	/** Orders every stored document, including layout-only writes. */
 	let documentRevision = 0;
+	let scenarioRevision = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
 	let previewRequestId = 0;
@@ -391,6 +403,45 @@ export async function createDesignWorkspace(
 			}
 		}
 	}
+	async function saveScenarios(
+		projectId: string,
+		scenarios: Scenario[],
+		revision: number,
+	) {
+		const savedAt = now();
+		try {
+			await store.saveScenarios(projectId, scenarios, { revision, savedAt });
+			if (activeProjectId === projectId && scenarioRevision === revision) {
+				setState({ ...state, projects: store.listProjects(), scenarioSave: { status: "saved", revision, savedAt } });
+			}
+		} catch (error) {
+			if (activeProjectId === projectId && scenarioRevision === revision) {
+				setState({
+					...state,
+					scenarioSave: {
+						status: "failed",
+						revision,
+						error: error instanceof Error ? error.message : String(error),
+					},
+				});
+			}
+		}
+	}
+
+	function updateScenarios(
+		projectId: string,
+		update: (scenarios: Scenario[]) => Scenario[],
+	) {
+		const scenarios = update(state.scenarios);
+		const revision = scenarioRevision + 1;
+		scenarioRevision = revision;
+		setState({
+			...state,
+			scenarios,
+			scenarioSave: { status: "saving", revision },
+		});
+		return saveScenarios(projectId, scenarios, revision);
+	}
 	/** Saves the draft immediately and debounces its disposable preview rebuild. */
 	async function applyStructuralChange(
 		projectId: string,
@@ -523,6 +574,7 @@ export async function createDesignWorkspace(
 				invalidatePreviewWork();
 				activeProjectId = project.id;
 				documentRevision = revision;
+				scenarioRevision = 0;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -532,6 +584,8 @@ export async function createDesignWorkspace(
 					save: { status: "saved", revision, savedAt },
 					sql: { status: "empty", draftRevision: revision, errors: [] },
 					sandbox: { status: "idle" },
+					scenarios: [],
+					scenarioSave: { status: "idle" },
 					undoRedo: getUndoRedoState(project.id),
 				});
 				return state;
@@ -542,10 +596,12 @@ export async function createDesignWorkspace(
 				const record = store.loadProject(action.projectId);
 				if (!record) throw new Error("That project could not be found.");
 				const design = normalizeDesign(record.design);
+				const scenarioDocument = store.loadScenarios(record.project.id);
 
 				invalidatePreviewWork();
 				activeProjectId = record.project.id;
 				documentRevision = record.documentRevision;
+				scenarioRevision = scenarioDocument.revision;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -559,12 +615,71 @@ export async function createDesignWorkspace(
 						errors: [],
 					},
 					sandbox: { status: "idle" },
+					scenarios: scenarioDocument.scenarios,
+					scenarioSave:
+						scenarioDocument.savedAt === null
+							? { status: "idle" }
+							: {
+									status: "saved",
+									revision: scenarioDocument.revision,
+									savedAt: scenarioDocument.savedAt,
+								},
 					undoRedo: getUndoRedoState(record.project.id),
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
 					await generateAndApply(record.project.id, record.revision, design, requestId);
 				}
+				return state;
+			});
+		},
+		createScenario(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const name = action.name.trim();
+				if (!name) throw new Error("Scenario name is required.");
+				const scenario: Scenario = { id: createId(), name, source: "" };
+				await updateScenarios(projectId, (scenarios) => [...scenarios, scenario]);
+				return state;
+			});
+		},
+		renameScenario(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const name = action.name.trim();
+				if (!name) throw new Error("Scenario name is required.");
+				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
+				if (!scenario) throw new Error("That scenario could not be found.");
+				if (scenario.name === name) return state;
+				await updateScenarios(projectId, (scenarios) =>
+					scenarios.map((item) => item.id === action.scenarioId ? { ...item, name } : item),
+				);
+				return state;
+			});
+		},
+		removeScenario(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				if (!state.scenarios.some((item) => item.id === action.scenarioId)) {
+					throw new Error("That scenario could not be found.");
+				}
+				await updateScenarios(projectId, (scenarios) =>
+					scenarios.filter((item) => item.id !== action.scenarioId),
+				);
+				return state;
+			});
+		},
+		updateScenarioSource(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
+				if (!scenario) throw new Error("That scenario could not be found.");
+				if (scenario.source === action.source) return state;
+				await updateScenarios(projectId, (scenarios) =>
+					scenarios.map((item) =>
+						item.id === action.scenarioId ? { ...item, source: action.source } : item,
+					),
+				);
 				return state;
 			});
 		},

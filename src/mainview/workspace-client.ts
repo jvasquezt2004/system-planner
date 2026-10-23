@@ -68,6 +68,18 @@ export const workspaceClient = {
 	createProject(name: string): Promise<WorkspaceState> {
 		return rpc.request.createProject({ name });
 	},
+	createScenario(request: { name: string }): Promise<WorkspaceState> {
+		return rpc.request.createScenario(request);
+	},
+	renameScenario(request: { scenarioId: string; name: string }): Promise<WorkspaceState> {
+		return rpc.request.renameScenario(request);
+	},
+	removeScenario(request: { scenarioId: string }): Promise<WorkspaceState> {
+		return rpc.request.removeScenario(request);
+	},
+	updateScenarioSource(request: { scenarioId: string; source: string }): Promise<WorkspaceState> {
+		return rpc.request.updateScenarioSource(request);
+	},
 	openProject(projectId: string): Promise<WorkspaceState> {
 		return rpc.request.openProject({ projectId });
 	},

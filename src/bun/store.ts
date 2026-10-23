@@ -23,17 +23,41 @@ export interface ProjectRecord {
 }
 
 /**
- * Local SQLite persistence for authoritative designs. Each project owns exactly
- * one design, written atomically so a partially written design is never read as
- * complete.
+ * Local SQLite persistence for project designs and independently saved
+ * scenarios. Each design is written atomically so a partial save is never read
+ * as complete.
  */
-export interface DesignStore {
+export interface DesignStore extends ScenarioStore {
 	listProjects(): ProjectSummary[];
 	createProject(project: ProjectSummary, design: Design, save: DesignSave): void | Promise<void>;
 	saveDesign(projectId: string, design: Design, save: DesignSave): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	close(): void;
 }
+
+export type ScenarioSave = { revision: number; savedAt: number };
+
+export interface StoredScenario {
+	id: string;
+	name: string;
+	source: string;
+}
+
+export type ScenarioDocumentRecord = {
+	scenarios: StoredScenario[];
+	revision: number;
+	savedAt: number | null;
+};
+
+export interface ScenarioStore {
+	loadScenarios(projectId: string): ScenarioDocumentRecord;
+	saveScenarios(
+		projectId: string,
+		scenarios: StoredScenario[],
+		save: ScenarioSave,
+	): void | Promise<void>;
+}
+
 
 type ProjectRow = {
 	id: string;
@@ -62,12 +86,59 @@ const SCHEMA = `
 		document TEXT NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS scenarios (
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		id TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		source TEXT NOT NULL,
+		PRIMARY KEY (project_id, id)
+	);
+
+	CREATE TABLE IF NOT EXISTS scenario_documents (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		revision INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
 `;
 
 export function openDesignStore(databasePath: string): DesignStore {
 	mkdirSync(dirname(databasePath), { recursive: true });
 	const database = new Database(databasePath, { create: true });
 	database.exec(SCHEMA);
+	const listScenarios = database.query<StoredScenario, [string]>(`
+		SELECT id, name, source FROM scenarios WHERE project_id = ? ORDER BY position ASC
+	`);
+	const selectScenarioDocument = database.query<{ revision: number; updated_at: number }, [string]>(
+		`SELECT revision, updated_at FROM scenario_documents WHERE project_id = ?`,
+	);
+	const deleteScenarios = database.query(`DELETE FROM scenarios WHERE project_id = ?`);
+	const insertScenario = database.query(
+		`INSERT INTO scenarios (project_id, id, position, name, source) VALUES (?, ?, ?, ?, ?)`,
+	);
+	const selectScenarioRevision = database.query<{ revision: number }, [string]>(
+		`SELECT revision FROM scenario_documents WHERE project_id = ?`,
+	);
+	const upsertScenarioRevision = database.query(
+		`INSERT INTO scenario_documents (project_id, revision, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+		 WHERE scenario_documents.revision < excluded.revision`,
+	);
+
+	const saveScenariosTransaction = database.transaction(
+		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave) => {
+			const current = selectScenarioRevision.get(projectId);
+			if (current && current.revision >= save.revision) return;
+			deleteScenarios.run(projectId);
+			scenarios.forEach((scenario, position) =>
+				insertScenario.run(projectId, scenario.id, position, scenario.name, scenario.source),
+			);
+			upsertScenarioRevision.run(projectId, save.revision, save.savedAt);
+			touchProject.run(save.savedAt, projectId);
+		},
+	);
+
 	migrateDocumentRevision(database);
 
 	const listProjects = database.query<{ id: string; name: string }, []>(
@@ -142,10 +213,22 @@ export function openDesignStore(databasePath: string): DesignStore {
 				savedAt: row.saved_at,
 			};
 		},
+		loadScenarios(projectId) {
+			const document = selectScenarioDocument.get(projectId);
+			return {
+				scenarios: listScenarios.all(projectId),
+				revision: document?.revision ?? 0,
+				savedAt: document?.updated_at ?? null,
+			};
+		},
+		saveScenarios(projectId, scenarios, save) {
+			saveScenariosTransaction(projectId, scenarios, save);
+		},
 		close() {
 			database.close();
 		},
 	};
+
 }
 
 /**
