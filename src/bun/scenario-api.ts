@@ -2,15 +2,16 @@ import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
 import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
-import { SUPABASE_SANDBOX_BOOTSTRAP } from "./sandbox";
+import { SUPABASE_SANDBOX_BOOTSTRAP, SUPABASE_SANDBOX_GRANTS } from "./sandbox";
 export type ScenarioRunDatabase = PGliteInstance;
 
 export async function createScenarioRunDatabase(sql: string): Promise<ScenarioRunDatabase> {
 	const database = new PGlite({ extensions: { vector } });
 	try {
 		await database.waitReady;
-		await database.exec(sql);
 		await database.exec(SUPABASE_SANDBOX_BOOTSTRAP);
+		await database.exec(sql);
+		await database.exec(SUPABASE_SANDBOX_GRANTS);
 		return database;
 	} catch (error) {
 		await database.close();
