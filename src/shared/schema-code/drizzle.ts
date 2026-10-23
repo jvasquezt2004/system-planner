@@ -118,7 +118,7 @@ export function generateDrizzleSchema(design: Design): SchemaCodeGeneration {
 
 	const lines = [
 		...(hasUnrepresentedRowLevelSecurity(design)
-			? ["// Row-level security and policies are not represented; preserve them in PostgreSQL migrations."]
+			? ["// Row-level security, policies, and functions are not represented; preserve them in PostgreSQL migrations."]
 			: []),
 		...(pgImports.size ? renderNamedImport([...pgImports], "drizzle-orm/pg-core") : []),
 		...(relationships.length ? ['import { relations } from "drizzle-orm";'] : []),

@@ -31,7 +31,12 @@ describe("Scenario Database type generation", () => {
 				{ name: "status", dataType: "enum", enumTypeName: "BookStatus", isIdentity: false, defaultExpression: null, nullable: false, primaryKey: false, unique: false },
 			],
 		}];
-		const declarations = generateScenarioDatabaseTypes(tables, [{ id: "book-status", name: "BookStatus", labels: ["draft", "published"] }]);
+		const declarations = generateScenarioDatabaseTypes(
+			tables,
+			[{ id: "book-status", name: "BookStatus", labels: ["draft", "published"] }],
+			[{ id: "book-by-id", name: "book_by_id", arguments: [{ name: "book_id", type: "integer" }], returnType: "Books", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: "SELECT *" },
+				{ id: "log-book", name: "log_book", arguments: [], returnType: "void", returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN; END" }],
+		);
 		const compile = (query: string) => {
 			const filename = `${process.cwd()}/scenario-typecheck-fixture.ts`;
 			const source = `${declarations}\n${query}\n`;
@@ -62,12 +67,16 @@ async function validScenario() {
   await supabase.from("Books").insert({ title: "Dune", status: "published" })
     .select("id,title,status").eq("status", "published").order("title").single();
   await supabase.from("Books").select("id").eq("id", 1).maybeSingle();
+  const rpc = await supabase.rpc("book_by_id", { book_id: 1 });
+  const row: { id: number; title: string; status: "draft" | "published" } = rpc.data!;
+  const voidResult: null = (await supabase.rpc("log_book")).data!;
 }`);
 		expect(validDiagnostics).toEqual([]);
 		const invalidDiagnostics = compile(`
 async function invalidScenario() {
   const rows: { unknown_column: unknown }[] =
     (await supabase.from("Books").select("unknown_column")).data!;
+  await supabase.rpc("book_by_id", { book_id: "not a number" });
 }`);
 		expect(invalidDiagnostics.length).toBeGreaterThan(0);
 	});

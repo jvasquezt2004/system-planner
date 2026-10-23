@@ -17,6 +17,7 @@ import type {
 	DesignIndex,
 	ReferentialAction,
 	DesignEnumType,
+	DesignFunction,
 	DesignPolicy,
 	DesignUniqueConstraint,
 	SandboxApiRequest,
@@ -132,6 +133,9 @@ export const workspaceClient = {
 	},
 	updateEnumTypes(enumTypes: DesignEnumType[]): Promise<WorkspaceState> {
 		return rpc.request.updateEnumTypes({ enumTypes });
+	},
+	updateFunctions(functions: DesignFunction[]): Promise<WorkspaceState> {
+		return rpc.request.updateFunctions({ functions });
 	},
 	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
 		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });

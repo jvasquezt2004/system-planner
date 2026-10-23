@@ -131,6 +131,21 @@ export type DesignUniqueConstraint = {
 };
 /** A named PostgreSQL enum and its ordered labels. */
 export type DesignEnumType = { id: string; name: string; labels: string[] };
+export type DesignFunctionArgument = { name: string; type: string };
+export type DesignFunction = {
+	id: string;
+	name: string;
+	arguments: DesignFunctionArgument[];
+	returnType: string;
+	returnsSet: boolean;
+	language: "sql" | "plpgsql";
+	volatility: "volatile" | "stable" | "immutable";
+	security: "invoker" | "definer";
+	body: string;
+	/** Referenced project tables, tracked so removing one rejects the draft. */
+	tableDependencies?: string[];
+};
+
 
 /** PostgreSQL access method used by an index. */
 export type IndexAccessMethod = "btree" | "hash" | "gin" | "gist" | "spgist" | "brin" | "hnsw" | "ivfflat";
@@ -198,7 +213,11 @@ export type Design = {
 	manyToManyRelationships: DesignManyToManyAssociation[];
 	viewport: CanvasViewport;
 	enumTypes?: DesignEnumType[];
+	functions?: DesignFunction[];
 };
+export type UpdateFunctionsAction = { functions: DesignFunction[] };
+
+
 
 export type SaveState =
 	| { status: "idle" }
@@ -312,6 +331,7 @@ export type SandboxSnapshot = {
 	relationships: SandboxAppliedRelationship[];
 	sql: string;
 	enumTypes?: DesignEnumType[];
+	functions?: DesignFunction[];
 };
 
 export type SandboxFailure = "sql-rejected" | "sandbox-error";

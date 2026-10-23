@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
-import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedRelationship, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
+import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedRelationship, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid, DesignFunction } from "../shared/design";
 import { SUPABASE_SANDBOX_BOOTSTRAP, SUPABASE_SANDBOX_GRANTS } from "./sandbox";
 export type ScenarioRunDatabase = PGliteInstance;
 
@@ -56,12 +56,21 @@ export async function captureScenarioResultGrids(
 }
 const UNSUPPORTED_CODE = "PGRST_SANDBOX_UNSUPPORTED";
 const ROLE_NAMES: Record<string, true> = { anon: true, authenticated: true, service_role: true };
+const BUILTIN_FUNCTION_TYPES: Record<string, true> = {
+	smallint: true, integer: true, int: true, bigint: true, numeric: true, decimal: true, real: true,
+	"double precision": true, smallserial: true, serial: true, bigserial: true, text: true, varchar: true,
+	"character varying": true, char: true, character: true, boolean: true, bool: true, uuid: true,
+	date: true, time: true, "time without time zone": true, "time with time zone": true, timestamp: true,
+	"timestamp without time zone": true, "timestamp with time zone": true, interval: true, json: true,
+	jsonb: true, bytea: true, inet: true, cidr: true, macaddr: true, void: true,
+};
 
 export async function handleSandboxApiRequest(
 	database: PGlite,
 	tables: SandboxAppliedTable[],
 	request: SandboxApiRequest,
 	relationships: SandboxAppliedRelationship[] = [],
+	functions: DesignFunction[] = [],
 ): Promise<{ response: SandboxApiResponse; entry: Omit<ScenarioRequestLogEntry, "order"> }> {
 	const url = new URL(request.path + (request.query ? `?${request.query}` : ""), "http://sandbox.local");
 	const segments = url.pathname.split("/").filter(Boolean);
@@ -78,6 +87,11 @@ export async function handleSandboxApiRequest(
 			await transaction.query("SELECT set_config('request.jwt.claim.role', $1, true)", [identity.role]);
 			await transaction.query("SELECT set_config('request.jwt.claim.sub', $1, true)", [identity.userId ?? ""]);
 			await transaction.query(`SET LOCAL ROLE ${identity.role}`);
+			if (segments.length === 4 && segments[0] === "rest" && segments[1] === "v1" && segments[2] === "rpc") {
+				const functionName = decodeURIComponent(segments[3]!);
+				table = `rpc/${functionName}`;
+				return await executeFunctionRpc(transaction, url, request, functionName, functions, tables, relationships);
+			}
 			if (segments.length !== 3 || segments[0] !== "rest" || segments[1] !== "v1") {
 				throw unsupported("endpoint");
 			}
@@ -304,7 +318,7 @@ export async function handleSandboxApiRequest(
 	} catch (error) {
 		if (error instanceof UnsupportedError || error instanceof PostgrestError) {
 			response = {
-				status: error instanceof UnsupportedError ? 501 : error.code === "PGRST201" ? 300 : error.code === "PGRST200" ? 400 : 406,
+				status: error instanceof UnsupportedError ? 501 : error.code === "PGRST202" ? 404 : error.code === "PGRST201" ? 300 : error.code === "PGRST200" ? 400 : 406,
 				headers: { "content-type": "application/json" },
 				body: {
 					code: error instanceof PostgrestError ? error.code : UNSUPPORTED_CODE,
@@ -313,6 +327,7 @@ export async function handleSandboxApiRequest(
 					hint: error instanceof PostgrestError ? error.hint : null,
 				},
 			};
+
 		} else {
 			const pgError = error as { code?: string; message?: string; detail?: string; hint?: string };
 			const code = pgError.code ?? "XX000";
@@ -324,6 +339,107 @@ export async function handleSandboxApiRequest(
 		}
 	}
 	return { response, entry: { method: request.method, table, filters, identity, status: response.status, result: response.body } };
+}
+type RpcTransaction = { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> };
+
+async function executeFunctionRpc(
+	transaction: RpcTransaction,
+	url: URL,
+	request: SandboxApiRequest,
+	name: string,
+	functions: DesignFunction[],
+	tables: SandboxAppliedTable[],
+	relationships: SandboxAppliedRelationship[],
+): Promise<SandboxApiResponse> {
+	const fn = functions.find((candidate) => candidate.name === name);
+	if (!fn) throw new PostgrestError("PGRST202", `Could not find the function public.${name} without parameters in the schema cache`, null);
+	if (request.method !== "POST" && request.method !== "GET") throw unsupported("function HTTP method");
+	if (request.method === "GET" && fn.volatility === "volatile") {
+		throw unsupported("GET for volatile functions");
+	}
+	const resultTable = tables.find((table) => table.name === fn.returnType);
+	const tableColumns = resultTable?.columns.map((column) => column.name) ?? functionTableReturnColumns(fn.returnType);
+	const queryKeys = [...url.searchParams.keys()];
+	const unsupportedOptions = queryKeys.filter((key) =>
+		!argumentNames.has(key) && !(key === "select" || key.includes(".")) &&
+		["order", "limit", "offset", "or", "and"].includes(key),
+	);
+	if (unsupportedOptions.length > 0) throw unsupported("filters or query options on function results");
+	const supplied: Record<string, unknown> = {};
+	if (request.method === "GET") {
+		for (const [key, value] of url.searchParams) {
+			if (argumentNames.has(key)) supplied[key] = value;
+			else if (!(key === "select" || key.includes("."))) {
+				if (tableColumns?.includes(key)) throw unsupported("filters on function results");
+				throw new PostgrestError("PGRST202", `Could not find the function public.${name} with the supplied parameter names`, null);
+			}
+		}
+	} else {
+		if (queryKeys.some((key) => !(key === "select" || key.includes(".")))) {
+			throw unsupported("query options on POST function calls");
+		}
+		const body: unknown = request.body ? JSON.parse(request.body) : {};
+		if (!body || typeof body !== "object" || Array.isArray(body)) throw unsupported("function arguments must be a JSON object");
+		Object.assign(supplied, body);
+	}
+	if (Object.keys(supplied).some((key) => !argumentNames.has(key))) {
+		throw new PostgrestError("PGRST202", `Could not find the function public.${name} with the supplied parameter names`, null);
+	}
+	if (fn.arguments.some((argument) => !(argument.name in supplied))) {
+		throw new PostgrestError("PGRST202", `Could not find the function public.${name} with the supplied parameter names`, null);
+	}
+	const params = fn.arguments.map((argument) => supplied[argument.name]);
+	const invocation = `public.${quoteIdentifier(name)}(${fn.arguments.map((argument, index) => `${quoteIdentifier(argument.name)} => $${index + 1}::${renderRpcArgumentType(argument.type, tables)}`).join(", ")})`;
+	const select = url.searchParams.get("select");
+	const resultOptionKeys = queryKeys.filter((key) => !argumentNames.has(key) && (key === "select" || key.includes(".")));
+	if (!tableColumns && resultOptionKeys.length) throw unsupported("function result projection");
+	if (fn.returnType.trim().toLowerCase() === "void" && !fn.returnsSet) {
+		await transaction.query(`SELECT ${invocation}`, params);
+		return { status: 200, headers: { "content-type": "application/json" }, body: null };
+	}
+	if (tableColumns) {
+		const sourceName = resultTable?.name ?? fn.returnType;
+		const projection = select === null
+			? { columns: tableColumns, embeds: [] as EmbedSelection[] }
+			: parseProjection(select, new Set(tableColumns), tables, sourceName);
+		const handledOptions = applyEmbeddedOptions(projection, url.searchParams, tables);
+		if (resultOptionKeys.some((key) => key !== "select" && !handledOptions.has(key))) {
+			throw unsupported("function result query options");
+		}
+		const queryParams = [...params];
+		const projectionSql = buildProjection(sourceName, "_rpc_result", projection, tables, relationships, queryParams);
+		const result = await transaction.query<{ result: unknown }>(
+			`SELECT ${projectionSql} AS result FROM ${invocation} AS _rpc_result`,
+			queryParams,
+		);
+		const body = fn.returnsSet ? result.rows.map((row) => row.result) : result.rows[0]?.result ?? null;
+		return { status: 200, headers: { "content-type": "application/json" }, body };
+	}
+	const result = fn.returnsSet
+		? await transaction.query<{ result: unknown }>(`SELECT to_jsonb(_rpc_result) AS result FROM ${invocation} AS _rpc_result`, params)
+		: await transaction.query<{ result: unknown }>(`SELECT to_jsonb(${invocation}) AS result`, params);
+	const body = fn.returnsSet ? result.rows.map((row) => row.result) : result.rows[0]?.result ?? null;
+	return { status: 200, headers: { "content-type": "application/json" }, body };
+}
+
+function functionTableReturnColumns(returnType: string): string[] | null {
+	const match = /^\s*TABLE\s*\((.*)\)\s*$/is.exec(returnType);
+	if (!match) return null;
+	return splitSelection(match[1]!).map((definition) => {
+		const column = /^\s*(?:"((?:[^"]|"")*)"|([A-Za-z_][A-Za-z0-9_$]*))\s+/.exec(definition);
+		if (!column) throw unsupported("function TABLE return columns");
+		return column[1]?.replaceAll('""', '"') ?? column[2]!;
+	});
+}
+
+function renderRpcArgumentType(value: string, tables: SandboxAppliedTable[]): string {
+	const normalized = value.trim();
+	const baseType = normalized.replace(/\[\]$/, "").trim().toLowerCase();
+	if (tables.some((table) => table.name === normalized)) return quoteIdentifier(normalized);
+	if (!BUILTIN_FUNCTION_TYPES[baseType] && /^[A-Za-z_][A-Za-z0-9_]*$/.test(baseType)) {
+		return `${quoteIdentifier(normalized.replace(/\[\]$/, ""))}${normalized.endsWith("[]") ? "[]" : ""}`;
+	}
+	return normalized;
 }
 
 function identityFromHeaders(headers: Record<string, string>): ScenarioIdentity {

@@ -72,7 +72,7 @@ export function generatePrismaSchema(design: Design): SchemaCodeGeneration {
 	}
 	const comments = renderMigrationNotes(design, names, objectNames);
 	if (hasUnrepresentedRowLevelSecurity(design)) {
-		comments.push("// Row-level security and policies are not represented; preserve them in PostgreSQL migrations.");
+		comments.push("// Row-level security, policies, and functions are not represented; preserve them in PostgreSQL migrations.");
 	}
 	if (comments.length) lines.push(...comments, "");
 	while (lines[lines.length - 1] === "") lines.pop();

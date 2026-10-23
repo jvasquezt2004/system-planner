@@ -455,7 +455,7 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		ok: true,
 		code: `${[
 			...(hasUnrepresentedRowLevelSecurity(design)
-				? ["# Row-level security and policies are not represented; preserve them in PostgreSQL migrations.", ""]
+				? ["# Row-level security, policies, and functions are not represented; preserve them in PostgreSQL migrations.", ""]
 				: []),
 			...imports,
 			...body,

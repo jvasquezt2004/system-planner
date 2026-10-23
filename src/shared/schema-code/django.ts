@@ -453,7 +453,7 @@ export function generateDjangoModels(design: Design): SchemaCodeGeneration {
 		migrationCommentLines.push(...Array.from(new Set(comments)));
 	}
 	if (hasUnrepresentedRowLevelSecurity(design)) {
-		migrationCommentLines.push("# Row-level security and policies are not represented; preserve them in PostgreSQL migrations.");
+		migrationCommentLines.push("# Row-level security, policies, and functions are not represented; preserve them in PostgreSQL migrations.");
 	}
 	if (migrationCommentLines.length) {
 		migrationCommentLines.unshift("# Migration notes:");

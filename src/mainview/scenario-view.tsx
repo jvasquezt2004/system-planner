@@ -4,7 +4,7 @@ import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
-import type { DesignEnumType, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import type { DesignEnumType, DesignFunction, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
 import type { RunAllResult } from "../shared/run-all";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,7 @@ type Props = {
 	scenarios: Scenario[];
 	appliedTables: SandboxAppliedTable[];
 	appliedEnums: DesignEnumType[];
+	appliedFunctions: DesignFunction[];
 	save: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	revision: number;
@@ -58,6 +59,7 @@ export function ScenarioView({
 	scenarios,
 	appliedTables,
 	appliedEnums,
+	appliedFunctions,
 	save,
 	scenarioRuns,
 	revision,
@@ -327,8 +329,8 @@ export function ScenarioView({
 								<label htmlFor="scenario-source" className="kicker">TypeScript source</label>
 								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
 							</div>
-							<Editor
-								key={generateScenarioDatabaseTypes(appliedTables, appliedEnums)}
+<Editor
+								key={generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}
 								height="min(60vh, 640px)"
 								language="typescript"
 								value={sourceDraft}
@@ -367,7 +369,7 @@ export function ScenarioView({
 										noEmit: true,
 									});
 									monaco.languages.typescript.typescriptDefaults.addExtraLib(
-										generateScenarioDatabaseTypes(appliedTables, appliedEnums),
+										generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions),
 										"file:///scenario-globals.d.ts",
 									);
 									for (const [filename, contents] of Object.entries(allSupabaseTypeDeclarations)) {

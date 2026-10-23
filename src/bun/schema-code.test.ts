@@ -64,6 +64,46 @@ describe("schema code formats", () => {
 			expect(typeof result.ok).toBe("boolean");
 		}
 	});
+	test("every ORM format visibly omits project Functions", () => {
+		const design: Design = {
+			...SCHEMA_CODE_FIXTURES.minimal,
+			tables: SCHEMA_CODE_FIXTURES.minimal.tables.map((table) => ({
+				...table,
+				rowLevelSecurity: true,
+				policies: [{
+					id: "read-rows",
+					name: "read_rows",
+					command: "SELECT",
+					roles: ["anon"],
+					mode: "permissive",
+					using: "true",
+					withCheck: "",
+				}],
+			})),
+			functions: [{
+				id: "get-books",
+				name: "get_books",
+				arguments: [],
+				returnType: "integer",
+				returnsSet: false,
+				language: "sql",
+				volatility: "stable",
+				security: "invoker",
+				body: "SELECT 1",
+			}],
+		};
+		for (const format of SCHEMA_CODE_FORMATS) {
+			if (!isOrmTarget(format.target)) continue;
+			const result = generateOrmSchema(format.target, design);
+			expect(result.ok).toBe(true);
+			if (result.ok) {
+				const notice = result.code.toLowerCase();
+				expect(notice).toContain("row-level security");
+				expect(notice).toContain("policies");
+				expect(notice).toContain("functions are not represented");
+			}
+		}
+	});
 });
 
 describe("ORM code transfer", () => {

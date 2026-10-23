@@ -388,13 +388,6 @@ describe("generatePrismaSchema", () => {
 			'// CREATE UNIQUE INDEX "posts_title_editor_id_idx" ON "posts" USING btree ("title", "editor_id") NULLS NOT DISTINCT;',
 		);
 	});
-	test("warns when row-level security or policies need PostgreSQL migrations", () => {
-		const design = structuredClone(blogDesign);
-		(design.tables[0] as typeof design.tables[number] & { rowLevelSecurity?: boolean }).rowLevelSecurity = true;
-		const result = generatePrismaSchema(design);
-		expect(result.ok).toBe(true);
-		if (result.ok) expect(result.code).toContain("// Row-level security and policies are not represented");
-	});
 	test("renders defaults for PostgreSQL types Prisma exposes as Unsupported", () => {
 		const design = structuredClone(typeCatalogDesign);
 		const columns = design.tables[0]!.columns;

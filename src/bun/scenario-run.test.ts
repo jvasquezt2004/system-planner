@@ -842,4 +842,115 @@ describe("Scenario runs", () => {
 		expect(writeResponses[1]?.headers.get("content-range")).toBe("*/2");
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
+	test("real supabase-js calls Functions with named arguments, composite and set results, and request identity", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const configured = await workspace.updateFunctions({ functions: [
+			{ id: "sum-ints", name: "sum_ints", arguments: [{ name: "a", type: "integer" }, { name: "b", type: "integer" }], returnType: "integer", returnsSet: false, language: "sql", volatility: "immutable", security: "invoker", body: "SELECT a + b" },
+			{ id: "who-am-i", name: "who_am_i", arguments: [], returnType: "uuid", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: "SELECT auth.uid()" },
+			{ id: "get-book", name: "get_book", arguments: [{ name: "book_id", type: "integer" }], returnType: "Books", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: 'SELECT * FROM "Books" WHERE id = book_id' },
+			{ id: "list-books", name: "list_books", arguments: [], returnType: "Books", returnsSet: true, language: "sql", volatility: "stable", security: "invoker", body: 'SELECT * FROM "Books" ORDER BY id' },
+			{ id: "table-rows", name: "table_rows", arguments: [], returnType: "TABLE (id bigint, label text)", returnsSet: true, language: "sql", volatility: "stable", security: "invoker", body: "SELECT 7::bigint, 'row'::text" },
+			{ id: "mark-run", name: "mark_run", arguments: [], returnType: "void", returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN; END;" },
+		] });
+		expect(configured.revision).toBeGreaterThan(1);
+		expect(configured.sandbox.status).toBe("applied");
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		await supabase.from("Books").insert({ title: "A" }).select("*");
+		const sum = await supabase.rpc("sum_ints", { a: 20, b: 22 });
+		expect(sum.error).toBeNull();
+		expect(sum.data).toBe(42);
+		const stableGet = await supabase.rpc("sum_ints", { a: 1, b: 2 }, { get: true });
+		expect(stableGet.data).toBe(3);
+		const get = await supabase.rpc("get_book", { book_id: 1 });
+		expect(get.error).toBeNull();
+		expect(get.data).toEqual({ id: 1, title: "A" });
+		const list = await supabase.rpc("list_books");
+		expect(list.error).toBeNull();
+		expect(list.data).toEqual([{ id: 1, title: "A" }]);
+		const tableRows = await supabase.rpc("table_rows");
+		expect(tableRows.error).toBeNull();
+		expect(tableRows.data).toEqual([{ id: 7, label: "row" }]);
+		const voidResult = await supabase.rpc("mark_run");
+		expect(voidResult.error).toBeNull();
+		expect(voidResult.data).toBeNull();
+		const identity = clientFor(workspace, runId, { identity: { role: "authenticated", sub: "10e4c1e5-1fed-49c4-8a06-71e25b160782" } });
+		const userId = await identity.rpc("who_am_i");
+		expect(userId.error).toBeNull();
+		expect(userId.data).toBe("10e4c1e5-1fed-49c4-8a06-71e25b160782");
+		const unknown = await supabase.rpc("missing_function");
+		expect(unknown.error?.code).toBe("PGRST202");
+		const requests = workspace.getState().scenarioRuns[scenarioId]?.requests ?? [];
+		expect(requests[requests.length - 1]).toMatchObject({
+			table: "rpc/missing_function",
+			status: 404,
+			result: { code: "PGRST202" },
+		});
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
+	test("RPC composite and set results serialize embedded resources like table reads", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		const authorsState = await workspace.addTable({ name: "Authors" });
+		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
+		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
+		const authorPrimaryKey = authors.columns.find((column) => column.name === "id");
+		if (!authorPrimaryKey) throw new Error("Expected the Authors primary key.");
+		await workspace.updateColumn({ tableId: authors.id, columnId: authorPrimaryKey.id, changes: { identity: false } });
+		const relationshipState = await workspace.addRelationship({
+			referencingTableId: books.id,
+			referencedTableId: authors.id,
+			cardinality: "one-to-one",
+		});
+		const relationship = relationshipState.design?.relationships[0];
+		if (!relationship) throw new Error("Expected the Books-to-Authors relationship.");
+		const authorColumn = relationshipState.design?.tables.find((table) => table.id === books.id)?.columns
+			.find((column) => column.id === relationship.referencingColumnId);
+		if (!authorColumn) throw new Error("Expected the relationship-owned author column.");
+		const configured = await workspace.updateFunctions({ functions: [
+			{
+				id: "book-by-id",
+				name: "book_by_id",
+				arguments: [{ name: "book_id", type: "integer" }],
+				returnType: "Books",
+				returnsSet: false,
+				language: "sql",
+				volatility: "stable",
+				security: "invoker",
+				body: 'SELECT * FROM "Books" WHERE id = book_id',
+			},
+			{
+				id: "books-with-authors",
+				name: "books_with_authors",
+				arguments: [],
+				returnType: "Books",
+				returnsSet: true,
+				language: "sql",
+				volatility: "stable",
+				security: "invoker",
+				body: 'SELECT * FROM "Books"',
+			},
+		] });
+		expect(configured.sandbox.status).toBe("applied");
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const author = await supabase.from("Authors").insert({ id: 1 }).select("id");
+		expect(author.error).toBeNull();
+		expect(author.data).toEqual([{ id: 1 }]);
+		const book = await supabase.from("Books").insert({
+			title: "RPC embedding",
+			[authorColumn.name]: 1,
+		}).select("id");
+		expect(book.error).toBeNull();
+		expect(book.data).toEqual([{ id: 1 }]);
+		const single = await supabase.rpc("book_by_id", { book_id: 1 }).select("id,Authors(id)");
+		expect(single.error).toBeNull();
+		expect(JSON.stringify(single.data)).toBe('{"id":1,"Authors":{"id":1}}');
+		const set = await supabase.rpc("books_with_authors").select("id,Authors(id)");
+		expect(set.error).toBeNull();
+		expect(JSON.stringify(set.data)).toBe('[{"id":1,"Authors":{"id":1}}]');
+		const unsupportedFilter = await supabase.rpc("books_with_authors", {}, { get: true }).eq("id", 1);
+		expect(unsupportedFilter.error?.code).toBe("PGRST_SANDBOX_UNSUPPORTED");
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 });

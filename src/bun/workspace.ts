@@ -22,6 +22,7 @@ import {
 	type DesignIndex,
 	type DesignIndexKey,
 	type DesignEnumType,
+	type DesignFunction,
 	type DesignPolicy,
 	type DesignUniqueConstraint,
 	type ReferentialAction,
@@ -43,6 +44,7 @@ import {
 	type UpdateEnumTypesAction,
 	type UpdatePoliciesAction,
 	type UpdateUniqueConstraintsAction,
+	type UpdateFunctionsAction,
 	type UpdateRelationshipAction,
 	type CreateScenarioAction,
 	type RenameScenarioAction,
@@ -118,6 +120,7 @@ export interface DesignWorkspace {
 	updateIndexes(action: UpdateIndexesAction): Promise<WorkspaceState>;
 	updatePolicies(action: UpdatePoliciesAction): Promise<WorkspaceState>;
 	updateEnumTypes(action: UpdateEnumTypesAction): Promise<WorkspaceState>;
+	updateFunctions(action: UpdateFunctionsAction): Promise<WorkspaceState>;
 	updateUniqueConstraints(action: UpdateUniqueConstraintsAction): Promise<WorkspaceState>;
 	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
 	/** Creates the relationship and the foreign-key column it owns. */
@@ -207,6 +210,7 @@ export async function createDesignWorkspace(
 		database: ScenarioRunDatabase | null;
 		tables: SandboxAppliedTable[];
 		relationships: SandboxSnapshot["relationships"];
+		functions: DesignFunction[];
 	} | null = null;
 	let previewRequestId = 0;
 	let scheduledPreview: {
@@ -377,6 +381,7 @@ export async function createDesignWorkspace(
 							relationships: result.relationships,
 							sql: generation.sql,
 							...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
+							...(design.functions ? { functions: structuredClone(design.functions) } : {}),
 						}
 					: result.failure === "sql-rejected"
 						? {
@@ -752,6 +757,7 @@ export async function createDesignWorkspace(
 					database: null as ScenarioRunDatabase | null,
 					tables: snapshot.tables,
 					relationships: snapshot.relationships,
+					functions: snapshot.functions ?? [],
 				};
 				activeScenarioRun = run;
 				setState({
@@ -811,7 +817,7 @@ export async function createDesignWorkspace(
 						body: { code: "PGRST_SANDBOX_UNSUPPORTED", message: "not supported by the sandbox: expired Scenario run", details: null, hint: null },
 					};
 				}
-				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request, run.relationships);
+				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request, run.relationships, run.functions);
 				if (activeScenarioRun !== run || activeProjectId !== run.projectId) return response;
 				const previous = state.scenarioRuns[run.scenarioId];
 				if (!previous || previous.id !== run.id) return response;
@@ -1049,6 +1055,15 @@ export async function createDesignWorkspace(
 				return applyStructuralChange(projectId, { ...design, enumTypes });
 			});
 		},
+		updateFunctions(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const functions = normalizeFunctions(action.functions, design);
+				if (JSON.stringify(functions) === JSON.stringify(design.functions ?? [])) return state;
+				return applyStructuralChange(projectId, { ...design, functions });
+			});
+		},
+
 		updateUniqueConstraints(action) {
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
@@ -1375,6 +1390,58 @@ function normalizePolicies(policies: DesignPolicy[]): DesignPolicy[] {
 		};
 	});
 }
+/** Validates function metadata and tracks referenced project tables. */
+function normalizeFunctions(values: unknown, design: Design): DesignFunction[] {
+	if (!Array.isArray(values)) throw new Error("Functions must be a list.");
+	const ids = new Set<string>();
+	const names = new Set<string>();
+	return values.map((value: unknown) => {
+		if (!value || typeof value !== "object") throw new Error("Function definition is invalid.");
+		const fn = value as DesignFunction;
+		const id = requireName(fn.id, "Function id");
+		const name = requireName(fn.name, "Function name");
+		if (ids.has(id)) throw new Error(`Function id "${id}" is duplicated.`);
+		if (names.has(name)) throw new Error(`Function name "${name}" is duplicated.`);
+		ids.add(id);
+		names.add(name);
+		if (!Array.isArray(fn.arguments)) throw new Error(`Function "${name}" arguments must be a list.`);
+		const argumentNames = new Set<string>();
+		const args = fn.arguments.map((argument) => {
+			const argumentName = requireName(argument.name, "Function argument name");
+			if (argumentNames.has(argumentName)) throw new Error(`Function "${name}" has duplicate argument "${argumentName}".`);
+			argumentNames.add(argumentName);
+			return { name: argumentName, type: requireName(argument.type, "Function argument type") };
+		});
+		if (!["sql", "plpgsql"].includes(fn.language)) throw new Error(`Function "${name}" has an unsupported language.`);
+		if (!["volatile", "stable", "immutable"].includes(fn.volatility)) throw new Error(`Function "${name}" has unsupported volatility.`);
+		if (!["invoker", "definer"].includes(fn.security)) throw new Error(`Function "${name}" has unsupported security mode.`);
+		if (typeof fn.returnsSet !== "boolean" || typeof fn.body !== "string") throw new Error(`Function "${name}" definition is incomplete.`);
+		const returnType = requireName(fn.returnType, "Function return type");
+		const previous = design.functions?.find((candidate) => candidate.id === id);
+		const unchangedReferences = previous?.body === fn.body
+			&& previous.returnType === returnType
+			&& JSON.stringify(previous.arguments) === JSON.stringify(args);
+		const tableDependencies = unchangedReferences && previous.tableDependencies
+			? [...previous.tableDependencies]
+			: functionTableDependencies(fn.body, design.tables, [returnType, ...args.map((argument) => argument.type)]);
+		return {
+			id, name, arguments: args, returnType,
+			returnsSet: fn.returnsSet || /^TABLE\s*\(/i.test(returnType),
+			language: fn.language, volatility: fn.volatility, security: fn.security,
+			body: fn.body, tableDependencies,
+		};
+	});
+}
+
+function functionTableDependencies(body: string, tables: DesignTable[], types: string[]): string[] {
+	return tables.filter((table) => {
+		if (types.some((type) => type.trim().replace(/\[\]$/, "") === table.name)) return true;
+		const escapedName = table.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		const relation = `(?:"${escapedName}"|${escapedName})`;
+		return new RegExp(`\\b(?:FROM|JOIN|UPDATE|INTO|REFERENCES)\\s+(?:public\\s*\\.\\s*)?${relation}(?![\\w$])`, "i").test(body);
+	}).map((table) => table.id);
+}
+
 function normalizeDesign(design: Design): Design {
 	return {
 		tables: design.tables.map((table) => ({
@@ -1401,6 +1468,7 @@ function normalizeDesign(design: Design): Design {
 		manyToManyRelationships: design.manyToManyRelationships ?? [],
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 		...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
+		...(design.functions ? { functions: structuredClone(design.functions) } : {}),
 	};
 }
 
