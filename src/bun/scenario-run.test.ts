@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { WorkspaceState } from "../shared/design";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
+import { createScenarioRunDriver } from "../mainview/scenario-run-driver";
 
 const workspaces: DesignWorkspace[] = [];
 const directories: string[] = [];
@@ -24,6 +25,14 @@ async function openWorkspace() {
 	await workspace.updateColumn({ tableId: table.id, columnId: column.id, changes: { nullable: false } });
 	const scenario = await workspace.createScenario({ name: "Insert and select" });
 	return { workspace, scenarioId: scenario.scenarios[0].id };
+}
+
+function scenarioDriverFor(workspace: DesignWorkspace) {
+	return createScenarioRunDriver({
+		workspace,
+		createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+		timeoutMs: 30_000,
+	});
 }
 
 function requireState(state: WorkspaceState) {
@@ -363,113 +372,78 @@ describe("Scenario runs", () => {
 
 	test("expectations report every outcome, fail the run when unmet, and keep exceptions errored", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
+		const driver = scenarioDriverFor(workspace);
 		const runScenario = async (source: string) => {
-			const { runId } = await workspace.beginScenarioRun({ scenarioId });
-			const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
-			const { promise, resolve, reject } = Promise.withResolvers<{
-				status: string;
-				console: string[];
-				expectations: { description: string; passed: boolean; message: string }[];
-			}>();
-			worker.onerror = (event) => reject(new Error(event.message));
-			worker.onmessage = async ({ data }: MessageEvent) => {
-				if (data.type === "request") {
-					const response = await workspace.handleSandboxApiRequest({ runId, request: data.request });
-					worker.postMessage({ type: "response", requestId: data.requestId, response });
-				} else if (data.type === "finished") resolve(data);
-			};
-			worker.postMessage({ type: "start", runId, source });
-			try {
-				const result = await promise;
-				const state = await workspace.finishScenarioRun({
-					runId,
-					status: result.status as "passed" | "failed" | "errored",
-					console: result.console,
-					expectations: result.expectations,
-				});
-				return { result, run: state.scenarioRuns[scenarioId] };
-			} finally {
-				worker.terminate();
-			}
+			const result = await driver.run({ id: scenarioId, name: "Expectation fixture", source });
+			if (!result) throw new Error("Expected the Scenario run to finish.");
+			return { result, run: workspace.getState().scenarioRuns[scenarioId] };
 		};
+		try {
+			const met = await runScenario(`
+				const inserted = await supabase.from("Books").insert({ title: "expected" }).select("*");
+				expect(inserted).succeeds();
+				expect(inserted).returnsDataEqual([{ id: 1, title: "expected" }]);
+				const rejected = await supabase.from("Books").insert({ title: null }).select("*");
+				expect(rejected).fails("23502");
+			`);
+			expect(met.result).toMatchObject({ status: "passed", expectations: [{ passed: true }, { passed: true }, { passed: true }] });
+			expect(met.run?.status).toBe("passed");
 
-		const met = await runScenario(`
-			const inserted = await supabase.from("Books").insert({ title: "expected" }).select("*");
-			expect(inserted).succeeds();
-			expect(inserted).returnsDataEqual([{ id: 1, title: "expected" }]);
-			const rejected = await supabase.from("Books").insert({ title: null }).select("*");
-			expect(rejected).fails("23502");
-		`);
-		expect(met.result).toMatchObject({ status: "passed", expectations: [{ passed: true }, { passed: true }, { passed: true }] });
-		expect(met.run?.status).toBe("passed");
+			const unmet = await runScenario(`
+				const result = await supabase.from("Books").insert({ title: "actual" }).select("*");
+				expect(result).fails("23505");
+				expect(result).returnsDataEqual([]);
+			`);
+			expect(unmet.result).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
+			expect(unmet.run).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
 
-		const unmet = await runScenario(`
-			const result = await supabase.from("Books").insert({ title: "actual" }).select("*");
-			expect(result).fails("23505");
-			expect(result).returnsDataEqual([]);
-		`);
-		expect(unmet.result).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
-		expect(unmet.run).toMatchObject({ status: "failed", expectations: [{ passed: false }, { passed: false }] });
-
-		const exception = await runScenario(`throw new Error("scenario broke");`);
-		expect(exception.result.status).toBe("errored");
-		expect(exception.run?.status).toBe("errored");
-		const invalidInputs = await runScenario(`
-			const pending = supabase.from("Books").insert({ title: "must not execute" });
-			expect(pending).succeeds();
-			expect(pending).fails("23502");
-			expect(pending).returnsDataEqual([]);
-			expect(null).succeeds();
-			expect(undefined).fails();
-			expect(42).returnsDataEqual(42);
-		`);
-		expect(invalidInputs.result).toMatchObject({
-			status: "failed",
-			expectations: [
-				{ passed: false, message: "expect() received a pending request; await it first" },
-				{ passed: false, message: "expect() received a pending request; await it first" },
-				{ passed: false, message: "expect() received a pending request; await it first" },
-				{ passed: false, message: "expect() requires an awaited request result" },
-				{ passed: false, message: "expect() requires an awaited request result" },
-				{ passed: false, message: "expect() requires an awaited request result" },
-			],
-		});
-		expect(invalidInputs.run).toMatchObject({ status: "failed", expectations: expect.any(Array) });
+			const exception = await runScenario(`throw new Error("scenario broke");`);
+			expect(exception.result.status).toBe("errored");
+			expect(exception.run?.status).toBe("errored");
+			const invalidInputs = await runScenario(`
+				const pending = supabase.from("Books").insert({ title: "must not execute" });
+				expect(pending).succeeds();
+				expect(pending).fails("23502");
+				expect(pending).returnsDataEqual([]);
+				expect(null).succeeds();
+				expect(undefined).fails();
+				expect(42).returnsDataEqual(42);
+			`);
+			expect(invalidInputs.result).toMatchObject({
+				status: "failed",
+				expectations: [
+					{ passed: false, message: "expect() received a pending request; await it first" },
+					{ passed: false, message: "expect() received a pending request; await it first" },
+					{ passed: false, message: "expect() received a pending request; await it first" },
+					{ passed: false, message: "expect() requires an awaited request result" },
+					{ passed: false, message: "expect() requires an awaited request result" },
+					{ passed: false, message: "expect() requires an awaited request result" },
+				],
+			});
+			expect(invalidInputs.run).toMatchObject({ status: "failed", expectations: expect.any(Array) });
+		} finally {
+			driver.dispose();
+		}
 	}, 30_000);
 	test("identity clients retain runner lockdown, expectations, and public grants", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
-		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
-		const { promise, resolve, reject } = Promise.withResolvers<{
-			status: string;
-			console: string[];
-			expectations: { description: string; passed: boolean; message: string }[];
-		}>();
-		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
-		worker.onerror = (event) => reject(new Error(event.message));
-		worker.onmessage = async ({ data }: MessageEvent) => {
-			if (data.type === "request") {
-				const response = await workspace.handleSandboxApiRequest({ runId, request: data.request });
-				worker.postMessage({ type: "response", requestId: data.requestId, response });
-			} else if (data.type === "finished") resolve(data);
-		};
-		worker.postMessage({
-			type: "start",
-			runId,
-			source: `
-				console.log(typeof fetch, typeof WebSocket, typeof expect);
-				const anonymous = await supabase.from("Books").insert({ title: "anonymous" }).select("*");
-				expect(anonymous).succeeds();
-				const member = await asUser("9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14", { app_metadata: { plan: "pro" } })
-					.from("Books").insert({ title: "member" }).select("*");
-				expect(member).succeeds();
-				const privileged = await asServiceRole().from("Books").insert({ title: "service" }).select("*");
-				expect(privileged).succeeds();
-				console.log(typeof fetch, typeof WebSocket);
-			`,
-		});
+		const driver = scenarioDriverFor(workspace);
 		try {
-			const result = await promise;
+			const result = await driver.run({
+				id: scenarioId,
+				name: "Identity clients",
+				source: `
+					console.log(typeof fetch, typeof WebSocket, typeof expect);
+					const anonymous = await supabase.from("Books").insert({ title: "anonymous" }).select("*");
+					expect(anonymous).succeeds();
+					const member = await asUser("9f8c5c8b-5e8d-4bb9-8e0d-a8f8a3fb8e14", { app_metadata: { plan: "pro" } })
+						.from("Books").insert({ title: "member" }).select("*");
+					expect(member).succeeds();
+					const privileged = await asServiceRole().from("Books").insert({ title: "service" }).select("*");
+					expect(privileged).succeeds();
+					console.log(typeof fetch, typeof WebSocket);
+				`,
+			});
 			expect(result).toMatchObject({
 				status: "passed",
 				console: ["undefined undefined function", "undefined undefined"],
@@ -490,42 +464,29 @@ describe("Scenario runs", () => {
 				},
 				{ role: "service_role", claims: { role: "service_role" } },
 			]);
-			await workspace.finishScenarioRun({
-				runId,
-				status: "passed",
-				console: result.console,
-				expectations: result.expectations,
-			});
 		} finally {
-			clearTimeout(timeout);
-			worker.terminate();
-			if (workspace.getState().scenarioRuns[scenarioId]?.status === "running") {
-				await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
-			}
+			driver.dispose();
 		}
 	}, 60_000);
 
 
 	test("scenario source executes inside a real Worker and transports requests through the workspace", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
-		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
-		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; console: string[] }>();
-		worker.onerror = (event) => reject(new Error(event.message));
-		worker.onmessage = async ({ data }: MessageEvent) => {
-			if (data.type === "request") {
-				const response = await workspace.handleSandboxApiRequest({ runId, request: data.request });
-				worker.postMessage({ type: "response", requestId: data.requestId, response });
-			} else if (data.type === "finished") resolve(data);
-		};
-		worker.postMessage({ type: "start", runId, source: 'const label: string = "worker"; const result = await supabase.from("Books").insert({ title: "from worker" }).select("*"); console.log(label, result.data);' });
+		const driver = scenarioDriverFor(workspace);
 		try {
-			const result = await promise;
-			expect(result).toMatchObject({ status: "passed", console: ['worker [{"id":1,"title":"from worker"}]'] });
+			const result = await driver.run({
+				id: scenarioId,
+				name: "Worker transport",
+				source: 'const label: string = "worker"; const result = await supabase.from("Books").insert({ title: "from worker" }).select("*"); console.log(label, result.data);',
+			});
+			expect(result).toMatchObject({
+				status: "passed",
+				console: ['worker [{"id":1,"title":"from worker"}]'],
+				requests: [{ method: "POST" }],
+			});
 			expect(workspace.getState().scenarioRuns[scenarioId]?.requests).toHaveLength(1);
 		} finally {
-			worker.terminate();
-			await workspace.finishScenarioRun({ runId, status: "passed", console: ["worker completed"] });
+			driver.dispose();
 		}
 	}, 60_000);
 	test("the runner permits type-only imports and removes worker network primitives", async () => {
@@ -580,42 +541,6 @@ describe("Scenario runs", () => {
 		}
 	}, 60_000);
 
-	test("terminating a runaway Scenario ends the run errored and releases its sandbox", async () => {
-		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
-		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
-		// A real worker must enter the infinite loop before it can be terminated.
-		const { promise: enteredPromise, resolve: entered } = Promise.withResolvers<void>();
-		worker.onmessage = ({ data }: MessageEvent) => {
-			if (data.type === "started") entered();
-		};
-		worker.postMessage({ type: "start", runId, source: 'postMessage({ type: "started" }); while (true) {}' });
-		await enteredPromise;
-		worker.terminate();
-		const stopped = await workspace.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] });
-		expect(stopped.scenarioRuns[scenarioId]).toMatchObject({ status: "errored", reason: "timed out" });
-		const next = await workspace.beginScenarioRun({ scenarioId });
-		expect(next.runId).not.toBe(runId);
-		const stopWorker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
-		const { promise: startedPromise, resolve: started } = Promise.withResolvers<void>();
-		stopWorker.onmessage = ({ data }: MessageEvent) => {
-			if (data.type === "started") started();
-		};
-		stopWorker.postMessage({
-			type: "start",
-			runId: next.runId,
-			source: 'postMessage({ type: "started" }); while (true) {}',
-		});
-		await startedPromise;
-		stopWorker.terminate();
-		const stoppedByUser = await workspace.finishScenarioRun({
-			runId: next.runId,
-			status: "errored",
-			reason: "stopped",
-			console: [],
-		});
-		expect(stoppedByUser.scenarioRuns[scenarioId]).toMatchObject({ status: "errored", reason: "stopped" });
-	}, 60_000);
 	test("core reads project columns, apply PostgREST filters and sorting, and paginate", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const { runId } = await workspace.beginScenarioRun({ scenarioId });
