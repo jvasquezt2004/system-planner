@@ -149,9 +149,10 @@ describe("Scenario runs", () => {
 		};
 		const inserted = await supabase.from("Books").insert(values).select("*");
 		expect(inserted.error).toBeNull();
+		if (!inserted.data?.length) throw new Error("Expected inserted representation.");
 		const selected = await supabase.from("Books").select("*").eq("id", inserted.data[0]!.id);
 		expect(selected.error).toBeNull();
-		expect(inserted.data).toEqual(selected.data);
+		expect(inserted.data!).toEqual(selected.data!);
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
 	test("bulk inserts honor defaultToNull for heterogeneous record keys", async () => {
