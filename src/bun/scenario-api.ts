@@ -85,7 +85,7 @@ export async function handleSandboxApiRequest(
 			if (!accept.includes("application/json") && !accept.includes("vnd.pgrst.object")) {
 				throw unsupported(accept.includes("csv") ? "CSV responses" : accept.includes("plan") ? "explain responses" : "response media type");
 			}
-			const selected = parseSelection(select, columns);
+			const selected = select === null ? [...columns] : parseSelection(select, columns);
 			const params: unknown[] = [...selected];
 			const where: string[] = [];
 			let orderBy = "";
@@ -137,17 +137,17 @@ export async function handleSandboxApiRequest(
 			const records = result.rows.map((row) => row.result);
 			const start = offset;
 			const end = records.length ? start + records.length - 1 : start;
-			const partial = Boolean(rangeHeader || limit !== null || offset > 0);
+			const contentRange = records.length ? `${start}-${end}/*` : "*/*";
 			if (request.headers.accept?.includes("vnd.pgrst.object")) {
 				if (records.length !== 1) {
 					const count = records.length;
 					throw new PostgrestError("PGRST116", "JSON object requested, multiple (or no) rows returned", `The result contains ${count} rows`);
 				}
-				response = { status: 200, headers: { "content-type": "application/vnd.pgrst.object+json", "content-range": `${start}-${end}/*` }, body: records[0] };
+				response = { status: 200, headers: { "content-type": "application/vnd.pgrst.object+json", "content-range": contentRange }, body: records[0] };
 			} else {
 				response = {
-					status: partial ? 206 : 200,
-					headers: { "content-type": "application/json", "content-range": `${start}-${end}/*` },
+					status: 200,
+					headers: { "content-type": "application/json", "content-range": contentRange },
 					body: records,
 				};
 			}
@@ -246,7 +246,7 @@ function parseFilter(column: string, expression: string, params: unknown[]): str
 	};
 	const sql = sqlOperator[operator];
 	if (!sql) throw unsupported(`filter operator ${operator}`);
-	params.push(value);
+	params.push(operator === "like" || operator === "ilike" ? value.replaceAll("*", "%") : value);
 	const comparison = `${identifier} ${sql} $${params.length}`;
 	return not ? `NOT (${comparison})` : comparison;
 }

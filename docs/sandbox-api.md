@@ -6,11 +6,11 @@ The Sandbox API is the in-process PostgREST-compatible interface used by Scenari
 
 | Feature | Supported form | Notes |
 | --- | --- | --- |
-| Projection | `select=*` or a comma-separated list of applied column names | Aliases, embeds, JSON paths, and other projection expressions are unsupported. |
-| Filters | `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `is`, `in`, `not`, `or` | Filter column names must exist in the applied table. `or` supports comma-separated simple filter expressions. |
+| Projection | `select=*`, a comma-separated list of applied column names, or an omitted `select` parameter | An omitted projection returns all columns. Aliases, embeds, JSON paths, and other projection expressions are unsupported. |
+| Filters | `eq`, `neq`, `gt`, `gte`, `lt`, `lte`, `like`, `ilike`, `is`, `in`, `not`, `or` | Filter column names must exist in the applied table. `or` supports comma-separated simple filter expressions; `*` is an alias for `%` in `like` and `ilike` patterns. |
 | Ordering | `order=column.asc` or `order=column.desc`; multiple columns and `nullsfirst`/`nullslast` | Order columns must exist in the applied table. |
-| Limit and offset | Non-negative integer `limit` and `offset` query parameters | Results are returned as JSON arrays. |
-| Range | Inclusive `Range: start-end` with the `items` range unit | Returns `Content-Range`; partial responses use HTTP 206. |
+| Limit and offset | Non-negative integer `limit` and `offset` query parameters | Results are returned as JSON arrays. Without an exact count, these responses use HTTP 200. |
+| Range | Inclusive `Range: start-end` with the `items` range unit | Returns `Content-Range`; without an exact count, range responses use HTTP 200. An empty result returns `*/*`. |
 | Single row | `single()` | Returns one JSON object. Zero or multiple records produce `PGRST116` with HTTP 406. |
 | Maybe single row | `maybeSingle()` | Returns one JSON object or `null` for no records; multiple records produce the normal cardinality error. |
 
