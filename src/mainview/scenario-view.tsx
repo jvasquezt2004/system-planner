@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type FormEvent } from "react";
-import Editor from "@monaco-editor/react";
+import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
@@ -54,6 +54,8 @@ export function ScenarioView({
 	const pendingSourceSave = useRef<{ scenarioId: string; source: string } | null>(null);
 	const sourceSaveCallback = useRef(onUpdateSource);
 	sourceSaveCallback.current = onUpdateSource;
+	const monacoApi = useRef<Monaco | null>(null);
+	const monacoEditor = useRef<Parameters<OnMount>[0] | null>(null);
 
 
 	useEffect(() => {
@@ -215,6 +217,29 @@ export function ScenarioView({
 								language="typescript"
 								value={sourceDraft}
 								onChange={(source) => setSourceDraft(source ?? "")}
+								onMount={(instance, monaco) => {
+									monacoEditor.current = instance;
+									monacoApi.current = monaco;
+								}}
+								onValidate={(markers) => {
+									const monaco = monacoApi.current;
+									const model = monacoEditor.current?.getModel();
+									if (
+										!monaco ||
+										!model ||
+										!markers.some((marker) => marker.severity === monaco.MarkerSeverity.Error)
+									) {
+										return;
+									}
+									monaco.editor.setModelMarkers(
+										model,
+										"typescript",
+										markers.map((marker) => ({
+											...marker,
+											severity: monaco.MarkerSeverity.Warning,
+										})),
+									);
+								}}
 								beforeMount={(monaco) => {
 									monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
 										target: monaco.languages.typescript.ScriptTarget.ES2022,
