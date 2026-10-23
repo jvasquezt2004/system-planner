@@ -13,6 +13,20 @@ export type ProjectSummary = {
 	id: string;
 	name: string;
 };
+/** Saved TypeScript source managed independently from the design history. */
+export type Scenario = { id: string; name: string; source: string };
+
+export type ScenarioSaveState =
+	| { status: "idle" }
+	| { status: "saving"; revision: number }
+	| { status: "saved"; revision: number; savedAt: number }
+	| { status: "failed"; revision: number; error: string };
+
+export type CreateScenarioAction = { name: string };
+export type RenameScenarioAction = { scenarioId: string; name: string };
+export type RemoveScenarioAction = { scenarioId: string };
+export type UpdateScenarioSourceAction = { scenarioId: string; source: string };
+
 
 export type CanvasPoint = {
 	x: number;
@@ -296,6 +310,8 @@ export type WorkspaceState = {
 	save: SaveState;
 	sql: SqlState;
 	sandbox: SandboxState;
+	scenarios: Scenario[];
+	scenarioSave: ScenarioSaveState;
 	/** In-memory undo/redo availability for the currently open project only. */
 	undoRedo: { canUndo: boolean; canRedo: boolean };
 };

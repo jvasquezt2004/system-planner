@@ -36,8 +36,11 @@ unchanged. Removing a direct relationship keeps its columns and drops only its
 own foreign key and uniqueness. Removing a many-to-many association keeps its
 junction and all columns and drops both foreign keys and pair uniqueness. The
 generated SQL and sandbox check live in the SQL preview view, switched in place
-of the canvas in the same window by the masthead's Canvas / SQL preview toggle.
-The view holds generated SQL and its status, Copy SQL, an export action with a
+of the canvas by the masthead. The masthead also opens Scenarios, where each
+project can keep named TypeScript source independently of design undo/redo and
+sandbox rebuilds. Scenario names and source autosave, with save status shown in
+the editor; Scenarios are saved source only and have no run controls. The SQL
+preview holds generated SQL and its status, Copy SQL, an export action with a
 file-name field, and the sandbox check, including the last successful sandbox
 when the current draft is not yet accepted. Undo and Redo buttons sit in the
 masthead next to the project name and revision (`undo-button` and `redo-button`).
@@ -78,6 +81,8 @@ bunx tsc --noEmit      # typecheck
   focused column editor, and relationship controls.
 - `src/mainview/sql-preview.tsx` — the SQL preview view shown in place of the
   canvas: generated SQL with copy, plus the sandbox result.
+- `src/mainview/scenario-view.tsx` — saved Scenario list and editor for names
+  and TypeScript source, with independent save status.
 - `src/mainview/index.css` — the editorial design tokens (paper, ink, rules,
   the blue-pencil accent, status colours) mapped onto shadcn/ui's slots.
 - `src/mainview/components/ui/` — shadcn/ui components (Radix-based),

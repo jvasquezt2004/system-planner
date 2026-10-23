@@ -12,6 +12,10 @@ import type {
 	UpdateIndexesAction,
 	UpdateEnumTypesAction,
 	UpdateUniqueConstraintsAction,
+	CreateScenarioAction,
+	RenameScenarioAction,
+	RemoveScenarioAction,
+	UpdateScenarioSourceAction,
 	DisplayedSqlPreview,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
@@ -47,6 +51,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { projectId: string };
 				response: WorkspaceState;
 			};
+			createScenario: { params: CreateScenarioAction; response: WorkspaceState };
+			renameScenario: { params: RenameScenarioAction; response: WorkspaceState };
+			removeScenario: { params: RemoveScenarioAction; response: WorkspaceState };
+			updateScenarioSource: { params: UpdateScenarioSourceAction; response: WorkspaceState };
 			undo: {
 				params: Record<string, never>;
 				response: WorkspaceState;

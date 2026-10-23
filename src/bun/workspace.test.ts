@@ -68,6 +68,21 @@ function createDelayedStore(
 	};
 }
 
+/** Real SQLite, with scenario-save completion timing controlled by the test. */
+function createDelayedScenarioStore(
+	databasePath: string,
+	waitBeforeScenarioSave: (projectId: string, revision: number) => Promise<void>,
+): DesignStore {
+	const store = openDesignStore(databasePath);
+	return {
+		...store,
+		async saveScenarios(projectId, scenarios, save) {
+			await waitBeforeScenarioSave(projectId, save.revision);
+			store.saveScenarios(projectId, scenarios, save);
+		},
+	};
+}
+
 afterEach(async () => {
 	for (const workspace of openWorkspaces.splice(0)) {
 		await workspace.close();
@@ -130,6 +145,158 @@ describe("design workspace", () => {
 				],
 			},
 		]);
+	});
+	test("persists ordered scenarios independently and rejects stale SQLite revisions", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+		const project = await workspace.createProject({ name: "Library" });
+		const projectId = project.project?.id;
+		if (!projectId) throw new Error("Expected a created project.");
+
+		const first = await workspace.createScenario({ name: "First" });
+		const firstId = first.scenarios[0].id;
+		await workspace.updateScenarioSource({
+			scenarioId: firstId,
+			source: "export const expected = true;",
+		});
+		await workspace.renameScenario({ scenarioId: firstId, name: "Renamed" });
+		expect(workspace.getState().scenarios).toEqual([
+			{ id: firstId, name: "Renamed", source: "export const expected = true;" },
+		]);
+		await workspace.createScenario({ name: "Second" });
+		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual([
+			"Renamed",
+			"Second",
+		]);
+		await workspace.removeScenario({ scenarioId: firstId });
+
+		expect(workspace.getState().scenarioSave).toMatchObject({
+			status: "saved",
+			revision: 5,
+		});
+		expect(workspace.getState().revision).toBe(project.revision);
+		expect(workspace.getState().sql.status).toBe("empty");
+		expect(workspace.getState().sandbox.status).toBe("idle");
+		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["Second"]);
+		await closeTestWorkspace(workspace);
+
+		const store = openDesignStore(databasePath);
+		const before = store.loadScenarios(projectId);
+		expect(before).toMatchObject({
+			revision: 5,
+			scenarios: [{ name: "Second", source: "" }],
+		});
+		for (const revision of [4, 5]) {
+			store.saveScenarios(projectId, [{ id: "stale", name: "Stale", source: "" }], {
+				revision,
+				savedAt: 1,
+			});
+		}
+		expect(store.loadScenarios(projectId)).toEqual(before);
+		store.close();
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId });
+		expect(reopened.getState().scenarios).toEqual(before.scenarios);
+		expect(reopened.getState().scenarioSave).toMatchObject({
+			status: "saved",
+			revision: 5,
+		});
+	});
+	test("keeps scenarios isolated between projects across switching and reopening", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+		const projectA = await workspace.createProject({ name: "Project A" });
+		const projectAId = projectA.project?.id;
+		if (!projectAId) throw new Error("Expected Project A to be created.");
+		const scenarioA = await workspace.createScenario({ name: "Scenario A" });
+
+		const projectB = await workspace.createProject({ name: "Project B" });
+		const projectBId = projectB.project?.id;
+		if (!projectBId) throw new Error("Expected Project B to be created.");
+		const scenarioB = await workspace.createScenario({ name: "Scenario B" });
+
+		await workspace.openProject({ projectId: projectAId });
+		expect(workspace.getState().scenarios).toEqual(scenarioA.scenarios);
+		await workspace.openProject({ projectId: projectBId });
+		expect(workspace.getState().scenarios).toEqual(scenarioB.scenarios);
+		await closeTestWorkspace(workspace);
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId: projectAId });
+		expect(reopened.getState().scenarios).toEqual(scenarioA.scenarios);
+		await reopened.openProject({ projectId: projectBId });
+		expect(reopened.getState().scenarios).toEqual(scenarioB.scenarios);
+	});
+
+	test("does not let a delayed save from another project overwrite active scenario state", async () => {
+		const saveStarted = Promise.withResolvers<void>();
+		const releaseSave = Promise.withResolvers<void>();
+		let projectAId: string | null = null;
+		const { workspace } = await openTestWorkspace({
+			openStore: (databasePath) =>
+				createDelayedScenarioStore(databasePath, async (projectId, revision) => {
+					if (projectId === projectAId && revision === 1) {
+						saveStarted.resolve();
+						await releaseSave.promise;
+					}
+				}),
+		});
+
+		const projectA = await workspace.createProject({ name: "Project A" });
+		projectAId = projectA.project?.id ?? null;
+		if (!projectAId) throw new Error("Expected Project A to be created.");
+		const saveFromA = workspace.createScenario({ name: "Scenario A" });
+		await saveStarted.promise;
+
+		const projectB = await workspace.createProject({ name: "Project B" });
+		const projectBId = projectB.project?.id;
+		if (!projectBId) throw new Error("Expected Project B to be created.");
+		const stateB = await workspace.createScenario({ name: "Scenario B" });
+		const expectedScenarios = stateB.scenarios;
+		const expectedScenarioSave = stateB.scenarioSave;
+
+		releaseSave.resolve();
+		await saveFromA;
+		expect(workspace.getState().project?.id).toBe(projectBId);
+		expect(workspace.getState().scenarios).toEqual(expectedScenarios);
+		expect(workspace.getState().scenarioSave).toEqual(expectedScenarioSave);
+
+		await workspace.openProject({ projectId: projectAId });
+		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["Scenario A"]);
+		await workspace.openProject({ projectId: projectBId });
+		expect(workspace.getState().scenarios).toEqual(expectedScenarios);
+	});
+
+
+	test("surfaces failed Scenario autosaves and preserves persisted content", async () => {
+		const { workspace, databasePath } = await openTestWorkspace({
+			openStore: (databasePath) => {
+				const store = openDesignStore(databasePath);
+				return {
+					...store,
+					async saveScenarios() {
+						throw new Error("SQLite is read-only");
+					},
+				};
+			},
+		});
+		const project = await workspace.createProject({ name: "Library" });
+		const projectId = project.project?.id;
+		if (!projectId) throw new Error("Expected a created project.");
+
+		const failed = await workspace.createScenario({ name: "Draft" });
+		expect(failed.scenarios).toMatchObject([{ name: "Draft", source: "" }]);
+		expect(failed.scenarioSave).toEqual({
+			status: "failed",
+			revision: 1,
+			error: "SQLite is read-only",
+		});
+		expect(failed.revision).toBe(project.revision);
+		expect(failed.sandbox).toEqual(project.sandbox);
+		await closeTestWorkspace(workspace);
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId });
+		expect(reopened.getState().scenarios).toEqual([]);
 	});
 
 	test("autosaves and restores the same project and table with a fresh workspace", async () => {
