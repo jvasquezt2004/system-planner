@@ -16,6 +16,32 @@ _Avoid_: Sandbox, live database
 A disposable database preview built from a valid version of a design. It is not the authoritative design, and its data is not intended to be preserved.
 _Avoid_: Design, production database
 
+**Scenario**:
+A named, saved, ordered series of data operations that a project keeps next to
+its design and replays against a fresh sandbox to see how the design behaves
+with records. The scenario is authoritative; the records it produces are not,
+and a design change never migrates them. Each scenario starts empty and never
+sees another scenario's records.
+_Avoid_: Seed data, test data, migration
+
+**Scenario run**:
+One execution of a scenario, on demand, against its own empty sandbox built
+from a specific design revision. It is stale, never current, once the design
+has moved past that revision. A run ends passed, failed, or errored.
+_Avoid_: Test run, live data
+
+**Expectation**:
+An outcome a scenario states for one of its Sandbox API requests, such as
+succeeding or failing with a particular PostgreSQL error. An unmet expectation
+fails the run; an unexpected exception errors it.
+_Avoid_: Assertion, test
+
+**Sandbox API**:
+The PostgREST-compatible interface a sandbox offers to scenarios. It covers a
+documented subset of PostgREST and refuses anything outside it rather than
+approximating.
+_Avoid_: PostgREST, Supabase, backend
+
 **Table card**:
 The spreadsheet-styled representation of a table on the canvas, showing its column definitions rather than stored records.
 _Avoid_: Data grid, spreadsheet of records
