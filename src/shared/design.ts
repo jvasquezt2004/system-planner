@@ -40,11 +40,13 @@ export type ScenarioRun = {
 	reason?: "exception" | "stopped" | "timed out";
 };
 
+export type ScenarioIdentity = { role: "anon" | "authenticated" | "service_role"; userId?: string; claims: Record<string, unknown> };
 export type ScenarioRequestLogEntry = {
 	order: number;
 	method: string;
 	table: string;
 	filters: Record<string, string>;
+	identity: ScenarioIdentity;
 	status: number;
 	result: unknown;
 };

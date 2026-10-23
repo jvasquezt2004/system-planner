@@ -1,13 +1,16 @@
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
-import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
+import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioIdentity, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
+import { SUPABASE_SANDBOX_BOOTSTRAP } from "./sandbox";
 export type ScenarioRunDatabase = PGliteInstance;
+
 export async function createScenarioRunDatabase(sql: string): Promise<ScenarioRunDatabase> {
 	const database = new PGlite({ extensions: { vector } });
 	try {
 		await database.waitReady;
 		await database.exec(sql);
+		await database.exec(SUPABASE_SANDBOX_BOOTSTRAP);
 		return database;
 	} catch (error) {
 		await database.close();
@@ -50,8 +53,8 @@ export async function captureScenarioResultGrids(
 		throw error;
 	}
 }
-
 const UNSUPPORTED_CODE = "PGRST_SANDBOX_UNSUPPORTED";
+const ROLE_NAMES: Record<string, true> = { anon: true, authenticated: true, service_role: true };
 
 export async function handleSandboxApiRequest(
 	database: PGlite,
@@ -64,6 +67,7 @@ export async function handleSandboxApiRequest(
 		? decodeURIComponent(segments[2])
 		: "";
 	const filters = Object.fromEntries([...url.searchParams.entries()].filter(([key]) => key !== "select"));
+	const identity = identityFromHeaders(request.headers);
 	let response: SandboxApiResponse;
 	let table = tableName;
 	try {
@@ -157,18 +161,8 @@ export async function handleSandboxApiRequest(
 			if (preferences.length !== 1 || preferences[0] !== "return=representation") {
 				throw unsupported("insert requires only Prefer: return=representation");
 			}
-			const record = request.body ? JSON.parse(request.body) : null;
-			if (!record || typeof record !== "object" || Array.isArray(record)) throw unsupported("insert requires one JSON record");
-			const fields = Object.keys(record);
-			if (fields.length === 0 || fields.some((field) => !columns.has(field))) throw unsupported("insert columns outside the applied table");
-			const params = fields.map((field) => (record as Record<string, unknown>)[field]);
-			const values = params.map((_, index) => `$${index + 1}`).join(", ");
-			const names = fields.map(quoteIdentifier).join(", ");
-			const result = await database.query(`INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES (${values}) RETURNING *`, params);
-			response = { status: 201, headers: { "content-type": "application/json", "content-range": `0-${Math.max(0, result.rows.length - 1)}/*` }, body: result.rows };
-		} else {
 			throw unsupported(`HTTP ${request.method}`);
-		}
+		});
 	} catch (error) {
 		if (error instanceof UnsupportedError || error instanceof PostgrestError) {
 			response = {
@@ -186,10 +180,22 @@ export async function handleSandboxApiRequest(
 			};
 		}
 	}
-	return {
-		response,
-		entry: { method: request.method, table, filters, status: response.status, result: response.body },
-	};
+	return { response, entry: { method: request.method, table, filters, identity, status: response.status, result: response.body } };
+}
+
+function identityFromHeaders(headers: Record<string, string>): ScenarioIdentity {
+	const authorization = Object.entries(headers).find(([name]) => name.toLowerCase() === "authorization")?.[1] ?? "";
+	const token = authorization.match(/^Bearer\s+[^.]+\.([^.]+)\./i)?.[1];
+	if (!token) return { role: "anon", claims: { role: "anon" } };
+	try {
+		const payload = JSON.parse(atob(token.replaceAll("-", "+").replaceAll("_", "/"))) as Record<string, unknown>;
+		const role = typeof payload.role === "string" && ROLE_NAMES[payload.role] ? payload.role as ScenarioIdentity["role"] : "anon";
+		const claims = { ...payload, role };
+		const userId = typeof payload.sub === "string" ? payload.sub : undefined;
+		return { role, ...(userId ? { userId } : {}), claims };
+	} catch {
+		return { role: "anon", claims: { role: "anon" } };
+	}
 }
 class PostgrestError extends Error {
 	constructor(readonly code: string, message: string, readonly details: string | null) {
