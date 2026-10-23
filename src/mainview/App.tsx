@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
+	getLastAppliedSandbox,
 	getSqlPreviewValidationStatus,
 	getSqlValidationErrors,
 	type AffectedRelationship,
@@ -18,6 +19,7 @@ import {
 	type SqlPreviewValidationStatus,
 	type SqlState,
 	type WorkspaceState,
+	type Scenario,
 } from "../shared/design";
 import { relationshipsForTable } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
@@ -130,6 +132,84 @@ function App() {
 		[state?.project?.id],
 	);
 	const projectId = state?.project?.id ?? null;
+	const scenarioWorkers = useRef(new Map<string, { worker: Worker; timer: ReturnType<typeof setTimeout> }>());
+	const scenarioRunDisabledReason = !state || !getLastAppliedSandbox(state.sandbox)
+		? "Apply a valid design revision before running a Scenario."
+		: Object.values(state.scenarioRuns).some((run) => run?.status === "running")
+			? "Another Scenario run is already active."
+			: null;
+	const stopScenario = useCallback((runId: string) => {
+		const current = scenarioWorkers.current.get(runId);
+		if (current) {
+			clearTimeout(current.timer);
+			current.worker.terminate();
+			scenarioWorkers.current.delete(runId);
+		}
+		void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "stopped", console: [] });
+	}, []);
+	const runScenario = useCallback(async (scenario: Scenario) => {
+		try {
+			const { runId, state: begun } = await workspaceClient.beginScenarioRun(scenario.id);
+			setState((current) => current?.project?.id === begun.project?.id ? begun : current);
+			const worker = new Worker(new URL("./scenario-worker.ts", import.meta.url), { type: "module" });
+			const timer = setTimeout(() => {
+				worker.terminate();
+				scenarioWorkers.current.delete(runId);
+				void workspaceClient.finishScenarioRun({ runId, status: "errored", reason: "timed out", console: [] });
+			}, 30_000);
+			scenarioWorkers.current.set(runId, { worker, timer });
+			worker.onmessage = (event: MessageEvent) => {
+				const message = event.data;
+				if (message.type === "request" && message.runId === runId) {
+					void workspaceClient.handleSandboxApiRequest(runId, message.request).then((response) => {
+						worker.postMessage({ type: "response", requestId: message.requestId, response });
+					}).catch((cause: unknown) => {
+						worker.postMessage({
+							type: "response",
+							requestId: message.requestId,
+							response: { status: 500, headers: { "content-type": "application/json" }, body: { code: "XX000", message: errorMessage(cause), details: null, hint: null } },
+						});
+					});
+					return;
+				}
+				if (message.type !== "finished" || message.runId !== runId) return;
+				const active = scenarioWorkers.current.get(runId);
+				if (active) clearTimeout(active.timer);
+				scenarioWorkers.current.delete(runId);
+				worker.terminate();
+				void workspaceClient.finishScenarioRun({
+					runId,
+					status: message.status,
+					reason: message.reason,
+					console: message.console,
+				}).then((finished) => {
+					setState((current) => current?.project?.id === finished.project?.id ? finished : current);
+				});
+			};
+			worker.onerror = (event) => {
+				const active = scenarioWorkers.current.get(runId);
+				if (active) clearTimeout(active.timer);
+				scenarioWorkers.current.delete(runId);
+				worker.terminate();
+				void workspaceClient.finishScenarioRun({
+					runId,
+					status: "errored",
+					reason: "exception",
+					console: [event.message],
+				});
+			};
+			worker.postMessage({ type: "start", runId, source: scenario.source });
+		} catch (cause) {
+			setError(errorMessage(cause));
+		}
+	}, []);
+	useEffect(() => {
+		for (const { worker, timer } of scenarioWorkers.current.values()) {
+			clearTimeout(timer);
+			worker.terminate();
+		}
+		scenarioWorkers.current.clear();
+	}, [projectId]);
 
 	// Selection belongs to the open project, never to a previously open one.
 	useEffect(() => {
@@ -453,6 +533,11 @@ function App() {
 								key={state.project.id}
 								scenarios={state.scenarios}
 								save={state.scenarioSave}
+								scenarioRuns={state.scenarioRuns}
+								revision={state.revision}
+								runDisabledReason={scenarioRunDisabledReason}
+								onRun={(scenario) => void runScenario(scenario)}
+								onStop={stopScenario}
 								onCreate={(name) =>
 									void applyScenario(() => workspaceClient.createScenario({ name }))
 								}

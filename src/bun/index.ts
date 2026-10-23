@@ -67,6 +67,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).removeScenario({ scenarioId }),
 			updateScenarioSource: async ({ scenarioId, source }) =>
 				(await workspacePromise).updateScenarioSource({ scenarioId, source }),
+			beginScenarioRun: async ({ scenarioId }) =>
+				(await workspacePromise).beginScenarioRun({ scenarioId }),
+			handleSandboxApiRequest: async ({ runId, request }) =>
+				(await workspacePromise).handleSandboxApiRequest({ runId, request }),
+			finishScenarioRun: async ({ runId, status, console: output, reason }) =>
+				(await workspacePromise).finishScenarioRun({ runId, status, console: output, reason }),
 			undo: async () => (await workspacePromise).undo(),
 			redo: async () => (await workspacePromise).redo(),
 			addTable: async ({ name, position }) =>

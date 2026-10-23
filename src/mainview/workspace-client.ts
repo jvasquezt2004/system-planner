@@ -17,6 +17,7 @@ import type {
 	ReferentialAction,
 	DesignEnumType,
 	DesignUniqueConstraint,
+	SandboxApiRequest,
 } from "../shared/design";
 import type {
 	AppRPCSchema,
@@ -79,6 +80,15 @@ export const workspaceClient = {
 	},
 	updateScenarioSource(request: { scenarioId: string; source: string }): Promise<WorkspaceState> {
 		return rpc.request.updateScenarioSource(request);
+	},
+	beginScenarioRun(scenarioId: string) {
+		return rpc.request.beginScenarioRun({ scenarioId });
+	},
+	handleSandboxApiRequest(runId: string, request: SandboxApiRequest) {
+		return rpc.request.handleSandboxApiRequest({ runId, request });
+	},
+	finishScenarioRun(input: { runId: string; status: "passed" | "errored"; console: string[]; reason?: "exception" | "stopped" | "timed out" }) {
+		return rpc.request.finishScenarioRun(input);
 	},
 	openProject(projectId: string): Promise<WorkspaceState> {
 		return rpc.request.openProject({ projectId });

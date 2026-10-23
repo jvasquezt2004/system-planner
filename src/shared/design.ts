@@ -16,6 +16,33 @@ export type ProjectSummary = {
 /** Saved TypeScript source managed independently from the design history. */
 export type Scenario = { id: string; name: string; source: string };
 
+export type ScenarioRunStatus = "running" | "passed" | "failed" | "errored";
+export type ScenarioRun = {
+	id: string;
+	status: ScenarioRunStatus;
+	revision: number;
+	stale: boolean;
+	requests: ScenarioRequestLogEntry[];
+	console: string[];
+	reason?: "exception" | "stopped" | "timed out";
+};
+
+export type ScenarioRequestLogEntry = {
+	order: number;
+	method: string;
+	table: string;
+	filters: Record<string, string>;
+	status: number;
+	result: unknown;
+};
+export type SandboxApiRequest = {
+	method: string;
+	path: string;
+	query: string;
+	headers: Record<string, string>;
+	body: string | null;
+};
+export type SandboxApiResponse = { status: number; headers: Record<string, string>; body: unknown };
 export type ScenarioSaveState =
 	| { status: "idle" }
 	| { status: "saving"; revision: number }
@@ -312,6 +339,7 @@ export type WorkspaceState = {
 	sandbox: SandboxState;
 	scenarios: Scenario[];
 	scenarioSave: ScenarioSaveState;
+	scenarioRuns: Record<string, ScenarioRun | null>;
 	/** In-memory undo/redo availability for the currently open project only. */
 	undoRedo: { canUndo: boolean; canRedo: boolean };
 };
