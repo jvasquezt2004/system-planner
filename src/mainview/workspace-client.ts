@@ -23,6 +23,10 @@ import type {
 	DesignUniqueConstraint,
 	RemoveFunctionAction,
 	SandboxApiRequest,
+	CreateEdgeFunctionAction,
+	RenameEdgeFunctionAction,
+	RemoveEdgeFunctionAction,
+	UpdateEdgeFunctionSourceAction,
 } from "../shared/design";
 import type {
 	AppRPCSchema,
@@ -85,6 +89,18 @@ export const workspaceClient = {
 	},
 	updateScenarioSource(request: { scenarioId: string; source: string }): Promise<WorkspaceState> {
 		return rpc.request.updateScenarioSource(request);
+	},
+	createEdgeFunction(action: CreateEdgeFunctionAction): Promise<WorkspaceState> {
+		return rpc.request.createEdgeFunction(action);
+	},
+	renameEdgeFunction(action: RenameEdgeFunctionAction): Promise<WorkspaceState> {
+		return rpc.request.renameEdgeFunction(action);
+	},
+	removeEdgeFunction(action: RemoveEdgeFunctionAction): Promise<WorkspaceState> {
+		return rpc.request.removeEdgeFunction(action);
+	},
+	updateEdgeFunctionSource(action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState> {
+		return rpc.request.updateEdgeFunctionSource(action);
 	},
 	beginScenarioRun(scenarioId: string) {
 		return rpc.request.beginScenarioRun({ scenarioId });

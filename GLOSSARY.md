@@ -24,6 +24,10 @@ and a design change never migrates them. Each scenario starts empty and never
 sees another scenario's records.
 _Avoid_: Seed data, test data, migration
 
+**Edge function**:
+A named TypeScript server handler kept with its Project and invoked by Scenarios.
+_Avoid_: Function (use **Function** for database routines), backend, serverless
+
 **Scenario run**:
 One execution of a scenario, on demand, against its own empty sandbox built
 from a specific design revision. It is stale, never current, once the design

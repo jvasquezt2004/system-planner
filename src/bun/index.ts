@@ -67,6 +67,10 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).removeScenario({ scenarioId }),
 			updateScenarioSource: async ({ scenarioId, source }) =>
 				(await workspacePromise).updateScenarioSource({ scenarioId, source }),
+			createEdgeFunction: async (action) => (await workspacePromise).createEdgeFunction(action),
+			renameEdgeFunction: async (action) => (await workspacePromise).renameEdgeFunction(action),
+			removeEdgeFunction: async (action) => (await workspacePromise).removeEdgeFunction(action),
+			updateEdgeFunctionSource: async (action) => (await workspacePromise).updateEdgeFunctionSource(action),
 			beginScenarioRun: async ({ scenarioId }) =>
 				(await workspacePromise).beginScenarioRun({ scenarioId }),
 			handleSandboxApiRequest: async ({ runId, request }) =>

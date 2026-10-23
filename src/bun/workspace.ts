@@ -54,6 +54,11 @@ import {
 	type RemoveScenarioAction,
 	type UpdateScenarioSourceAction,
 	type Scenario,
+	type EdgeFunction,
+	type CreateEdgeFunctionAction,
+	type RenameEdgeFunctionAction,
+	type RemoveEdgeFunctionAction,
+	type UpdateEdgeFunctionSourceAction,
 	type ScenarioRun,
 	type SandboxAppliedTable,
 	type SandboxApiRequest,
@@ -109,6 +114,10 @@ export interface DesignWorkspace {
 	renameScenario(action: RenameScenarioAction): Promise<WorkspaceState>;
 	removeScenario(action: RemoveScenarioAction): Promise<WorkspaceState>;
 	updateScenarioSource(action: UpdateScenarioSourceAction): Promise<WorkspaceState>;
+	createEdgeFunction(action: CreateEdgeFunctionAction): Promise<WorkspaceState>;
+	renameEdgeFunction(action: RenameEdgeFunctionAction): Promise<WorkspaceState>;
+	removeEdgeFunction(action: RemoveEdgeFunctionAction): Promise<WorkspaceState>;
+	updateEdgeFunctionSource(action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState>;
 	beginScenarioRun(action: { scenarioId: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
@@ -198,6 +207,8 @@ export async function createDesignWorkspace(
 		sandbox: { status: "idle" },
 		scenarios: [],
 		scenarioSave: { status: "idle" },
+		edgeFunctions: [],
+		edgeFunctionSave: { status: "idle" },
 		scenarioRuns: {},
 		undoRedo: { canUndo: false, canRedo: false },
 	};
@@ -205,6 +216,8 @@ export async function createDesignWorkspace(
 	/** Orders every stored document, including layout-only writes. */
 	let documentRevision = 0;
 	let scenarioRevision = 0;
+	let edgeFunctionRevision = 0;
+	let edgeFunctionProjectGeneration = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
 	let activeScenarioRun: {
@@ -487,6 +500,35 @@ export async function createDesignWorkspace(
 		}
 	}
 
+	async function saveEdgeFunctions(projectId: string, edgeFunctions: EdgeFunction[], revision: number, projectGeneration: number) {
+		const savedAt = now();
+		try {
+			await store.saveEdgeFunctions(projectId, edgeFunctions, { revision, savedAt });
+			if (activeProjectId === projectId && edgeFunctionProjectGeneration === projectGeneration && edgeFunctionRevision === revision) {
+				setState({ ...state, projects: store.listProjects(), edgeFunctionSave: { status: "saved", revision, savedAt } });
+			}
+		} catch (error) {
+			if (activeProjectId === projectId && edgeFunctionProjectGeneration === projectGeneration && edgeFunctionRevision === revision) {
+				setState({
+					...state,
+					edgeFunctionSave: {
+						status: "failed",
+						revision,
+						error: error instanceof Error ? error.message : String(error),
+					},
+				});
+			}
+		}
+	}
+
+	function updateEdgeFunctions(projectId: string, update: (items: EdgeFunction[]) => EdgeFunction[]) {
+		const edgeFunctions = update(state.edgeFunctions);
+		const revision = edgeFunctionRevision + 1;
+		edgeFunctionRevision = revision;
+		setState({ ...state, edgeFunctions, edgeFunctionSave: { status: "saving", revision } });
+		return saveEdgeFunctions(projectId, edgeFunctions, revision, edgeFunctionProjectGeneration);
+	}
+
 	function updateScenarios(
 		projectId: string,
 		update: (scenarios: Scenario[]) => Scenario[],
@@ -633,6 +675,7 @@ export async function createDesignWorkspace(
 				await disposeActiveScenarioRun();
 				invalidatePreviewWork();
 				activeProjectId = project.id;
+				edgeFunctionProjectGeneration += 1;
 				documentRevision = revision;
 				scenarioRevision = 0;
 				lastGeneratableSql = null;
@@ -646,6 +689,8 @@ export async function createDesignWorkspace(
 					sandbox: { status: "idle" },
 					scenarios: [],
 					scenarioSave: { status: "idle" },
+					edgeFunctions: [],
+					edgeFunctionSave: { status: "idle" },
 					scenarioRuns: {},
 					undoRedo: getUndoRedoState(project.id),
 				});
@@ -662,7 +707,10 @@ export async function createDesignWorkspace(
 				await disposeActiveScenarioRun();
 				invalidatePreviewWork();
 				activeProjectId = record.project.id;
+				edgeFunctionProjectGeneration += 1;
 				documentRevision = record.documentRevision;
+				const edgeFunctionDocument = store.loadEdgeFunctions(record.project.id);
+				edgeFunctionRevision = Math.max(edgeFunctionRevision, edgeFunctionDocument.revision);
 				scenarioRevision = scenarioDocument.revision;
 				lastGeneratableSql = null;
 				setState({
@@ -687,12 +735,73 @@ export async function createDesignWorkspace(
 									savedAt: scenarioDocument.savedAt,
 								},
 					scenarioRuns: {},
+					edgeFunctions: edgeFunctionDocument.edgeFunctions,
+					edgeFunctionSave:
+						edgeFunctionDocument.savedAt === null
+							? { status: "idle" }
+							: {
+									status: "saved",
+									revision: edgeFunctionDocument.revision,
+									savedAt: edgeFunctionDocument.savedAt,
+								},
 					undoRedo: getUndoRedoState(record.project.id),
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
 					await generateAndApply(record.project.id, record.revision, design, requestId);
 				}
+				return state;
+			});
+		},
+		createEdgeFunction(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const name = requireEdgeFunctionName(action.name);
+				if (state.edgeFunctions.some((item) => item.name === name)) throw new Error(`Edge function “${name}” already exists in this project.`);
+				const edgeFunction: EdgeFunction = {
+					id: createId(),
+					name,
+					source: 'Deno.serve(async (_request) => new Response("OK"));',
+				};
+				await updateEdgeFunctions(projectId, (items) => [...items, edgeFunction]);
+				return state;
+			});
+		},
+		renameEdgeFunction(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const name = requireEdgeFunctionName(action.name);
+				const current = state.edgeFunctions.find((item) => item.id === action.edgeFunctionId);
+				if (!current) throw new Error("That Edge function could not be found.");
+				if (state.edgeFunctions.some((item) => item.id !== current.id && item.name === name)) {
+					throw new Error(`Edge function “${name}” already exists in this project.`);
+				}
+				if (current.name === name) return state;
+				await updateEdgeFunctions(projectId, (items) =>
+					items.map((item) => item.id === current.id ? { ...item, name } : item),
+				);
+				return state;
+			});
+		},
+		removeEdgeFunction(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				if (!state.edgeFunctions.some((item) => item.id === action.edgeFunctionId)) {
+					throw new Error("That Edge function could not be found.");
+				}
+				await updateEdgeFunctions(projectId, (items) => items.filter((item) => item.id !== action.edgeFunctionId));
+				return state;
+			});
+		},
+		updateEdgeFunctionSource(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				const edgeFunction = state.edgeFunctions.find((item) => item.id === action.edgeFunctionId);
+				if (!edgeFunction) throw new Error("That Edge function could not be found.");
+				if (edgeFunction.source === action.source) return state;
+				await updateEdgeFunctions(projectId, (items) =>
+					items.map((item) => item.id === edgeFunction.id ? { ...item, source: action.source } : item),
+				);
 				return state;
 			});
 		},
@@ -2087,4 +2196,12 @@ function samePoint(a: CanvasPoint, b: CanvasPoint): boolean {
 
 function sameViewport(a: CanvasViewport, b: CanvasViewport): boolean {
 	return a.x === b.x && a.y === b.y && a.zoom === b.zoom;
+}
+
+function requireEdgeFunctionName(value: string): string {
+	const name = value.trim();
+	if (!/^[a-z0-9_-]+$/.test(name)) {
+		throw new Error("Edge function names must use lowercase letters, digits, hyphens, or underscores.");
+	}
+	return name;
 }
