@@ -116,6 +116,7 @@ function App() {
 				finishScenarioRun: (action) => workspaceClient.finishScenarioRun(action),
 			},
 			createWorker: () => new Worker(new URL("./scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => new Worker(new URL("./edge-function-worker.ts", import.meta.url), { type: "module" }),
 			timeoutMs: 30_000,
 			getToken: () => projectGeneration.current,
 			onState: receiveWorkspaceState,

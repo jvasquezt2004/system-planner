@@ -72,6 +72,21 @@ export async function handleSandboxApiRequest(
 	relationships: SandboxAppliedRelationship[] = [],
 	functions: DesignFunction[] = [],
 ): Promise<{ response: SandboxApiResponse; entry: Omit<ScenarioRequestLogEntry, "order"> }> {
+	if (request.invocation) {
+		const response = { status: request.invocation.status, headers: { "content-type": "application/json" }, body: request.invocation.response };
+		return {
+			response,
+			entry: {
+				method: "INVOKE",
+				table: `functions/${request.invocation.functionName}`,
+				filters: {},
+				identity: identityFromHeaders(request.headers),
+				status: response.status,
+				result: response.body,
+				invocation: request.invocation,
+			},
+		};
+	}
 	const url = new URL(request.path + (request.query ? `?${request.query}` : ""), "http://sandbox.local");
 	const segments = url.pathname.split("/").filter(Boolean);
 	const tableName = segments.length === 3 && segments[0] === "rest" && segments[1] === "v1"
@@ -342,7 +357,7 @@ export async function handleSandboxApiRequest(
 			};
 		}
 	}
-	return { response, entry: { method: request.method, table, filters, identity, status: response.status, result: response.body } };
+	return { response, entry: { method: request.method, table, filters, identity, status: response.status, result: response.body, ...(request.invocationRef ? { invocationRef: request.invocationRef } : {}) } };
 }
 type RpcTransaction = { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> };
 

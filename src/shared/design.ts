@@ -59,6 +59,8 @@ export type ScenarioRequestLogEntry = {
 	identity: ScenarioIdentity;
 	status: number;
 	result: unknown;
+	invocation?: { functionName: string; status: number; response: unknown };
+	invocationRef?: string;
 };
 export type SandboxApiRequest = {
 	method: string;
@@ -66,6 +68,8 @@ export type SandboxApiRequest = {
 	query: string;
 	headers: Record<string, string>;
 	body: string | null;
+	invocationRef?: string;
+	invocation?: { functionName: string; status: number; response: unknown };
 };
 export type SandboxApiResponse = { status: number; headers: Record<string, string>; body: unknown };
 export type ScenarioSaveState =

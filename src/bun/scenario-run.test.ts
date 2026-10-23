@@ -31,6 +31,7 @@ function scenarioDriverFor(workspace: DesignWorkspace) {
 	return createScenarioRunDriver({
 		workspace,
 		createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+		createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
 		timeoutMs: 30_000,
 	});
 }

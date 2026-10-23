@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import ts from "typescript";
+import { findRuntimeImport } from "./scenario-runtime";
 
 const scope = self as unknown as {
 	onmessage: ((event: MessageEvent) => void) | null;
@@ -14,8 +15,13 @@ const expectations: ExpectationResult[] = [];
 
 scope.onmessage = async (event: MessageEvent) => {
 	const message = event.data as
-		| { type: "start"; runId: string; source: string }
-		| { type: "response"; requestId: string; response: { status: number; headers: Record<string, string>; body: unknown } };
+		| { type: "start"; runId: string; source: string; edgeFunctions: { id: string; name: string; source: string }[] }
+		| { type: "response"; requestId: string; response: { status: number; headers: Record<string, string>; body: unknown } }
+		| { type: "console"; lines: string[] };
+	if (message.type === "console") {
+		output.push(...message.lines);
+		return;
+	}
 	if (message.type === "response") {
 		pending.get(message.requestId)?.(message.response);
 		pending.delete(message.requestId);
@@ -27,15 +33,8 @@ scope.onmessage = async (event: MessageEvent) => {
 	const report = (status: "passed" | "failed" | "errored", reason?: "exception") =>
 		scope.postMessage({ type: "finished", runId, status: status === "passed" && expectations.some((item) => !item.passed) ? "failed" : status, reason, console: output, expectations: [...expectations] });
 	try {
-		const file = ts.createSourceFile("scenario.ts", message.source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
-		const hasRuntimeImport = (node: ts.Node): boolean => {
-			if (ts.isImportDeclaration(node) && !node.importClause?.isTypeOnly) return true;
-			if (ts.isExportDeclaration(node) && Boolean(node.moduleSpecifier) && !node.isTypeOnly) return true;
-			if (ts.isImportEqualsDeclaration(node) && !node.isTypeOnly) return true;
-			if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword) return true;
-			return ts.forEachChild(node, hasRuntimeImport) ?? false;
-		};
-		if (hasRuntimeImport(file)) throw new Error("Scenarios may only import types; runtime imports are not supported.");
+		const importError = findRuntimeImport(message.source, () => false);
+		if (importError) throw new Error("Scenarios may only import types; runtime imports are not supported.");
 		const source = ts.transpileModule(message.source, {
 			reportDiagnostics: true,
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove },
@@ -48,11 +47,15 @@ scope.onmessage = async (event: MessageEvent) => {
 			const body = init?.body ? String(init.body) : null;
 			const { promise, resolve } = Promise.withResolvers<{ status: number; headers: Record<string, string>; body: unknown }>();
 			pending.set(requestId, resolve);
+			const functionRoute = parsed.pathname.startsWith("/functions/v1/");
 			scope.postMessage({
-				type: "request",
+				type: functionRoute ? "invoke" : "request",
 				runId,
 				requestId,
-				request: { method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: parsed.pathname, query: parsed.search.slice(1), headers, body },
+				functionName: functionRoute ? decodeURIComponent(parsed.pathname.slice("/functions/v1/".length)) : undefined,
+				request: functionRoute
+					? { url, method: init?.method ?? (input instanceof Request ? input.method : "GET"), headers, body }
+					: { method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: parsed.pathname, query: parsed.search.slice(1), headers, body },
 			});
 			const response = await promise;
 			return new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
