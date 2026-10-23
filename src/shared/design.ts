@@ -16,6 +16,16 @@ export type ProjectSummary = {
 /** Saved TypeScript source managed independently from the design history. */
 export type Scenario = { id: string; name: string; source: string };
 
+/** Saved TypeScript server handler managed independently from design history. */
+export type EdgeFunction = { id: string; name: string; source: string };
+
+export type EdgeFunctionSaveState = ScenarioSaveState;
+export type CreateEdgeFunctionAction = { name: string };
+export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string };
+export type RemoveEdgeFunctionAction = { edgeFunctionId: string };
+export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string };
+
+
 export type ScenarioExpectationResult = {
 	description: string;
 	passed: boolean;
@@ -403,6 +413,8 @@ export type WorkspaceState = {
 	sql: SqlState;
 	sandbox: SandboxState;
 	scenarios: Scenario[];
+	edgeFunctions: EdgeFunction[];
+	edgeFunctionSave: EdgeFunctionSaveState;
 	scenarioSave: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	/** In-memory undo/redo availability for the currently open project only. */

@@ -20,6 +20,10 @@ import type {
 	RenameScenarioAction,
 	RemoveScenarioAction,
 	UpdateScenarioSourceAction,
+	CreateEdgeFunctionAction,
+	RenameEdgeFunctionAction,
+	RemoveEdgeFunctionAction,
+	UpdateEdgeFunctionSourceAction,
 	DisplayedSqlPreview,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
@@ -62,6 +66,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			renameScenario: { params: RenameScenarioAction; response: WorkspaceState };
 			removeScenario: { params: RemoveScenarioAction; response: WorkspaceState };
 			updateScenarioSource: { params: UpdateScenarioSourceAction; response: WorkspaceState };
+			createEdgeFunction: { params: CreateEdgeFunctionAction; response: WorkspaceState };
+			renameEdgeFunction: { params: RenameEdgeFunctionAction; response: WorkspaceState };
+			removeEdgeFunction: { params: RemoveEdgeFunctionAction; response: WorkspaceState };
+			updateEdgeFunctionSource: { params: UpdateEdgeFunctionSourceAction; response: WorkspaceState };
 			beginScenarioRun: { params: { scenarioId: string }; response: { runId: string; state: WorkspaceState } };
 			handleSandboxApiRequest: { params: { runId: string; request: SandboxApiRequest }; response: SandboxApiResponse };
 			finishScenarioRun: { params: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };

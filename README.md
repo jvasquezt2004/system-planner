@@ -39,13 +39,14 @@ generated SQL and sandbox check live in the SQL preview view, switched in place
 of the canvas by the masthead. The project-level Functions and Triggers views
 author PostgreSQL routines and table event rules; trigger effects execute in
 Scenario runs, and removal confirmations list dependent Triggers. ORM schemas
-name omitted trigger logic. The masthead also opens Scenarios, where each
-project keeps named TypeScript source and disposable Scenario runs separately
-from design undo/redo. The bundled Monaco editor uses the TypeScript language
-service and types generated from the last successfully applied revision;
-diagnostics are warnings and never prevent a run. Scenario names and source
-autosave with visible save status. The SQL preview includes Copy SQL, export,
-and the last successful sandbox when the current draft is not yet accepted.
+name omitted trigger logic. The masthead also opens Scenarios and Edge
+functions: projects keep named TypeScript client scenarios and server handlers
+as saved content, independently of design undo/redo. The bundled Monaco editors
+use the TypeScript language service and declarations generated from the last
+successfully applied revision; diagnostics are warnings and never prevent
+editing. Scenario and Edge function names and source autosave with visible save
+status. The SQL preview includes Copy SQL, export, and the last successful
+sandbox when the current draft is not yet accepted.
 Undo and Redo buttons sit in the masthead next to the project name and revision
 (`undo-button` and `redo-button`).
 
@@ -62,7 +63,8 @@ bunx tsc --noEmit      # typecheck
 
 ## Architecture
 
-- `src/shared/design.ts` — domain vocabulary and observable workspace state.
+- `src/shared/design.ts` — domain vocabulary and observable workspace state,
+  including Scenarios and Edge functions as project content.
 - `src/shared/column-types.ts` — the shared registry of supported PostgreSQL
   types and type families used by the picker, validation, SQL, and sandbox.
 - `src/shared/column-defaults.ts` — the structured default vocabulary, literal
@@ -75,7 +77,8 @@ bunx tsc --noEmit      # typecheck
 - `src/bun/workspace.ts` — the public design workspace interface used by the
   React view and behavioral tests. Autosave, SQL generation, and sandbox
   orchestration stay behind it.
-- `src/bun/store.ts` — atomic local SQLite persistence (one design per project).
+- `src/bun/store.ts` — atomic local SQLite persistence for each project's
+  design, Scenarios, and Edge functions.
 - `src/bun/sql.ts` — one-way PostgreSQL SQL generation with explicit errors for
   incomplete designs.
 - `src/bun/sandbox.ts` — disposable PGlite preview and catalog inspection.
@@ -87,6 +90,8 @@ bunx tsc --noEmit      # typecheck
   canvas: generated SQL with copy, plus the sandbox result.
 - `src/mainview/scenario-view.tsx` — saved Scenario list and editor for names
   and TypeScript source, with independent save status.
+- `src/mainview/edge-functions-view.tsx` — saved Edge function list and Monaco
+  editor with Deno and supabase-js declarations, independent of design history.
 - `src/mainview/index.css` — the editorial design tokens (paper, ink, rules,
   the blue-pencil accent, status colours) mapped onto shadcn/ui's slots.
 - `src/mainview/components/ui/` — shadcn/ui components (Radix-based),

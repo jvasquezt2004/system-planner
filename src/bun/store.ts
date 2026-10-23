@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Design, ProjectSummary } from "../shared/design";
+import type { Design, EdgeFunction, ProjectSummary } from "../shared/design";
 
 /**
  * A write of one stored design document. `revision` counts structural schema
@@ -27,7 +27,7 @@ export interface ProjectRecord {
  * scenarios. Each design is written atomically so a partial save is never read
  * as complete.
  */
-export interface DesignStore extends ScenarioStore {
+export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
 	createProject(project: ProjectSummary, design: Design, save: DesignSave): void | Promise<void>;
 	saveDesign(projectId: string, design: Design, save: DesignSave): void | Promise<void>;
@@ -57,6 +57,22 @@ export interface ScenarioStore {
 		save: ScenarioSave,
 	): void | Promise<void>;
 }
+
+export interface EdgeFunctionStore {
+	loadEdgeFunctions(projectId: string): EdgeFunctionDocumentRecord;
+	saveEdgeFunctions(
+		projectId: string,
+		edgeFunctions: EdgeFunction[],
+		save: ScenarioSave,
+	): void | Promise<void>;
+}
+
+export type EdgeFunctionDocumentRecord = {
+	edgeFunctions: EdgeFunction[];
+	revision: number;
+	savedAt: number | null;
+};
+
 
 
 type ProjectRow = {
@@ -101,6 +117,22 @@ const SCHEMA = `
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS edge_functions (
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		id TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		name TEXT NOT NULL,
+		source TEXT NOT NULL,
+		PRIMARY KEY (project_id, id),
+		UNIQUE (project_id, name)
+	);
+
+	CREATE TABLE IF NOT EXISTS edge_function_documents (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		revision INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	);
 `;
 
 export function openDesignStore(databasePath: string): DesignStore {
@@ -135,6 +167,37 @@ export function openDesignStore(databasePath: string): DesignStore {
 				insertScenario.run(projectId, scenario.id, position, scenario.name, scenario.source),
 			);
 			upsertScenarioRevision.run(projectId, save.revision, save.savedAt);
+			touchProject.run(save.savedAt, projectId);
+		},
+	);
+
+	const listEdgeFunctions = database.query<EdgeFunction, [string]>(
+		`SELECT id, name, source FROM edge_functions WHERE project_id = ? ORDER BY position ASC`,
+	);
+	const selectEdgeFunctionDocument = database.query<{ revision: number; updated_at: number }, [string]>(
+		`SELECT revision, updated_at FROM edge_function_documents WHERE project_id = ?`,
+	);
+	const selectEdgeFunctionRevision = database.query<{ revision: number }, [string]>(
+		`SELECT revision FROM edge_function_documents WHERE project_id = ?`,
+	);
+	const deleteEdgeFunctions = database.query(`DELETE FROM edge_functions WHERE project_id = ?`);
+	const insertEdgeFunction = database.query(
+		`INSERT INTO edge_functions (project_id, id, position, name, source) VALUES (?, ?, ?, ?, ?)`,
+	);
+	const upsertEdgeFunctionRevision = database.query(
+		`INSERT INTO edge_function_documents (project_id, revision, updated_at) VALUES (?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+		 WHERE edge_function_documents.revision < excluded.revision`,
+	);
+	const saveEdgeFunctionsTransaction = database.transaction(
+		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave) => {
+			const current = selectEdgeFunctionRevision.get(projectId);
+			if (current && current.revision >= save.revision) return;
+			deleteEdgeFunctions.run(projectId);
+			edgeFunctions.forEach((edgeFunction, position) =>
+				insertEdgeFunction.run(projectId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+			);
+			upsertEdgeFunctionRevision.run(projectId, save.revision, save.savedAt);
 			touchProject.run(save.savedAt, projectId);
 		},
 	);
@@ -223,6 +286,17 @@ export function openDesignStore(databasePath: string): DesignStore {
 		},
 		saveScenarios(projectId, scenarios, save) {
 			saveScenariosTransaction(projectId, scenarios, save);
+		},
+		loadEdgeFunctions(projectId) {
+			const document = selectEdgeFunctionDocument.get(projectId);
+			return {
+				edgeFunctions: listEdgeFunctions.all(projectId),
+				revision: document?.revision ?? 0,
+				savedAt: document?.updated_at ?? null,
+			};
+		},
+		saveEdgeFunctions(projectId, edgeFunctions, save) {
+			saveEdgeFunctionsTransaction(projectId, edgeFunctions, save);
 		},
 		close() {
 			database.close();

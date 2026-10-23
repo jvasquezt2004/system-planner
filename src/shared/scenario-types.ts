@@ -111,7 +111,9 @@ export function generateScenarioDatabaseTypes(
 	});
 	return `type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
-export interface Database {
+import type { SupabaseClient } from "@supabase/supabase-js";
+declare global {
+  interface Database {
   public: {
     Tables: {
 ${tableEntries.join("\n")}
@@ -125,9 +127,8 @@ ${enumEntries.join("\n")}
     };
     CompositeTypes: Record<string, never>;
   };
+  }
 }
-
-import type { SupabaseClient } from "@supabase/supabase-js";
 declare global {
   const supabase: SupabaseClient<Database>;
   function asUser(userId: string, claims?: Record<string, unknown>): SupabaseClient<Database>;

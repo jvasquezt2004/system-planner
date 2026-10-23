@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
@@ -59,11 +59,12 @@ import { workspaceClient } from "./workspace-client";
 import { ScenarioView } from "./scenario-view";
 import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
+import { EdgeFunctionsView } from "./edge-functions-view";
 
 type RunAllOperation = { projectId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios" | "functions" | "triggers";
+type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -175,7 +176,7 @@ function App() {
 		}
 	}, []);
 
-	const applyScenario = useCallback(
+	const applySavedContent = useCallback(
 		async (action: () => Promise<WorkspaceState>) => {
 			const requestProjectId = state?.project?.id;
 			try {
@@ -639,20 +640,40 @@ function App() {
 								onRun={(scenario) => void runSingleScenario(scenario)}
 								onStop={stopScenario}
 								onCreate={(name) =>
-									void applyScenario(() => workspaceClient.createScenario({ name }))
+									void applySavedContent(() => workspaceClient.createScenario({ name }))
 								}
 								onRename={(scenarioId, name) =>
-									void applyScenario(() =>
+									void applySavedContent(() =>
 										workspaceClient.renameScenario({ scenarioId, name }),
 									)
 								}
 								onRemove={(scenarioId) =>
-									void applyScenario(() => workspaceClient.removeScenario({ scenarioId }))
+									void applySavedContent(() => workspaceClient.removeScenario({ scenarioId }))
 								}
 								onUpdateSource={(scenarioId, source) =>
-									void applyScenario(() =>
+									void applySavedContent(() =>
 										workspaceClient.updateScenarioSource({ scenarioId, source }),
 									)
+								}
+							/>
+						)}
+						{view === "edge-functions" && (
+							<EdgeFunctionsView
+								key={state.project.id}
+								edgeFunctions={state.edgeFunctions}
+								save={state.edgeFunctionSave}
+								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
+								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
+								appliedFunctions={getLastAppliedSandbox(state.sandbox)?.functions ?? []}
+								onCreate={(name) => void applySavedContent(() => workspaceClient.createEdgeFunction({ name }))}
+								onRename={(edgeFunctionId, name) =>
+									void applySavedContent(() => workspaceClient.renameEdgeFunction({ edgeFunctionId, name }))
+								}
+								onRemove={(edgeFunctionId) =>
+									void applySavedContent(() => workspaceClient.removeEdgeFunction({ edgeFunctionId }))
+								}
+								onUpdateSource={(edgeFunctionId, source) =>
+									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source }))
 								}
 							/>
 						)}
@@ -907,7 +928,7 @@ function Masthead({
 					value={project ? view : ""}
 					disabled={!project}
 					onValueChange={(next) => {
-						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "functions" || next === "triggers") onViewChange(next);
+						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "edge-functions" || next === "functions" || next === "triggers") onViewChange(next);
 					}}
 				>
 					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
@@ -921,6 +942,10 @@ function Masthead({
 					<ToggleGroupItem value="scenarios" data-testid="view-scenarios" className="h-7 px-3">
 						<ScrollText />
 						Scenarios
+					</ToggleGroupItem>
+					<ToggleGroupItem value="edge-functions" data-testid="view-edge-functions" className="h-7 px-3">
+						<Server />
+						Edge functions
 					</ToggleGroupItem>
 					<ToggleGroupItem value="functions" data-testid="view-functions" className="h-7 px-3">
 						<Braces />

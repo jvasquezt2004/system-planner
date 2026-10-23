@@ -83,6 +83,35 @@ function createDelayedScenarioStore(
 	};
 }
 
+function createDelayedEdgeFunctionStore(
+	databasePath: string,
+	waitBeforeSave: (projectId: string, revision: number) => Promise<void>,
+): DesignStore {
+	const store = openDesignStore(databasePath);
+	return {
+		...store,
+		async saveEdgeFunctions(projectId, edgeFunctions, save) {
+			await waitBeforeSave(projectId, save.revision);
+			store.saveEdgeFunctions(projectId, edgeFunctions, save);
+		},
+	};
+}
+
+function createFailingEdgeFunctionStore(databasePath: string): DesignStore {
+	const store = openDesignStore(databasePath);
+	let fail = true;
+	return {
+		...store,
+		saveEdgeFunctions(projectId, edgeFunctions, save) {
+			if (fail) {
+				fail = false;
+				throw new Error("SQLite write denied");
+			}
+			store.saveEdgeFunctions(projectId, edgeFunctions, save);
+		},
+	};
+}
+
 afterEach(async () => {
 	for (const workspace of openWorkspaces.splice(0)) {
 		await workspace.close();
@@ -201,6 +230,138 @@ describe("design workspace", () => {
 			status: "saved",
 			revision: 5,
 		});
+	});
+	test("persists ordered Edge functions independently with Supabase slugs and reopens them", async () => {
+		const { workspace, databasePath } = await openTestWorkspace();
+		const project = await workspace.createProject({ name: "Library" });
+		const projectId = project.project?.id;
+		if (!projectId) throw new Error("Expected a created project.");
+		await workspace.addTable({ name: "Books" });
+		const designState = workspace.getState();
+
+		const created = await workspace.createEdgeFunction({ name: "place-order" });
+		const edgeFunction = created.edgeFunctions[0];
+		if (!edgeFunction) throw new Error("Expected an Edge function.");
+		expect(edgeFunction).toMatchObject({
+			name: "place-order",
+			source: 'Deno.serve(async (_request) => new Response("OK"));',
+		});
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: edgeFunction.id,
+			source: "Deno.serve(async () => new Response('placed'));",
+		});
+		await workspace.renameEdgeFunction({ edgeFunctionId: edgeFunction.id, name: "place_order2" });
+		const second = await workspace.createEdgeFunction({ name: "cancel-order" });
+		const secondId = second.edgeFunctions[1]!.id;
+		await expect(workspace.renameEdgeFunction({ edgeFunctionId: secondId, name: "place_order2" })).rejects.toThrow("already exists");
+		await workspace.removeEdgeFunction({ edgeFunctionId: secondId });
+
+		expect(workspace.getState().edgeFunctions).toEqual([
+			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));" },
+		]);
+		expect(workspace.getState().edgeFunctionSave.status).toBe("saved");
+		expect(workspace.getState().revision).toBe(designState.revision);
+		expect(workspace.getState().undoRedo).toEqual(designState.undoRedo);
+		expect(workspace.getState().sandbox).toEqual(designState.sandbox);
+		expect(workspace.getState().sql).toEqual(designState.sql);
+		await expect(workspace.createEdgeFunction({ name: "Not-a-slug" })).rejects.toThrow("lowercase letters, digits, hyphens, or underscores");
+		await expect(workspace.createEdgeFunction({ name: "place_order2" })).rejects.toThrow("already exists");
+
+		await closeTestWorkspace(workspace);
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId });
+		expect(reopened.getState().edgeFunctions).toEqual([
+			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));" },
+		]);
+		expect(reopened.getState().edgeFunctionSave.status).toBe("saved");
+	});
+	test("shows Edge function save failures and recovers on the next edit", async () => {
+		const { workspace } = await openTestWorkspace({
+			openStore: createFailingEdgeFunctionStore,
+		});
+		await workspace.createProject({ name: "Library" });
+		const failed = await workspace.createEdgeFunction({ name: "place-order" });
+		expect(failed.edgeFunctionSave).toMatchObject({ status: "failed", error: "SQLite write denied" });
+		const edgeFunction = failed.edgeFunctions[0];
+		if (!edgeFunction) throw new Error("Expected unsaved Edge function draft.");
+		const saved = await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: edgeFunction.id,
+			source: "Deno.serve(() => new Response('recovered'));",
+		});
+		expect(saved.edgeFunctionSave.status).toBe("saved");
+		expect(saved.edgeFunctions[0]?.source).toBe("Deno.serve(() => new Response('recovered'));");
+	});
+
+	test("ignores stale and cross-project Edge function save completions", async () => {
+		const oldSaveStarted = Promise.withResolvers<void>();
+		const releaseOldSave = Promise.withResolvers<void>();
+		let projectAId: string | null = null;
+		const { workspace, databasePath } = await openTestWorkspace({
+			openStore: (path) => createDelayedEdgeFunctionStore(path, async (projectId, revision) => {
+				if (projectId === projectAId && revision === 1) {
+					oldSaveStarted.resolve();
+					await releaseOldSave.promise;
+				}
+			}),
+		});
+		const projectA = await workspace.createProject({ name: "Project A" });
+		projectAId = projectA.project?.id ?? null;
+		if (!projectAId) throw new Error("Expected Project A to be created.");
+
+		const staleSave = workspace.createEdgeFunction({ name: "older" });
+		await oldSaveStarted.promise;
+		const projectB = await workspace.createProject({ name: "Project B" });
+		const projectBId = projectB.project?.id;
+		if (!projectBId) throw new Error("Expected Project B to be created.");
+		await workspace.createEdgeFunction({ name: "other-project" });
+
+		await workspace.openProject({ projectId: projectAId });
+		const latest = await workspace.createEdgeFunction({ name: "newer" });
+		expect(latest.edgeFunctionSave.status).toBe("saved");
+		releaseOldSave.resolve();
+		await staleSave;
+		expect(workspace.getState().edgeFunctions.map(({ name }) => name)).toEqual(["newer"]);
+
+		await workspace.openProject({ projectId: projectBId });
+		expect(workspace.getState().edgeFunctions.map(({ name }) => name)).toEqual(["other-project"]);
+		await closeTestWorkspace(workspace);
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId: projectBId });
+		expect(reopened.getState().edgeFunctions.map(({ name }) => name)).toEqual(["other-project"]);
+	});
+	test("ignores a delayed Edge function save after reopening the same project", async () => {
+		const saveStarted = Promise.withResolvers<void>();
+		const releaseSave = Promise.withResolvers<void>();
+		let projectId: string | null = null;
+		const { workspace, databasePath } = await openTestWorkspace({
+			openStore: (path) => createDelayedEdgeFunctionStore(path, async (savedProjectId, revision) => {
+				if (savedProjectId === projectId && revision === 1) {
+					saveStarted.resolve();
+					await releaseSave.promise;
+				}
+			}),
+		});
+		const project = await workspace.createProject({ name: "Library" });
+		projectId = project.project?.id ?? null;
+		if (!projectId) throw new Error("Expected a created project.");
+
+		const delayedSave = workspace.createEdgeFunction({ name: "late-save" });
+		await saveStarted.promise;
+		await workspace.createProject({ name: "Another project" });
+		await workspace.openProject({ projectId });
+		expect(workspace.getState().edgeFunctions).toEqual([]);
+		expect(workspace.getState().edgeFunctionSave.status).toBe("idle");
+
+		releaseSave.resolve();
+		await delayedSave;
+		expect(workspace.getState().edgeFunctions).toEqual([]);
+		expect(workspace.getState().edgeFunctionSave.status).toBe("idle");
+		await closeTestWorkspace(workspace);
+
+		const reopened = await reopenTestWorkspace(databasePath);
+		await reopened.openProject({ projectId });
+		expect(reopened.getState().edgeFunctions.map(({ name }) => name)).toEqual(["late-save"]);
 	});
 	test("keeps scenarios isolated between projects across switching and reopening", async () => {
 		const { workspace, databasePath } = await openTestWorkspace();
