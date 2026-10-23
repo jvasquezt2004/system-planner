@@ -632,4 +632,65 @@ describe("Scenario runs", () => {
 		}
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 30_000);
+	test("exact counts include filtered totals across pagination, HEAD, empty results, writes, and RLS", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
+		if (!table) throw new Error("Expected Books table.");
+		await workspace.addColumn({ tableId: table.id, name: "owner_id", type: "uuid" });
+		await workspace.updatePolicies({
+			tableId: table.id,
+			rowLevelSecurity: true,
+			policies: [{
+				id: "own-books", name: "own_books", command: "ALL", roles: ["authenticated"],
+				mode: "permissive", using: "owner_id = auth.uid()", withCheck: "owner_id = auth.uid()",
+			}],
+		});
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const aliceId = "11111111-1111-4111-8111-111111111111";
+		const alice = clientFor(workspace, runId, { identity: { role: "authenticated", sub: aliceId } });
+		const inserted = await alice.from("Books").insert([
+			{ title: "One", owner_id: aliceId },
+			{ title: "Two", owner_id: aliceId },
+		]).select("*");
+		expect(inserted.error).toBeNull();
+		const filtered = await alice.from("Books").select("*", { count: "exact" }).eq("owner_id", aliceId);
+		expect(filtered.count).toBe(2);
+		expect(filtered.data).toHaveLength(2);
+		expect(filtered.status).toBe(200);
+
+		const ranged = await alice.from("Books").select("*", { count: "exact" }).eq("owner_id", aliceId).order("id").range(1, 1);
+		expect(ranged.data).toEqual([{ id: 2, title: "Two", owner_id: aliceId }]);
+		expect(ranged.count).toBe(2);
+		expect(ranged.status).toBe(206);
+
+		const limited = await alice.from("Books").select("*", { count: "exact" }).eq("owner_id", aliceId).order("id").limit(1);
+		expect(limited.data).toEqual([{ id: 1, title: "One", owner_id: aliceId }]);
+		expect(limited.count).toBe(2);
+		expect(limited.status).toBe(206);
+
+		const head = await alice.from("Books").select("*", { count: "exact", head: true }).eq("owner_id", aliceId);
+		expect(head.data).toBeNull();
+		expect(head.count).toBe(2);
+		expect(head.status).toBe(200);
+
+		const emptyResponses: Response[] = [];
+		const emptyClient = clientFor(workspace, runId, { responses: emptyResponses, identity: { role: "authenticated", sub: aliceId } });
+		const empty = await emptyClient.from("Books").select("*", { count: "exact" }).eq("owner_id", "22222222-2222-4222-8222-222222222222");
+		expect(empty.data).toEqual([]);
+		expect(empty.count).toBe(0);
+		expect(emptyResponses[0]?.headers.get("content-range")).toBe("*/0");
+		const anonymous = clientFor(workspace, runId);
+		const hidden = await anonymous.from("Books").select("*", { count: "exact" });
+		expect(hidden.data).toEqual([]);
+		expect(hidden.count).toBe(0);
+		expect(empty.status).toBe(200);
+
+		const write = await alice.from("Books").update({ title: "Changed" }, { count: "exact" }).eq("owner_id", aliceId);
+		expect(write.count).toBe(2);
+		const responses: Response[] = [];
+		const capture = clientFor(workspace, runId, { responses, identity: { role: "authenticated", sub: aliceId } });
+		await capture.from("Books").select("*", { count: "exact" }).eq("owner_id", aliceId).range(1, 1);
+		expect(responses[0]?.headers.get("content-range")).toBe("1-1/2");
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 });

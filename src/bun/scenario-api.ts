@@ -87,15 +87,18 @@ export async function handleSandboxApiRequest(
 			const preferences = (request.headers.prefer ?? "").split(",").map((value) => value.trim()).filter(Boolean);
 			let transactionResponse: SandboxApiResponse | null = null;
 			if (request.method === "GET" || request.method === "HEAD") {
-				if (request.method === "HEAD") throw unsupported("HEAD requests");
 				const accept = request.headers.accept ?? "application/json";
-				if (preferences.length > 0) {
-					if (preferences.some((preference) => preference.startsWith("count="))) throw unsupported("row counts");
+				const countPreferences = preferences.filter((preference) => preference.startsWith("count="));
+				if (countPreferences.some((preference) => preference !== "count=exact")) {
+					throw unsupported("planned and estimated row counts");
+				}
+				if (preferences.some((preference) => !preference.startsWith("count="))) {
 					throw unsupported("Prefer options on reads");
 				}
 				if (!accept.includes("application/json") && !accept.includes("vnd.pgrst.object")) {
 					throw unsupported(accept.includes("csv") ? "CSV responses" : accept.includes("plan") ? "explain responses" : "response media type");
 				}
+				const exactCount = countPreferences.includes("count=exact");
 				const selected = select === null ? [...columns] : parseSelection(select, columns);
 				const params: unknown[] = [...selected];
 				const where: string[] = [];
@@ -143,21 +146,38 @@ export async function handleSandboxApiRequest(
 					limit === null ? "" : `LIMIT ${limit}`,
 					offset ? `OFFSET ${offset}` : "",
 				].filter(Boolean).join(" ");
+				const filterParams = params.slice(selected.length);
+				const countWhere = where.map((part) =>
+					part.replace(/\$(\d+)/g, (_, index: string) => `$${Number(index) - selected.length}`),
+				);
+				const total = exactCount
+					? Number((await transaction.query<{ total: number }>(
+						`SELECT count(*)::int AS total FROM ${quoteIdentifier(tableName)}${countWhere.length ? ` WHERE ${countWhere.join(" AND ")}` : ""}`,
+						filterParams,
+					)).rows[0]?.total ?? 0)
+					: null;
 				const result = await transaction.query<{ result: unknown }>(sql, params);
 				const records = result.rows.map((row) => row.result);
 				const start = offset;
 				const end = records.length ? start + records.length - 1 : start;
-				const contentRange = records.length ? `${start}-${end}/*` : "*/*";
-				if (request.headers.accept?.includes("vnd.pgrst.object")) {
+				const contentRange = total === null
+					? records.length ? `${start}-${end}/*` : "*/*"
+					: records.length ? `${start}-${end}/${total}` : `*/${total}`;
+				const partial = total !== null && (start > 0 || total > records.length);
+				const responseHeaders = {
+					"content-type": accept.includes("vnd.pgrst.object") ? "application/vnd.pgrst.object+json" : "application/json",
+					"content-range": contentRange,
+				};
+				if (accept.includes("vnd.pgrst.object")) {
 					if (records.length !== 1) {
 						throw new PostgrestError("PGRST116", "JSON object requested, multiple (or no) rows returned", `The result contains ${records.length} rows`);
 					}
-					transactionResponse = { status: 200, headers: { "content-type": "application/vnd.pgrst.object+json", "content-range": contentRange }, body: records[0] };
+					transactionResponse = { status: partial ? 206 : 200, headers: responseHeaders, body: records[0] };
 				} else {
 					transactionResponse = {
-						status: 200,
-						headers: { "content-type": "application/json", "content-range": contentRange },
-						body: records,
+						status: partial ? 206 : 200,
+						headers: responseHeaders,
+						body: request.method === "HEAD" ? null : records,
 					};
 				}
 			} else if (request.method === "POST" || request.method === "PATCH" || request.method === "DELETE") {
@@ -166,6 +186,11 @@ export async function handleSandboxApiRequest(
 				)) {
 					throw unsupported("write query options");
 				}
+				const countPreferences = preferences.filter((preference) => preference.startsWith("count="));
+				if (countPreferences.some((preference) => preference !== "count=exact")) {
+					throw unsupported("planned and estimated row counts");
+				}
+				const exactCount = countPreferences.includes("count=exact");
 				const selected = select === null ? [...columns] : parseSelection(select, columns);
 				const returnPreference = preferences.find((value) => value.startsWith("return="))?.slice(7) ?? "minimal";
 				if (preferences.some((value) => value.startsWith("return=") && value !== "return=minimal" && value !== "return=representation")) {
@@ -215,13 +240,13 @@ export async function handleSandboxApiRequest(
 							: ` ON CONFLICT (${target.map(quoteIdentifier).join(", ")}) DO UPDATE SET ${fields.filter((field) => !target.includes(field)).map((field) => `${quoteIdentifier(field)} = EXCLUDED.${quoteIdentifier(field)}`).join(", ") || `${quoteIdentifier(target[0]!)} = EXCLUDED.${quoteIdentifier(target[0]!)}`}`;
 					}
 					const statement = `INSERT INTO ${quoteIdentifier(tableName)} (${names}) VALUES ${values}${conflict}`;
-					if (representation) {
-						const result = await queryWriteRepresentation(transaction, statement, selected, params);
-						transactionResponse = writeResponse(201, result, true);
-					} else {
-						await transaction.query(statement, params);
-						transactionResponse = writeResponse(201, null, false);
-					}
+					const result = representation
+						? await queryWriteRepresentation(transaction, statement, selected, params)
+						: null;
+					const count = exactCount
+						? result?.length ?? await queryWriteCount(transaction, statement, params)
+						: null;
+					transactionResponse = writeResponse(201, result, representation, count);
 				} else {
 					if (!where.length) throw unsupported("update or delete without filters");
 					const clause = ` WHERE ${where.join(" AND ")}`;
@@ -234,25 +259,24 @@ export async function handleSandboxApiRequest(
 						const assignments = entries.map(([field], index) => `${quoteIdentifier(field)} = $${index + 1}`).join(", ");
 						const filters = where.map((part) => part.replace(/\$(\d+)/g, (_, n: string) => `$${Number(n) + params.length}`));
 						const statement = `UPDATE ${quoteIdentifier(tableName)} SET ${assignments} WHERE ${filters.join(" AND ")}`;
-						if (representation) {
-							const result = await queryWriteRepresentation(transaction, statement, selected, [...params, ...filterParams]);
-							transactionResponse = writeResponse(200, result, true);
-						} else {
-							await transaction.query(statement, [...params, ...filterParams]);
-							transactionResponse = writeResponse(200, null, false);
-						}
+						const result = representation
+							? await queryWriteRepresentation(transaction, statement, selected, [...params, ...filterParams])
+							: null;
+						const count = exactCount
+							? result?.length ?? await queryWriteCount(transaction, statement, [...params, ...filterParams])
+							: null;
+						transactionResponse = writeResponse(200, result, representation, count);
 					} else {
 						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
-						if (representation) {
-							const result = await queryWriteRepresentation(transaction, statement, selected, filterParams);
-							transactionResponse = writeResponse(200, result, true);
-						} else {
-							await transaction.query(statement, filterParams);
-							transactionResponse = writeResponse(200, null, false);
-						}
+						const result = representation
+							? await queryWriteRepresentation(transaction, statement, selected, filterParams)
+							: null;
+						const count = exactCount
+							? result?.length ?? await queryWriteCount(transaction, statement, filterParams)
+							: null;
+						transactionResponse = writeResponse(200, result, representation, count);
 					}
-				}
-				if (!representation && request.method !== "POST") transactionResponse.status = 204;
+					}
 			} else {
 				throw unsupported(`HTTP ${request.method}`);
 			}
@@ -336,12 +360,23 @@ async function queryWriteRepresentation(
 	return result.rows.map((row) => row.result);
 }
 
-function writeResponse(status: number, rows: unknown[] | null, representation: boolean): SandboxApiResponse {
-	return {
-		status,
-		headers: representation ? { "content-type": "application/json" } : {},
-		body: representation ? rows ?? [] : null,
-	};
+async function queryWriteCount(
+	transaction: { query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> },
+	statement: string,
+	params: unknown[],
+): Promise<number> {
+	const result = await transaction.query<{ total: number }>(
+		`WITH written AS (${statement} RETURNING *) SELECT count(*)::int AS total FROM written`,
+		params,
+	);
+	return Number(result.rows[0]?.total ?? 0);
+}
+
+function writeResponse(status: number, rows: unknown[] | null, representation: boolean, count: number | null): SandboxApiResponse {
+	const headers: Record<string, string> = {};
+	if (representation) headers["content-type"] = "application/json";
+	if (count !== null) headers["content-range"] = rows?.length ? `0-${rows.length - 1}/${count}` : `*/${count}`;
+	return { status, headers, body: representation ? rows ?? [] : null };
 }
 
 function parseFilter(column: string, expression: string, params: unknown[]): string {
