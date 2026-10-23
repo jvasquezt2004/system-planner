@@ -567,6 +567,7 @@ export type AddRelationshipAction = {
 	/** Canvas placement for the visible junction created by many-to-many. */
 	junctionPosition?: CanvasPoint;
 };
+/** An omitted property keeps its current value. */
 export type UpdateRelationshipAction = {
 	relationshipId: string;
 	required?: boolean;

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
+import { generateDesignSql } from "./sql";
 
 const workspaces: DesignWorkspace[] = [];
 const directories: string[] = [];
@@ -126,5 +127,66 @@ describe("project Functions", () => {
 		workspaces.splice(workspaces.indexOf(workspace), 1);
 		const reopened = await openWorkspace(path);
 		expect(reopened.getState().design?.triggers).toEqual([]);
+	}, 60_000);
+	test("confirmed table removal removes its dependent Trigger, and undo restores valid SQL", async () => {
+		const workspace = await openWorkspace();
+		await workspace.createProject({ name: "Table trigger removal" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = withTable.design!.tables[0]!;
+		await workspace.addTable({ name: "Authors" });
+		await workspace.updateFunctions({ functions: [{
+			id: "table-handler", name: "table_handler", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN NEW; END;",
+		}] });
+		const trigger = {
+			id: "table-trigger", name: "books_insert", tableId: table.id, timing: "AFTER" as const,
+			events: [{ event: "INSERT" as const }], level: "ROW" as const, functionId: "table-handler", when: "",
+		};
+		await workspace.updateTriggers({ triggers: [trigger] });
+		expect(workspace.describeRemoval({ kind: "table", tableId: table.id }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		const removed = await workspace.removeTable({ tableId: table.id, confirmed: true });
+		expect(removed.design?.triggers).toEqual([]);
+		expect(removed.sql).toMatchObject({ status: "current" });
+		const undone = await workspace.undo();
+		expect(undone.design?.triggers).toEqual([trigger]);
+		expect(undone.sql.status).toBe("current");
+	}, 60_000);
+
+	test("confirmed column removal drops an empty UPDATE OF filter and undo restores it", async () => {
+		const workspace = await openWorkspace();
+		await workspace.createProject({ name: "Column trigger removal" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = withTable.design!.tables[0]!;
+		const withColumn = await workspace.addColumn({ tableId: table.id, name: "title", type: "text" });
+		const title = withColumn.design!.tables[0]!.columns.find((column) => column.name === "title")!;
+		await workspace.updateFunctions({ functions: [{
+			id: "column-handler", name: "column_handler", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN NEW; END;",
+		}] });
+		const trigger = {
+			id: "column-trigger", name: "books_title_update", tableId: table.id, timing: "AFTER" as const,
+			events: [{ event: "UPDATE" as const, columnIds: [title.id] }], level: "ROW" as const,
+			functionId: "column-handler", when: "",
+		};
+		await workspace.updateTriggers({ triggers: [trigger] });
+		const invalidDesign = {
+			...workspace.getState().design!,
+			triggers: [{ ...trigger, events: [{ event: "UPDATE" as const, columnIds: ["missing-column"] }] }],
+		};
+		const invalidSql = generateDesignSql(invalidDesign);
+		expect(invalidSql).toMatchObject({ ok: false });
+		if (invalidSql.ok) throw new Error("Expected SQL validation to reject the missing trigger column.");
+		expect(invalidSql.errors).toContainEqual(expect.stringContaining('Trigger "books_title_update" references a column'));
+		expect(workspace.describeRemoval({ kind: "column", tableId: table.id, columnId: title.id }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		const removed = await workspace.removeColumn({ tableId: table.id, columnId: title.id, confirmed: true });
+		expect(removed.design?.triggers?.[0]?.events).toEqual([{ event: "UPDATE" }]);
+		expect(removed.sql.status).toBe("current");
+		const undone = await workspace.undo();
+		expect(undone.design?.triggers).toEqual([trigger]);
+		expect(undone.sql.status).toBe("current");
 	}, 60_000);
 });

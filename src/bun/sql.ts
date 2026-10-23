@@ -156,8 +156,15 @@ export function generateDesignSql(design: Design): SqlGeneration {
 		if (!trigger.name.trim() || trigger.name.includes("\u0000")) errors.push(`Trigger name "${trigger.name}" is invalid.`);
 		if (!table) errors.push(`Trigger "${trigger.name}" depends on a table that no longer exists.`);
 		if (!fn || fn.returnType.trim().toLowerCase() !== "trigger" || fn.language !== "plpgsql" || fn.arguments.length > 0) errors.push(`Trigger "${trigger.name}" needs a no-argument PL/pgSQL Function returning trigger.`);
-		if (!trigger.events.length) errors.push(`Trigger "${trigger.name}" needs at least one event.`);
-		if (trigger.when.includes("\u0000")) errors.push(`Trigger "${trigger.name}" has an invalid WHEN condition.`);
+		if (!Array.isArray(trigger.events) || trigger.events.length === 0) errors.push(`Trigger "${trigger.name}" needs at least one event.`);
+		for (const event of trigger.events ?? []) {
+			for (const columnId of event.columnIds ?? []) {
+				if (!table?.columns.some((column) => column.id === columnId)) {
+					errors.push(`Trigger "${trigger.name}" references a column that no longer exists.`);
+				}
+			}
+		}
+		if (typeof trigger.when !== "string" || trigger.when.includes("\u0000")) errors.push(`Trigger "${trigger.name}" has an invalid WHEN condition.`);
 	}
 
 	const occupiedNames = initialPostgresRelationNames(design);
@@ -256,10 +263,14 @@ function renderFunction(fn: DesignFunction, design: Design): string {
 	].join("\n");
 }
 function renderTrigger(trigger: DesignTrigger, design: Design): string {
-	const table = design.tables.find((candidate) => candidate.id === trigger.tableId)!;
-	const fn = design.functions!.find((candidate) => candidate.id === trigger.functionId)!;
-	const events = trigger.events.map(({ event, columnIds }) => {
-		const columns = (columnIds ?? []).map((id) => table.columns.find((column) => column.id === id)!.name);
+	const table = design.tables.find((candidate) => candidate.id === trigger.tableId);
+	const fn = design.functions?.find((candidate) => candidate.id === trigger.functionId);
+	if (!table || !fn) return "";
+	const events = (trigger.events ?? []).map(({ event, columnIds }) => {
+		const columns = (columnIds ?? []).flatMap((id) => {
+			const column = table.columns.find((candidate) => candidate.id === id);
+			return column ? [column.name] : [];
+		});
 		return event === "UPDATE" && columns.length
 			? `UPDATE OF ${columns.map(quoteIdentifier).join(", ")}`
 			: event;

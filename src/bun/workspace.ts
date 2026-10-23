@@ -1725,9 +1725,15 @@ function removeColumnAndItsRelationships(
 		manyToManyRelationships: design.manyToManyRelationships.filter(
 			(association) => !affected.associationIds.has(association.id),
 		),
-		triggers: (design.triggers ?? []).filter((trigger) =>
-			trigger.tableId !== table.id || !trigger.events.some((event) => event.columnIds?.includes(column.id)),
-		),
+		// Removing the last UPDATE OF column removes the filter, so the trigger fires on any UPDATE.
+		triggers: (design.triggers ?? []).map((trigger) => ({
+			...trigger,
+			events: trigger.events.map((event) => {
+				if (event.event !== "UPDATE" || !event.columnIds?.includes(column.id)) return event;
+				const columnIds = event.columnIds.filter((id) => id !== column.id);
+				return columnIds.length ? { ...event, columnIds } : { event: "UPDATE" as const };
+			}),
+		})),
 	};
 }
 

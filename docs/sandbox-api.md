@@ -32,6 +32,9 @@ Triggers in the applied design execute during supported writes according to
 their configured timing, events, and row or statement level. BEFORE row
 triggers may change the returned row; AFTER triggers can write related records
 that subsequent Sandbox API requests can observe.
+When a column in an `UPDATE OF` list is removed from a design, that column is
+removed from the list. If it was the last listed column, the `UPDATE OF` filter
+is dropped and the trigger runs for every update.
 
 ## Row-level security
 
