@@ -1,12 +1,30 @@
+/// <reference types="vite/client" />
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
 import TsWorker from "../../node_modules/monaco-editor/esm/vs/language/typescript/ts.worker.js?worker";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
-import type { SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
-import { generateScenarioDatabaseTypes } from "../shared/scenario-types";
+import type { DesignEnumType, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
+import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+const supabaseTypeDeclarations = import.meta.glob(
+	"../../node_modules/@supabase/{supabase-js,postgrest-js,auth-js,functions-js,realtime-js,storage-js}/dist/**/*.d.{ts,mts,cts}",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const otherSupabaseTypeDeclarations = import.meta.glob(
+	"../../node_modules/{iceberg-js}/dist/**/*.d.{ts,mts,cts}",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const phoenixTypeDeclarations = import.meta.glob(
+	"../../node_modules/@supabase/phoenix/priv/static/types/**/*.d.ts",
+	{ eager: true, query: "?raw", import: "default" },
+) as Record<string, string>;
+const allSupabaseTypeDeclarations = {
+	...supabaseTypeDeclarations,
+	...otherSupabaseTypeDeclarations,
+	...phoenixTypeDeclarations,
+};
 const scenarioMonacoEnvironment = globalThis as typeof globalThis & {
 	MonacoEnvironment?: { getWorker: (_moduleId: string, label: string) => Worker };
 };
@@ -18,6 +36,7 @@ scenarioMonacoEnvironment.MonacoEnvironment = {
 type Props = {
 	scenarios: Scenario[];
 	appliedTables: SandboxAppliedTable[];
+	appliedEnums: DesignEnumType[];
 	save: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
 	revision: number;
@@ -34,6 +53,7 @@ type Props = {
 export function ScenarioView({
 	scenarios,
 	appliedTables,
+	appliedEnums,
 	save,
 	scenarioRuns,
 	revision,
@@ -212,7 +232,7 @@ export function ScenarioView({
 								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
 							</div>
 							<Editor
-								key={generateScenarioDatabaseTypes(appliedTables)}
+								key={generateScenarioDatabaseTypes(appliedTables, appliedEnums)}
 								height="min(60vh, 640px)"
 								language="typescript"
 								value={sourceDraft}
@@ -244,14 +264,22 @@ export function ScenarioView({
 									monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
 										target: monaco.languages.typescript.ScriptTarget.ES2022,
 										module: monaco.languages.typescript.ModuleKind.ESNext,
-										moduleResolution: monaco.languages.typescript.ModuleResolutionKind.NodeJs,
+										moduleResolution: monaco.languages.typescript.ModuleResolutionKind.Bundler,
+										baseUrl: "/",
+										paths: scenarioSupabaseTypePaths,
 										strict: true,
 										noEmit: true,
 									});
 									monaco.languages.typescript.typescriptDefaults.addExtraLib(
-										generateScenarioDatabaseTypes(appliedTables),
+										generateScenarioDatabaseTypes(appliedTables, appliedEnums),
 										"file:///scenario-globals.d.ts",
 									);
+									for (const [filename, contents] of Object.entries(allSupabaseTypeDeclarations)) {
+										monaco.languages.typescript.typescriptDefaults.addExtraLib(
+											contents,
+											scenarioTypeLibraryUri(filename),
+										);
+									}
 								}}
 								options={{
 									ariaLabel: "Scenario TypeScript source",
