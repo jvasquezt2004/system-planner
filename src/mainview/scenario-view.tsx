@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
-import type { Scenario, ScenarioSaveState } from "../shared/design";
+import type { Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -8,26 +8,37 @@ import { Textarea } from "@/components/ui/textarea";
 type Props = {
 	scenarios: Scenario[];
 	save: ScenarioSaveState;
+	scenarioRuns: Record<string, ScenarioRun | null>;
+	revision: number;
+	runDisabledReason: string | null;
 	onCreate: (name: string) => void;
 	onRename: (scenarioId: string, name: string) => void;
 	onRemove: (scenarioId: string) => void;
 	onUpdateSource: (scenarioId: string, source: string) => void;
+	onRun: (scenario: Scenario) => void;
+	onStop: (runId: string) => void;
 };
 
-/** Manage saved TypeScript Scenarios; execution is intentionally not part of this view. */
+/** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
 	scenarios,
 	save,
+	scenarioRuns,
+	revision,
+	runDisabledReason,
 	onCreate,
 	onRename,
 	onRemove,
 	onUpdateSource,
+	onRun,
+	onStop,
 }: Props) {
 	const [selectedId, setSelectedId] = useState<string | null>(scenarios[0]?.id ?? null);
 	const [newName, setNewName] = useState("");
 	const [nameDraft, setNameDraft] = useState("");
 	const [sourceDraft, setSourceDraft] = useState(scenarios[0]?.source ?? "");
 	const selected = scenarios.find((scenario) => scenario.id === selectedId) ?? null;
+	const selectedRun = selected ? scenarioRuns[selected.id] : null;
 
 	useEffect(() => {
 		if (!selected || !scenarios.some((scenario) => scenario.id === selectedId)) {
@@ -133,6 +144,19 @@ export function ScenarioView({
 								</label>
 								<SaveIndicator save={save} />
 								<Button
+									size="sm"
+									disabled={Boolean(runDisabledReason) || selectedRun?.status === "running"}
+									title={runDisabledReason ?? undefined}
+									onClick={() => onRun(selected)}
+								>
+									Run
+								</Button>
+								{selectedRun?.status === "running" && (
+									<Button size="sm" variant="strike" onClick={() => onStop(selectedRun.id)}>
+										Stop
+									</Button>
+								)}
+								<Button
 									variant="strike"
 									size="sm"
 									aria-label={`Remove Scenario ${selected.name}`}
@@ -158,6 +182,31 @@ export function ScenarioView({
 								spellCheck={false}
 								className="min-h-[min(60vh,640px)] flex-1 resize-y rounded-none border-0 bg-paper-raised px-5 py-4 font-mono text-[12.5px] leading-6 focus-visible:ring-0"
 							/>
+							{runDisabledReason && (
+								<p className="border-t border-rule px-5 py-2 text-[12px] text-ink-3" role="status">
+									{runDisabledReason}
+								</p>
+							)}
+							{selectedRun && (
+								<section aria-label="Scenario run results" className="border-t border-rule bg-paper-tint/40 px-5 py-4">
+									<h3 className="font-display text-[17px] font-medium">
+										{selectedRun.status} — revision {selectedRun.revision}
+										{selectedRun.stale ? ` (stale; current draft ${revision})` : ` (draft ${revision})`}
+									</h3>
+									{selectedRun.reason && <p className="text-[12px] text-ink-3">Reason: {selectedRun.reason}</p>}
+									{selectedRun.console.length > 0 && (
+										<pre aria-label="Scenario console output" className="mt-2 whitespace-pre-wrap font-mono text-[12px]">{selectedRun.console.join("\n")}</pre>
+									)}
+									<ol aria-label="Sandbox API request log" className="mt-3 space-y-2">
+										{selectedRun.requests.map((entry) => (
+											<li key={entry.order} className="border-t border-rule pt-2 font-mono text-[11px]">
+												<div>{entry.order}. {entry.method} /rest/v1/{entry.table}{Object.keys(entry.filters).length > 0 ? `?${new URLSearchParams(entry.filters).toString()}` : ""} — {entry.status}</div>
+												<pre className="whitespace-pre-wrap">{JSON.stringify(entry.result, null, 2)}</pre>
+											</li>
+										))}
+									</ol>
+								</section>
+							)}
 						</section>
 					) : (
 						<div className="flex min-w-0 flex-col items-center justify-center px-8 text-center">

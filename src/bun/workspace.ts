@@ -47,8 +47,14 @@ import {
 	type RemoveScenarioAction,
 	type UpdateScenarioSourceAction,
 	type Scenario,
+	type ScenarioRun,
+	type SandboxAppliedTable,
+	type SandboxApiRequest,
+	type SandboxApiResponse,
 	type WorkspaceState,
 } from "../shared/design";
+import type { ScenarioRunDatabase } from "./scenario-api";
+import { createScenarioRunDatabase, handleSandboxApiRequest } from "./scenario-api";
 import { uniquePostgresIdentifier } from "../shared/postgres-identifiers";
 import {
 	foreignKeyColumnName,
@@ -94,6 +100,9 @@ export interface DesignWorkspace {
 	renameScenario(action: RenameScenarioAction): Promise<WorkspaceState>;
 	removeScenario(action: RemoveScenarioAction): Promise<WorkspaceState>;
 	updateScenarioSource(action: UpdateScenarioSourceAction): Promise<WorkspaceState>;
+	beginScenarioRun(action: { scenarioId: string }): Promise<{ runId: string; state: WorkspaceState }>;
+	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
+	finishScenarioRun(action: { runId: string; status: "passed" | "errored"; console: string[]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
@@ -176,6 +185,7 @@ export async function createDesignWorkspace(
 		sandbox: { status: "idle" },
 		scenarios: [],
 		scenarioSave: { status: "idle" },
+		scenarioRuns: {},
 		undoRedo: { canUndo: false, canRedo: false },
 	};
 	let activeProjectId: string | null = null;
@@ -184,6 +194,14 @@ export async function createDesignWorkspace(
 	let scenarioRevision = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
+	let activeScenarioRun: {
+		id: string;
+		scenarioId: string;
+		projectId: string;
+		revision: number;
+		database: ScenarioRunDatabase | null;
+		tables: SandboxAppliedTable[];
+	} | null = null;
 	let previewRequestId = 0;
 	let scheduledPreview: {
 		requestId: number;
@@ -192,8 +210,24 @@ export async function createDesignWorkspace(
 	} | null = null;
 
 	function setState(next: WorkspaceState) {
+		if (next.project?.id === state.project?.id) {
+			next = {
+				...next,
+				scenarioRuns: Object.fromEntries(
+					Object.entries(next.scenarioRuns).map(([scenarioId, run]) => [
+						scenarioId,
+						run ? { ...run, stale: run.revision < next.revision } : null,
+					]),
+				),
+			};
+		}
 		state = next;
 		for (const listener of listeners) listener(state);
+	}
+	async function disposeActiveScenarioRun() {
+		const run = activeScenarioRun;
+		activeScenarioRun = null;
+		if (run?.database) await run.database.close();
 	}
 
 	/**
@@ -571,6 +605,7 @@ export async function createDesignWorkspace(
 					documentRevision: revision,
 					savedAt,
 				});
+				await disposeActiveScenarioRun();
 				invalidatePreviewWork();
 				activeProjectId = project.id;
 				documentRevision = revision;
@@ -586,6 +621,7 @@ export async function createDesignWorkspace(
 					sandbox: { status: "idle" },
 					scenarios: [],
 					scenarioSave: { status: "idle" },
+					scenarioRuns: {},
 					undoRedo: getUndoRedoState(project.id),
 				});
 				return state;
@@ -598,6 +634,7 @@ export async function createDesignWorkspace(
 				const design = normalizeDesign(record.design);
 				const scenarioDocument = store.loadScenarios(record.project.id);
 
+				await disposeActiveScenarioRun();
 				invalidatePreviewWork();
 				activeProjectId = record.project.id;
 				documentRevision = record.documentRevision;
@@ -624,6 +661,7 @@ export async function createDesignWorkspace(
 									revision: scenarioDocument.revision,
 									savedAt: scenarioDocument.savedAt,
 								},
+					scenarioRuns: {},
 					undoRedo: getUndoRedoState(record.project.id),
 				});
 				if (design.tables.length > 0) {
@@ -680,6 +718,119 @@ export async function createDesignWorkspace(
 						item.id === action.scenarioId ? { ...item, source: action.source } : item,
 					),
 				);
+				return state;
+			});
+		},
+		beginScenarioRun(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenDesign();
+				if (activeScenarioRun) throw new Error("Another Scenario run is already active.");
+				const scenario = state.scenarios.find((candidate) => candidate.id === action.scenarioId);
+				if (!scenario) throw new Error("That Scenario could not be found.");
+				const snapshot = getLastAppliedSandbox(state.sandbox);
+				if (!snapshot) throw new Error("Apply a valid design revision before running a Scenario.");
+				const run = {
+					id: createId(),
+					scenarioId: scenario.id,
+					projectId,
+					revision: snapshot.revision,
+					database: null as ScenarioRunDatabase | null,
+					tables: snapshot.tables,
+				};
+				activeScenarioRun = run;
+				setState({
+					...state,
+					scenarioRuns: {
+						...state.scenarioRuns,
+						[scenario.id]: {
+							id: run.id,
+							status: "running",
+							revision: run.revision,
+							stale: run.revision < state.revision,
+							requests: [],
+							console: [],
+						},
+					},
+				});
+				try {
+					const database = await createScenarioRunDatabase(snapshot.sql);
+					if (activeScenarioRun !== run || activeProjectId !== projectId) {
+						await database.close();
+						throw new Error("The Scenario run was superseded.");
+					}
+					run.database = database;
+				} catch (error) {
+					if (activeScenarioRun === run) {
+						activeScenarioRun = null;
+						const current = state.scenarioRuns[scenario.id];
+						if (activeProjectId === projectId && current?.id === run.id) {
+							setState({
+								...state,
+								scenarioRuns: {
+									...state.scenarioRuns,
+									[scenario.id]: {
+										...current,
+										status: "errored",
+										reason: "exception",
+										console: [error instanceof Error ? error.message : String(error)],
+									},
+								},
+							});
+						}
+					}
+					throw error;
+				}
+				return { runId: run.id, state };
+			});
+		},
+		handleSandboxApiRequest(action) {
+			return runTask(async () => {
+				const run = activeScenarioRun;
+				if (!run || run.id !== action.runId || run.projectId !== activeProjectId || !run.database) {
+					return {
+						status: 410,
+						headers: { "content-type": "application/json" },
+						body: { code: "PGRST_SANDBOX_UNSUPPORTED", message: "not supported by the sandbox: expired Scenario run", details: null, hint: null },
+					};
+				}
+				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request);
+				if (activeScenarioRun !== run || activeProjectId !== run.projectId) return response;
+				const previous = state.scenarioRuns[run.scenarioId];
+				if (!previous || previous.id !== run.id) return response;
+				setState({
+					...state,
+					scenarioRuns: {
+						...state.scenarioRuns,
+						[run.scenarioId]: {
+							...previous,
+							requests: [...previous.requests, { ...entry, order: previous.requests.length + 1 }],
+						},
+					},
+				});
+				return response;
+			});
+		},
+		finishScenarioRun(action) {
+			return runTask(async () => {
+				const run = activeScenarioRun;
+				if (!run || run.id !== action.runId || run.projectId !== activeProjectId) return state;
+				activeScenarioRun = null;
+				const previous = state.scenarioRuns[run.scenarioId];
+				if (previous?.id === run.id) {
+					setState({
+						...state,
+						scenarioRuns: {
+							...state.scenarioRuns,
+							[run.scenarioId]: {
+								...previous,
+								status: action.status,
+								console: [...action.console],
+								...(action.reason ? { reason: action.reason } : {}),
+							},
+						},
+					});
+				}
+				if (run.database) await run.database.close();
 				return state;
 			});
 		},
@@ -1135,6 +1286,7 @@ export async function createDesignWorkspace(
 		},
 		async close() {
 			invalidatePreviewWork();
+			await disposeActiveScenarioRun();
 			await settle();
 			listeners.clear();
 			store.close();
