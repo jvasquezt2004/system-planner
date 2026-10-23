@@ -31,9 +31,15 @@ function requireState(state: WorkspaceState) {
 	return state.sandbox;
 }
 
-function clientFor(workspace: DesignWorkspace, runId: string) {
+function clientFor(
+	workspace: DesignWorkspace,
+	runId: string,
+	options: { responses?: Response[]; stripSelect?: boolean; offset?: number } = {},
+) {
 	const transport = async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
+		if (options.stripSelect) url.searchParams.delete("select");
+		if (options.offset !== undefined) url.searchParams.set("offset", String(options.offset));
 		const headers = Object.fromEntries(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).entries());
 		const response = await workspace.handleSandboxApiRequest({
 			runId,
@@ -45,7 +51,9 @@ function clientFor(workspace: DesignWorkspace, runId: string) {
 				body: init?.body ? String(init.body) : null,
 			},
 		});
-		return new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
+		const httpResponse = new Response(JSON.stringify(response.body), { status: response.status, headers: response.headers });
+		options.responses?.push(httpResponse.clone());
+		return httpResponse;
 	};
 	return createClient("http://scenario.local", "local-anon-key", {
 		auth: { autoRefreshToken: false, persistSession: false, detectSessionInUrl: false },
@@ -112,7 +120,7 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const first = await workspace.beginScenarioRun({ scenarioId });
 		const firstClient = clientFor(workspace, first.runId);
-		const unsupported = await firstClient.from("Books").select("*").order("id");
+		const unsupported = await firstClient.from("Books").select("*").filter("id", "fts", "temporary");
 		expect(unsupported.error?.code).toBe("PGRST_SANDBOX_UNSUPPORTED");
 		await firstClient.from("Books").insert({ title: "temporary" }).select("*");
 		await workspace.finishScenarioRun({ runId: first.runId, status: "passed", console: [] });
@@ -328,4 +336,95 @@ describe("Scenario runs", () => {
 		});
 		expect(stoppedByUser.scenarioRuns[scenarioId]).toMatchObject({ status: "errored", reason: "stopped" });
 	}, 60_000);
+	test("core reads project columns, apply PostgREST filters and sorting, and paginate", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const responses: Response[] = [];
+		const supabase = clientFor(workspace, runId, { responses });
+		await supabase.from("Books").insert({ title: "Alpha" }).select("*");
+		await supabase.from("Books").insert({ title: "Beta" }).select("*");
+		await supabase.from("Books").insert({ title: "Alpine" }).select("*");
+		await supabase.from("Books").insert({ title: "Gamma" }).select("*");
+
+		const projected = await supabase.from("Books").select("title").eq("id", 1);
+		expect(projected.data).toEqual([{ title: "Alpha" }]);
+		const compound = await supabase.from("Books").select("*")
+			.gte("id", 2).lte("id", 4).neq("title", "Gamma").order("id", { ascending: false });
+		expect(compound.data).toEqual([{ id: 3, title: "Alpine" }, { id: 2, title: "Beta" }]);
+		const alternatives = await supabase.from("Books").select("*").or("title.eq.Alpha,title.eq.Gamma").order("id");
+		expect(alternatives.data).toEqual([{ id: 1, title: "Alpha" }, { id: 4, title: "Gamma" }]);
+		const matched = await supabase.from("Books").select("*").like("title", "Al%").order("id").range(1, 1);
+		expect(matched.data).toEqual([{ id: 3, title: "Alpine" }]);
+		expect(matched.count).toBeNull();
+		expect(matched).toMatchObject({ error: null, status: 200 });
+		const limited = await supabase.from("Books").select("*").order("id").limit(2);
+		expect(limited.data).toEqual([{ id: 1, title: "Alpha" }, { id: 2, title: "Beta" }]);
+		expect(limited.status).toBe(200);
+		const supabaseWithOffset = clientFor(workspace, runId, { offset: 1 });
+		const offset = await supabaseWithOffset.from("Books").select("*").order("id").limit(1);
+		expect(offset.data).toEqual([{ id: 2, title: "Beta" }]);
+		expect(offset.status).toBe(200);
+		const emptyPage = await supabase.from("Books").select("*").eq("id", 99).range(0, 1);
+		expect(emptyPage.data).toEqual([]);
+		expect(emptyPage.status).toBe(200);
+		expect(responses[responses.length - 1]?.headers.get("content-range")).toBe("*/*");
+		const likeWildcard = await supabase.from("Books").select("title").like("title", "Al*").order("id");
+		expect(likeWildcard.data).toEqual([{ title: "Alpha" }, { title: "Alpine" }]);
+		const ilikeWildcard = await supabase.from("Books").select("title").ilike("title", "al*").order("id");
+		expect(ilikeWildcard.data).toEqual([{ title: "Alpha" }, { title: "Alpine" }]);
+		const clientWithoutSelect = clientFor(workspace, runId, { stripSelect: true });
+		const implicitAllColumns = await clientWithoutSelect.from("Books").select("*").order("id");
+		expect(implicitAllColumns.data).toEqual([
+			{ id: 1, title: "Alpha" }, { id: 2, title: "Beta" }, { id: 3, title: "Alpine" }, { id: 4, title: "Gamma" },
+		]);
+		const comparative = await supabase.from("Books").select("*").gt("id", 1).lt("id", 4).order("id");
+		expect(comparative.data).toEqual([{ id: 2, title: "Beta" }, { id: 3, title: "Alpine" }]);
+		const included = await supabase.from("Books").select("*").in("id", [1, 3]).order("id");
+		expect(included.data).toEqual([{ id: 1, title: "Alpha" }, { id: 3, title: "Alpine" }]);
+		const omitted = await supabase.from("Books").select("*").not("id", "eq", 1).order("id").limit(2);
+		expect(omitted.data).toEqual([{ id: 2, title: "Beta" }, { id: 3, title: "Alpine" }]);
+		const insensitive = await supabase.from("Books").select("*").ilike("title", "al%");
+		expect(insensitive.data).toEqual([{ id: 1, title: "Alpha" }, { id: 3, title: "Alpine" }]);
+		const nulls = await supabase.from("Books").select("*").is("title", null);
+		expect(nulls.data).toEqual([]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+		expect(workspace.getState().scenarioRuns[scenarioId]?.requests[7]?.status).toBe(200);
+	}, 30_000);
+
+	test("single and maybeSingle return object responses with PostgREST cardinality errors", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		await supabase.from("Books").insert({ title: "Only" }).select("*");
+		const one = await supabase.from("Books").select("id,title").eq("id", 1).single();
+		expect(one.data).toEqual({ id: 1, title: "Only" });
+		const absent = await supabase.from("Books").select("*").eq("id", 99).maybeSingle();
+		expect(absent.data).toBeNull();
+		expect(absent.error).toBeNull();
+		const absentSingle = await supabase.from("Books").select("*").eq("id", 99).single();
+		expect(absentSingle.error?.code).toBe("PGRST116");
+		expect(absentSingle.status).toBe(406);
+		await supabase.from("Books").insert({ title: "Second" }).select("*");
+		const multiple = await supabase.from("Books").select("*").order("id").single();
+		expect(multiple.error?.code).toBe("PGRST116");
+		expect(multiple.status).toBe(406);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+		expect(workspace.getState().scenarioRuns[scenarioId]?.requests.slice(1).map((request) => request.status)).toEqual([200, 200, 406, 201, 406]);
+	}, 30_000);
+
+	test("unsupported read projections and query features identify the unsupported feature", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const [embedding, alias, jsonPath] = await Promise.all([
+			supabase.from("Books").select("Authors(*)"),
+			supabase.from("Books").select("label:title"),
+			supabase.from("Books").select("metadata->name"),
+		]);
+		for (const result of [embedding, alias, jsonPath]) {
+			expect(result.error?.code).toBe("PGRST_SANDBOX_UNSUPPORTED");
+			expect(result.error?.message).toContain("not supported by the sandbox");
+		}
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 30_000);
 });
