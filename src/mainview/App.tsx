@@ -619,16 +619,19 @@ function App() {
 									onAddColumn={handleAddColumn}
 									onApplyColumn={handleApplyColumn}
 									onUpdateIndexes={(indexes) =>
-									void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))
-								}
-								onUpdateEnumTypes={(enumTypes) =>
-									void run(() => workspaceClient.updateEnumTypes(enumTypes))
-								}
-								 onUpdateUniqueConstraints={(uniqueConstraints) =>
-									void run(() =>
-										workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints),
-									)
-								}
+										void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))
+									}
+									onUpdateEnumTypes={(enumTypes) =>
+										void run(() => workspaceClient.updateEnumTypes(enumTypes))
+									}
+									onUpdateUniqueConstraints={(uniqueConstraints) =>
+										void run(() =>
+											workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints),
+										)
+									}
+									onUpdatePolicies={(rowLevelSecurity, policies) =>
+										void run(() => workspaceClient.updatePolicies(selectedTable.id, rowLevelSecurity, policies))
+									}
 									onRemoveColumn={handleRemoveColumn}
 									onSelectRelationship={handleSelectRelationship}
 									onSetRelationshipRequired={handleSetRelationshipRequired}

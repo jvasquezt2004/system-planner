@@ -565,6 +565,14 @@ describe("generateDjangoModels", () => {
 		expect(code.endsWith("\n")).toBe(true);
 		expect(code.endsWith("\n\n")).toBe(false);
 	});
+	test("warns when policies need PostgreSQL migrations", () => {
+		const design = structuredClone(minimalDesign);
+		design.tables[0].policies = [{
+			id: "policy", name: "read_rows", command: "SELECT", roles: ["anon"],
+			mode: "permissive", using: "true", withCheck: "",
+		}];
+		expect(codeFor(design)).toContain("# Row-level security and policies are not represented");
+	});
 });
 
 function codeFor(fixture: (typeof SCHEMA_CODE_FIXTURES)[keyof typeof SCHEMA_CODE_FIXTURES]): string {

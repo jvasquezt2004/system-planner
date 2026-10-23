@@ -17,6 +17,7 @@ import type {
 	DesignIndex,
 	ReferentialAction,
 	DesignEnumType,
+	DesignPolicy,
 	DesignUniqueConstraint,
 	SandboxApiRequest,
 } from "../shared/design";
@@ -134,6 +135,9 @@ export const workspaceClient = {
 	},
 	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
 		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });
+	},
+	updatePolicies(tableId: string, rowLevelSecurity: boolean, policies: DesignPolicy[]): Promise<WorkspaceState> {
+		return rpc.request.updatePolicies({ tableId, rowLevelSecurity, policies });
 	},
 	removeColumn(
 		tableId: string,

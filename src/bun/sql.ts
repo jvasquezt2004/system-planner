@@ -208,6 +208,7 @@ export function generateDesignSql(design: Design): SqlGeneration {
 				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
 		),
 		...pairConstraintSql,
+		...design.tables.flatMap((table) => renderPolicies(table)),
 	];
 	return { ok: true, sql: `${statements.join("\n\n")}\n` };
 }
@@ -786,6 +787,24 @@ function renderIndex(table: DesignTable, index: DesignIndex, name: string): stri
 	];
 	const clause = clauses.join(" ");
 	return `${clause};`;
+}
+function renderPolicies(table: DesignTable): string[] {
+	const statements = table.rowLevelSecurity
+		? [`ALTER TABLE ${quoteIdentifier(table.name)} ENABLE ROW LEVEL SECURITY;`]
+		: [];
+	for (const policy of table.policies ?? []) {
+		const roles = policy.roles.length > 0
+			? policy.roles.map(quoteIdentifier).join(", ")
+			: "PUBLIC";
+		const clauses = [
+			policy.using.trim() ? `USING (${policy.using.trim()})` : "",
+			policy.withCheck.trim() ? `WITH CHECK (${policy.withCheck.trim()})` : "",
+		].filter(Boolean);
+		statements.push(
+			`CREATE POLICY ${quoteIdentifier(policy.name)} ON ${quoteIdentifier(table.name)} AS ${policy.mode.toUpperCase()} FOR ${policy.command} TO ${roles}${clauses.length ? ` ${clauses.join(" ")}` : ""};`,
+		);
+	}
+	return statements;
 }
 
 function quoteString(value: string): string {

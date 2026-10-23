@@ -3,6 +3,8 @@ import { resolveRelationship } from "../relationships";
 import type { Design, DesignColumn, DesignIndex, DesignTable } from "../design";
 import type { SchemaCodeGeneration } from "./types";
 import { modelWords, planRelationshipNames, splitWords } from "./naming";
+import { hasUnrepresentedRowLevelSecurity } from "./rls-notice";
+
 
 type Relation = {
 	id: string;
@@ -449,5 +451,14 @@ export function generateSqlAlchemyModels(design: Design): SchemaCodeGeneration {
 		...importBlock("sqlalchemy.orm", ["DeclarativeBase", "Mapped", "mapped_column", "relationship"]),
 		...(usesPgvector ? [""] : ["", ""]),
 	);
-	return { ok: true, code: `${[...imports, ...body].join("\n")}\n` };
+	return {
+		ok: true,
+		code: `${[
+			...(hasUnrepresentedRowLevelSecurity(design)
+				? ["# Row-level security and policies are not represented; preserve them in PostgreSQL migrations.", ""]
+				: []),
+			...imports,
+			...body,
+		].join("\n")}\n`,
+	};
 }

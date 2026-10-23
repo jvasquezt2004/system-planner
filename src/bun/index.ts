@@ -89,6 +89,7 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await workspacePromise).updateColumn({ tableId, columnId, changes }),
 			updateIndexes: async (action) => (await workspacePromise).updateIndexes(action),
 			updateEnumTypes: async (action) => (await workspacePromise).updateEnumTypes(action),
+			updatePolicies: async (action) => (await workspacePromise).updatePolicies(action),
 			updateUniqueConstraints: async (action) => (await workspacePromise).updateUniqueConstraints(action),
 			removeColumn: async ({ tableId, columnId, confirmed }) =>
 				(await workspacePromise).removeColumn({ tableId, columnId, confirmed }),

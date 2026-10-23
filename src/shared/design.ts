@@ -110,6 +110,17 @@ export type DesignTable = {
 	columns: DesignColumn[];
 	indexes?: DesignIndex[];
 	uniqueConstraints?: DesignUniqueConstraint[];
+	rowLevelSecurity?: boolean;
+	policies?: DesignPolicy[];
+};
+export type DesignPolicy = {
+	id: string;
+	name: string;
+	command: "ALL" | "SELECT" | "INSERT" | "UPDATE" | "DELETE";
+	roles: string[];
+	mode: "permissive" | "restrictive";
+	using: string;
+	withCheck: string;
 };
 /** A composite uniqueness rule declared independently of a relationship. */
 export type DesignUniqueConstraint = {
@@ -470,6 +481,11 @@ export type OpenProjectAction = { projectId: string };
 export type AddTableAction = { name: string; position?: CanvasPoint };
 export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[] };
 export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[] };
+export type UpdatePoliciesAction = {
+	tableId: string;
+	rowLevelSecurity: boolean;
+	policies: DesignPolicy[];
+};
 export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[] };
 export type RenameTableAction = { tableId: string; name: string };
 /** Removing a table that relationships depend on requires explicit confirmation. */

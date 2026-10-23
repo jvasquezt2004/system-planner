@@ -562,4 +562,14 @@ describe("generateDrizzleSchema", () => {
 			expect(vector.code).toContain(fragment);
 		}
 	});
+	test("warns when row-level security or policies need PostgreSQL migrations", () => {
+		const design = structuredClone(SCHEMA_CODE_FIXTURES.minimal);
+		design.tables[0].policies = [{
+			id: "policy", name: "read_rows", command: "SELECT", roles: ["anon"],
+			mode: "permissive", using: "true", withCheck: "",
+		}];
+		const result = generateDrizzleSchema(design);
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.code).toContain("// Row-level security and policies are not represented");
+	});
 });

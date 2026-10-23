@@ -22,6 +22,7 @@ import {
 	type DesignIndex,
 	type DesignIndexKey,
 	type DesignEnumType,
+	type DesignPolicy,
 	type DesignUniqueConstraint,
 	type ReferentialAction,
 	type DesignRelationship,
@@ -40,6 +41,7 @@ import {
 	type UpdateColumnAction,
 	type UpdateIndexesAction,
 	type UpdateEnumTypesAction,
+	type UpdatePoliciesAction,
 	type UpdateUniqueConstraintsAction,
 	type UpdateRelationshipAction,
 	type CreateScenarioAction,
@@ -86,9 +88,10 @@ export type WorkspaceListener = (state: WorkspaceState) => void;
  * generation, or sandbox orchestration.
  *
  * Structural actions (adding, renaming, removing tables; adding, editing, and
- * removing columns) advance the schema revision and refresh the SQL preview and
- * sandbox. Layout actions (moving a table card, panning or zooming the canvas)
- * and column-note edits only save the design document.
+ * removing columns; and updating row-level security policies) advance the
+ * schema revision and refresh the SQL preview and sandbox. Layout actions
+ * (moving a table card, panning or zooming the canvas) and column-note edits
+ * only save the design document.
  */
 export interface DesignWorkspace {
 	getState(): WorkspaceState;
@@ -112,6 +115,7 @@ export interface DesignWorkspace {
 	addColumn(action: AddColumnAction): Promise<WorkspaceState>;
 	updateColumn(action: UpdateColumnAction): Promise<WorkspaceState>;
 	updateIndexes(action: UpdateIndexesAction): Promise<WorkspaceState>;
+	updatePolicies(action: UpdatePoliciesAction): Promise<WorkspaceState>;
 	updateEnumTypes(action: UpdateEnumTypesAction): Promise<WorkspaceState>;
 	updateUniqueConstraints(action: UpdateUniqueConstraintsAction): Promise<WorkspaceState>;
 	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
@@ -1051,6 +1055,22 @@ export async function createDesignWorkspace(
 				return applyStructuralChange(projectId, replaceTable(design, { ...table, uniqueConstraints: constraints }));
 			});
 		},
+		updatePolicies(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const table = requireTable(design, action.tableId);
+				const rowLevelSecurity = action.rowLevelSecurity === true;
+				const policies = normalizePolicies(action.policies);
+				if (
+					rowLevelSecurity === (table.rowLevelSecurity ?? false) &&
+					JSON.stringify(policies) === JSON.stringify(table.policies ?? [])
+				) return state;
+				return applyStructuralChange(
+					projectId,
+					replaceTable(design, { ...table, rowLevelSecurity, policies }),
+				);
+			});
+		},
 		removeColumn(action) {
 			return runTask(async () => {
 				const { projectId, design } = requireOpenDesign();
@@ -1327,7 +1347,31 @@ export async function createDesignWorkspace(
 	return workspace;
 }
 
-/** Documents saved before the canvas existed have no viewport yet. */
+/** Validates policy names and roles before preserving handwritten conditions. */
+function normalizePolicies(policies: DesignPolicy[]): DesignPolicy[] {
+	const names = new Set<string>();
+	const ids = new Set<string>();
+	return policies.map((policy) => {
+		const id = requireName(policy.id, "Policy id");
+		const name = requireName(policy.name, "Policy name");
+		if (ids.has(id)) throw new Error(`Policy id "${id}" is duplicated.`);
+		if (names.has(name)) throw new Error(`Policy name "${name}" is duplicated.`);
+		ids.add(id);
+		names.add(name);
+		if (!["ALL", "SELECT", "INSERT", "UPDATE", "DELETE"].includes(policy.command)) {
+			throw new Error(`Policy "${name}" has an unsupported command.`);
+		}
+		if (!["permissive", "restrictive"].includes(policy.mode)) {
+			throw new Error(`Policy "${name}" has an unsupported mode.`);
+		}
+		return {
+			...policy,
+			id,
+			name,
+			roles: [...new Set(policy.roles.map((role) => requireName(role, "Policy role")))],
+		};
+	});
+}
 function normalizeDesign(design: Design): Design {
 	return {
 		tables: design.tables.map((table) => ({
@@ -1340,6 +1384,8 @@ function normalizeDesign(design: Design): Design {
 					: noColumnDefault(),
 				notes: column.notes ?? "",
 			})),
+			rowLevelSecurity: table.rowLevelSecurity ?? false,
+			policies: table.policies ?? [],
 		})),
 		// Documents saved before relationships existed have none yet.
 		relationships: (design.relationships ?? []).map((relationship) => ({
@@ -1377,6 +1423,8 @@ function createDefaultTable(
 				notes: "",
 			},
 		],
+		rowLevelSecurity: false,
+		policies: [],
 	};
 }
 

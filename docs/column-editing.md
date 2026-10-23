@@ -33,6 +33,25 @@ Renaming a column, changing its type, or toggling its key settings keeps the
 column's stable identity. Associated metadata — notes, uniqueness, defaults, and
 relationships — therefore survives a rename.
 
+## Row-level security and policies
+
+The table inspector contains a **Row-level security** section. It is off for
+new tables and is normalized to off when opening older designs. Enable it to
+enforce the table's policies. Policies can also be authored while it is off;
+PostgreSQL stores them, but does not enforce them until row-level security is
+enabled.
+
+Each policy has a name, command (`ALL`, `SELECT`, `INSERT`, `UPDATE`, or
+`DELETE`), target roles, permissive/restrictive mode, and optional handwritten
+`USING` and `WITH CHECK` conditions. Conditions are SQL expressions; they are
+the only handwritten SQL in table policy authoring. Apply policies to save
+them as one structural edit. The edit advances the design revision, rebuilds
+the design-check sandbox, and participates in undo/redo. If PostgreSQL rejects
+a condition, the saved draft remains and the sandbox error stays visible.
+
+The PostgreSQL SQL preview emits the row-level security toggle and policies
+after table creation. ORM schema code omits these PostgreSQL-specific rules and
+shows a notice naming the omitted feature.
 ## Supported types
 
 The type picker, validation, SQL generation, and sandbox share one registry in
