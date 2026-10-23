@@ -138,6 +138,36 @@ describe("Scenario runs", () => {
 		expect(remaining.data).toEqual([{ id: 2, title: "Merged" }]);
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
+	test("write status codes match minimal and representation responses through supabase-js", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+
+		const insertedMinimal = await supabase.from("Books").insert({ title: "Minimal insert" });
+		expect(insertedMinimal.error).toBeNull();
+		expect(insertedMinimal.status).toBe(201);
+
+		const insertedRepresentation = await supabase.from("Books").insert({ title: "Representation insert" }).select("*");
+		expect(insertedRepresentation.error).toBeNull();
+		expect(insertedRepresentation.status).toBe(201);
+
+		const updatedMinimal = await supabase.from("Books").update({ title: "Minimal update" }).eq("id", 1);
+		expect(updatedMinimal.error).toBeNull();
+		expect(updatedMinimal.status).toBe(204);
+
+		const updatedRepresentation = await supabase.from("Books").update({ title: "Representation update" }).eq("id", 2).select("*");
+		expect(updatedRepresentation.error).toBeNull();
+		expect(updatedRepresentation.status).toBe(200);
+
+		const deletedMinimal = await supabase.from("Books").delete().eq("id", 1);
+		expect(deletedMinimal.error).toBeNull();
+		expect(deletedMinimal.status).toBe(204);
+
+		const deletedRepresentation = await supabase.from("Books").delete().eq("id", 2).select("*");
+		expect(deletedRepresentation.error).toBeNull();
+		expect(deletedRepresentation.status).toBe(200);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 	test("write representations match read serialization for PostgreSQL value types", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
@@ -685,12 +715,20 @@ describe("Scenario runs", () => {
 		expect(hidden.count).toBe(0);
 		expect(empty.status).toBe(200);
 
-		const write = await alice.from("Books").update({ title: "Changed" }, { count: "exact" }).eq("owner_id", aliceId);
+		const writeResponses: Response[] = [];
+		const countedWriter = clientFor(workspace, runId, { responses: writeResponses, identity: { role: "authenticated", sub: aliceId } });
+		const write = await countedWriter.from("Books").update({ title: "Changed" }, { count: "exact" }).eq("owner_id", aliceId);
 		expect(write.count).toBe(2);
-		const responses: Response[] = [];
-		const capture = clientFor(workspace, runId, { responses, identity: { role: "authenticated", sub: aliceId } });
+		expect(write.status).toBe(204);
+		expect(writeResponses[0]?.headers.get("content-range")).toBe("*/2");
+		const rangeResponses: Response[] = [];
+		const capture = clientFor(workspace, runId, { responses: rangeResponses, identity: { role: "authenticated", sub: aliceId } });
 		await capture.from("Books").select("*", { count: "exact" }).eq("owner_id", aliceId).range(1, 1);
-		expect(responses[0]?.headers.get("content-range")).toBe("1-1/2");
+		expect(rangeResponses[0]?.headers.get("content-range")).toBe("1-1/2");
+		const deleted = await countedWriter.from("Books").delete({ count: "exact" }).eq("owner_id", aliceId);
+		expect(deleted.count).toBe(2);
+		expect(deleted.status).toBe(204);
+		expect(writeResponses[1]?.headers.get("content-range")).toBe("*/2");
 		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
 	}, 60_000);
 });

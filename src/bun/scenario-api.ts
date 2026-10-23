@@ -265,7 +265,7 @@ export async function handleSandboxApiRequest(
 						const count = exactCount
 							? result?.length ?? await queryWriteCount(transaction, statement, [...params, ...filterParams])
 							: null;
-						transactionResponse = writeResponse(200, result, representation, count);
+						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					} else {
 						const statement = `DELETE FROM ${quoteIdentifier(tableName)}${clause}`;
 						const result = representation
@@ -274,7 +274,7 @@ export async function handleSandboxApiRequest(
 						const count = exactCount
 							? result?.length ?? await queryWriteCount(transaction, statement, filterParams)
 							: null;
-						transactionResponse = writeResponse(200, result, representation, count);
+						transactionResponse = writeResponse(representation ? 200 : 204, result, representation, count);
 					}
 					}
 			} else {
