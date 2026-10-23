@@ -357,6 +357,7 @@ async function executeFunctionRpc(
 	if (request.method === "GET" && fn.volatility === "volatile") {
 		throw unsupported("GET for volatile functions");
 	}
+	const argumentNames = new Set(fn.arguments.map((argument) => argument.name));
 	const resultTable = tables.find((table) => table.name === fn.returnType);
 	const tableColumns = resultTable?.columns.map((column) => column.name) ?? functionTableReturnColumns(fn.returnType);
 	const queryKeys = [...url.searchParams.keys()];
