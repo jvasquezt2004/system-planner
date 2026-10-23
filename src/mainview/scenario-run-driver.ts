@@ -20,6 +20,7 @@ type WorkerPort = Pick<Worker, "postMessage" | "terminate"> & {
 export type ScenarioRunDriverOptions = {
 	workspace: ScenarioRunClient;
 	createWorker: () => WorkerPort;
+	createEdgeWorker: () => WorkerPort;
 	timeoutMs: number;
 	isCurrent?: () => boolean;
 	getToken?: () => unknown;
@@ -46,6 +47,7 @@ type ActiveRun = {
 	projectId: string | null;
 	token: unknown;
 	worker: WorkerPort | null;
+	edgeWorkers: Set<WorkerPort>;
 	timer: ReturnType<typeof setTimeout> | undefined;
 	resolve: (run: ScenarioRun | null) => void;
 	reject: (error: unknown) => void;
@@ -69,6 +71,8 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 		run.finishing = true;
 		pendingStops.delete(run.runId);
 		clearTimeout(run.timer);
+		for (const edgeWorker of run.edgeWorkers) edgeWorker.terminate();
+		run.edgeWorkers.clear();
 		run.worker?.terminate();
 		run.worker = null;
 		void options.workspace.finishScenarioRun({ runId: run.runId, ...outcome }).then((state) => {
@@ -93,6 +97,8 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 		clearTimeout(run.timer);
 		run.worker?.terminate();
 		run.worker = null;
+		for (const edgeWorker of run.edgeWorkers) edgeWorker.terminate();
+		run.edgeWorkers.clear();
 		run.resolve(null);
 	};
 
@@ -107,6 +113,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 				projectId: null,
 				token,
 				worker: null,
+				edgeWorkers: new Set(),
 				timer: undefined,
 				resolve,
 				reject,
@@ -140,6 +147,66 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 				worker.onmessage = (event: MessageEvent) => {
 					if (active !== run || run.finishing || run.cancelled || !isCurrent(run)) return;
 					const message = event.data;
+					if (message.type === "invoke" && message.runId === run.runId) {
+						const edgeFunction = begun.state.edgeFunctions.find(({ name }) => name === message.functionName);
+						const invocationId = `${message.requestId}:${message.functionName}`;
+						const completeInvocation = async (status: number, body: unknown) => {
+							await options.workspace.handleSandboxApiRequest({
+								runId: run.runId!,
+								request: {
+									method: "POST",
+									path: `/functions/v1/${encodeURIComponent(message.functionName)}`,
+									query: "",
+									headers: message.request.headers,
+									body: message.request.body,
+									invocation: { functionName: message.functionName, status, response: body },
+								},
+							});
+							if (active === run && !run.finishing && isCurrent(run)) {
+								worker.postMessage({
+									type: "response",
+									requestId: message.requestId,
+									response: { status, headers: { "content-type": "application/json" }, body },
+								});
+							}
+						};
+						if (!edgeFunction) {
+							void completeInvocation(404, { error: `Edge function not found: ${message.functionName}` });
+							return;
+						}
+						const edgeWorker = options.createEdgeWorker();
+						run.edgeWorkers.add(edgeWorker);
+						edgeWorker.onmessage = (edgeEvent: MessageEvent) => {
+							if (active !== run || run.finishing || run.cancelled || !isCurrent(run)) return;
+							const edgeMessage = edgeEvent.data;
+							if (edgeMessage.type === "request" && edgeMessage.invocationId === invocationId) {
+								void options.workspace.handleSandboxApiRequest({ runId: run.runId!, request: edgeMessage.request }).then((response) => {
+									if (active === run && !run.finishing && isCurrent(run)) edgeWorker.postMessage({ type: "response", requestId: edgeMessage.requestId, response });
+								});
+								return;
+							}
+							if (edgeMessage.type === "finished" && edgeMessage.invocationId === invocationId) {
+								run.edgeWorkers.delete(edgeWorker);
+								edgeWorker.terminate();
+								worker.postMessage({ type: "console", lines: edgeMessage.logs.map((line: string) => `[${message.functionName}] ${line}`) });
+								let body: unknown = edgeMessage.body;
+								try {
+									body = JSON.parse(edgeMessage.body);
+								} catch {
+									// Preserve non-JSON response text for supabase-js error handling.
+								}
+								void completeInvocation(edgeMessage.status, body);
+							}
+						};
+						edgeWorker.onerror = (error: ErrorEvent) => {
+							run.edgeWorkers.delete(edgeWorker);
+							edgeWorker.terminate();
+							worker.postMessage({ type: "console", lines: [`[${message.functionName}] ${error.message}`] });
+							void completeInvocation(500, { error: error.message });
+						};
+						edgeWorker.postMessage({ type: "start", runId: run.runId, invocationId, source: edgeFunction.source, request: message.request });
+						return;
+					}
 					if (message.type === "request" && message.runId === run.runId) {
 						void options.workspace.handleSandboxApiRequest({ runId: run.runId!, request: message.request }).then((response) => {
 							if (active === run && !run.finishing && isCurrent(run)) {
@@ -173,7 +240,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 						finish(run, { status: "errored", reason: "exception", console: [event.message] });
 					}
 				};
-				worker.postMessage({ type: "start", runId: run.runId, source: scenario.source });
+				worker.postMessage({ type: "start", runId: run.runId, source: scenario.source, edgeFunctions: begun.state.edgeFunctions });
 			} catch (error) {
 				if (run.runId && !run.cancelled && active === run) {
 					finish(run, { status: "errored", reason: "exception", console: [error instanceof Error ? error.message : String(error)] });

@@ -67,6 +67,24 @@ arguments as query parameters. Unknown Functions and argument-name mismatches
 return `PGRST202`. Filters, ordering, limits, and ranges on set-returning
 results are not implemented and return `PGRST_SANDBOX_UNSUPPORTED`.
 
+## Edge function invocation
+
+`supabase.functions.invoke(name, { body })` is routed by the Scenario run driver
+to the saved Edge function source in a fresh locked-down worker. The worker
+supports `Deno.serve`, `Deno.env.get` for `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
+and `SUPABASE_SERVICE_ROLE_KEY`, and imports of
+`jsr:@supabase/supabase-js@2`, `npm:@supabase/supabase-js@2`,
+`https://esm.sh/@supabase/supabase-js@2`, and `@supabase/supabase-js`.
+The bundled supabase-js client sends its Sandbox API traffic to the same run;
+the service-role key executes requests as `service_role`. Other runtime
+imports are refused before the handler executes, and network, WebSocket,
+XMLHttpRequest, and script-import access are unavailable to the handler.
+
+The handler's response is returned through supabase-js. The run request log
+includes the invocation and its response, with Sandbox API requests attributed
+to that invocation. Handler console output is labelled with the Edge function
+name; writes are included in the run's result grids.
+
 ## Unsupported read features
 
 The Sandbox API refuses aliases, JSON-path projections, CSV and explain responses, planned or estimated count preferences, unsupported filter operators or syntax, and unimplemented query options. The error names the unsupported feature and uses the `PGRST_SANDBOX_UNSUPPORTED` code.

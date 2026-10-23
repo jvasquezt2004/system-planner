@@ -40,6 +40,7 @@ function driverFor(workspace: DesignWorkspace, timeoutMs = 30_000) {
 	return createScenarioRunDriver({
 		workspace,
 		createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+		createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
 		timeoutMs,
 	});
 }
@@ -61,6 +62,92 @@ describe("Scenario run driver", () => {
 			}
 			expect(results[1]?.run.expectations[0]?.passed).toBe(false);
 			expect(results[2]?.run.reason).toBe("exception");
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
+	test("scenario invokes a saved Edge function that writes with service role and returns the result", async () => {
+		const { workspace, scenarios } = await fixture([
+			'const result = await supabase.functions.invoke("add-book", { body: { title: "from edge" } }); expect(result).returnsDataEqual({ id: 1, title: "from edge" });',
+		]);
+		const created = await workspace.createEdgeFunction({ name: "add-book" });
+		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "add-book");
+		if (!edgeFunction) throw new Error("Expected the saved Edge function.");
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: edgeFunction.id,
+			source: `import { createClient } from "jsr:@supabase/supabase-js@2";
+Deno.serve(async (request) => {
+	const client = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+	const { title } = await request.json();
+	const { data, error } = await client.from("Books").insert({ title }).select("*").single();
+	if (error) return Response.json({ error: error.message }, { status: 500 });
+	console.log("created", data.title);
+	return Response.json(data);
+});`,
+		});
+		const driver = driverFor(workspace);
+		try {
+			const run = await driver.run(scenarios[0]!);
+			expect(run?.status).toBe("passed");
+			expect(run?.requests).toEqual([
+				expect.objectContaining({
+					method: "POST",
+					table: "Books",
+					identity: expect.objectContaining({ role: "service_role" }),
+					invocationRef: expect.stringContaining("add-book"),
+				}),
+				expect.objectContaining({
+					method: "INVOKE",
+					table: "functions/add-book",
+					invocation: expect.objectContaining({ functionName: "add-book", status: 200, response: { id: 1, title: "from edge" } }),
+				}),
+			]);
+			expect(run?.console).toContain("[add-book] created from edge");
+			expect(run?.grids.find(({ table }) => table === "Books")?.rows).toEqual([{ id: 1, title: "from edge" }]);
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
+	test("supported supabase-js import forms resolve and unsupported imports are refused before handler execution", async () => {
+		const imports = [
+			["jsr-form", "jsr:@supabase/supabase-js@2"],
+			["npm-form", "npm:@supabase/supabase-js@2"],
+			["esm-form", "https://esm.sh/@supabase/supabase-js@2"],
+			["bare-form", "@supabase/supabase-js"],
+		] as const;
+		const { workspace, scenarios } = await fixture([
+			'for (const name of ["jsr-form", "npm-form", "esm-form", "bare-form"]) { const result = await supabase.functions.invoke(name); expect(result).returnsDataEqual({ name }); } const network = await supabase.functions.invoke("network-check"); expect(network).returnsDataEqual({ fetch: "undefined", WebSocket: "undefined", XMLHttpRequest: "undefined" }); const refused = await supabase.functions.invoke("bad-import"); expect(refused).fails();',
+		]);
+		for (const [name, specifier] of imports) {
+			const created = await workspace.createEdgeFunction({ name });
+			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
+			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
+			await workspace.updateEdgeFunctionSource({
+				edgeFunctionId: edgeFunction.id,
+				source: `import { createClient } from "${specifier}"; Deno.serve(() => Response.json({ name: "${name}" }));`,
+			});
+		}
+		const network = await workspace.createEdgeFunction({ name: "network-check" });
+		const networkFunction = network.edgeFunctions.find(({ name }) => name === "network-check");
+		if (!networkFunction) throw new Error("Expected saved Edge function network-check.");
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: networkFunction.id,
+			source: `Deno.serve(() => Response.json({ fetch: typeof fetch, WebSocket: typeof WebSocket, XMLHttpRequest: typeof XMLHttpRequest }));`,
+		});
+		const bad = await workspace.createEdgeFunction({ name: "bad-import" });
+		const badFunction = bad.edgeFunctions.find(({ name }) => name === "bad-import");
+		if (!badFunction) throw new Error("Expected saved Edge function bad-import.");
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: badFunction.id,
+			source: `import "node:fs"; console.log("must not execute"); Deno.serve(() => Response.json({ ok: true }));`,
+		});
+		const driver = driverFor(workspace);
+		try {
+			const run = await driver.run(scenarios[0]!);
+			expect(run?.status).toBe("passed");
+			expect(run?.requests.filter(({ method }) => method === "INVOKE")).toHaveLength(6);
+			expect(JSON.stringify(run?.requests.find(({ table }) => table === "functions/bad-import")?.result)).toContain("Runtime import is not supported: node:fs");
+			expect(run?.console).not.toContain("[bad-import] must not execute");
 		} finally {
 			driver.dispose();
 		}
@@ -99,6 +186,7 @@ describe("Scenario run driver", () => {
 		const driver = createScenarioRunDriver({
 			workspace,
 			createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
 			timeoutMs: 30_000,
 			getToken: () => projectGeneration,
 		});
