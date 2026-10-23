@@ -1,7 +1,7 @@
 import { PGlite } from "@electric-sql/pglite";
 import { vector } from "@electric-sql/pglite-pgvector";
 import type { PGlite as PGliteInstance } from "@electric-sql/pglite";
-import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioRequestLogEntry } from "../shared/design";
+import type { SandboxApiRequest, SandboxApiResponse, SandboxAppliedTable, ScenarioRequestLogEntry, ScenarioResultGrid } from "../shared/design";
 export type ScenarioRunDatabase = PGliteInstance;
 export async function createScenarioRunDatabase(sql: string): Promise<ScenarioRunDatabase> {
 	const database = new PGlite({ extensions: { vector } });
@@ -15,6 +15,41 @@ export async function createScenarioRunDatabase(sql: string): Promise<ScenarioRu
 	}
 }
 
+
+
+export async function captureScenarioResultGrids(
+	database: ScenarioRunDatabase,
+	tables: SandboxAppliedTable[],
+): Promise<ScenarioResultGrid[]> {
+	await database.exec("BEGIN");
+	try {
+		await database.exec("SET LOCAL ROLE postgres");
+		const grids: ScenarioResultGrid[] = [];
+		for (const table of tables) {
+			const primaryKey = table.columns.filter((column) => column.primaryKey).map((column) => column.name);
+			const orderBy = primaryKey.length
+				? ` ORDER BY ${primaryKey.map(quoteIdentifier).join(", ")}`
+				: "";
+			const countResult = await database.query<{ total: string | number }>(
+				`SELECT count(*) AS total FROM ${quoteIdentifier(table.name)}`,
+			);
+			const rowResult = await database.query<Record<string, unknown>>(
+				`SELECT * FROM ${quoteIdentifier(table.name)}${orderBy} LIMIT 500`,
+			);
+			grids.push({
+				table: table.name,
+				columns: table.columns.map((column) => column.name),
+				rows: rowResult.rows,
+				total: Number(countResult.rows[0]?.total ?? 0),
+			});
+		}
+		await database.exec("COMMIT");
+		return grids;
+	} catch (error) {
+		await database.exec("ROLLBACK");
+		throw error;
+	}
+}
 
 const UNSUPPORTED_CODE = "PGRST_SANDBOX_UNSUPPORTED";
 

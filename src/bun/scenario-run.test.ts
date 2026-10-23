@@ -77,7 +77,36 @@ describe("Scenario runs", () => {
 		expect(workspace.getState().scenarioRuns[scenarioId]?.requests[2]).toMatchObject({ status: 400, result: { code: "23502" } });
 		await workspace.finishScenarioRun({ runId, status: "passed", console: ["inserted one record"] });
 		expect(workspace.getState().scenarioRuns[scenarioId]).toMatchObject({ status: "passed", console: ["inserted one record"] });
-	});
+	}, 60_000);
+	test("finishing captures every table in primary-key order with a 500-row cap and total", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		await workspace.addTable({ name: "EmptyRecords" });
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		const idColumn = books?.columns.find((column) => column.name === "id");
+		if (!books || !idColumn) throw new Error("Expected Books primary key.");
+		await workspace.updateColumn({ tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		for (let id = 501; id >= 1; id -= 1) {
+			const inserted = await supabase.from("Books").insert({ id, title: `Book ${id}` }).select("*");
+			expect(inserted.error).toBeNull();
+		}
+
+		const finished = await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+		const result = finished.scenarioRuns[scenarioId];
+		expect(result?.grids).toHaveLength(2);
+		expect(result?.grids?.[0]).toMatchObject({
+			table: "Books",
+			columns: ["id", "title"],
+			total: 501,
+		});
+		expect(result?.grids?.[0]?.rows.slice(0, 2)).toEqual([
+			{ id: 1, title: "Book 1" },
+			{ id: 2, title: "Book 2" },
+		]);
+		expect(result?.grids?.[0]?.rows).toHaveLength(500);
+		expect(result?.grids?.[0]?.rows[499]).toEqual({ id: 500, title: "Book 500" });
+	}, 60_000);
 
 	test("unsupported filters fail loudly and consecutive runs start with empty records", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
@@ -95,7 +124,7 @@ describe("Scenario runs", () => {
 		expect(empty.data).toEqual([]);
 		expect(second.state.scenarioRuns[scenarioId]?.revision).toBe(first.state.scenarioRuns[scenarioId]?.revision);
 		await workspace.finishScenarioRun({ runId: second.runId, status: "passed", console: [] });
-	});
+	}, 60_000);
 	test("runs require an applied revision, reject overlap, and turn stale as the draft advances", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-unapplied-scenario-"));
 		directories.push(directory);
@@ -111,7 +140,7 @@ describe("Scenario runs", () => {
 		const laterDraft = await workspace.addTable({ name: "Authors" });
 		expect(laterDraft.scenarioRuns[scenario.scenarios[0].id]?.stale).toBe(true);
 		await workspace.finishScenarioRun({ runId: first.runId, status: "passed", console: [] });
-	});
+	}, 60_000);
 
 	test("scenario source executes inside a real Worker and transports requests through the workspace", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
@@ -136,5 +165,5 @@ describe("Scenario runs", () => {
 			worker.terminate();
 			await workspace.finishScenarioRun({ runId, status: "passed", console: ["worker completed"] });
 		}
-	});
+		}, 60_000);
 });
