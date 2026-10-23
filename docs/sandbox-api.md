@@ -16,9 +16,16 @@ The Sandbox API is the in-process PostgREST-compatible interface used by Scenari
 
 Selected values are serialized by PostgreSQL into JSONB before the Sandbox API returns them, preserving PostgreSQL's JSON representation for the applied column types. All identifiers are quoted; filter values are bound parameters.
 
-## Existing write support
+## Supported writes
 
-A single-record `insert` with `Prefer: return=representation` and `select=*` is supported. Other write forms remain unsupported.
+| Feature | Supported form | Notes |
+| --- | --- | --- |
+| Insert | `POST` with one record or an array of records | Bulk inserts use the union of record keys. Omitted keys become `NULL` by default; `Prefer: missing=default` uses database defaults. |
+| Update | `PATCH` with supported filters | Update filters use the same operators as reads. |
+| Delete | `DELETE` with supported filters | |
+| Upsert | `POST` with `Prefer: resolution=merge-duplicates` or `resolution=ignore-duplicates`; optional `on_conflict=column[,column]` | Without `on_conflict`, the applied table's primary key is used. Conflict targets must identify an applicable unique constraint. |
+| Return | `Prefer: return=minimal` or `return=representation`; `.select(columns)` requests a projected representation | Minimal is the default. Insert/upsert responses use HTTP 201; update/delete use 204 when minimal and 200 with representation. |
+| Constraint errors | PostgreSQL constraint errors retain SQLSTATE and PostgREST status mapping | Requests are transactional: any error rolls back every row in that request. |
 
 ## Unsupported read features
 
