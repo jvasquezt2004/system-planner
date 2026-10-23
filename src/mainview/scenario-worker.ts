@@ -33,8 +33,8 @@ scope.onmessage = async (event: MessageEvent) => {
 		if (hasRuntimeImport(file)) throw new Error("Scenarios may only import types; runtime imports are not supported.");
 		const source = ts.transpileModule(message.source, {
 			reportDiagnostics: true,
-			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None, importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove },
-		}).outputText;
+			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, importsNotUsedAsValues: ts.ImportsNotUsedAsValues.Remove },
+		}).outputText.replace(/^export \{\};?\s*$/gm, "");
 		const requestFetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = input instanceof Request ? input.url : String(input);
 			const parsed = new URL(url);
@@ -63,7 +63,7 @@ scope.onmessage = async (event: MessageEvent) => {
 			error: (...values: unknown[]) => output.push(values.map(stringify).join(" ")),
 		};
 		Object.assign(globalThis, {
-			fetch: () => { throw new Error("Network access is disabled in Scenarios."); },
+			fetch: undefined,
 			XMLHttpRequest: undefined,
 			WebSocket: undefined,
 			importScripts: undefined,
