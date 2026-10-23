@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
+import { generateDesignSql } from "./sql";
 
 const workspaces: DesignWorkspace[] = [];
 const directories: string[] = [];
@@ -79,5 +80,113 @@ describe("project Functions", () => {
 		expect(removed.sql.status).toBe("stale");
 		if (removed.sql.status !== "stale") throw new Error("Expected the blocked SQL preview.");
 		expect(removed.sql.errors).toContainEqual(expect.stringContaining("depends on a table"));
+	}, 60_000);
+	test("Triggers are structural, undoable, persisted, rejected drafts are retained, and dependencies require confirmation", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-triggers-"));
+		directories.push(directory);
+		const path = join(directory, "design.sqlite");
+		let workspace = await openWorkspace(path);
+		await workspace.createProject({ name: "Trigger project" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = withTable.design!.tables[0]!;
+		const withFunction = await workspace.updateFunctions({ functions: [{
+			id: "set-title", name: "set_title", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker",
+			body: "BEGIN RETURN NEW; END;",
+		}] });
+		expect(withFunction.sandbox.status).toBe("applied");
+		const trigger = {
+			id: "before-insert", name: "before_insert", tableId: table.id, timing: "BEFORE" as const,
+			events: [{ event: "INSERT" as const }], level: "ROW" as const, functionId: "set-title", when: "",
+		};
+		const applied = await workspace.updateTriggers({ triggers: [trigger] });
+		expect(applied.sandbox.status).toBe("applied");
+		const undone = await workspace.undo();
+		expect(undone.design?.triggers ?? []).toEqual([]);
+		const redone = await workspace.redo();
+		expect(redone.design?.triggers).toEqual([trigger]);
+		await workspace.close();
+		workspaces.splice(workspaces.indexOf(workspace), 1);
+		workspace = await openWorkspace(path);
+		expect(workspace.getState().design?.triggers).toEqual([trigger]);
+		const rejected = await workspace.updateTriggers({ triggers: [{ ...trigger, when: "missing_column > 0" }] });
+		expect(rejected.design?.triggers?.[0]?.when).toBe("missing_column > 0");
+		expect(rejected.sandbox).toMatchObject({ status: "failed", failure: "sql-rejected" });
+		expect(workspace.describeRemoval({ kind: "table", tableId: table.id }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		await expect(workspace.removeTable({ tableId: table.id })).rejects.toThrow(/trigger before_insert/);
+		expect(workspace.describeRemoval({ kind: "function", functionId: "set-title" }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		await expect(workspace.removeFunction({ functionId: "set-title" })).rejects.toThrow(/trigger before_insert/);
+		const removed = await workspace.removeFunction({ functionId: "set-title", confirmed: true });
+		expect(removed.design?.triggers).toEqual([]);
+		expect(removed.design?.functions).toEqual([]);
+		await workspace.close();
+		workspaces.splice(workspaces.indexOf(workspace), 1);
+		const reopened = await openWorkspace(path);
+		expect(reopened.getState().design?.triggers).toEqual([]);
+	}, 60_000);
+	test("confirmed table removal removes its dependent Trigger, and undo restores valid SQL", async () => {
+		const workspace = await openWorkspace();
+		await workspace.createProject({ name: "Table trigger removal" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = withTable.design!.tables[0]!;
+		await workspace.addTable({ name: "Authors" });
+		await workspace.updateFunctions({ functions: [{
+			id: "table-handler", name: "table_handler", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN NEW; END;",
+		}] });
+		const trigger = {
+			id: "table-trigger", name: "books_insert", tableId: table.id, timing: "AFTER" as const,
+			events: [{ event: "INSERT" as const }], level: "ROW" as const, functionId: "table-handler", when: "",
+		};
+		await workspace.updateTriggers({ triggers: [trigger] });
+		expect(workspace.describeRemoval({ kind: "table", tableId: table.id }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		const removed = await workspace.removeTable({ tableId: table.id, confirmed: true });
+		expect(removed.design?.triggers).toEqual([]);
+		expect(removed.sql).toMatchObject({ status: "current" });
+		const undone = await workspace.undo();
+		expect(undone.design?.triggers).toEqual([trigger]);
+		expect(undone.sql.status).toBe("current");
+	}, 60_000);
+
+	test("confirmed column removal drops an empty UPDATE OF filter and undo restores it", async () => {
+		const workspace = await openWorkspace();
+		await workspace.createProject({ name: "Column trigger removal" });
+		const withTable = await workspace.addTable({ name: "Books" });
+		const table = withTable.design!.tables[0]!;
+		const withColumn = await workspace.addColumn({ tableId: table.id, name: "title", type: "text" });
+		const title = withColumn.design!.tables[0]!.columns.find((column) => column.name === "title")!;
+		await workspace.updateFunctions({ functions: [{
+			id: "column-handler", name: "column_handler", arguments: [], returnType: "trigger", returnsSet: false,
+			language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN NEW; END;",
+		}] });
+		const trigger = {
+			id: "column-trigger", name: "books_title_update", tableId: table.id, timing: "AFTER" as const,
+			events: [{ event: "UPDATE" as const, columnIds: [title.id] }], level: "ROW" as const,
+			functionId: "column-handler", when: "",
+		};
+		await workspace.updateTriggers({ triggers: [trigger] });
+		const invalidDesign = {
+			...workspace.getState().design!,
+			triggers: [{ ...trigger, events: [{ event: "UPDATE" as const, columnIds: ["missing-column"] }] }],
+		};
+		const invalidSql = generateDesignSql(invalidDesign);
+		expect(invalidSql).toMatchObject({ ok: false });
+		if (invalidSql.ok) throw new Error("Expected SQL validation to reject the missing trigger column.");
+		expect(invalidSql.errors).toContainEqual(expect.stringContaining('Trigger "books_title_update" references a column'));
+		expect(workspace.describeRemoval({ kind: "column", tableId: table.id, columnId: title.id }).triggers).toEqual([
+			{ triggerId: trigger.id, name: trigger.name, table: "Books" },
+		]);
+		const removed = await workspace.removeColumn({ tableId: table.id, columnId: title.id, confirmed: true });
+		expect(removed.design?.triggers?.[0]?.events).toEqual([{ event: "UPDATE" }]);
+		expect(removed.sql.status).toBe("current");
+		const undone = await workspace.undo();
+		expect(undone.design?.triggers).toEqual([trigger]);
+		expect(undone.sql.status).toBe("current");
 	}, 60_000);
 });

@@ -100,6 +100,46 @@ describe("Scenario runs", () => {
 		await workspace.finishScenarioRun({ runId, status: "passed", console: ["inserted one record"] });
 		expect(workspace.getState().scenarioRuns[scenarioId]).toMatchObject({ status: "passed", console: ["inserted one record"] });
 	}, 60_000);
+	test("BEFORE and AFTER Triggers change inserted records through the real supabase-js client", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		if (!books) throw new Error("Expected Books table.");
+		const title = books.columns.find((column) => column.name === "title");
+		if (!title) throw new Error("Expected the Books title column.");
+		const auditState = await workspace.addTable({ name: "Audit" });
+		const audit = auditState.design?.tables.find((table) => table.name === "Audit");
+		if (!audit) throw new Error("Expected Audit table.");
+		await workspace.addColumn({ tableId: audit.id, name: "message", type: "text" });
+		const withFunctions = await workspace.updateFunctions({ functions: [
+			{
+				id: "normalise-title", name: "normalise_title", arguments: [], returnType: "trigger",
+				returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker",
+				body: "BEGIN NEW.title := upper(NEW.title); RETURN NEW; END;",
+			},
+			{
+				id: "audit-title", name: "audit_title", arguments: [], returnType: "trigger",
+				returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker",
+				body: 'BEGIN INSERT INTO "Audit" (message) VALUES (NEW.title); RETURN NEW; END;',
+			},
+		] });
+		expect(withFunctions.sandbox.status).toBe("applied");
+		await workspace.updateTriggers({ triggers: [
+			{ id: "normalise-before-insert", name: "normalise_before_insert", tableId: books.id, timing: "BEFORE", events: [{ event: "INSERT" }], level: "ROW", functionId: "normalise-title", when: "" },
+			{ id: "audit-after-insert", name: "audit_after_insert", tableId: books.id, timing: "AFTER", events: [{ event: "INSERT" }], level: "ROW", functionId: "audit-title", when: "" },
+			{ id: "audit-title-update", name: "audit_title_update", tableId: books.id, timing: "AFTER", events: [{ event: "UPDATE", columnIds: [title.id] }], level: "ROW", functionId: "audit-title", when: "" },
+		] });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+		const inserted = await supabase.from("Books").insert({ title: "draft" }).select("*");
+		expect(inserted.error).toBeNull();
+		expect(inserted.data).toEqual([{ id: 1, title: "DRAFT" }]);
+		const updated = await supabase.from("Books").update({ title: "updated" }).eq("id", 1);
+		expect(updated.error).toBeNull();
+		const auditRows = await supabase.from("Audit").select("*");
+		expect(auditRows.error).toBeNull();
+		expect(auditRows.data).toEqual([{ id: 1, message: "DRAFT" }, { id: 2, message: "updated" }]);
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 60_000);
 	test("the real supabase-js client performs bulk insert, filtered update, upsert, and delete", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");

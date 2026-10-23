@@ -6,6 +6,7 @@ export function unrepresentedPostgresqlLogicNotice(design: Design): string | nul
 		...(design.tables.some((table) => table.rowLevelSecurity === true) ? ["Row-level security"] : []),
 		...(design.tables.some((table) => (table.policies?.length ?? 0) > 0) ? ["policies"] : []),
 		...((design.functions?.length ?? 0) > 0 ? ["functions"] : []),
+		...((design.triggers?.length ?? 0) > 0 ? ["triggers"] : []),
 	];
 	if (omitted.length === 0) return null;
 	const subject = omitted.length === 1

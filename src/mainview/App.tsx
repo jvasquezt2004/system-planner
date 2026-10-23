@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
 	getSqlPreviewValidationStatus,
 	getSqlValidationErrors,
 	type AffectedRelationship,
+	type AffectedTrigger,
 	type CanvasPoint,
 	type CanvasViewport,
 	type ColumnChanges,
@@ -56,12 +57,13 @@ import { SqlPreviewView, sqlStatusLine } from "./sql-preview";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
 import { ScenarioView } from "./scenario-view";
+import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
 
 type RunAllOperation = { projectId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios" | "functions";
+type WorkspaceView = "canvas" | "sql" | "scenarios" | "functions" | "triggers";
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -419,16 +421,16 @@ function App() {
 	const confirmRemoval = useCallback(() => {
 		if (!pendingRemoval) return;
 		const target = pendingRemoval.target;
-		const tableId = target.tableId;
-		const columnId = target.kind === "column" ? target.columnId : null;
 		setPendingRemoval(null);
 		setSelectedRelationshipId(null);
 		setSelectedColumnId(null);
-		if (columnId === null) {
+		if (target.kind === "function") {
+			void run(() => workspaceClient.removeFunction({ functionId: target.functionId, confirmed: true }));
+		} else if (target.kind === "table") {
 			setSelectedTableId(null);
-			void run(() => workspaceClient.removeTable(tableId, true));
+			void run(() => workspaceClient.removeTable(target.tableId, true));
 		} else {
-			void run(() => workspaceClient.removeColumn(tableId, columnId, true));
+			void run(() => workspaceClient.removeColumn(target.tableId, target.columnId, true));
 		}
 	}, [pendingRemoval, run]);
 
@@ -599,6 +601,24 @@ function App() {
 								functions={state.design.functions ?? []}
 								busy={busy}
 								onSave={(functions) => void run(() => workspaceClient.updateFunctions(functions))}
+								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId })}
+							/>
+						)}
+						{view === "triggers" && (
+							<TriggersView
+								key={state.project.id}
+								triggers={state.design.triggers ?? []}
+								tables={state.design.tables}
+								functions={state.design.functions ?? []}
+								busy={busy}
+								onSave={(triggers) => void run(() => workspaceClient.updateTriggers(triggers))}
+								onRemove={(triggerId) =>
+									void run(() =>
+										workspaceClient.updateTriggers(
+											(state.design?.triggers ?? []).filter((trigger) => trigger.id !== triggerId),
+										),
+									)
+								}
 							/>
 						)}
 						{view === "scenarios" && (
@@ -887,7 +907,7 @@ function Masthead({
 					value={project ? view : ""}
 					disabled={!project}
 					onValueChange={(next) => {
-						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "functions") onViewChange(next);
+						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "functions" || next === "triggers") onViewChange(next);
 					}}
 				>
 					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
@@ -905,6 +925,10 @@ function Masthead({
 					<ToggleGroupItem value="functions" data-testid="view-functions" className="h-7 px-3">
 						<Braces />
 						Functions
+					</ToggleGroupItem>
+					<ToggleGroupItem value="triggers" data-testid="view-triggers" className="h-7 px-3">
+						<Zap />
+						Triggers
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>
@@ -1219,12 +1243,12 @@ function RemovalDialog({
 								Remove <span className="font-mono text-[18px]">{plan.target}</span>?
 							</DialogTitle>
 							<DialogDescription>
-								{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length === 0
+								{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length + plan.triggers.length === 0
 									? "No schema objects depend on it."
-									: "The listed relationships, indexes, and constraints will be adjusted or removed with this change."}
+									: "The listed relationships, indexes, constraints, and triggers will be adjusted or removed with this change."}
 							</DialogDescription>
 						</DialogHeader>
-						{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length > 0 && (
+						{plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length + plan.triggers.length > 0 && (
 							<ul data-testid="affected-relationships" className="border-y border-rule">
 								{plan.relationships.map((relationship: AffectedRelationship, index) => (
 									<li
@@ -1278,6 +1302,11 @@ function RemovalDialog({
 										className="border-t border-rule-soft py-2 font-mono text-[11.5px] text-ink-2"
 									>
 										{constraint.table}.{constraint.name}
+									</li>
+								))}
+								{plan.triggers.map((trigger: AffectedTrigger) => (
+									<li key={trigger.triggerId} data-testid="affected-trigger" className="border-t border-rule-soft py-2 font-mono text-[11.5px] text-ink-2">
+										{trigger.table}.{trigger.name}
 									</li>
 								))}
 							</ul>

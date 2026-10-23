@@ -28,6 +28,14 @@ Selected values are serialized by PostgreSQL into JSONB before the Sandbox API r
 | Return | `Prefer: return=minimal` or `return=representation`; `.select(columns)` requests a projected representation, including related-resource embeds | Minimal is the default. Insert/upsert responses use HTTP 201; update/delete use 204 when minimal and 200 with representation. `count: "exact"` on writes reports the affected top-level row count in `Content-Range`. |
 | Constraint errors | PostgreSQL constraint errors retain SQLSTATE and PostgREST status mapping | Requests are transactional: any error rolls back every row in that request. |
 
+Triggers in the applied design execute during supported writes according to
+their configured timing, events, and row or statement level. BEFORE row
+triggers may change the returned row; AFTER triggers can write related records
+that subsequent Sandbox API requests can observe.
+When a column in an `UPDATE OF` list is removed from a design, that column is
+removed from the list. If it was the last listed column, the `UPDATE OF` filter
+is dropped and the trigger runs for every update.
+
 ## Row-level security
 
 Scenario requests execute in a transaction under the request's `anon`,

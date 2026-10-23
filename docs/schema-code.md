@@ -32,7 +32,7 @@ reference) and the ORM formats Prisma, Drizzle, SQLAlchemy, and Django ORM.
 
 ## PostgreSQL-only logic
 
-The ORM formats do not emit row-level security, policies, or project functions.
+The ORM formats do not emit row-level security, policies, project functions, or triggers.
 When a design contains any of these PostgreSQL-only features, every generated
 ORM schema includes a visible migration notice. The generated ORM code is not a
 substitute for those database-side definitions.

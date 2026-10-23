@@ -145,6 +145,18 @@ export type DesignFunction = {
 	/** Referenced project tables, tracked so removing one rejects the draft. */
 	tableDependencies?: string[];
 };
+export type DesignTriggerEvent = { event: "INSERT" | "UPDATE" | "DELETE" | "TRUNCATE"; columnIds?: string[] };
+export type DesignTrigger = {
+	id: string;
+	name: string;
+	tableId: string;
+	timing: "BEFORE" | "AFTER" | "INSTEAD OF";
+	events: DesignTriggerEvent[];
+	level: "ROW" | "STATEMENT";
+	functionId: string;
+	when: string;
+};
+
 
 
 /** PostgreSQL access method used by an index. */
@@ -214,8 +226,12 @@ export type Design = {
 	viewport: CanvasViewport;
 	enumTypes?: DesignEnumType[];
 	functions?: DesignFunction[];
+	triggers?: DesignTrigger[];
 };
 export type UpdateFunctionsAction = { functions: DesignFunction[] };
+export type UpdateTriggersAction = { triggers: DesignTrigger[] };
+export type RemoveFunctionAction = { functionId: string; confirmed?: boolean };
+
 
 
 
@@ -551,7 +567,6 @@ export type AddRelationshipAction = {
 	/** Canvas placement for the visible junction created by many-to-many. */
 	junctionPosition?: CanvasPoint;
 };
-
 /** An omitted property keeps its current value. */
 export type UpdateRelationshipAction = {
 	relationshipId: string;
@@ -568,7 +583,8 @@ export type RemoveRelationshipAction = { relationshipId: string };
 
 export type RemovalTarget =
 	| { kind: "table"; tableId: string }
-	| { kind: "column"; tableId: string; columnId: string };
+	| { kind: "column"; tableId: string; columnId: string }
+	| { kind: "function"; functionId: string };
 
 /** A relationship or association a pending removal would also delete. */
 export type AffectedRelationship = {
@@ -583,6 +599,8 @@ export type AffectedRelationship = {
 	/** The relationship-owned constraints, never independent column settings. */
 	constraints: RelationshipConstraint[];
 };
+export type AffectedTrigger = { triggerId: string; name: string; table: string };
+
 
 /**
  * What a destructive edit would remove, so the designer can inspect it before
@@ -593,6 +611,7 @@ export type RemovalPlan = {
 	relationships: AffectedRelationship[];
 	indexes: AffectedIndex[];
 	uniqueConstraints: AffectedUniqueConstraint[];
+	triggers: AffectedTrigger[];
 };
 
 /** An index key or INCLUDE entry removed with the referenced column. */

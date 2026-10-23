@@ -47,6 +47,12 @@ _Avoid_: PostgREST, Supabase, backend
 A named PostgreSQL routine with typed arguments, a declared return shape, and a handwritten SQL or PL/pgSQL body.
 _Avoid_: Trigger (a function is called explicitly or by a trigger; it is not itself a trigger)
 
+
+**Trigger**:
+A named table rule that invokes a Function before or after selected row or
+statement events.
+_Avoid_: Function
+
 **Table card**:
 The spreadsheet-styled representation of a table on the canvas, showing its column definitions rather than stored records.
 _Avoid_: Data grid, spreadsheet of records

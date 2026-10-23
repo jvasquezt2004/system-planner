@@ -90,6 +90,16 @@ describe("schema code formats", () => {
 			security: "invoker",
 			body: "SELECT 1",
 		};
+		const triggerDesign = {
+			...minimal,
+			tables: tables(false, false),
+			functions: [{ ...fn, returnType: "trigger", language: "plpgsql" as const }],
+			triggers: [{
+				id: "touch-books", name: "touch_books", tableId: minimal.tables[0]!.id,
+				timing: "BEFORE" as const, events: [{ event: "INSERT" as const }],
+				level: "ROW" as const, functionId: fn.id, when: "",
+			}],
+		};
 		const cases: { name: string; design: Design; expected: string | null }[] = [
 			{
 				name: "row-level security only",
@@ -107,8 +117,13 @@ describe("schema code formats", () => {
 				expected: "functions are not represented",
 			},
 			{
+				name: "triggers only",
+				design: triggerDesign,
+				expected: "triggers are not represented",
+			},
+			{
 				name: "no omitted PostgreSQL logic",
-				design: { ...minimal, tables: tables(false, false), functions: [] },
+				design: { ...minimal, tables: tables(false, false), functions: [], triggers: [] },
 				expected: null,
 			},
 		];
