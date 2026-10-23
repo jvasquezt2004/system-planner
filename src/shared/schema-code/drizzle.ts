@@ -9,7 +9,7 @@ import type {
 import { planSchemaObjectNames } from "../../bun/sql";
 import { postgresGeneratedObjectName } from "../postgres-identifiers";
 import { modelWords, planRelationshipNames, splitWords, type NameWords } from "./naming";
-import { hasUnrepresentedRowLevelSecurity } from "./rls-notice";
+import { unrepresentedPostgresqlLogicNotice } from "./postgresql-logic-notice";
 
 import type { SchemaCodeGeneration } from "./types";
 
@@ -116,10 +116,9 @@ export function generateDrizzleSchema(design: Design): SchemaCodeGeneration {
 		"relations",
 	);
 
+	const omissionNotice = unrepresentedPostgresqlLogicNotice(design);
 	const lines = [
-		...(hasUnrepresentedRowLevelSecurity(design)
-			? ["// Row-level security and policies are not represented; preserve them in PostgreSQL migrations."]
-			: []),
+		...(omissionNotice ? [`// ${omissionNotice}`] : []),
 		...(pgImports.size ? renderNamedImport([...pgImports], "drizzle-orm/pg-core") : []),
 		...(relationships.length ? ['import { relations } from "drizzle-orm";'] : []),
 		...(relationships.some((item) => item.table.id === item.target.id)

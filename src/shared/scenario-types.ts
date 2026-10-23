@@ -1,3 +1,4 @@
+import type { DesignFunction } from "./design";
 import type { DesignEnumType, SandboxAppliedTable } from "./design";
 
 export const scenarioSupabaseTypePaths = {
@@ -44,6 +45,8 @@ function typeScriptType(dataType: string, enumTypeName?: string): string {
 		case "timestamp without time zone":
 		case "timestamp with time zone":
 			return "string";
+		case "void":
+			return "null";
 		default:
 			return "unknown";
 	}
@@ -52,11 +55,33 @@ function typeScriptType(dataType: string, enumTypeName?: string): string {
 function propertyName(name: string): string {
 	return /^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name);
 }
+function functionTypeScriptType(
+	dataType: string,
+	tables: SandboxAppliedTable[],
+	enumTypes: DesignEnumType[],
+): string {
+	if (enumTypes.some((candidate) => candidate.name === dataType)) {
+		return `Database["public"]["Enums"][${JSON.stringify(dataType)}]`;
+	}
+	const rowType = tables.find((table) => table.name === dataType);
+	if (rowType) return `Database["public"]["Tables"][${JSON.stringify(rowType.name)}]["Row"]`;
+	const tableReturn = /^TABLE\s*\((.*)\)$/is.exec(dataType.trim());
+	if (tableReturn) {
+		const properties = tableReturn[1]!.split(",").map((column) => {
+			const match = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s+(.+?)\s*$/.exec(column);
+			return match ? `          ${propertyName(match[1]!)}: ${functionTypeScriptType(match[2]!, tables, enumTypes)};` : "";
+		}).filter(Boolean);
+		return `{\n${properties.join("\n")}\n        }`;
+	}
+	return typeScriptType(dataType);
+}
+
 
 /** Emits supabase gen types-shaped declarations for one applied revision. */
 export function generateScenarioDatabaseTypes(
 	tables: SandboxAppliedTable[],
 	enumTypes: DesignEnumType[] = [],
+	functions: DesignFunction[] = [],
 ): string {
 	const tableEntries = tables.map((table) => {
 		const rowProperties = table.columns.map((column) => {
@@ -77,6 +102,13 @@ export function generateScenarioDatabaseTypes(
 	const enumEntries = enumTypes.map((enumType) =>
 		`      ${propertyName(enumType.name)}: ${enumType.labels.map((label) => JSON.stringify(label)).join(" | ") || "never"};`,
 	);
+	const functionEntries = functions.map((fn) => {
+		const args = fn.arguments.map((argument) =>
+			`          ${propertyName(argument.name)}: ${functionTypeScriptType(argument.type, tables, enumTypes)};`,
+		).join("\n");
+		const returns = functionTypeScriptType(fn.returnType, tables, enumTypes);
+		return `      ${propertyName(fn.name)}: {\n        Args: {\n${args}\n        };\n        Returns: ${returns}${fn.returnsSet ? "[]" : ""};\n      };`;
+	});
 	return `type Json = string | number | boolean | null | { [key: string]: Json | undefined } | Json[];
 
 export interface Database {
@@ -85,7 +117,9 @@ export interface Database {
 ${tableEntries.join("\n")}
     };
     Views: Record<string, never>;
-    Functions: Record<string, never>;
+    Functions: {
+${functionEntries.join("\n")}
+    };
     Enums: {
 ${enumEntries.join("\n")}
     };

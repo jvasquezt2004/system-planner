@@ -38,6 +38,24 @@ those transaction-local claims. The Supabase-compatible `service_role` bypasses
 row-level security; tables with RLS disabled are unaffected by their policies.
 Result grids continue to use the privileged role and include all rows.
 
+## Function calls
+
+`POST /rest/v1/rpc/<name>` calls a design Function with a JSON object of named
+arguments, matching `supabase.rpc(name, args)`. Scalar and single composite
+results are returned as JSON values; set-returning Functions return JSON arrays.
+Every call runs in the request's identity transaction, so `auth.uid()`,
+`auth.role()`, `auth.jwt()`, and row-level security apply inside the Function.
+
+Named table-row composite and set-returning results accept `.select(...)` and use
+the same relationship-embed serialization as table reads. Anonymous `TABLE`
+results support column projections but have no relationship metadata; scalar
+results do not support projections.
+
+`GET` is supported only for `stable` and `immutable` Functions and accepts
+arguments as query parameters. Unknown Functions and argument-name mismatches
+return `PGRST202`. Filters, ordering, limits, and ranges on set-returning
+results are not implemented and return `PGRST_SANDBOX_UNSUPPORTED`.
+
 ## Unsupported read features
 
 The Sandbox API refuses aliases, JSON-path projections, CSV and explain responses, planned or estimated count preferences, unsupported filter operators or syntax, and unimplemented query options. The error names the unsupported feature and uses the `PGRST_SANDBOX_UNSUPPORTED` code.

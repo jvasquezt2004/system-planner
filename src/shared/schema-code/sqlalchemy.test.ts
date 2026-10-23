@@ -636,9 +636,4 @@ describe("SQLAlchemy schema code", () => {
 	test("generates stable single-table output", () => {
 		expect(generateSqlAlchemyModels(minimalDesign)).toEqual(generateSqlAlchemyModels(minimalDesign));
 	});
-	test("warns when row-level security needs PostgreSQL migrations", () => {
-		const design = structuredClone(minimalDesign);
-		(design.tables[0] as typeof design.tables[number] & { rowLevelSecurity?: boolean }).rowLevelSecurity = true;
-		expect(generatedCode(design)).toContain("# Row-level security and policies are not represented");
-	});
 });

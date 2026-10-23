@@ -12,6 +12,7 @@ import type {
 	DesignIndex,
 	DesignTable,
 	DesignUniqueConstraint,
+	DesignFunction,
 } from "../shared/design";
 import {
 	relationshipConstraintName,
@@ -135,6 +136,20 @@ export function generateDesignSql(design: Design): SqlGeneration {
 			errors.push(`Enum type "${enumType.name}" needs non-empty, unique labels.`);
 		}
 	}
+	for (const fn of design.functions ?? []) {
+		if (!fn.name.trim() || fn.name.includes("\u0000")) errors.push(`Function name "${fn.name}" is invalid.`);
+		for (const argument of fn.arguments) {
+			if (!argument.name.trim() || argument.name.includes("\u0000")) errors.push(`Function "${fn.name}" has an invalid argument name.`);
+			if (!isFunctionType(argument.type)) errors.push(`Function "${fn.name}" has unsupported argument type "${argument.type}".`);
+		}
+		for (const dependency of fn.tableDependencies ?? []) {
+			if (!design.tables.some((table) => table.id === dependency)) {
+				errors.push(`Function "${fn.name}" depends on a table that no longer exists.`);
+			}
+		}
+		if (!isFunctionType(fn.returnType)) errors.push(`Function "${fn.name}" has unsupported return type "${fn.returnType}".`);
+	}
+
 	const occupiedNames = initialPostgresRelationNames(design);
 	const explicitSchemaNames = new Set<string>();
 	for (const table of design.tables) {
@@ -208,9 +223,46 @@ export function generateDesignSql(design: Design): SqlGeneration {
 				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
 		),
 		...pairConstraintSql,
+		...(design.functions ?? []).map((fn) => renderFunction(fn, design)),
 		...design.tables.flatMap((table) => renderPolicies(table)),
 	];
 	return { ok: true, sql: `${statements.join("\n\n")}\n` };
+}
+
+function renderFunction(fn: DesignFunction, design: Design): string {
+	const argumentsSql = fn.arguments
+		.map((argument) => `${quoteIdentifier(argument.name)} ${renderFunctionType(argument.type, design)}`)
+		.join(", ");
+	let delimiter = "$function$";
+	for (let suffix = 1; fn.body.includes(delimiter); suffix++) delimiter = `$function_${suffix}$`;
+	return [
+		`CREATE FUNCTION ${quoteIdentifier(fn.name)}(${argumentsSql})`,
+		`RETURNS ${fn.returnsSet && !/^TABLE\s*\(/i.test(fn.returnType) ? "SETOF " : ""}${renderFunctionType(fn.returnType, design)}`,
+		`LANGUAGE ${fn.language.toUpperCase()}`,
+		`${fn.volatility.toUpperCase()}`,
+		`SECURITY ${fn.security.toUpperCase()}`,
+		`AS ${delimiter}${fn.body}${delimiter};`,
+	].join("\n");
+}
+
+function renderFunctionType(value: string, design: Design): string {
+	const normalized = value.trim();
+	const arraySuffix = normalized.endsWith("[]") ? "[]" : "";
+	const baseType = arraySuffix ? normalized.slice(0, -2).trim() : normalized;
+	const customType = [...design.tables.map((table) => table.name), ...(design.enumTypes ?? []).map((type) => type.name)]
+		.find((name) => name === baseType);
+	return customType ? `${quoteIdentifier(customType)}${arraySuffix}` : normalized;
+}
+
+function isFunctionType(value: string): boolean {
+	const normalized = value.trim();
+	if (!normalized || normalized.includes("\u0000") || /[;'"`$]/.test(normalized)) return false;
+	if (/^[A-Za-z_][A-Za-z0-9_ .]*(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?(?:\[\])*$/.test(normalized)) return true;
+	const table = /^TABLE\s*\((.*)\)$/is.exec(normalized);
+	if (!table) return false;
+	return table[1]!.split(",").every((column) =>
+		/^\s*[A-Za-z_][A-Za-z0-9_]*\s+[A-Za-z_][A-Za-z0-9_ .]*(?:\(\s*\d+(?:\s*,\s*\d+)?\s*\))?(?:\[\])*\s*$/.test(column),
+	);
 }
 
 function validateRelationship(

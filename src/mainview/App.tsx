@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
@@ -56,11 +56,12 @@ import { SqlPreviewView, sqlStatusLine } from "./sql-preview";
 import { TableInspector } from "./table-inspector";
 import { workspaceClient } from "./workspace-client";
 import { ScenarioView } from "./scenario-view";
+import { FunctionsView } from "./functions-view";
 
 type RunAllOperation = { projectId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios";
+type WorkspaceView = "canvas" | "sql" | "scenarios" | "functions";
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -592,6 +593,14 @@ function App() {
 								validationStatus={getSqlPreviewValidationStatus(state)}
 							/>
 						)}
+						{view === "functions" && (
+							<FunctionsView
+								key={state.project.id}
+								functions={state.design.functions ?? []}
+								busy={busy}
+								onSave={(functions) => void run(() => workspaceClient.updateFunctions(functions))}
+							/>
+						)}
 						{view === "scenarios" && (
 							<ScenarioView
 								key={state.project.id}
@@ -599,6 +608,7 @@ function App() {
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
 								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
 								save={state.scenarioSave}
+								appliedFunctions={getLastAppliedSandbox(state.sandbox)?.functions ?? []}
 								scenarioRuns={state.scenarioRuns}
 								revision={state.revision}
 								runDisabledReason={scenarioRunDisabledReason}
@@ -877,9 +887,7 @@ function Masthead({
 					value={project ? view : ""}
 					disabled={!project}
 					onValueChange={(next) => {
-						if (next === "canvas" || next === "sql" || next === "scenarios") {
-							onViewChange(next);
-						}
+						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "functions") onViewChange(next);
 					}}
 				>
 					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
@@ -893,6 +901,10 @@ function Masthead({
 					<ToggleGroupItem value="scenarios" data-testid="view-scenarios" className="h-7 px-3">
 						<ScrollText />
 						Scenarios
+					</ToggleGroupItem>
+					<ToggleGroupItem value="functions" data-testid="view-functions" className="h-7 px-3">
+						<Braces />
+						Functions
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>
