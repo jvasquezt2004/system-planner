@@ -195,6 +195,27 @@ describe("Scenario runs", () => {
 		const exception = await runScenario(`throw new Error("scenario broke");`);
 		expect(exception.result.status).toBe("errored");
 		expect(exception.run?.status).toBe("errored");
+		const invalidInputs = await runScenario(`
+			const pending = supabase.from("Books").insert({ title: "must not execute" });
+			expect(pending).succeeds();
+			expect(pending).fails("23502");
+			expect(pending).returnsDataEqual([]);
+			expect(null).succeeds();
+			expect(undefined).fails();
+			expect(42).returnsDataEqual(42);
+		`);
+		expect(invalidInputs.result).toMatchObject({
+			status: "failed",
+			expectations: [
+				{ passed: false, message: "expect() received a pending request; await it first" },
+				{ passed: false, message: "expect() received a pending request; await it first" },
+				{ passed: false, message: "expect() received a pending request; await it first" },
+				{ passed: false, message: "expect() requires an awaited request result" },
+				{ passed: false, message: "expect() requires an awaited request result" },
+				{ passed: false, message: "expect() requires an awaited request result" },
+			],
+		});
+		expect(invalidInputs.run).toMatchObject({ status: "failed", expectations: expect.any(Array) });
 	}, 30_000);
 
 	test("scenario source executes inside a real Worker and transports requests through the workspace", async () => {
