@@ -14,6 +14,8 @@ import type {
 	UpdatePoliciesAction,
 	UpdateFunctionsAction,
 	UpdateUniqueConstraintsAction,
+	RemoveFunctionAction,
+	UpdateTriggersAction,
 	CreateScenarioAction,
 	RenameScenarioAction,
 	RemoveScenarioAction,
@@ -99,6 +101,8 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			updateEnumTypes: { params: UpdateEnumTypesAction; response: WorkspaceState };
 			updateUniqueConstraints: { params: UpdateUniqueConstraintsAction; response: WorkspaceState };
 			updateFunctions: { params: UpdateFunctionsAction; response: WorkspaceState };
+			updateTriggers: { params: UpdateTriggersAction; response: WorkspaceState };
+			removeFunction: { params: RemoveFunctionAction; response: WorkspaceState };
 			updatePolicies: { params: UpdatePoliciesAction; response: WorkspaceState };
 			removeColumn: {
 				params: { tableId: string; columnId: string; confirmed?: boolean };

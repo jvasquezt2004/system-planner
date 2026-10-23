@@ -23,6 +23,7 @@ import {
 	type DesignIndexKey,
 	type DesignEnumType,
 	type DesignFunction,
+	type DesignTrigger,
 	type DesignPolicy,
 	type DesignUniqueConstraint,
 	type ReferentialAction,
@@ -43,8 +44,10 @@ import {
 	type UpdateIndexesAction,
 	type UpdateEnumTypesAction,
 	type UpdatePoliciesAction,
+	type RemoveFunctionAction,
 	type UpdateUniqueConstraintsAction,
 	type UpdateFunctionsAction,
+	type UpdateTriggersAction,
 	type UpdateRelationshipAction,
 	type CreateScenarioAction,
 	type RenameScenarioAction,
@@ -121,6 +124,8 @@ export interface DesignWorkspace {
 	updatePolicies(action: UpdatePoliciesAction): Promise<WorkspaceState>;
 	updateEnumTypes(action: UpdateEnumTypesAction): Promise<WorkspaceState>;
 	updateFunctions(action: UpdateFunctionsAction): Promise<WorkspaceState>;
+	removeFunction(action: RemoveFunctionAction): Promise<WorkspaceState>;
+	updateTriggers(action: UpdateTriggersAction): Promise<WorkspaceState>;
 	updateUniqueConstraints(action: UpdateUniqueConstraintsAction): Promise<WorkspaceState>;
 	removeColumn(action: RemoveColumnAction): Promise<WorkspaceState>;
 	/** Creates the relationship and the foreign-key column it owns. */
@@ -1063,6 +1068,27 @@ export async function createDesignWorkspace(
 				return applyStructuralChange(projectId, { ...design, functions });
 			});
 		},
+		removeFunction(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const target: RemovalTarget = { kind: "function", functionId: action.functionId };
+				requireRemovalTarget(design, target);
+				requireConfirmedRemoval(design, target, action.confirmed);
+				return applyStructuralChange(projectId, {
+					...design,
+					functions: (design.functions ?? []).filter((fn) => fn.id !== action.functionId),
+					triggers: (design.triggers ?? []).filter((trigger) => trigger.functionId !== action.functionId),
+				});
+			});
+		},
+		updateTriggers(action) {
+			return runTask(async () => {
+				const { projectId, design } = requireOpenDesign();
+				const triggers = normalizeTriggers(action.triggers, design);
+				if (JSON.stringify(triggers) === JSON.stringify(design.triggers ?? [])) return state;
+				return applyStructuralChange(projectId, { ...design, triggers });
+			});
+		},
 
 		updateUniqueConstraints(action) {
 			return runTask(async () => {
@@ -1417,6 +1443,7 @@ function normalizeFunctions(values: unknown, design: Design): DesignFunction[] {
 		if (!["invoker", "definer"].includes(fn.security)) throw new Error(`Function "${name}" has unsupported security mode.`);
 		if (typeof fn.returnsSet !== "boolean" || typeof fn.body !== "string") throw new Error(`Function "${name}" definition is incomplete.`);
 		const returnType = requireName(fn.returnType, "Function return type");
+		if (returnType.toLowerCase() === "trigger" && fn.language !== "plpgsql") throw new Error(`Function "${name}" returning trigger must use PL/pgSQL.`);
 		const previous = design.functions?.find((candidate) => candidate.id === id);
 		const unchangedReferences = previous?.body === fn.body
 			&& previous.returnType === returnType
@@ -1426,10 +1453,43 @@ function normalizeFunctions(values: unknown, design: Design): DesignFunction[] {
 			: functionTableDependencies(fn.body, design.tables, [returnType, ...args.map((argument) => argument.type)]);
 		return {
 			id, name, arguments: args, returnType,
-			returnsSet: fn.returnsSet || /^TABLE\s*\(/i.test(returnType),
+			returnsSet: returnType.toLowerCase() === "trigger" ? false : fn.returnsSet || /^TABLE\s*\(/i.test(returnType),
 			language: fn.language, volatility: fn.volatility, security: fn.security,
 			body: fn.body, tableDependencies,
 		};
+	});
+}
+function normalizeTriggers(values: unknown, design: Design): DesignTrigger[] {
+	if (!Array.isArray(values)) throw new Error("Triggers must be a list.");
+	const ids = new Set<string>();
+	const names = new Set<string>();
+	return values.map((value: unknown) => {
+		if (!value || typeof value !== "object") throw new Error("Trigger definition is invalid.");
+		const trigger = value as DesignTrigger;
+		const id = requireName(trigger.id, "Trigger id");
+		const name = requireName(trigger.name, "Trigger name");
+		const scopedName = `${trigger.tableId}:${name}`;
+		if (ids.has(id) || names.has(scopedName)) throw new Error(`Trigger "${name}" is duplicated on this table.`);
+		ids.add(id);
+		names.add(scopedName);
+		if (!design.tables.some((table) => table.id === trigger.tableId)) throw new Error(`Trigger "${name}" needs an existing table.`);
+		if (!design.functions?.some((fn) => fn.id === trigger.functionId && fn.returnType.trim().toLowerCase() === "trigger" && fn.language === "plpgsql" && fn.arguments.length === 0)) {
+			throw new Error(`Trigger "${name}" needs a no-argument PL/pgSQL Function returning trigger.`);
+		}
+		if (!["BEFORE", "AFTER", "INSTEAD OF"].includes(trigger.timing)) throw new Error(`Trigger "${name}" has invalid timing.`);
+		if (!["ROW", "STATEMENT"].includes(trigger.level)) throw new Error(`Trigger "${name}" has invalid level.`);
+		if (!Array.isArray(trigger.events) || trigger.events.length === 0) throw new Error(`Trigger "${name}" needs at least one event.`);
+		const table = design.tables.find((candidate) => candidate.id === trigger.tableId)!;
+		const events = trigger.events.map((event) => {
+			if (!["INSERT", "UPDATE", "DELETE", "TRUNCATE"].includes(event.event)) throw new Error(`Trigger "${name}" has an invalid event.`);
+			const columnIds = [...new Set(event.columnIds ?? [])];
+			if (event.event !== "UPDATE" && columnIds.length) throw new Error(`Only UPDATE events can select columns.`);
+			if (columnIds.some((columnId) => !table.columns.some((column) => column.id === columnId))) throw new Error(`Trigger "${name}" references a missing column.`);
+			if (columnIds.length && trigger.level !== "ROW") throw new Error(`UPDATE OF columns requires a row-level trigger.`);
+			return columnIds.length ? { event: event.event, columnIds } : { event: event.event };
+		});
+		if (new Set(events.map((event) => event.event)).size !== events.length) throw new Error(`Trigger "${name}" has duplicate events.`);
+		return { ...trigger, id, name, events, when: typeof trigger.when === "string" ? trigger.when.trim() : "" };
 	});
 }
 
@@ -1469,6 +1529,7 @@ function normalizeDesign(design: Design): Design {
 		viewport: design.viewport ?? { ...DEFAULT_VIEWPORT },
 		...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
 		...(design.functions ? { functions: structuredClone(design.functions) } : {}),
+		...(design.triggers ? { triggers: structuredClone(design.triggers) } : {}),
 	};
 }
 
@@ -1565,6 +1626,10 @@ function isManyToManyReferenceColumn(
 }
 
 function requireRemovalTarget(design: Design, target: RemovalTarget) {
+	if (target.kind === "function") {
+		if (!design.functions?.some((fn) => fn.id === target.functionId)) throw new Error("Function does not exist.");
+		return;
+	}
 	const table = requireTable(design, target.tableId);
 	if (target.kind === "column") requireColumn(table, target.columnId);
 }
@@ -1580,19 +1645,19 @@ function requireConfirmedRemoval(
 	if (
 		plan.relationships.length === 0 &&
 		plan.indexes.length === 0 &&
-		plan.uniqueConstraints.length === 0
+		plan.uniqueConstraints.length === 0 &&
+		plan.triggers.length === 0
 	) return;
-	const label = target.kind === "table" ? `table "${plan.target}"` : `column "${plan.target}"`;
-	const count = plan.relationships.length;
+	const label = target.kind === "table" ? `table "${plan.target}"` : target.kind === "function" ? `Function "${plan.target}"` : `column "${plan.target}"`;
+	const count = plan.relationships.length + plan.indexes.length + plan.uniqueConstraints.length + plan.triggers.length;
 	const summary = [
 		...plan.relationships.map(describeAffectedRelationship),
 		...plan.indexes.map((index) => `index ${index.name}`),
 		...plan.uniqueConstraints.map((constraint) => `unique constraint ${constraint.name}`),
+		...plan.triggers.map((trigger) => `trigger ${trigger.name} on ${trigger.table}`),
 	].join(", ");
 	throw new Error(
-		`Removing ${label} also affects ` +
-			`${count + plan.indexes.length + plan.uniqueConstraints.length} schema item(s) ` +
-			`(${summary}). Confirm the removal to continue.`,
+		`Removing ${label} also affects ${count} schema item(s) (${summary}). Confirm the removal to continue.`,
 	);
 }
 
@@ -1615,6 +1680,7 @@ function removeTableAndItsRelationships(design: Design, table: DesignTable): Des
 		manyToManyRelationships: design.manyToManyRelationships.filter(
 			(association) => !affected.associationIds.has(association.id),
 		),
+		triggers: (design.triggers ?? []).filter((trigger) => trigger.tableId !== table.id),
 	};
 }
 
@@ -1658,6 +1724,9 @@ function removeColumnAndItsRelationships(
 		),
 		manyToManyRelationships: design.manyToManyRelationships.filter(
 			(association) => !affected.associationIds.has(association.id),
+		),
+		triggers: (design.triggers ?? []).filter((trigger) =>
+			trigger.tableId !== table.id || !trigger.events.some((event) => event.columnIds?.includes(column.id)),
 		),
 	};
 }

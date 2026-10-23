@@ -19,7 +19,9 @@ import type {
 	DesignEnumType,
 	DesignFunction,
 	DesignPolicy,
+	DesignTrigger,
 	DesignUniqueConstraint,
+	RemoveFunctionAction,
 	SandboxApiRequest,
 } from "../shared/design";
 import type {
@@ -136,6 +138,12 @@ export const workspaceClient = {
 	},
 	updateFunctions(functions: DesignFunction[]): Promise<WorkspaceState> {
 		return rpc.request.updateFunctions({ functions });
+	},
+	updateTriggers(triggers: DesignTrigger[]): Promise<WorkspaceState> {
+		return rpc.request.updateTriggers({ triggers });
+	},
+	removeFunction(action: RemoveFunctionAction): Promise<WorkspaceState> {
+		return rpc.request.removeFunction(action);
 	},
 	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
 		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });

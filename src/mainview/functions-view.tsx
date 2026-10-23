@@ -8,6 +8,7 @@ type Props = {
 	functions: DesignFunction[];
 	busy: boolean;
 	onSave: (functions: DesignFunction[]) => void;
+	onRemove: (functionId: string) => void;
 };
 
 const newFunction = (): DesignFunction => ({
@@ -23,7 +24,7 @@ const newFunction = (): DesignFunction => ({
 });
 
 /** Project-level editor for the Functions emitted in PostgreSQL SQL. */
-export function FunctionsView({ functions, busy, onSave }: Props) {
+export function FunctionsView({ functions, busy, onSave, onRemove }: Props) {
 	const [selectedId, setSelectedId] = useState<string | null>(functions[0]?.id ?? null);
 	const [draft, setDraft] = useState<DesignFunction | null>(null);
 	const [argumentText, setArgumentText] = useState("");
@@ -65,10 +66,7 @@ export function FunctionsView({ functions, busy, onSave }: Props) {
 	}
 
 	function removeFunction() {
-		if (!selected) return;
-		const remaining = functions.filter((fn) => fn.id !== selected.id);
-		onSave(remaining);
-		setSelectedId(remaining[0]?.id ?? null);
+		if (selected) onRemove(selected.id);
 	}
 
 	return (
@@ -92,10 +90,10 @@ export function FunctionsView({ functions, busy, onSave }: Props) {
 					<div className="min-h-0 overflow-auto pr-2">
 						<div className="grid grid-cols-2 gap-4">
 							<label className="space-y-1 text-xs text-ink-2">Name<Input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-							<label className="space-y-1 text-xs text-ink-2">Return type<Input value={draft.returnType} onChange={(event) => setDraft({ ...draft, returnType: event.target.value })} placeholder="integer, text, or a table name" /></label>
+							<label className="space-y-1 text-xs text-ink-2">Return type<Input value={draft.returnType} onChange={(event) => { const returnType = event.target.value; setDraft({ ...draft, returnType, ...(returnType.trim().toLowerCase() === "trigger" ? { language: "plpgsql", returnsSet: false } : {}) }); }} placeholder="integer, text, trigger, or a table name" /></label>
 							<label className="space-y-1 text-xs text-ink-2">Arguments <span className="block text-ink-4">One “name type” per line</span><textarea value={argumentText} onChange={(event) => setArgumentText(event.target.value)} className="min-h-20 w-full rounded-sm border border-rule bg-paper px-3 py-2 font-mono text-sm" placeholder="user_id uuid" /></label>
 							<div className="grid grid-cols-2 gap-3">
-								<label className="space-y-1 text-xs text-ink-2">Language<select value={draft.language} onChange={(event) => setDraft({ ...draft, language: event.target.value as DesignFunction["language"] })} className="block h-9 w-full rounded-sm border border-rule bg-paper px-2"><option value="sql">SQL</option><option value="plpgsql">PL/pgSQL</option></select></label>
+								<label className="space-y-1 text-xs text-ink-2">Language<select value={draft.language} disabled={draft.returnType.trim().toLowerCase() === "trigger"} onChange={(event) => setDraft({ ...draft, language: event.target.value as DesignFunction["language"] })} className="block h-9 w-full rounded-sm border border-rule bg-paper px-2"><option value="sql">SQL</option><option value="plpgsql">PL/pgSQL</option></select></label>
 								<label className="space-y-1 text-xs text-ink-2">Volatility<select value={draft.volatility} onChange={(event) => setDraft({ ...draft, volatility: event.target.value as DesignFunction["volatility"] })} className="block h-9 w-full rounded-sm border border-rule bg-paper px-2"><option value="volatile">Volatile</option><option value="stable">Stable</option><option value="immutable">Immutable</option></select></label>
 								<label className="space-y-1 text-xs text-ink-2">Security<select value={draft.security} onChange={(event) => setDraft({ ...draft, security: event.target.value as DesignFunction["security"] })} className="block h-9 w-full rounded-sm border border-rule bg-paper px-2"><option value="invoker">Invoker</option><option value="definer">Definer</option></select></label>
 								<label className="flex items-center gap-2 pt-6 text-xs text-ink-2"><input type="checkbox" checked={draft.returnsSet} onChange={(event) => setDraft({ ...draft, returnsSet: event.target.checked })} /> Returns a set</label>

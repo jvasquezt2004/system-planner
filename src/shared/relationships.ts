@@ -169,6 +169,15 @@ export function relationshipConstraints(
 
 /** Lists the relationships a removal would delete alongside its target. */
 export function removalPlan(design: Design, target: RemovalTarget): RemovalPlan {
+	if (target.kind === "function") {
+		const triggers = (design.triggers ?? []).flatMap((trigger) => {
+			const table = design.tables.find((candidate) => candidate.id === trigger.tableId);
+			return trigger.functionId === target.functionId
+				? [{ triggerId: trigger.id, name: trigger.name, table: table?.name ?? "(missing table)" }]
+				: [];
+		});
+		return { target: removalTargetLabel(design, target), relationships: [], indexes: [], uniqueConstraints: [], triggers };
+	}
 	const affectedIndexes = design.tables.flatMap((table) =>
 		(table.indexes ?? []).flatMap((index) => {
 			const inTargetTable = table.id === target.tableId;
@@ -202,11 +211,18 @@ export function removalPlan(design: Design, target: RemovalTarget): RemovalPlan 
 				: [];
 		}),
 	);
+	const affectedTriggers = (design.triggers ?? []).flatMap((trigger) => {
+		const table = design.tables.find((candidate) => candidate.id === trigger.tableId);
+		const affected = trigger.tableId === target.tableId ||
+			(target.kind === "column" && trigger.events.some((event) => event.columnIds?.includes(target.columnId)));
+		return affected ? [{ triggerId: trigger.id, name: trigger.name, table: table?.name ?? "(missing table)" }] : [];
+	});
 	return {
 		target: removalTargetLabel(design, target),
 		relationships: affectedRelationships(design, target),
 		indexes: affectedIndexes,
 		uniqueConstraints: affectedUniqueConstraints,
+		triggers: affectedTriggers,
 	};
 }
 
@@ -215,6 +231,7 @@ function affectedRelationships(
 	design: Design,
 	target: RemovalTarget,
 ): AffectedRelationship[] {
+	if (target.kind === "function") return [];
 	const affected: AffectedRelationship[] = [];
 	const associationRelationshipIds = new Set(
 		design.manyToManyRelationships.flatMap((association) => [
@@ -284,6 +301,7 @@ function relationshipTouchesTarget(
 	relationship: DesignRelationship,
 	target: RemovalTarget,
 ): boolean {
+	if (target.kind === "function") return false;
 	if (target.kind === "table") {
 		return (
 			relationship.referencingTableId === target.tableId ||
@@ -300,6 +318,7 @@ function relationshipTouchesTarget(
 }
 
 function removalTargetLabel(design: Design, target: RemovalTarget): string {
+	if (target.kind === "function") return design.functions?.find((fn) => fn.id === target.functionId)?.name ?? "(missing function)";
 	const table = design.tables.find((candidate) => candidate.id === target.tableId);
 	const tableName = table?.name ?? "(missing table)";
 	if (target.kind === "table") return tableName;

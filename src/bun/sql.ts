@@ -13,6 +13,7 @@ import type {
 	DesignTable,
 	DesignUniqueConstraint,
 	DesignFunction,
+	DesignTrigger,
 } from "../shared/design";
 import {
 	relationshipConstraintName,
@@ -149,6 +150,15 @@ export function generateDesignSql(design: Design): SqlGeneration {
 		}
 		if (!isFunctionType(fn.returnType)) errors.push(`Function "${fn.name}" has unsupported return type "${fn.returnType}".`);
 	}
+	for (const trigger of design.triggers ?? []) {
+		const table = design.tables.find((candidate) => candidate.id === trigger.tableId);
+		const fn = design.functions?.find((candidate) => candidate.id === trigger.functionId);
+		if (!trigger.name.trim() || trigger.name.includes("\u0000")) errors.push(`Trigger name "${trigger.name}" is invalid.`);
+		if (!table) errors.push(`Trigger "${trigger.name}" depends on a table that no longer exists.`);
+		if (!fn || fn.returnType.trim().toLowerCase() !== "trigger" || fn.language !== "plpgsql" || fn.arguments.length > 0) errors.push(`Trigger "${trigger.name}" needs a no-argument PL/pgSQL Function returning trigger.`);
+		if (!trigger.events.length) errors.push(`Trigger "${trigger.name}" needs at least one event.`);
+		if (trigger.when.includes("\u0000")) errors.push(`Trigger "${trigger.name}" has an invalid WHEN condition.`);
+	}
 
 	const occupiedNames = initialPostgresRelationNames(design);
 	const explicitSchemaNames = new Set<string>();
@@ -224,6 +234,7 @@ export function generateDesignSql(design: Design): SqlGeneration {
 		),
 		...pairConstraintSql,
 		...(design.functions ?? []).map((fn) => renderFunction(fn, design)),
+		...(design.triggers ?? []).map((trigger) => renderTrigger(trigger, design)),
 		...design.tables.flatMap((table) => renderPolicies(table)),
 	];
 	return { ok: true, sql: `${statements.join("\n\n")}\n` };
@@ -243,6 +254,17 @@ function renderFunction(fn: DesignFunction, design: Design): string {
 		`SECURITY ${fn.security.toUpperCase()}`,
 		`AS ${delimiter}${fn.body}${delimiter};`,
 	].join("\n");
+}
+function renderTrigger(trigger: DesignTrigger, design: Design): string {
+	const table = design.tables.find((candidate) => candidate.id === trigger.tableId)!;
+	const fn = design.functions!.find((candidate) => candidate.id === trigger.functionId)!;
+	const events = trigger.events.map(({ event, columnIds }) => {
+		const columns = (columnIds ?? []).map((id) => table.columns.find((column) => column.id === id)!.name);
+		return event === "UPDATE" && columns.length
+			? `UPDATE OF ${columns.map(quoteIdentifier).join(", ")}`
+			: event;
+	});
+	return `CREATE TRIGGER ${quoteIdentifier(trigger.name)} ${trigger.timing} ${events.join(" OR ")} ON ${quoteIdentifier(table.name)}${trigger.level === "ROW" ? " FOR EACH ROW" : " FOR EACH STATEMENT"}${trigger.when ? ` WHEN (${trigger.when})` : ""} EXECUTE FUNCTION ${quoteIdentifier(fn.name)}();`;
 }
 
 function renderFunctionType(value: string, design: Design): string {

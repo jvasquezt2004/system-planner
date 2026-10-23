@@ -36,7 +36,10 @@ unchanged. Removing a direct relationship keeps its columns and drops only its
 own foreign key and uniqueness. Removing a many-to-many association keeps its
 junction and all columns and drops both foreign keys and pair uniqueness. The
 generated SQL and sandbox check live in the SQL preview view, switched in place
-of the canvas by the masthead. The masthead also opens Scenarios, where each
+of the canvas by the masthead. The project-level Functions and Triggers views
+author PostgreSQL routines and table event rules; trigger effects execute in
+Scenario runs, and removal confirmations list dependent Triggers. ORM schemas
+name omitted trigger logic. The masthead also opens Scenarios, where each
 project keeps named TypeScript source and disposable Scenario runs separately
 from design undo/redo. The bundled Monaco editor uses the TypeScript language
 service and types generated from the last successfully applied revision;
