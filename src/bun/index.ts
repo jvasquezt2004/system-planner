@@ -1,3 +1,4 @@
+import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { join } from "node:path";
@@ -6,6 +7,10 @@ import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
 import { createAssistantRuntime } from "./assistant-runtime";
+
+// pi-ai loads OAuth sign-in flows through a variable import() the bundle cannot
+// follow; register them statically so account sign-in works in the built app.
+registerBunOAuthFlows();
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
