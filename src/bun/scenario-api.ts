@@ -488,16 +488,20 @@ class PostgrestError extends Error {
 }
 function missingTable(name: string, tables: SandboxAppliedTable[]): PostgrestError {
 	const normalizedName = name.toLowerCase();
-	const closeMatches = tables
-		.map((table) => ({ name: table.name, distance: editDistance(normalizedName, table.name.toLowerCase()) }))
-		.filter(({ name: candidate, distance }) => distance <= Math.max(1, Math.floor(Math.max(name.length, candidate.length) / 5)))
-		.sort((left, right) => left.distance - right.distance);
-	const hint = closeMatches.length > 0 && (closeMatches.length === 1 || closeMatches[0]!.distance < closeMatches[1]!.distance)
-		? `Perhaps you meant the table 'public.${closeMatches[0]!.name}'`
-		: null;
+	let bestMatch: { name: string; similarity: number } | null = null;
+	for (const table of tables) {
+		const candidate = table.name.toLowerCase();
+		const maxLength = Math.max(normalizedName.length, candidate.length);
+		const similarity = maxLength === 0 ? 1 : 1 - editDistance(normalizedName, candidate) / maxLength;
+		if (similarity >= 0.75 && (!bestMatch || similarity > bestMatch.similarity)) {
+			bestMatch = { name: table.name, similarity };
+		}
+	}
+	const hint = bestMatch ? `Perhaps you meant the table 'public.${bestMatch.name}'` : null;
 	return new PostgrestError(
 		"PGRST205",
 		`Could not find the table 'public.${name}' in the schema cache`,
+		null,
 		hint,
 	);
 }
