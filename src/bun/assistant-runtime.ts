@@ -123,7 +123,31 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		}
 		return providerId;
 	}
+	let migrationPromise: Promise<void> | null = null;
+	function ensureLegacyCredentialsMigrated(): Promise<void> {
+		if (!migrationPromise) {
+			migrationPromise = (async () => {
+				for (const conn of store.listProviderConnections()) {
+					if (conn.provider_id === "anthropic" && conn.auth_method === "api-key") {
+						const existing = await credentials.read(`connection-${conn.id}`);
+						if (!existing) {
+							const legacy = await credentials.read("anthropic");
+							if (legacy) {
+								await credentials.modify(`connection-${conn.id}`, async () => legacy);
+								await credentials.delete("anthropic");
+								connectionModelsMap.delete(conn.id);
+							}
+						}
+					}
+				}
+			})();
+		}
+		return migrationPromise;
+	}
+	void ensureLegacyCredentialsMigrated();
+
 	async function getConnectionStatus(connectionIdOrProviderId: string): Promise<AssistantConnectionStatus> {
+		await ensureLegacyCredentialsMigrated();
 		let conn = store.getConnection(connectionIdOrProviderId);
 		if (!conn) {
 			const savedList = store.listProviderConnections();
@@ -431,6 +455,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return store.deleteConversation(conversationId);
 		},
 		async listConnections(): Promise<AssistantConnectionStatus[]> {
+			await ensureLegacyCredentialsMigrated();
 			const saved = store.listProviderConnections();
 			const statuses: AssistantConnectionStatus[] = [];
 			for (const conn of saved) {
@@ -500,6 +525,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return () => oAuthSubscribers.delete(subscriber);
 		},
 		async listModels(): Promise<AssistantModel[]> {
+			await ensureLegacyCredentialsMigrated();
 			const connections = store.listProviderConnections();
 			const result: AssistantModel[] = [];
 			for (const conn of connections) {
@@ -705,6 +731,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return store.loadConversation(conversationId);
 		},
 		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium", connectionId?: string) {
+			await ensureLegacyCredentialsMigrated();
 			const conversation = requireBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
 			const effectiveConnectionId = connectionId ?? conversation.connection_id;

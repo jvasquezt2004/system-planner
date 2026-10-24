@@ -60,8 +60,6 @@ const SCHEMA = `
 		created_at INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
-	CREATE UNIQUE INDEX IF NOT EXISTS assistant_provider_connections_provider_auth
-		ON assistant_provider_connections(provider_id, auth_method);
 	CREATE TABLE IF NOT EXISTS assistant_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		connection_id TEXT,

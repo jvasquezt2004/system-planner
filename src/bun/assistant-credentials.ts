@@ -9,7 +9,7 @@ const NAME_BY_PROVIDER: Readonly<Record<string, string>> = {
 };
 
 function credentialSecretName(id: string): string {
-	if (id === "anthropic") return "anthropic-api-key";
+	if (id === "anthropic" || id === "anthropic-api-key") return "anthropic-api-key";
 	if (id.startsWith("connection-")) return id;
 	return `connection-${id}`;
 }

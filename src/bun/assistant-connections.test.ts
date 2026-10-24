@@ -622,4 +622,150 @@ describe("Assistant provider connections", () => {
 		}
 		db.close();
 	});
+
+	test("Migrates pre-#78 database and legacy anthropic-api-key secret to connection-<id>", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-legacy-mig-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+
+		const legacyKey = "sk-ant-pre78-legacy-secret-key-9999";
+
+		// 1. Seed pre-#78 SQLite schema and row with id = 'anthropic'
+		const workspaceInitial = await createDesignWorkspace({ databasePath });
+		const state = await workspaceInitial.createProject({ name: "Legacy Project" });
+		if (!state.project) throw new Error("Expected project to be created.");
+		const projectId = state.project.id;
+		await workspaceInitial.close();
+
+		// Seed pre-#78 row with id = 'anthropic' and conversation
+		const db = new Database(databasePath);
+		db.exec(`
+			CREATE TABLE IF NOT EXISTS assistant_provider_connections (
+				id TEXT PRIMARY KEY,
+				auth_method TEXT NOT NULL,
+				credential_name TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS assistant_conversations (
+				id TEXT PRIMARY KEY,
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				title TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				provider TEXT,
+				model TEXT,
+				thinking TEXT
+			);
+			CREATE TABLE IF NOT EXISTS assistant_messages (
+				conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+				sequence INTEGER NOT NULL,
+				role TEXT NOT NULL,
+				kind TEXT,
+				payload TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				PRIMARY KEY (conversation_id, sequence)
+			);
+			CREATE TABLE IF NOT EXISTS assistant_settings (
+				id INTEGER PRIMARY KEY CHECK (id = 1),
+				model TEXT,
+				thinking TEXT
+			);
+			CREATE TABLE IF NOT EXISTS assistant_project_observations (
+				conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL,
+				snapshot TEXT
+			);
+		`);
+		db.run(
+			"INSERT INTO assistant_provider_connections (id, auth_method, credential_name, created_at, updated_at) VALUES ('anthropic', 'api-key', 'anthropic-api-key', 1000, 1000)",
+		);
+		db.run(
+			"INSERT INTO assistant_conversations (id, project_id, title, created_at, updated_at, provider, model, thinking) VALUES ('conv-legacy', ?, 'Legacy Chat', 1000, 1000, 'anthropic', 'claude-sonnet-4-5', 'medium')",
+			[projectId],
+		);
+		db.close();
+
+		// 2. Seed legacy secret into OS secret store under 'anthropic-api-key'
+		await Bun.secrets.set({
+			service: "com.dbplanner.schema-designer",
+			name: "anthropic-api-key",
+			value: legacyKey,
+		});
+
+		// 3. Open workspace and runtime (which triggers migration)
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		await workspace.openProject({ projectId });
+		const receivedKeys: string[] = [];
+		const fauxAnthropicBase = fauxProvider({
+			provider: "anthropic",
+			models: [{ id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" }],
+		});
+		const customAnthropicProvider = {
+			...fauxAnthropicBase.provider,
+			auth: {
+				apiKey: {
+					name: "Anthropic API key",
+					resolve: async ({ credential }: { credential?: { key?: string } }) => ({ auth: { apiKey: credential?.key } }),
+				},
+			},
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				if (options?.apiKey) receivedKeys.push(options.apiKey);
+				return (fauxAnthropicBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const models = createModels();
+		models.setProvider(customAnthropicProvider as never);
+
+		const runtime = createAssistantRuntime({ databasePath, workspace, models });
+		runtimes.push(runtime);
+
+		// Assert the connection is connected
+		const connections = await runtime.listConnections();
+		expect(connections.length).toBe(1);
+		const conn = connections[0]!;
+		expect(conn.providerId).toBe("anthropic");
+		expect(conn.authMethod).toBe("api-key");
+		expect(conn.connected).toBe(true);
+		expect(conn.error).toBeNull();
+		expect(conn.id).not.toBe("anthropic"); // UUID assigned
+
+		// Assert it streams with that key
+		fauxAnthropicBase.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t_migrated (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Migrated!")]),
+		]);
+
+		await runtime.sendMessage("conv-legacy", "Create t_migrated", "claude-sonnet-4-5");
+		expect(receivedKeys).toContain(legacyKey);
+		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_migrated");
+
+		// Assert legacy secret is gone from OS secret store
+		const legacySecret = await Bun.secrets.get({
+			service: "com.dbplanner.schema-designer",
+			name: "anthropic-api-key",
+		});
+		expect(legacySecret).toBeNull();
+
+		// Assert secret is preserved under connection-<id>
+		const credStore = new BunSecretCredentialStore(databasePath);
+		const migratedSecret = await credStore.read(`connection-${conn.id}`);
+		expect(migratedSecret?.type).toBe("api_key");
+		if (migratedSecret?.type === "api_key") {
+			expect(migratedSecret.key).toBe(legacyKey);
+		}
+
+		// Assert idempotency: restarting runtime does not re-delete or fail
+		runtime.close();
+		const runtimeRestart = createAssistantRuntime({ databasePath, workspace, models });
+		runtimes.push(runtimeRestart);
+		const connections2 = await runtimeRestart.listConnections();
+		expect(connections2.length).toBe(1);
+		expect(connections2[0]?.connected).toBe(true);
+		expect(connections2[0]?.id).toBe(conn.id);
+	});
 });
