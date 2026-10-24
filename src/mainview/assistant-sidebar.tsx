@@ -8,6 +8,8 @@ import type {
 	AssistantMessage,
 	AssistantModel,
 	AssistantThinkingLevel,
+	AssistantTotalUsage,
+	AssistantTurnUsage,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
 
@@ -79,6 +81,8 @@ export function AssistantSidebar({
 	const [turnPaused, setTurnPaused] = useState(false);
 	const [confirmationRequired, setConfirmationRequired] = useState(false);
 	const initialConversationModelRef = useRef<string | null>(null);
+	const [turnUsages, setTurnUsages] = useState<AssistantTurnUsage[]>([]);
+	const [totalUsage, setTotalUsage] = useState<AssistantTotalUsage | null>(null);
 	const contextRef = useRef({ projectId, activeId, generation: 0 });
 	if (contextRef.current.projectId !== projectId || contextRef.current.activeId !== activeId) {
 		contextRef.current = {
@@ -139,6 +143,8 @@ export function AssistantSidebar({
 			.then((conversation: AssistantConversationRecord | null) => {
 				if (live && conversation) {
 					setMessages(conversation.messages);
+					setTurnUsages(conversation.usages ?? []);
+					setTotalUsage(conversation.totalUsage ?? null);
 					if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
 					if (conversation.model) {
 						setModel(conversation.model);
@@ -175,6 +181,10 @@ export function AssistantSidebar({
 				if (envelope.event.type === "assistant_confirmation_resolved") {
 					setTurnPaused(false);
 					setConfirmationRequired(false);
+				}
+				if (envelope.event.type === "assistant_turn_usage") {
+					const usageEvent = envelope.event as unknown as { usage: AssistantTurnUsage };
+					if (usageEvent.usage) setTurnUsages((current) => [...current, usageEvent.usage]);
 				}
 			}
 			setMessages((current) => [...current, {
@@ -329,7 +339,11 @@ export function AssistantSidebar({
 		setError("");
 		try {
 			const saved = await api.continueAssistantTurn(activeId) as AssistantConversationRecord | null;
-			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
+			if (contextRef.current.generation === requestContext.generation && saved) {
+				setMessages(saved.messages);
+				setTurnUsages(saved.usages ?? []);
+				setTotalUsage(saved.totalUsage ?? null);
+			}
 		} catch (cause) {
 			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
 		} finally {
@@ -399,6 +413,8 @@ export function AssistantSidebar({
 			if (contextRef.current.generation !== requestContext.generation) return;
 			if (saved) {
 				setMessages(saved.messages);
+				setTurnUsages(saved.usages ?? []);
+				setTotalUsage(saved.totalUsage ?? null);
 				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
 			}
 		} catch (cause) {
@@ -472,6 +488,24 @@ export function AssistantSidebar({
 					<X className="size-4" />
 				</button>
 			</div>
+			{(() => {
+				const effectiveTotal = totalUsage ?? {
+					inputTokens: turnUsages.reduce((sum, u) => sum + (u.inputTokens || 0), 0),
+					outputTokens: turnUsages.reduce((sum, u) => sum + (u.outputTokens || 0), 0),
+					cacheReadTokens: turnUsages.reduce((sum, u) => sum + (u.cacheReadTokens || 0), 0),
+					cost: turnUsages.reduce((sum, u) => sum + (typeof u.cost === "number" ? u.cost : 0), 0),
+				};
+				if (effectiveTotal.inputTokens <= 0 && effectiveTotal.outputTokens <= 0 && effectiveTotal.cacheReadTokens <= 0) return null;
+				return (
+					<div aria-label="Conversation usage" className="flex shrink-0 items-center justify-between border-b border-ink/10 px-3 py-1 text-[11px] text-ink-3">
+						<span>Total:</span>
+						<span>
+							{effectiveTotal.inputTokens.toLocaleString()} in · {effectiveTotal.outputTokens.toLocaleString()} out · {effectiveTotal.cacheReadTokens.toLocaleString()} cached
+							{typeof effectiveTotal.cost === "number" && effectiveTotal.cost > 0 && ` · $${effectiveTotal.cost < 0.01 ? effectiveTotal.cost.toFixed(4) : effectiveTotal.cost.toFixed(2)}`}
+						</span>
+					</div>
+				);
+			})()}
 			<div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-3 py-4">
 				{messages.length === 0 ? (
 					<div className="pt-8 text-center">
@@ -778,9 +812,20 @@ function MessageCard({
 	onSelectTable: (tableId: string) => void;
 	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
 }) {
+	if (message.kind === "assistant-compaction") {
+		const payload = message.payload as { text?: string } | null;
+		return (
+			<div role="status" aria-label="Compaction announcement" className="my-2 rounded border border-ink/15 bg-ink/5 px-2.5 py-1.5 text-xs text-ink-2">
+				<span className="font-medium">Context compaction:</span> {payload?.text ?? "Older turns summarised to preserve context space."}
+			</div>
+		);
+	}
 	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
 	const payload = message.payload;
 	const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
+	const usage = record && "usage" in record && record.usage && typeof record.usage === "object"
+		? record.usage as { input?: number; output?: number; cacheRead?: number; cost?: { total?: number } }
+		: null;
 	const toolCall = record && Array.isArray(record.content)
 		? record.content.find((part) => part && typeof part === "object" && "type" in part && part.type === "toolCall")
 		: undefined;
@@ -865,6 +910,18 @@ function MessageCard({
 		<div className="text-sm leading-relaxed">
 			<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">{summary}</p>
 			<p className="whitespace-pre-wrap">{printable}</p>
+			{usage && (
+				<div aria-label="Turn usage" className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
+					<span>{(usage.input ?? 0).toLocaleString()} in</span>
+					<span>·</span>
+					<span>{(usage.output ?? 0).toLocaleString()} out</span>
+					<span>·</span>
+					<span>{(usage.cacheRead ?? 0).toLocaleString()} cached</span>
+					{typeof usage.cost?.total === "number" && usage.cost.total > 0 && (
+						<span>· ${usage.cost.total < 0.01 ? usage.cost.total.toFixed(4) : usage.cost.total.toFixed(2)}</span>
+					)}
+				</div>
+			)}
 		</div>
 	);
 	return <article>{body}</article>;

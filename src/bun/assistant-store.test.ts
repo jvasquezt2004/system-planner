@@ -78,4 +78,37 @@ describe("Assistant conversations", () => {
 			database.close();
 		}
 	});
+
+	test("persists per-turn token usage and compaction data", async () => {
+		const { databasePath, projectId } = await setup();
+		const store = openAssistantStore(databasePath);
+		try {
+			const conversation = store.createConversation(projectId, { role: "user", payload: "Test usage" });
+			store.saveTurnUsage(conversation.id, "turn-1", { inputTokens: 120, outputTokens: 30, cacheReadTokens: 50, cost: 0.0012 });
+			store.saveTurnUsage(conversation.id, "turn-2", { inputTokens: 200, outputTokens: 40, cacheReadTokens: 150, cost: 0.0025 });
+
+			const usages = store.getTurnUsages(conversation.id);
+			expect(usages.length).toBe(2);
+			expect(usages[0]).toEqual(expect.objectContaining({ turnId: "turn-1", inputTokens: 120, outputTokens: 30, cacheReadTokens: 50, cost: 0.0012 }));
+			expect(usages[1]).toEqual(expect.objectContaining({ turnId: "turn-2", inputTokens: 200, outputTokens: 40, cacheReadTokens: 150, cost: 0.0025 }));
+
+			const total = store.getConversationTotalUsage(conversation.id);
+			expect(total.inputTokens).toBe(320);
+			expect(total.outputTokens).toBe(70);
+			expect(total.cacheReadTokens).toBe(200);
+			expect(total.cost).toBeCloseTo(0.0037, 4);
+
+			expect(store.getCompaction(conversation.id)).toBeNull();
+			store.saveCompaction(conversation.id, "Summary of turn 1", "msg-kept-1");
+			const compaction = store.getCompaction(conversation.id);
+			expect(compaction?.summary).toBe("Summary of turn 1");
+			expect(compaction?.firstKeptMessageId).toBe("msg-kept-1");
+
+			const loaded = store.loadConversation(conversation.id);
+			expect(loaded?.usages?.length).toBe(2);
+			expect(loaded?.totalUsage?.inputTokens).toBe(320);
+		} finally {
+			store.close();
+		}
+	});
 });

@@ -628,4 +628,325 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 	});
+
+	test("tracks per-turn token usage, cache reads, and estimated cost with running totals and persistence", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-usage-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Usage project" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({
+			provider: "anthropic",
+			models: [{
+				id: "scripted-pricing-model",
+				name: "Scripted Pricing Model",
+				contextWindow: 100000,
+				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			}],
+		});
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-api-key",
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE items (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the items table.")]),
+			fauxAssistantMessage([fauxText("The table has an id column.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create items table.", "scripted-pricing-model");
+		let loaded = runtime.loadConversation(conversation.id)!;
+		expect(loaded.usages?.length).toBe(1);
+		const turn1Usage = loaded.usages![0]!;
+		expect(turn1Usage.inputTokens).toBeGreaterThan(0);
+		expect(turn1Usage.outputTokens).toBeGreaterThan(0);
+		expect(typeof turn1Usage.cost).toBe("number");
+		expect(turn1Usage.cost!).toBeGreaterThan(0);
+
+		await runtime.sendMessage(conversation.id, "Describe items.", "scripted-pricing-model");
+		loaded = runtime.loadConversation(conversation.id)!;
+		expect(loaded.usages?.length).toBe(2);
+		const turn2Usage = loaded.usages![1]!;
+		expect(turn2Usage.inputTokens).toBeGreaterThan(0);
+		expect(turn2Usage.cacheReadTokens).toBeGreaterThan(0);
+		expect(typeof turn2Usage.cost).toBe("number");
+		expect(turn2Usage.cost!).toBeGreaterThan(0);
+
+		expect(loaded.totalUsage).toBeDefined();
+		expect(loaded.totalUsage!.inputTokens).toBe(turn1Usage.inputTokens + turn2Usage.inputTokens);
+		expect(loaded.totalUsage!.outputTokens).toBe(turn1Usage.outputTokens + turn2Usage.outputTokens);
+		expect(loaded.totalUsage!.cacheReadTokens).toBe(turn1Usage.cacheReadTokens + turn2Usage.cacheReadTokens);
+		expect(loaded.totalUsage!.cost).toBeCloseTo(turn1Usage.cost! + turn2Usage.cost!, 6);
+
+		// Verify persistence survives reopening store
+		runtime.close();
+		const reopenedRuntime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-api-key",
+		});
+		runtimes.push(reopenedRuntime);
+		const reloaded = reopenedRuntime.loadConversation(conversation.id)!;
+		expect(reloaded.usages?.length).toBe(2);
+		expect(reloaded.totalUsage?.inputTokens).toBe(loaded.totalUsage!.inputTokens);
+		expect(reloaded.totalUsage?.cost).toBeCloseTo(loaded.totalUsage!.cost!, 6);
+	});
+
+	test("compaction lifecycle: turn boundary timing, no orphan toolResults, recent turns kept verbatim, repeated compaction folding previous summary, visible history unchanged, and stable prefix", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-compaction-lifecycle-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Compaction lifecycle" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		// Context window: 2500 tokens. 80% threshold = 2000 tokens.
+		// System prompt with all tool declarations is ~1070 tokens.
+		const scripted = fauxProvider({
+			provider: "anthropic",
+			models: [{
+				id: "scripted-lifecycle-model",
+				name: "Scripted Lifecycle Model",
+				contextWindow: 2500,
+				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			}],
+		});
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const receivedContexts: Array<{ messages: Array<{ role: string; toolCallId?: string; content?: unknown }> }> = [];
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-api-key",
+			streamFn: async (model, context, options) => {
+				receivedContexts.push(JSON.parse(JSON.stringify(context)));
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			// Turn 1
+			fauxAssistantMessage([fauxText("Response 1")]),
+			// Turn 2: Assistant tool call crossing 80% mid-turn, then text
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE users (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created users table.")]),
+			// Compaction 1 summary response
+			fauxAssistantMessage([fauxText("Summary 1: created users table.")]),
+			// Turn 3
+			fauxAssistantMessage([fauxText("Response 3")]),
+			// Compaction 2 summary response
+			fauxAssistantMessage([fauxText("Summary 2: created users and items.")]),
+			// Turn 4
+			fauxAssistantMessage([fauxText("Response 4")]),
+			// Turn 5
+			fauxAssistantMessage([fauxText("Response 5")]),
+		]);
+
+		// Turn 1: Short message (remains below 800 tokens)
+		await runtime.sendMessage(conversation.id, "Prompt 1", "scripted-lifecycle-model");
+		let saved = runtime.loadConversation(conversation.id)!;
+		expect(saved.messages.some((m) => m.kind === "assistant-compaction")).toBe(false);
+
+		// Turn 2: Long prompt (2400 chars = ~600 tokens + 1070 system + ~450 tool result = ~2120 tokens >= 2000 tokens) with tool call
+		await runtime.sendMessage(conversation.id, "Create users: " + "X".repeat(2400), "scripted-lifecycle-model");
+		saved = runtime.loadConversation(conversation.id)!;
+
+		// (a) Compaction was decided on agent_end (not mid-turn); announcement was added
+		const compactionAnnouncements = saved.messages.filter((m) => m.kind === "assistant-compaction");
+		expect(compactionAnnouncements.length).toBe(1);
+
+		// Turn 3: Request sent after compaction
+		await runtime.sendMessage(conversation.id, "Prompt 3", "scripted-lifecycle-model");
+
+		// Find the request for Turn 3 (not the summary request)
+		// receivedContexts[0]: Turn 1
+		// receivedContexts[1]: Turn 2 (first assistant call with toolCall)
+		// receivedContexts[2]: Turn 2 (second assistant call after toolResult)
+		// receivedContexts[3]: Compaction 1 summary request
+		// receivedContexts[4]: Turn 3 request
+		const turn3Req = receivedContexts[4]!;
+		expect(turn3Req).toBeDefined();
+
+		// (a) & (b) Assert every toolResult's toolCallId appears in a preceding assistant message of that request
+		const toolResults = turn3Req.messages.filter((m) => m.role === "toolResult");
+		expect(toolResults.length).toBeGreaterThan(0);
+		const precedingAssistantMessages = turn3Req.messages.filter((m) => m.role === "assistant");
+		const precedingToolCallIds = new Set(
+			precedingAssistantMessages.flatMap((m) =>
+				Array.isArray(m.content) ? m.content.filter((c) => c && typeof c === "object" && "type" in c && c.type === "toolCall").map((c) => {
+					const toolBlock = c as { id: string };
+					return toolBlock.id;
+				}) : []
+			)
+		);
+		for (const tr of toolResults) {
+			expect(precedingToolCallIds.has(tr.toolCallId!)).toBe(true);
+		}
+
+		// (b) Next request contains the summary and the last turn verbatim
+		const summaryMsg = turn3Req.messages.find((m) => typeof m.content === "string" && m.content.includes("Summary of earlier conversation:"));
+		expect(summaryMsg).toBeDefined();
+		expect(summaryMsg!.content).toContain("Summary 1: created users table.");
+		// Last turn (Turn 2) is present verbatim
+		expect(turn3Req.messages.some((m) => Array.isArray(m.content) && m.content.some((c) => typeof c === "object" && c && "text" in c && typeof c.text === "string" && c.text.includes("Create users:")))).toBe(true);
+		expect(turn3Req.messages.some((m) => Array.isArray(m.content) && m.content.some((c) => typeof c === "object" && c && "text" in c && typeof c.text === "string" && c.text.includes("Created users table.")))).toBe(true);
+
+		// Turn 3 was over 80% (because it kept Turn 2 which had 1200 chars), so second compaction was triggered at end of Turn 3!
+		// receivedContexts[5]: Compaction 2 summary request!
+		const comp2Req = receivedContexts[5]!;
+		expect(comp2Req).toBeDefined();
+		// (c) A second compaction happens and its summary request included the previous summary
+		const comp2SummaryInstruction = comp2Req.messages[comp2Req.messages.length - 1]!;
+		expect(comp2SummaryInstruction.content).toContain("Summarise the conversation so far");
+		expect(comp2Req.messages.some((m) => typeof m.content === "string" && m.content.includes("Summary 1: created users table."))).toBe(true);
+
+		// Turn 4: Request after second compaction
+		await runtime.sendMessage(conversation.id, "Prompt 4", "scripted-lifecycle-model");
+		// receivedContexts[6]: Turn 4 request
+		const turn4Req = receivedContexts[6]!;
+		expect(turn4Req.messages.some((m) => typeof m.content === "string" && m.content.includes("Summary 2: created users and items."))).toBe(true);
+
+		// Turn 5: Request after Turn 4
+		await runtime.sendMessage(conversation.id, "Prompt 5", "scripted-lifecycle-model");
+		// receivedContexts[7]: Turn 5 request
+		const turn5Req = receivedContexts[7]!;
+
+		// (e) Two consecutive requests after a compaction share an identical prefix
+		expect(turn4Req.messages[0]!.role).toBe("system");
+		expect(turn4Req.messages[1]!.role).toBe("user");
+		expect(turn5Req.messages[0]!.role).toBe("system");
+		expect(turn5Req.messages[1]!.role).toBe("user");
+		expect(JSON.stringify(turn4Req.messages.slice(0, 2))).toBe(JSON.stringify(turn5Req.messages.slice(0, 2)));
+
+		// (d) The designer's visible history (loadConversation) is unchanged and contains one announcement per compaction
+		saved = runtime.loadConversation(conversation.id)!;
+		const allAnnouncements = saved.messages.filter((m) => m.kind === "assistant-compaction");
+		expect(allAnnouncements.length).toBe(2);
+		const allDesignerMessages = saved.messages.filter((m) => m.role === "user");
+		expect(allDesignerMessages.length).toBe(5);
+		expect(allDesignerMessages.map((m) => {
+			const payload = m.payload as { content?: string };
+			return payload.content;
+		})).toEqual([
+			"Prompt 1",
+			"Create users: " + "X".repeat(2400),
+			"Prompt 3",
+			"Prompt 4",
+			"Prompt 5",
+		]);
+	});
+
+	test("compaction survives runtime restart and keeps model context pruned to summary plus kept turns", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-compaction-restart-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Restart compaction" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({
+			provider: "anthropic",
+			models: [{
+				id: "scripted-restart-model",
+				name: "Scripted Restart Model",
+				contextWindow: 2000,
+				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+			}],
+		});
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-api-key",
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([fauxText("Response to turn 1")]),
+			fauxAssistantMessage([fauxText("Response to turn 2")]),
+			fauxAssistantMessage([fauxText("Summary of turn 1: discussed initial schema decisions.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Turn 1 question", "scripted-restart-model");
+		await runtime.sendMessage(conversation.id, "Turn 2 question: " + "K".repeat(2400), "scripted-restart-model");
+
+		const savedBefore = runtime.loadConversation(conversation.id)!;
+		expect(savedBefore.messages.some((m) => m.kind === "assistant-compaction")).toBe(true);
+
+		runtime.close();
+
+		const receivedAfterRestart: Array<{ messages: Array<{ role: string; content?: unknown }> }> = [];
+		const reopenedRuntime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-api-key",
+			streamFn: async (model, context, options) => {
+				receivedAfterRestart.push(JSON.parse(JSON.stringify(context)));
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(reopenedRuntime);
+
+		scripted.setResponses([
+			fauxAssistantMessage([fauxText("Response after restart")]),
+			fauxAssistantMessage([fauxText("Summary after restart")]),
+		]);
+
+		await reopenedRuntime.sendMessage(conversation.id, "Turn 3 question after restart", "scripted-restart-model");
+
+		expect(receivedAfterRestart.length).toBeGreaterThanOrEqual(1);
+		const restartReq = receivedAfterRestart[0]!;
+
+		// Model request must contain:
+		// 1. System prompt
+		expect(restartReq.messages[0]!.role).toBe("system");
+		// 2. Summary
+		expect(restartReq.messages[1]!.role).toBe("user");
+		expect(typeof restartReq.messages[1]!.content === "string").toBe(true);
+		expect(restartReq.messages[1]!.content as string).toContain("Summary of earlier conversation:");
+		expect(restartReq.messages[1]!.content as string).toContain("Summary of turn 1: discussed initial schema decisions.");
+		// 3. Kept turn (Turn 2)
+		const containsTurn2 = restartReq.messages.some((m) => {
+			if (typeof m.content === "string") return m.content.includes("Turn 2 question:");
+			if (Array.isArray(m.content)) return m.content.some((c) => typeof c === "object" && c && "text" in c && typeof c.text === "string" && c.text.includes("Turn 2 question:"));
+			return false;
+		});
+		expect(containsTurn2).toBe(true);
+		// 4. NOT the compacted turn (Turn 1)
+		const containsTurn1 = restartReq.messages.some((m) => {
+			if (typeof m.content === "string") return m.content.includes("Turn 1 question");
+			if (Array.isArray(m.content)) return m.content.some((c) => typeof c === "object" && c && "text" in c && typeof c.text === "string" && c.text.includes("Turn 1 question"));
+			return false;
+		});
+		expect(containsTurn1).toBe(false);
+		// 5. The new message (Turn 3)
+		const containsTurn3 = restartReq.messages.some((m) => {
+			if (typeof m.content === "string") return m.content.includes("Turn 3 question after restart");
+			if (Array.isArray(m.content)) return m.content.some((c) => typeof c === "object" && c && "text" in c && typeof c.text === "string" && c.text.includes("Turn 3 question after restart"));
+			return false;
+		});
+		expect(containsTurn3).toBe(true);
+	});
 });
