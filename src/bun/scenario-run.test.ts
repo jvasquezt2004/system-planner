@@ -82,6 +82,52 @@ afterEach(async () => {
 });
 
 describe("Scenario runs", () => {
+	test("unknown tables return PostgREST PGRST205 errors and fuzzy-match hints", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		await workspace.addTable({ name: "Customers" });
+		await workspace.addTable({ name: "projects" });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+
+		const missing = await supabase.from("missing_table").select("*");
+		expect(missing.status).toBe(404);
+		expect(missing.error).toMatchObject({
+			code: "PGRST205",
+			message: "Could not find the table 'public.missing_table' in the schema cache",
+			details: null,
+			hint: null,
+		});
+
+		const customerCaseMiss = await supabase.from("customers").select("*");
+		expect(customerCaseMiss.status).toBe(404);
+		expect(customerCaseMiss.error).toMatchObject({
+			code: "PGRST205",
+			message: "Could not find the table 'public.customers' in the schema cache",
+			details: null,
+			hint: "Perhaps you meant the table 'public.Customers'",
+		});
+
+		for (const name of ["projectx", "projecxx"]) {
+			const nearMiss = await supabase.from(name).select("*");
+			expect(nearMiss.status).toBe(404);
+			expect(nearMiss.error).toMatchObject({
+				code: "PGRST205",
+				message: `Could not find the table 'public.${name}' in the schema cache`,
+				details: null,
+				hint: "Perhaps you meant the table 'public.projects'",
+			});
+		}
+
+		const distantMiss = await supabase.from("projxxxx").select("*");
+		expect(distantMiss.status).toBe(404);
+		expect(distantMiss.error).toMatchObject({
+			code: "PGRST205",
+			message: "Could not find the table 'public.projxxxx' in the schema cache",
+			details: null,
+			hint: null,
+		});
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 30_000);
 	test("the real supabase-js client inserts, selects by eq, and receives PostgreSQL SQLSTATE errors", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		requireState(workspace.getState());
