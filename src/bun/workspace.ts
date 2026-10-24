@@ -108,6 +108,7 @@ export interface DesignWorkspace {
 	getState(): WorkspaceState;
 	subscribe(listener: WorkspaceListener): () => void;
 	listProjects(): ProjectSummary[];
+	addTable(action: AddTableAction): Promise<WorkspaceState>;
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
 	createScenario(action: CreateScenarioAction): Promise<WorkspaceState>;
@@ -123,7 +124,7 @@ export interface DesignWorkspace {
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
-	addTable(action: AddTableAction): Promise<WorkspaceState>;
+	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
 	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
@@ -154,6 +155,7 @@ type DesignHistoryEntry = {
 	before: Design;
 	after: Design;
 	structural: boolean;
+	assistantTurnId?: string;
 };
 
 type ProjectDesignHistory = {
@@ -186,6 +188,7 @@ export async function createDesignWorkspace(
 		before: Design,
 		after: Design,
 		structural: boolean,
+		assistantTurnId?: string,
 	): WorkspaceState["undoRedo"] {
 		let history = histories.get(projectId);
 		if (!history) {
@@ -193,8 +196,14 @@ export async function createDesignWorkspace(
 			histories.set(projectId, history);
 		}
 		history.entries.length = history.cursor;
-		history.entries.push({ before, after, structural });
-		history.cursor = history.entries.length;
+		const previous = assistantTurnId ? history.entries[history.cursor - 1] : undefined;
+		if (assistantTurnId && previous?.assistantTurnId === assistantTurnId) {
+			previous.after = after;
+			previous.structural ||= structural;
+		} else {
+			history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
+			history.cursor = history.entries.length;
+		}
 		return getUndoRedoState(projectId);
 	}
 	let state: WorkspaceState = {
@@ -552,11 +561,12 @@ export async function createDesignWorkspace(
 		projectId: string,
 		design: Design,
 		recordHistory = true,
+		assistantTurnId?: string,
 	) {
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, true)
+			? recordDesignChange(projectId, before, design, true, assistantTurnId)
 			: getUndoRedoState(projectId);
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
@@ -997,6 +1007,48 @@ export async function createDesignWorkspace(
 		},
 		redo() {
 			return runTask(() => applyHistoryChange("redo"));
+		},
+		applyAssistantDesign(design, assistantTurnId) {
+			return runTask(async () => {
+				const { projectId, design: currentDesign } = requireOpenDesign();
+				const normalized = normalizeDesign(design);
+				const currentTables = new Map(currentDesign.tables.map((table) => [table.id, table]));
+				for (const table of normalized.tables) {
+					const currentTable = currentTables.get(table.id);
+					const position = requirePoint(table.position, "Table position");
+					if (currentTable && !samePoint(position, currentTable.position)) {
+						throw new Error("Assistant design changes cannot move existing tables.");
+					}
+				}
+				if (!sameViewport(normalized.viewport, currentDesign.viewport)) {
+					throw new Error("Assistant design changes cannot change the canvas viewport.");
+				}
+				const validated: Design = {
+					...normalized,
+					tables: normalized.tables.map((table) => ({
+						...table,
+						position: requirePoint(table.position, "Table position"),
+						policies: normalizePolicies(table.policies ?? []),
+						...(table.indexes !== undefined
+							? { indexes: normalizeIndexes(table.indexes, table) }
+							: {}),
+						...(table.uniqueConstraints !== undefined
+							? { uniqueConstraints: normalizeUniqueConstraints(table.uniqueConstraints, table) }
+							: {}),
+					})),
+					...(normalized.enumTypes !== undefined
+						? { enumTypes: normalizeEnumTypes(normalized.enumTypes) }
+						: {}),
+					...(normalized.functions !== undefined
+						? { functions: normalizeFunctions(normalized.functions, normalized) }
+						: {}),
+					...(normalized.triggers !== undefined
+						? { triggers: normalizeTriggers(normalized.triggers, normalized) }
+						: {}),
+				};
+				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
+				return applyStructuralChange(projectId, validated, true, assistantTurnId);
+			});
 		},
 		addTable(action) {
 			return runTask(async () => {

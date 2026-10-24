@@ -1,4 +1,5 @@
 import type { ElectrobunRPCSchema } from "electrobun/rpc";
+import type { AssistantConversation, AssistantConversationRecord, AssistantThinkingLevel } from "./assistant";
 import type {
 	AddRelationshipAction,
 	CanvasPoint,
@@ -153,19 +154,33 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: SchemaCodeExportRequest;
 				response: { requestId: string };
 			};
+			listAssistantConversations: { params: { projectId: string }; response: AssistantConversation[] };
+			getAssistantConversation: { params: { conversationId: string }; response: AssistantConversationRecord | null };
+			createAssistantConversation: { params: { projectId: string }; response: AssistantConversation };
+			renameAssistantConversation: { params: { conversationId: string; title: string }; response: boolean };
+			deleteAssistantConversation: { params: { conversationId: string }; response: boolean };
+			listAssistantModels: { params: Record<string, never>; response: Array<{ id: string; name: string; reasoning: boolean; contextWindow: number }> };
+			getAnthropicConnectionStatus: { params: Record<string, never>; response: { connected: boolean; error: string | null } };
+			setAnthropicApiKey: { params: { apiKey: string }; response: void };
+			removeAnthropicApiKey: { params: Record<string, never>; response: void };
+			sendAssistantMessage: { params: { conversationId: string; text: string; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: unknown };
+			stopAssistantTurn: { params: { conversationId: string }; response: void };
+			continueAssistantTurn: { params: { conversationId: string }; response: unknown };
+			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean } };
+			updateAssistantConversationSelection: { params: { conversationId: string; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
+			confirmAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };
+			assistantEvent: { conversationId: string; event: unknown };
 		};
 	};
 	webview: {
 		requests: Record<string, never>;
 		messages: {
 			workspaceState: WorkspaceState;
-			sqlPreviewExportCompleted: {
-				requestId: string;
-				result: SqlPreviewExportResult;
-			};
+			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
+			assistantEvent: { conversationId: string; event: unknown };
 		};
 	};
 }

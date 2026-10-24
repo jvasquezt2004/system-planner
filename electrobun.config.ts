@@ -18,6 +18,8 @@ export default {
 			// PGlite resolves its WebAssembly runtime relative to the bundled
 			// main process, so the assets ship beside it in the packaged app.
 			"node_modules/@electric-sql/pglite/dist/pglite.wasm": "bun/pglite.wasm",
+			// The PostgreSQL 17 libpg_query parser is pure WASM; ship its module asset beside the Bun process.
+			"node_modules/@pgsql/parser/wasm/v17/libpg-query.wasm": "bun/libpg-query.wasm",
 			"node_modules/@electric-sql/pglite/dist/pglite.data": "bun/pglite.data",
 			"node_modules/@electric-sql/pglite/dist/initdb.wasm": "bun/initdb.wasm",
 			// pgvector is loaded as an extension bundle from the same place.

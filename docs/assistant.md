@@ -1,0 +1,13 @@
+# Assistant
+
+The Assistant is a project-scoped panel backed by `pi-agent-core` in the Bun main process. Conversations and transcript messages are stored in the application SQLite database; messages retain model tool calls and results. Deleting a project cascades its conversations. The Assistant has one provider connection, Anthropic. Provider credentials are kept outside SQLite through Bun's OS secret store. On Windows only, an unavailable secret-store operation falls back to a sibling `.assistant-credentials.dpapi` file containing current-user DPAPI ciphertext; the API key is supplied to PowerShell over stdin, not a command-line argument or plaintext file. No plaintext fallback exists.
+
+The model picker uses pi-ai's Anthropic catalog. Model and thinking selections persist per conversation and as the defaults for new conversations. Every conversation uses its own stable ID as the pi-agent-core session ID. The system prompt and tool definitions are fixed; the current project is read through `read_project` before changes. External project revisions are reported on the next user message with a compact current-project summary. Transcript writes are append-only, including internal change notes.
+
+`read_project` returns the authoritative design, freshly generated PostgreSQL SQL, sandbox state, Functions, Triggers, Policies, Scenarios, Edge functions, and Scenario run results. `apply_ddl` uses the pure-WASM `libpg-query` parser and applies the supported subset as one workspace change. Unsupported or invalid DDL fails without partially applying a batch. A destructive drop with dependents pauses for an explicit confirmation. Changes within one Assistant turn share one undo entry; new tables are laid out without moving existing cards.
+
+The accepted DDL subset is documented in [ADR 0003](adr/0003-assistant-writes-the-design-through-sql.md) and the parent Assistant spec, issue #68. Translation deliberately rejects constructs that the design model cannot represent. Tool calls and results are shown in collapsible conversation cards; applied changes are linked to the affected design tables.
+
+## Credential verification
+
+The Windows credential fallback is platform-specific and cannot be exercised by the Linux test suite. Before release, build and run the packaged Windows application and verify both paths: with Bun's secret store available, save/restart/read/remove an Anthropic key and confirm no key appears in SQLite; with the store unavailable, repeat and confirm the adjacent fallback file contains only DPAPI ciphertext, can be decrypted only by the same Windows user, and is removed on credential deletion. Do not use a live provider call for this storage check.
