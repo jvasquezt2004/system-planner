@@ -22,8 +22,9 @@ import {
 	type Scenario,
 	type WorkspaceState,
 } from "../shared/design";
-import { runAllScenarios, type RunAllResult } from "../shared/run-all";
+import { SCENARIO_RUN_TIMEOUT_MS, runAllScenarios, type RunAllResult } from "../shared/run-all";
 import { createScenarioRunDriver, type ScenarioRunDriver } from "./scenario-run-driver";
+import { createAssistantScenarioRunBridge } from "./assistant-scenario-run-bridge";
 import { relationshipsForTable } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
 import {
@@ -116,6 +117,8 @@ function App() {
 	const scenarioRunDriver = useRef<ScenarioRunDriver | null>(null);
 	const runAllOperation = useRef<RunAllOperation | null>(null);
 	const scenarioStartOperation = useRef<object | null>(null);
+	const scenarioStateRef = useRef<WorkspaceState | null>(null);
+	const assistantScenarioRunBridge = useRef<ReturnType<typeof createAssistantScenarioRunBridge> | null>(null);
 
 	const resetScenarioExecution = useCallback(() => {
 		scenarioRunDriver.current?.cancel();
@@ -133,6 +136,7 @@ function App() {
 			resetScenarioExecution();
 		}
 		setState(next);
+		scenarioStateRef.current = next;
 	}, [resetScenarioExecution]);
 
 	if (!scenarioRunDriver.current) {
@@ -145,11 +149,30 @@ function App() {
 			},
 			createWorker: () => new Worker(new URL("./scenario-worker.ts", import.meta.url), { type: "module" }),
 			createEdgeWorker: () => new Worker(new URL("./edge-function-worker.ts", import.meta.url), { type: "module" }),
-			timeoutMs: 30_000,
+			timeoutMs: SCENARIO_RUN_TIMEOUT_MS,
 			getToken: () => projectGeneration.current,
 			onState: receiveWorkspaceState,
 		});
 	}
+	if (!assistantScenarioRunBridge.current && scenarioRunDriver.current) {
+		assistantScenarioRunBridge.current = createAssistantScenarioRunBridge({
+			driver: scenarioRunDriver.current,
+			getWorkspaceState: () => scenarioStateRef.current,
+			complete: (requestId, run, error) => {
+				void workspaceClient.completeAssistantScenarioRun(requestId, run, error);
+			},
+		});
+	}
+	useEffect(() => {
+		const bridge = assistantScenarioRunBridge.current;
+		if (!bridge) return;
+		const unsubscribeRequests = workspaceClient.subscribeAssistantScenarioRuns((request) => bridge.request(request));
+		const unsubscribeCancels = workspaceClient.subscribeAssistantScenarioRunCancels((requestId) => bridge.cancel(requestId));
+		return () => {
+			unsubscribeRequests();
+			unsubscribeCancels();
+		};
+	}, []);
 
 	useEffect(() => {
 		let active = true;
@@ -306,7 +329,10 @@ function App() {
 		}
 	}, [runScenario, scenarioIsRunning, scenarioStarting, state]);
 
-	useEffect(() => () => scenarioRunDriver.current?.cancel(), []);
+	useEffect(() => () => {
+		assistantScenarioRunBridge.current?.dispose();
+		scenarioRunDriver.current?.cancel();
+	}, []);
 
 	// Selection belongs to the open project, never to a previously open one.
 	useEffect(() => {
