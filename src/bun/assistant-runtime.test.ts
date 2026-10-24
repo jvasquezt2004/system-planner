@@ -964,24 +964,48 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		runtimes.push(runtime);
 		const conversation = runtime.createConversation(state.project.id);
 		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" }),
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "assistant_scenario" }),
+				fauxToolCall("manage_code", { action: "create", kind: "edge-function", name: "assistant_edge" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the project changes.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create the project changes.", "scripted-model");
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
+		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["assistant_scenario"]);
+		expect(workspace.getState().edgeFunctions.map(({ name }) => name)).toEqual(["assistant_edge"]);
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design?.tables).toEqual([]);
+		expect(workspace.getState().scenarios).toEqual([]);
+		expect(workspace.getState().edgeFunctions).toEqual([]);
+		expect(workspace.getState().undoRedo.canUndo).toBe(true);
+	});
+	test("disables turn revert after a hand edit", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-revert-hand-edit-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Hand edit after turn" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
 			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("Created the table.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
-		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
-		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
-		await runtime.revertTurn(conversation.id);
-		expect(workspace.getState().design?.tables).toEqual([]);
-		expect(workspace.getState().undoRedo.canUndo).toBe(true);
-		scripted.setResponses([
-			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
-			fauxAssistantMessage([fauxText("Created the table again.")]),
-		]);
-		await runtime.sendMessage(conversation.id, "Create the table again.", "scripted-model");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		await workspace.addTable({ name: "hand_table" });
 		expect(runtime.canRevertTurn(conversation.id)).toBe(false);
 		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(/can no longer be reverted/);
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table", "hand_table"]);
 	});
 	test("delivers a message sent mid-turn as steering after the current tool call", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-steering-"));
