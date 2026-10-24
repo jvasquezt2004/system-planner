@@ -69,8 +69,14 @@ type RunAllOperation = { projectId: string; generation: number };
 type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
 type AssistantCodeTarget = { kind: "scenario" | "edge-function" | "function-body"; id: string };
 
-function App() {
-	const [state, setState] = useState<WorkspaceState | null>(null);
+export function App({
+	initialState,
+	client = workspaceClient,
+}: {
+	initialState?: WorkspaceState;
+	client?: typeof workspaceClient;
+} = {}) {
+	const [state, setState] = useState<WorkspaceState | null>(() => initialState ?? null);
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
@@ -175,11 +181,12 @@ function App() {
 	}, []);
 
 	useEffect(() => {
+		if (initialState) return;
 		let active = true;
-		const unsubscribe = workspaceClient.subscribe((next) => {
+		const unsubscribe = client.subscribe((next) => {
 			if (active) receiveWorkspaceState(next);
 		});
-		workspaceClient
+		client
 			.load()
 			.then((next) => {
 				if (active) receiveWorkspaceState(next);
@@ -191,7 +198,7 @@ function App() {
 			active = false;
 			unsubscribe();
 		};
-	}, [receiveWorkspaceState]);
+	}, [client, initialState, receiveWorkspaceState]);
 
 
 	const run = useCallback(async (action: () => Promise<WorkspaceState>) => {
@@ -622,7 +629,7 @@ function App() {
 				{state.project && state.design ? (
 					<>
 						<div
-							className="h-full"
+							className="h-full min-w-0"
 							style={{ marginRight: assistantCollapsed ? 40 : assistantWidth }}
 						>
 						{/*
@@ -870,7 +877,7 @@ function App() {
  * stands, and the switch between the canvas and the SQL preview. A double rule
  * closes it.
  */
-function Masthead({
+export function Masthead({
 	state,
 	busy,
 	onOpenProject,
@@ -892,25 +899,25 @@ function Masthead({
 	const project = state.project;
 	return (
 		<header
-			className="double-rule flex shrink-0 items-center justify-between gap-6 bg-paper px-6"
+			className="double-rule flex shrink-0 items-center justify-between gap-3 sm:gap-4 lg:gap-6 bg-paper px-3 sm:px-6"
 			style={{ height: "var(--masthead-height)" }}
 		>
-			<div className="flex min-w-0 items-center gap-5">
-				<p className="kicker hidden shrink-0 leading-tight text-ink-2! sm:block">
+			<div className="flex min-w-0 items-center gap-2 sm:gap-3 md:gap-4">
+				<p className="kicker hidden shrink-0 leading-tight text-ink-2! md:block">
 					Schema
 					<br />
 					Designer
 				</p>
-				<span className="hidden h-8 w-px bg-rule sm:block" aria-hidden="true" />
+				<span className="hidden h-8 w-px bg-rule md:block" aria-hidden="true" />
 				<DropdownMenu>
 					<h1 className="min-w-0">
 						<DropdownMenuTrigger
 							disabled={busy}
-							className="group flex max-w-full min-w-0 items-baseline gap-2 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
+							className="group flex max-w-full min-w-0 items-baseline gap-1.5 sm:gap-2 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
 						>
 							<span
 								className={cn(
-									"truncate font-display text-[26px] leading-none font-medium tracking-[-0.015em]",
+									"truncate font-display text-[20px] sm:text-[22px] md:text-[24px] 2xl:text-[26px] leading-none font-medium tracking-[-0.015em]",
 									project ? "text-ink" : "text-ink-3 italic",
 								)}
 							>
@@ -984,9 +991,9 @@ function Masthead({
 				)}
 			</div>
 
-			<div className="flex shrink-0 items-center gap-5">
+			<div className="flex shrink-0 items-center gap-3 sm:gap-4 lg:gap-5">
 				{project && (
-					<dl className="hidden items-center gap-5 lg:flex">
+					<dl className="hidden items-center gap-5 2xl:flex">
 						<StatusLine label="Saved">
 							<SaveStatus save={state.save} />
 						</StatusLine>
@@ -1011,32 +1018,77 @@ function Masthead({
 					value={project ? view : ""}
 					disabled={!project}
 					onValueChange={(next) => {
-						if (next === "canvas" || next === "sql" || next === "scenarios" || next === "edge-functions" || next === "functions" || next === "triggers") onViewChange(next);
+						if (
+							next === "canvas" ||
+							next === "sql" ||
+							next === "scenarios" ||
+							next === "edge-functions" ||
+							next === "functions" ||
+							next === "triggers"
+						)
+							onViewChange(next);
 					}}
+					className="shrink-0"
 				>
-					<ToggleGroupItem value="canvas" data-testid="view-canvas" className="h-7 px-3">
-						<PenTool />
-						Canvas
+					<ToggleGroupItem
+						value="canvas"
+						data-testid="view-canvas"
+						title="Canvas"
+						aria-label="Canvas"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<PenTool className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Canvas</span>
 					</ToggleGroupItem>
-					<ToggleGroupItem value="sql" data-testid="view-sql" className="h-7 px-3">
-						<FileCode2 />
-						SQL preview
+					<ToggleGroupItem
+						value="sql"
+						data-testid="view-sql"
+						title="SQL preview"
+						aria-label="SQL preview"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<FileCode2 className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">SQL preview</span>
 					</ToggleGroupItem>
-					<ToggleGroupItem value="scenarios" data-testid="view-scenarios" className="h-7 px-3">
-						<ScrollText />
-						Scenarios
+					<ToggleGroupItem
+						value="scenarios"
+						data-testid="view-scenarios"
+						title="Scenarios"
+						aria-label="Scenarios"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<ScrollText className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Scenarios</span>
 					</ToggleGroupItem>
-					<ToggleGroupItem value="edge-functions" data-testid="view-edge-functions" className="h-7 px-3">
-						<Server />
-						Edge functions
+					<ToggleGroupItem
+						value="edge-functions"
+						data-testid="view-edge-functions"
+						title="Edge functions"
+						aria-label="Edge functions"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<Server className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Edge functions</span>
 					</ToggleGroupItem>
-					<ToggleGroupItem value="functions" data-testid="view-functions" className="h-7 px-3">
-						<Braces />
-						Functions
+					<ToggleGroupItem
+						value="functions"
+						data-testid="view-functions"
+						title="Functions"
+						aria-label="Functions"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<Braces className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Functions</span>
 					</ToggleGroupItem>
-					<ToggleGroupItem value="triggers" data-testid="view-triggers" className="h-7 px-3">
-						<Zap />
-						Triggers
+					<ToggleGroupItem
+						value="triggers"
+						data-testid="view-triggers"
+						title="Triggers"
+						aria-label="Triggers"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<Zap className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Triggers</span>
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>

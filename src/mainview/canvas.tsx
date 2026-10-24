@@ -428,7 +428,7 @@ export function TableCanvas({
 			onPointerUp={handleCanvasPointerUp}
 			onPointerCancel={handleCanvasPointerUp}
 			className={cn(
-				"relative h-full w-full touch-none overflow-hidden bg-paper",
+				"relative h-full w-full touch-none overflow-hidden bg-paper @container",
 				relatingFrom ? "cursor-crosshair" : panning ? "cursor-grabbing" : "cursor-grab",
 			)}
 			style={{
@@ -596,10 +596,10 @@ export function TableCanvas({
 			<div
 				data-testid="canvas-toolbar"
 				onPointerDown={(event) => event.stopPropagation()}
-				className="absolute bottom-4 left-4 flex cursor-default flex-wrap items-center gap-1.5 rounded-sm border border-rule-strong bg-paper-raised p-1.5"
+				className="absolute bottom-4 left-4 z-10 flex max-w-[calc(100%-2rem)] cursor-default flex-wrap items-center gap-1.5 rounded-sm border border-rule-strong bg-paper-raised p-1.5 shadow-xs"
 			>
 				<form
-					className="flex items-center gap-1.5"
+					className="flex min-w-0 items-center gap-1.5"
 					onSubmit={(event) => {
 						event.preventDefault();
 						if (draftName.trim().length === 0) return;
@@ -612,51 +612,54 @@ export function TableCanvas({
 						onChange={(event) => setDraftName(event.target.value)}
 						aria-label="Table name"
 						placeholder="Table name"
-						className="h-7 w-36"
+						className="h-7 w-28 sm:w-36 min-w-0"
 					/>
 					<Button
 						type="submit"
 						size="sm"
 						data-testid="add-table"
 						disabled={draftName.trim().length === 0}
+						className="shrink-0"
 					>
 						<Plus />
 						Add table
 					</Button>
 				</form>
-				<span className="mx-1 h-5 w-px bg-rule" aria-hidden="true" />
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					aria-label="Zoom out"
-					data-testid="zoom-out"
-					onClick={() => zoomAroundCentre(1 / 1.2)}
-				>
-					<Minus />
-				</Button>
-				<button
-					type="button"
-					aria-label="Reset zoom"
-					data-testid="zoom-reset"
-					title="Reset zoom to 100%"
-					onClick={() => zoomAroundCentre(1 / viewportRef.current.zoom)}
-					className="figures h-7 w-12 rounded-sm text-center font-mono text-[11px] text-ink-2 hover:bg-paper-tint"
-				>
-					<span data-testid="zoom-level">{Math.round(viewport.zoom * 100)}%</span>
-				</button>
-				<Button
-					variant="ghost"
-					size="icon-sm"
-					aria-label="Zoom in"
-					data-testid="zoom-in"
-					onClick={() => zoomAroundCentre(1.2)}
-				>
-					<Plus />
-				</Button>
-				<span className="mx-1 h-5 w-px bg-rule" aria-hidden="true" />
-				<span className="figures px-1.5 font-mono text-[11px] text-ink-3">
-					{design.tables.length} {design.tables.length === 1 ? "table" : "tables"}
-				</span>
+				<div className="flex shrink-0 items-center gap-1.5">
+					<span className="hidden @md:inline-block mx-0.5 sm:mx-1 h-5 w-px bg-rule" aria-hidden="true" />
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						aria-label="Zoom out"
+						data-testid="zoom-out"
+						onClick={() => zoomAroundCentre(1 / 1.2)}
+					>
+						<Minus />
+					</Button>
+					<button
+						type="button"
+						aria-label="Reset zoom"
+						data-testid="zoom-reset"
+						title="Reset zoom to 100%"
+						onClick={() => zoomAroundCentre(1 / viewportRef.current.zoom)}
+						className="figures h-7 w-12 rounded-sm text-center font-mono text-[11px] text-ink-2 hover:bg-paper-tint"
+					>
+						<span data-testid="zoom-level">{Math.round(viewport.zoom * 100)}%</span>
+					</button>
+					<Button
+						variant="ghost"
+						size="icon-sm"
+						aria-label="Zoom in"
+						data-testid="zoom-in"
+						onClick={() => zoomAroundCentre(1.2)}
+					>
+						<Plus />
+					</Button>
+					<span className="mx-0.5 sm:mx-1 h-5 w-px bg-rule" aria-hidden="true" />
+					<span className="figures px-1 sm:px-1.5 font-mono text-[11px] text-ink-3">
+						{design.tables.length} {design.tables.length === 1 ? "table" : "tables"}
+					</span>
+				</div>
 			</div>
 		</div>
 	);
