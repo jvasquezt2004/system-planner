@@ -110,10 +110,12 @@ Deno.serve(async (request) => {
 	}, 60_000);
 	test("forwards caller Authorization through the Edge function to caller-scoped clients under RLS", async () => {
 		const { workspace, scenarios } = await fixture([
-			`const one = await asUser("11111111-1111-4111-8111-111111111111").functions.invoke("visible-books");
+			`const missingHeader = await asUser("11111111-1111-4111-8111-111111111111").functions.invoke("without-forwarding");
+const one = await asUser("11111111-1111-4111-8111-111111111111").functions.invoke("visible-books");
 const two = await asUser("22222222-2222-4222-8222-222222222222").functions.invoke("visible-books");
 const anon = await supabase.functions.invoke("visible-books");
 const service = await asServiceRole().functions.invoke("visible-books");
+expect(missingHeader).returnsDataEqual([]);
 expect(one).returnsDataEqual(["first user's book"]);
 expect(two).returnsDataEqual(["second user's book"]);
 expect(anon).returnsDataEqual([]);
@@ -135,21 +137,27 @@ expect(service).returnsDataEqual(["first user's book", "second user's book"]);`,
 				withCheck: "",
 			}],
 		});
-		const created = await workspace.createEdgeFunction({ name: "visible-books" });
-		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "visible-books");
-		if (!edgeFunction) throw new Error("Expected saved Edge function.");
-		await workspace.updateEdgeFunctionSource({
-			edgeFunctionId: edgeFunction.id,
-			source: `import { createClient } from "jsr:@supabase/supabase-js@2";
+		for (const [name, forwardAuthorization] of [["visible-books", true], ["without-forwarding", false]] as const) {
+			const created = await workspace.createEdgeFunction({ name });
+			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
+			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
+			await workspace.updateEdgeFunctionSource({
+				edgeFunctionId: edgeFunction.id,
+				source: `import { createClient } from "jsr:@supabase/supabase-js@2";
 Deno.serve(async (request) => {
-	const client = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!, {
-		global: { headers: { Authorization: request.headers.get("Authorization")! } },
-	});
+	const client = createClient(
+		Deno.env.get("SUPABASE_URL")!,
+		Deno.env.get("SUPABASE_ANON_KEY")!,
+		${forwardAuthorization ? `{
+			global: { headers: { Authorization: request.headers.get("Authorization")! } },
+		}` : "{}"},
+	);
 	const { data, error } = await client.from("Books").select("title").order("title");
 	if (error) throw new Error(error.message);
 	return Response.json(data.map(({ title }) => title));
 });`,
-		});
+			});
+		}
 		const seed = `await asServiceRole().from("Books").insert([
 			{ title: "first user's book", owner_id: "11111111-1111-4111-8111-111111111111" },
 			{ title: "second user's book", owner_id: "22222222-2222-4222-8222-222222222222" },
@@ -164,7 +172,7 @@ Deno.serve(async (request) => {
 		try {
 			const run = await driver.run(currentScenario);
 			expect(run?.status).toBe("passed");
-			expect(run?.requests.filter(({ method }) => method === "INVOKE")).toHaveLength(4);
+			expect(run?.requests.filter(({ method }) => method === "INVOKE")).toHaveLength(5);
 		} finally {
 			driver.dispose();
 		}

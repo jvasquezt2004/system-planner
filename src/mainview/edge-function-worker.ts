@@ -10,6 +10,14 @@ const supportedImports = new Set([
 ]);
 const realtimeWebSocket = globalThis.WebSocket;
 
+const tokenForRole = (role: "anon" | "service_role") => {
+	const payload = btoa(JSON.stringify({ role })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+	return `Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${payload}.`;
+};
+const roleAuthorization = {
+	anon: tokenForRole("anon"),
+	serviceRole: tokenForRole("service_role"),
+};
 scope.onmessage = async ({ data }) => {
 	if (data.type === "response") {
 		pending.get(data.requestId)?.(data.response);
@@ -31,7 +39,6 @@ scope.onmessage = async ({ data }) => {
 		const compiled = ts.transpileModule(rewritten, {
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 		}).outputText;
-		const callerAuthorization = new Headers(request.headers).get("authorization");
 		let nestedInvocationAttempted = false;
 		const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = new URL(input instanceof Request ? input.url : String(input));
@@ -44,10 +51,9 @@ scope.onmessage = async ({ data }) => {
 			pending.set(requestId, resolve);
 			const headers = Object.fromEntries(new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).entries());
 			if (headers.authorization === "Bearer scenario-service-role-key") {
-				const payload = btoa(JSON.stringify({ role: "service_role" })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
-				headers.authorization = `Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${payload}.`;
-			} else if (callerAuthorization) {
-				headers.authorization = callerAuthorization;
+				headers.authorization = roleAuthorization.serviceRole;
+			} else if (headers.authorization === "Bearer scenario-anon-key") {
+				headers.authorization = roleAuthorization.anon;
 			}
 			send({ type: "request", requestId, request: {
 				method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: url.pathname, query: url.search.slice(1),

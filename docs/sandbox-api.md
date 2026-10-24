@@ -76,10 +76,12 @@ and `SUPABASE_SERVICE_ROLE_KEY`, and imports of
 `jsr:@supabase/supabase-js@2`, `npm:@supabase/supabase-js@2`,
 `https://esm.sh/@supabase/supabase-js@2`, and `@supabase/supabase-js`.
 The bundled supabase-js client sends its Sandbox API traffic to the same run.
-The incoming `Authorization` header is forwarded to the handler; an anon-key
-client created there uses that caller identity, so user JWT claims and RLS apply.
-The service-role key executes requests as `service_role`, and an anon-key client
-without caller authorization acts as `anon`. Other runtime imports are refused
+The incoming `Authorization` header is available to the handler, but is never
+injected into its clients. An anon-key client without configured `Authorization`
+acts as `anon`; explicitly forwarding the incoming header, for example through
+`global.headers.Authorization`, makes it act as the caller, so user claims and
+RLS apply. The service-role key executes requests as `service_role`; other
+Authorization values pass through unchanged. Other runtime imports are refused
 before the handler executes, and network, WebSocket, XMLHttpRequest, and
 script-import access are unavailable to the handler.
 
