@@ -3,13 +3,20 @@ import { assistantText, foldAssistantEvent } from "./assistant-transcript";
 import type { AssistantMessage } from "../shared/assistant";
 
 describe("assistant transcript model", () => {
-	test("folds text deltas into one message and ignores unrelated pi events", () => {
+	test("starts a new assistant message after tool execution and uses full pi message updates", () => {
 		let messages: AssistantMessage[] = [{ role: "user", payload: "Explain it" }];
-		messages = foldAssistantEvent(messages, { type: "agent_start" });
-		messages = foldAssistantEvent(messages, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Hello" } });
-		messages = foldAssistantEvent(messages, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: " world" } });
-		expect(messages).toHaveLength(2);
-		expect(assistantText(messages[1].payload)).toBe("Hello world");
+		messages = foldAssistantEvent(messages, { type: "message_start", message: { role: "user", content: [{ type: "text", text: "ignored" }] } });
+		messages = foldAssistantEvent(messages, { type: "message_start", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read_project" }] } });
+		messages = foldAssistantEvent(messages, { type: "tool_execution_start", toolCallId: "call-1", toolName: "read_project", args: {} });
+		messages = foldAssistantEvent(messages, { type: "tool_execution_end", toolCallId: "call-1", result: "ready" });
+		messages = foldAssistantEvent(messages, { type: "message_end", message: { role: "assistant", content: [{ type: "toolCall", id: "call-1", name: "read_project" }] } });
+		messages = foldAssistantEvent(messages, { type: "message_start", message: { role: "toolResult", content: [] } });
+		messages = foldAssistantEvent(messages, { type: "message_start", message: { role: "assistant", content: [{ type: "text", text: "Hello" }] } });
+		messages = foldAssistantEvent(messages, { type: "message_update", message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] } });
+		messages = foldAssistantEvent(messages, { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "Hello world" }] } });
+		expect(messages.map((message) => message.kind)).toEqual([undefined, "live-tool", "live-assistant"]);
+		expect(assistantText(messages[1].payload)).toBe("");
+		expect(assistantText(messages[2].payload)).toBe("Hello world");
 	});
 
 	test("shows running tool calls and completes the same card", () => {

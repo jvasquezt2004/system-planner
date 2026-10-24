@@ -8,6 +8,8 @@ import { createAssistantRuntime } from "./assistant-runtime";
 import { openDesignStore } from "./store";
 import { generateDesignSql } from "./sql";
 import { createDesignWorkspace } from "./workspace";
+import type { AssistantMessage } from "../shared/assistant";
+import { assistantText, foldAssistantEvent } from "../mainview/assistant-transcript";
 
 const directories: string[] = [];
 const workspaces: Awaited<ReturnType<typeof createDesignWorkspace>>[] = [];
@@ -65,6 +67,53 @@ describe("Assistant pi agent runtime", () => {
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: false });
 		await workspace.undo();
 		expect(workspace.getState().design?.tables).toEqual([]);
+	});
+	test("folds real pi events into the same visible transcript as saved messages", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-transcript-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Transcript project" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("read_project", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The project is ready.")]),
+		]);
+		const events: unknown[] = [];
+		runtime.subscribe((conversationId, event) => {
+			if (conversationId === conversation.id) events.push(event);
+		});
+		const prompt = "Read the project and summarize it.";
+		await runtime.sendMessage(conversation.id, prompt, "scripted-model");
+
+		const live = events.reduce<AssistantMessage[]>((messages, event) => foldAssistantEvent(messages, event), [
+			{ role: "user", payload: prompt },
+		]);
+		const saved = runtime.loadConversation(conversation.id);
+		if (!saved) throw new Error("Expected the conversation to be saved.");
+		const visibleShape = (messages: AssistantMessage[]) => messages.flatMap((message) => {
+			if (message.role === "user") return ["user"];
+			if (message.kind === "live-tool" || message.role === "toolResult") return ["tool"];
+			const text = assistantText(message.payload);
+			return text ? [`assistant:${text}`] : [];
+		});
+		expect(visibleShape(live)).toEqual(visibleShape(saved.messages));
+		expect(visibleShape(live)).toEqual(["user", "tool", "assistant:The project is ready."]);
+		expect(live.filter((message) => message.kind === "live-assistant").every((message) => Boolean(assistantText(message.payload).trim()))).toBe(true);
+		expect(live.find((message) => message.kind === "live-tool")?.payload).toMatchObject({ status: "complete" });
 	});
 	test("rejects a tool execution when the open project changes during model streaming", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-project-binding-"));

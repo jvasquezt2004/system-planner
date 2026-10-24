@@ -922,6 +922,7 @@ function MessageCard({
 	}
 	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
 	const payload = message.payload;
+	if (message.kind === "live-assistant" && !assistantText(payload).trim()) return null;
 	const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
 	const usage = record && "usage" in record && record.usage && typeof record.usage === "object"
 		? record.usage as { input?: number; output?: number; cacheRead?: number; cost?: { total?: number } }
