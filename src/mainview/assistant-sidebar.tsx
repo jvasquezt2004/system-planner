@@ -122,6 +122,7 @@ export function AssistantSidebar({
 				if (!live) return;
 				const recent = [...items].sort((a, b) => b.updated_at - a.updated_at);
 				setConversations(recent);
+				setModels(available);
 				setConnections(connectionList);
 				setClaudeOptIn(optIn);
 				setRequestCap(cap);
