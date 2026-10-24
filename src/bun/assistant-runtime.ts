@@ -39,6 +39,17 @@ function assistantColumnNotesSql(state: ReturnType<DesignWorkspace["getState"]>)
 }
 const SANDBOX_API_PROMPT = `Sandbox API subset (unsupported features must be treated as errors):
 
+Writing a Scenario: its source is top-level TypeScript run once against a fresh, empty Sandbox. Do not import or create a Supabase client, and do not use Deno.test or test frameworks. These globals are provided:
+- supabase: an anon client; asUser(userId, claims?) returns an authenticated client; asServiceRole() returns a service_role client that bypasses row-level security.
+- expect(result) checks a request result without throwing: .succeeds(), .fails(code?) where code is a PostgreSQL SQLSTATE or PostgREST code, and .returnsDataEqual(value).
+Example:
+const admin = asServiceRole();
+const author = await admin.from("authors").insert({ name: "Ada" }).select("id").single();
+expect(author).succeeds();
+const duplicate = await admin.from("authors").insert({ name: "Ada" });
+expect(duplicate).fails("23505");
+A run passes when every expectation is met, fails when one is unmet, and errors on an uncaught exception. Edge functions are different: they are Deno.serve handlers, and Scenarios call them with supabase.functions.invoke(name, { body }).
+
 Scenarios use the Supabase client against a fresh Sandbox. Reads support select=* or comma-separated columns, nested foreign-key embeds (including !inner and !relationship hints), eq/neq/gt/gte/lt/lte/like/ilike/is/in/not/or filters, ordering, non-negative limit/offset, inclusive Range, exact count and head requests, single() and maybeSingle(). Writes support insert, update (PATCH), delete, upsert with merge/ignore duplicates and optional on_conflict, minimal or representation returns, and exact counts. PostgreSQL constraint errors retain SQLSTATE; each request is transactional.
 
 Row-level security applies to anon, authenticated, and service_role requests. auth.uid(), auth.role(), and auth.jwt() expose request claims. Scenario clients can invoke design Functions by POST /rpc/<name>; GET is only for stable or immutable Functions. Set-returning and named table-row results support the documented projections; other query operations on function results are unsupported.
@@ -622,7 +633,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	{
 		name: "manage_code",
 		label: "Manage project code",
-		description: "Create, rename, or remove a Scenario or Edge function; write or exact-string-edit a Scenario, Edge function, or design Function body. Every edit must match exactly once. Code writes use ordinary workspace saves; tool results include the complete source diff and TypeScript diagnostics from the same declarations as Monaco (Function bodies are SQL, not TypeScript).",
+		description: "Create (optionally with its full source), rename, or remove a Scenario or Edge function; write or exact-string-edit a Scenario, Edge function, or design Function body. Every edit must match exactly once. Code writes use ordinary workspace saves; tool results include the complete source diff and TypeScript diagnostics from the same declarations as Monaco (Function bodies are SQL, not TypeScript).",
 		parameters: Type.Object({
 			action: Type.Union([
 				Type.Literal("create"),
@@ -662,7 +673,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					? state.scenarios.find((candidate) => candidate.name === input.name?.trim())
 					: state.edgeFunctions.find((candidate) => candidate.name === input.name?.trim());
 				if (!item) throw new Error("The created code item could not be found in the bound project.");
-				return { content: [{ type: "text", text: JSON.stringify({ action: "created", kind, id: item.id, name: item.name }) }], details: { action: "created", kind, id: item.id, name: item.name } };
+				if (input.source === undefined) {
+					return { content: [{ type: "text", text: JSON.stringify({ action: "created", kind, id: item.id, name: item.name }) }], details: { action: "created", kind, id: item.id, name: item.name } };
+				}
+				// A create that carries source continues as a whole-file write of the new item.
+				input.id = item.id;
+				input.action = "write";
 			}
 			if (input.action === "rename" || input.action === "remove") {
 				if (kind === "function-body") throw new Error("Function bodies cannot be renamed or removed through code tools.");
