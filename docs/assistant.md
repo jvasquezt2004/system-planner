@@ -6,7 +6,7 @@ The model picker uses pi-ai's Anthropic catalog. Model and thinking selections p
 
 `read_project` returns the authoritative design, freshly generated PostgreSQL SQL (including column notes as `COMMENT ON COLUMN`), sandbox state, Functions, Triggers, Policies, Scenarios, Edge functions, and Scenario run results. `apply_ddl` uses the pure-WASM `libpg-query` parser and applies the supported subset as one workspace change. Unsupported or invalid DDL fails without partially applying a batch. A destructive drop with dependents pauses the turn until a one-shot confirmation bound to the displayed project, revision, target set, and complete removal plan. Changes within one Assistant turn share one undo entry even across intervening hand edits; those hand edits remain independently undoable. New tables are laid out without moving existing cards.
 
-The accepted DDL subset is documented in [ADR 0003](adr/0003-assistant-writes-the-design-through-sql.md) and the parent Assistant spec, issue #68. Translation deliberately rejects constructs that the design model cannot represent. Tool calls and results are shown in collapsible conversation cards; applied changes are linked to the affected design tables.
+The sidebar renders saved messages and live pi events through one transcript model. Text deltas update one in-progress assistant message; tool execution events update expandable cards with a running state. Assistant text parts are shown without provider signatures or non-text content.
 
 ## Code tools
 

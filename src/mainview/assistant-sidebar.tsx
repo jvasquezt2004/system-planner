@@ -12,6 +12,7 @@ import type {
 	AssistantTurnUsage,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
+import { assistantText, foldAssistantEvent } from "./assistant-transcript";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
 type AssistantApi = Pick<
@@ -198,11 +199,7 @@ export function AssistantSidebar({
 					if (usageEvent.usage) setTurnUsages((current) => [...current, usageEvent.usage]);
 				}
 			}
-			setMessages((current) => [...current, {
-				role: "assistant",
-				kind: "event",
-				payload: envelope.event,
-			}]);
+			setMessages((current) => foldAssistantEvent(current, envelope.event));
 		});
 	}, [activeId, api]);
 	useEffect(() => {
@@ -957,15 +954,18 @@ function MessageCard({
 				&& (!("runId" in run) || typeof run.runId === "string")),
 		)
 		: [];
-	const isTool = message.role === "toolResult" || message.kind === "tool-result" || Boolean(toolCall);
-	const summary = message.kind === "event" ? "Assistant activity" : isTool ? "Tool call and result" : message.role === "user" ? "You" : "Assistant";
+	const isTool = message.role === "toolResult" || message.kind === "tool-result" || message.kind === "live-tool" || Boolean(toolCall);
+	const summary = isTool ? "Tool call and result" : message.role === "user" ? "You" : "Assistant";
 	const content = record && "content" in record ? record.content : payload;
-	const printable = typeof content === "string" ? content : JSON.stringify(content, null, 2);
+	const printable = message.kind === "live-tool"
+		? `${String(record?.toolName ?? "Tool")}${record?.args === undefined ? "" : `\n${JSON.stringify(record.args, null, 2)}`}`
+		: typeof content === "string" ? content : JSON.stringify(content, null, 2);
 	const body = isTool ? (
 		<div className="border-y border-ink/10 py-2 text-xs">
 			<details>
 				<summary className="cursor-pointer font-medium">{summary}</summary>
 				<pre className="mt-2 whitespace-pre-wrap break-words text-ink-3">{printable}</pre>
+			{message.kind === "live-tool" && record?.status === "running" && <span className="mt-1 block text-ink-3">Running…</span>}
 			</details>
 			{scenarioRuns.map((run) => (
 				<div key={run.runId ?? run.scenarioId} className="mt-2 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1.5">
@@ -1012,7 +1012,7 @@ function MessageCard({
 	) : (
 		<div className="text-sm leading-relaxed">
 			<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">{summary}</p>
-			<p className="whitespace-pre-wrap">{printable}</p>
+			<p className="whitespace-pre-wrap">{message.role === "assistant" ? assistantText(payload) : printable}</p>
 			{usage && (
 				<div aria-label="Turn usage" className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
 					<span>{(usage.input ?? 0).toLocaleString()} in</span>
