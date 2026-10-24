@@ -486,6 +486,38 @@ describe("Assistant pi agent runtime", () => {
 		expect(saved.messages.some(({ role, payload }) => role === "toolResult" && JSON.stringify(payload).includes("the designer rejected this destructive change"))).toBe(true);
 		await expect(runtime.sendMessage(conversation.id, "Continue.", "scripted-model")).resolves.toBeDefined();
 	});
+	test("refuses a retry of a destructive change the designer rejected in the same turn", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-reject-retry-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Reject retry" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		await applyAssistantDdl(workspace, "CREATE TABLE users (id integer PRIMARY KEY); CREATE TABLE posts (id integer PRIMARY KEY, user_id integer REFERENCES users(id));");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "DROP TABLE users;" })], { stopReason: "toolUse" }),
+			// After the rejection the model tries the same drop again.
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "DROP TABLE users" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Understood, users stays. What would you like instead?")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Drop users.", "scripted-model");
+		const plan = runtime.loadConversation(conversation.id)!.messages.find(({ role }) => role === "toolResult")!;
+		await runtime.rejectDdlDrop(conversation.id, (plan.payload as { toolCallId: string }).toolCallId);
+
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(false);
+		expect(scripted.state.callCount).toBe(3);
+		expect(workspace.getState().design?.tables.map(({ name }) => name).sort()).toEqual(["posts", "users"]);
+		const results = runtime.loadConversation(conversation.id)!.messages.filter(({ role }) => role === "toolResult").map(({ payload }) => JSON.stringify(payload));
+		expect(results.some((text) => text.includes("rejected-earlier"))).toBe(true);
+		expect(results.filter((text) => text.includes("confirmation-required"))).toHaveLength(1);
+	});
 	test("writes Scenario and Edge function source with unique exact edits, diagnostics, and fixed prompt tools", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-tools-"));
 		directories.push(directory);

@@ -56,7 +56,7 @@ Row-level security applies to anon, authenticated, and service_role requests. au
 
 supabase.functions.invoke(name, { body }) invokes a saved Edge function. Edge handlers support Deno.serve, Deno.env.get for SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, and Supabase imports from jsr:@supabase/supabase-js@2, npm:@supabase/supabase-js@2, https://esm.sh/@supabase/supabase-js@2, or @supabase/supabase-js. Network, WebSocket, XMLHttpRequest, script imports, other runtime imports, and nested Edge function invocations are unavailable.`;
 
-const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation. Keep existing card positions and viewport unchanged. ${SANDBOX_API_PROMPT} Report tool errors without claiming changes that were not applied.`;
+const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation; if the designer rejects it, never retry it or an equivalent change, and ask what they want instead. Keep existing card positions and viewport unchanged. ${SANDBOX_API_PROMPT} Report tool errors without claiming changes that were not applied.`;
 
 function estimateMessageTokens(msg: { content?: unknown }): number {
 	if (typeof msg.content === "string") return Math.ceil(msg.content.length / 4);
@@ -331,6 +331,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
 	const latestTurnByProject = new Map<string, string>();
 	const pendingConfirmations = new Set<string>();
+	// Removal plans the designer rejected, per conversation, for the current turn only.
+	const rejectedDrops = new Map<string, { turnId: string | undefined; plans: Set<string> }>();
 	const confirmingDrops = new Set<string>();
 	const turnUsages = new Map<string, {
 		inputTokens: number;
@@ -602,6 +604,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				idFactory: deterministicDdlIdFactory(_toolCallId),
 			});
 			if (result.status === "confirmation-required") {
+				const rejected = rejectedDrops.get(conversationId);
+				if (rejected && rejected.turnId === turnIds.get(conversationId) && rejected.plans.has(JSON.stringify(result.removal))) {
+					const refused = { status: "rejected-earlier", message: "Not applied: the designer already rejected this destructive change in this turn. Do not retry it; explain and ask what they want instead." };
+					return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
+				}
 				pendingConfirmations.add(conversationId);
 				publish(conversationId, { type: "assistant_confirmation_required" });
 			}
@@ -1101,14 +1108,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId
 					&& "status" in message.payload && (message.payload.status === "consumed" || message.payload.status === "rejected");
 			})) throw new Error("This DDL confirmation has already been used.");
-			const exists = [...conversation.messages].reverse().some((message) => {
+			const pendingPlan = [...conversation.messages].reverse().find((message) => {
 				const payload = message.payload;
 				if (message.role !== "toolResult" || !payload || typeof payload !== "object" || !("toolCallId" in payload) || !("details" in payload)) return false;
 				const details = payload.details;
 				return payload.toolCallId === toolCallId && details !== null && typeof details === "object"
 					&& "status" in details && details.status === "confirmation-required";
 			});
-			if (!exists) throw new Error("This DDL confirmation is no longer available.");
+			if (!pendingPlan) throw new Error("This DDL confirmation is no longer available.");
+			const rejectedRemoval = (pendingPlan.payload as { details: { removal?: unknown } }).details.removal;
+			const turnId = turnIds.get(conversationId);
+			const rejected = rejectedDrops.get(conversationId);
+			if (!rejected || rejected.turnId !== turnId) rejectedDrops.set(conversationId, { turnId, plans: new Set([JSON.stringify(rejectedRemoval)]) });
+			else rejected.plans.add(JSON.stringify(rejectedRemoval));
 			store.appendMessage(conversationId, {
 				role: "system",
 				kind: "assistant-drop-confirmation",
@@ -1117,7 +1129,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const toolResult = {
 				role: "toolResult" as const,
 				toolCallId,
-				content: [{ type: "text" as const, text: "the designer rejected this destructive change" }],
+				content: [{ type: "text" as const, text: "Not applied: the designer rejected this destructive change. Do not retry it or an equivalent change; explain and ask what they want instead." }],
 			};
 			const rowId = store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
 			(toolResult as { id?: string }).id = rowId;
