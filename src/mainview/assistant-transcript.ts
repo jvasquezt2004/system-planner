@@ -2,6 +2,35 @@ import type { AssistantMessage } from "../shared/assistant";
 
 type TranscriptRecord = Record<string, unknown>;
 
+export type DropConfirmationState = "pending" | "confirmed" | "rejected" | "stale";
+
+/** Resolve confirmation cards from persisted events and the runtime's live pending state. */
+export function deriveDropConfirmationStates(messages: AssistantMessage[], isConfirmationPending: boolean): Map<string, DropConfirmationState> {
+	const statuses = new Map<string, DropConfirmationState>();
+	for (const message of messages) {
+		if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") continue;
+		const payload = message.payload as TranscriptRecord;
+		if (typeof payload.toolCallId !== "string") continue;
+		if (payload.status === "consumed") statuses.set(payload.toolCallId, "confirmed");
+		else if (payload.status === "rejected") statuses.set(payload.toolCallId, "rejected");
+	}
+	const confirmationCards = messages.filter((message) => {
+		if (message.role !== "toolResult" || !message.payload || typeof message.payload !== "object") return false;
+		const payload = message.payload as TranscriptRecord;
+		const details = payload.details;
+		return typeof payload.toolCallId === "string" && details && typeof details === "object"
+			&& (details as TranscriptRecord).status === "confirmation-required";
+	});
+	const latest = confirmationCards[confirmationCards.length - 1];
+	for (const message of confirmationCards) {
+		const payload = message.payload as TranscriptRecord;
+		const id = payload.toolCallId as string;
+		if (statuses.has(id)) continue;
+		statuses.set(id, isConfirmationPending && message === latest ? "pending" : "stale");
+	}
+	return statuses;
+}
+
 /** Apply pi's streaming events to the same message list used by saved conversations. */
 export function foldAssistantEvent(messages: AssistantMessage[], event: unknown): AssistantMessage[] {
 	if (!event || typeof event !== "object") return messages;

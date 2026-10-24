@@ -1105,6 +1105,25 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().edgeFunctions).toEqual([]);
 		expect(workspace.getState().undoRedo.canUndo).toBe(true);
 	});
+	test("does not offer revert when an Assistant turn leaves the project unchanged", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-revert-noop-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "No-op revert" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([fauxAssistantMessage([fauxText("There are no tables.")])]);
+		await runtime.sendMessage(conversation.id, "List the tables.", "scripted-model");
+		expect(runtime.canRevertTurn(conversation.id)).toBe(false);
+	});
+
 	test("disables turn revert after a hand edit", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-revert-hand-edit-"));
 		directories.push(directory);

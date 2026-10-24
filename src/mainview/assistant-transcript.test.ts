@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assistantText, foldAssistantEvent } from "./assistant-transcript";
+import { assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
 import type { AssistantMessage } from "../shared/assistant";
 
 describe("assistant transcript model", () => {
@@ -36,5 +36,20 @@ describe("assistant transcript model", () => {
 		] } };
 		expect(assistantText(saved.payload)).toBe("**bold** and `code`");
 		expect(assistantText(saved.payload)).not.toContain("provider secret metadata");
+	});
+
+	test("confirmation state is pending only for the current unresolved plan", () => {
+		const messages: AssistantMessage[] = [
+			{ role: "toolResult", payload: { toolCallId: "old", details: { status: "confirmation-required" } } },
+			{ role: "system", kind: "assistant-drop-confirmation", payload: { toolCallId: "old", status: "updated" } },
+			{ role: "toolResult", payload: { toolCallId: "current", details: { status: "confirmation-required" } } },
+		];
+		expect(deriveDropConfirmationStates(messages, true)).toEqual(new Map([["old", "stale"], ["current", "pending"]]));
+		expect(deriveDropConfirmationStates(messages, false).get("current")).toBe("stale");
+		expect(deriveDropConfirmationStates([
+			...messages,
+			{ role: "system", kind: "assistant-drop-confirmation", payload: { toolCallId: "old", status: "consumed" } },
+			{ role: "system", kind: "assistant-drop-confirmation", payload: { toolCallId: "current", status: "rejected" } },
+		], true)).toEqual(new Map([["old", "confirmed"], ["current", "rejected"]]));
 	});
 });

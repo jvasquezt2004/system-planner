@@ -12,7 +12,7 @@ import type {
 	AssistantTurnUsage,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
-import { assistantText, foldAssistantEvent } from "./assistant-transcript";
+import { assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
 type AssistantApi = Pick<
@@ -256,11 +256,74 @@ export function AssistantSidebar({
 			}
 			if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 			setCacheWarning(null);
+			setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
 			setActiveId(conversation.id);
 		} catch (cause) {
 			setError(String(cause));
 		}
 	}
+
+	async function sendMessage() {
+		const message = text.trim();
+		if (!message || !model || confirmationRequired) return;
+		const requestContext = contextRef.current;
+		const steering = pending;
+		setText("");
+		setMessages((current) => [...current, { role: "user", payload: message }]);
+		setPending(true);
+		setError("");
+		try {
+			let conversationId = activeId;
+			if (!conversationId) {
+				const conversation = await api.createAssistantConversation(projectId);
+				conversationId = conversation.id;
+				setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
+				if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
+				if (conversation.model) {
+					setModel(conversation.model);
+					initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
+				}
+				setActiveId(conversationId);
+			}
+			const saved = await api.sendAssistantMessage(conversationId, message, model, thinking, selectedConnectionId || undefined) as AssistantConversationRecord | null;
+			if (contextRef.current.projectId !== requestContext.projectId) return;
+			if (saved) {
+				setMessages(saved.messages);
+				setTurnUsages(saved.usages ?? []);
+				setTotalUsage(saved.totalUsage ?? null);
+				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
+			}
+			const status = await api.getAssistantTurnStatus(conversationId);
+			if (contextRef.current.projectId === requestContext.projectId) setRevertAvailable(status.revertAvailable);
+		} catch (cause) {
+			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
+		} finally {
+			if (contextRef.current.projectId === requestContext.projectId && !steering) setPending(false);
+		}
+	}
+
+	const selectedConnection = connections.find((c) => c.id === selectedConnectionId);
+	const isConnectionRemoved = Boolean(selectedConnectionId && !selectedConnection && connections.length > 0);
+
+	const connectionGroups = connections.map((conn) => {
+		const connModels = models.filter((m) => m.connectionId === conn.id);
+		return {
+			...conn,
+			models: connModels,
+		};
+	}).filter((g) => g.models.length > 0);
+
+	const pickerGroups = connectionGroups.length > 0 ? connectionGroups : Array.from(
+		new Set(models.map((m) => m.provider)),
+	).map((providerId) => ({
+		id: providerId,
+		providerId,
+		name: providerId === "anthropic" ? "Anthropic" : providerId === "openai" ? "OpenAI" : providerId === "google" ? "Google Gemini" : providerId,
+		authMethod: "api-key" as const,
+		connected: false,
+		error: null,
+		models: models.filter((m) => m.provider === providerId),
+	}));
 
 	async function renameConversation() {
 		const conversation = conversations.find(({ id }) => id === activeId);
@@ -439,57 +502,6 @@ export function AssistantSidebar({
 			}
 		}
 	}
-	async function sendMessage() {
-		const message = text.trim();
-		if (!message || !activeId || !model || confirmationRequired) return;
-		const requestContext = contextRef.current;
-		const steering = pending;
-		setText("");
-		setMessages((current) => [...current, { role: "user", payload: message }]);
-		setPending(true);
-		setError("");
-		try {
-			const saved = await api.sendAssistantMessage(activeId, message, model, thinking, selectedConnectionId || undefined) as AssistantConversationRecord | null;
-			if (contextRef.current.generation !== requestContext.generation) return;
-			if (saved) {
-				setMessages(saved.messages);
-				setTurnUsages(saved.usages ?? []);
-				setTotalUsage(saved.totalUsage ?? null);
-				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
-			}
-			if (contextRef.current.generation === requestContext.generation) {
-				const status = await api.getAssistantTurnStatus(activeId);
-				setRevertAvailable(status.revertAvailable);
-			}
-		} catch (cause) {
-			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
-		} finally {
-			if (contextRef.current.generation === requestContext.generation && !steering) setPending(false);
-		}
-	}
-
-	const selectedConnection = connections.find((c) => c.id === selectedConnectionId);
-	const isConnectionRemoved = Boolean(selectedConnectionId && !selectedConnection && connections.length > 0);
-
-	const connectionGroups = connections.map((conn) => {
-		const connModels = models.filter((m) => m.connectionId === conn.id);
-		return {
-			...conn,
-			models: connModels,
-		};
-	}).filter((g) => g.models.length > 0);
-
-	const pickerGroups = connectionGroups.length > 0 ? connectionGroups : Array.from(
-		new Set(models.map((m) => m.provider)),
-	).map((providerId) => ({
-		id: providerId,
-		providerId,
-		name: providerId === "anthropic" ? "Anthropic" : providerId === "openai" ? "OpenAI" : providerId === "google" ? "Google Gemini" : providerId,
-		authMethod: "api-key" as const,
-		connected: false,
-		error: null,
-		models: models.filter((m) => m.provider === providerId),
-	}));
 
 	if (collapsed) {
 		return (
@@ -558,7 +570,7 @@ export function AssistantSidebar({
 						<p className="font-display text-lg">Start a conversation</p>
 						<p className="mt-2 text-xs text-ink-3">Ask about the open project.</p>
 					</div>
-				) : displayAssistantMessages(messages).map((message, index) => (
+				) : displayAssistantMessages(messages, confirmationRequired).map((message, index) => (
 					<MessageCard key={`${index}-${message.role}`} message={message} pending={pending} onConfirmDrop={confirmDrop} onRejectDrop={rejectDrop} onSelectTable={onSelectTable} onSelectCodeSource={onSelectCodeSource} />
 				))}
 			</div>
@@ -693,7 +705,7 @@ export function AssistantSidebar({
 					) : turnPaused ? (
 						<button aria-label="Continue assistant response" onClick={() => void continueTurn()} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Continue</button>
 					) : (
-						<button aria-label={pending ? "Steer assistant" : "Send message"} disabled={!activeId || !text.trim() || !model || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
+						<button aria-label={pending ? "Steer assistant" : "Send message"} disabled={!text.trim() || !model || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
 							<Send className="size-4" />
 						</button>
 					)}
@@ -879,24 +891,25 @@ export function AssistantSidebar({
 	);
 }
 
-function displayAssistantMessages(messages: AssistantMessage[]): AssistantMessage[] {
+function displayAssistantMessages(messages: AssistantMessage[], confirmationPending: boolean): AssistantMessage[] {
+	const states = deriveDropConfirmationStates(messages, confirmationPending);
 	const updates = new Map<string, Record<string, unknown>>();
-	const resolutions = new Set<string>();
 	for (const message of messages) {
 		if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") continue;
 		const payload = message.payload as Record<string, unknown>;
-		if (typeof payload.toolCallId !== "string") continue;
-		if (payload.status === "updated" && payload.details && typeof payload.details === "object") updates.set(payload.toolCallId, payload.details as Record<string, unknown>);
-		if (payload.status === "consumed" || payload.status === "rejected") resolutions.add(payload.toolCallId);
+		if (typeof payload.toolCallId === "string" && payload.status === "updated" && payload.details && typeof payload.details === "object") {
+			updates.set(payload.toolCallId, payload.details as Record<string, unknown>);
+		}
 	}
 	return messages.map((message) => {
 		if (message.role !== "toolResult" || !message.payload || typeof message.payload !== "object") return message;
 		const payload = message.payload as Record<string, unknown>;
 		if (typeof payload.toolCallId !== "string" || !payload.details || typeof payload.details !== "object") return message;
-		const details = payload.details as Record<string, unknown>;
-		if (resolutions.has(payload.toolCallId)) return { ...message, payload: { ...payload, details: { ...details, status: "resolved" } } };
+		const state = states.get(payload.toolCallId);
+		if (!state) return message;
 		const updated = updates.get(payload.toolCallId);
-		return updated ? { ...message, payload: { ...payload, details: { ...updated, planUpdated: true, note: "The plan changed. Review the updated plan before confirming." } } } : message;
+		const details = updated ? { ...updated, planUpdated: true, note: "The plan changed. Review the updated plan before confirming." } : payload.details as Record<string, unknown>;
+		return { ...message, payload: { ...payload, details: { ...details, confirmationState: state } } };
 	});
 }
 function MessageCard({
@@ -1002,13 +1015,25 @@ function MessageCard({
 			)}
 			{confirmation && (
 				<div className="mt-2 rounded-sm border border-proof-red/30 p-2">
-					<p className="font-medium">Destructive change needs confirmation</p>
+					<p className="font-medium">Destructive change {confirmation.confirmationState === "pending" ? "needs confirmation" : confirmation.confirmationState === "confirmed" ? "Confirmed" : confirmation.confirmationState === "rejected" ? "Rejected" : "No longer pending"}</p>
 					{details?.planUpdated === true && <p className="mt-1 text-ink-3">{typeof details.note === "string" ? details.note : "The plan changed. Review the updated plan before confirming."}</p>}
-					{affectedRelationships.length > 0 && <p className="mt-1 text-ink-3">This removes {affectedRelationships.length} relationship(s).</p>}
-					<div className="mt-2 flex gap-2">
+					{affectedRelationships.length > 0 && (
+						<div className="mt-1 text-ink-3">
+							<p>This removes {affectedRelationships.length} {affectedRelationships.length === 1 ? "relationship" : "relationships"}:</p>
+							<ul className="list-inside list-disc">
+								{affectedRelationships.map((relationship, index) => (
+									<li key={typeof relationship.relationshipId === "string" ? relationship.relationshipId : index}>
+										{String(relationship.referencingTable ?? "?")}.{String(relationship.referencingColumn ?? "?")} → {String(relationship.referencedTable ?? "?")}.{String(relationship.referencedColumn ?? "?")} ({String(relationship.cardinality ?? "relationship")}; {Array.isArray(relationship.constraints) ? relationship.constraints.join(", ") : "constraints unspecified"})
+										{typeof relationship.junctionTable === "string" ? `; junction table ${relationship.junctionTable}` : ""}
+									</li>
+								))}
+							</ul>
+						</div>
+					)}
+					{confirmation.confirmationState === "pending" && <div className="mt-2 flex gap-2">
 						<button disabled={!toolCallId || pending} onClick={() => onConfirmDrop(toolCallId)} className="rounded-sm border border-proof-red/40 px-2 py-1 text-xs disabled:opacity-40">Confirm drop</button>
 						<button disabled={!toolCallId || pending} onClick={() => onRejectDrop(toolCallId)} className="rounded-sm border border-ink/25 px-2 py-1 text-xs disabled:opacity-40">Reject</button>
-					</div>
+					</div>}
 				</div>
 			)}
 		</div>
