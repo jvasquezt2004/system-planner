@@ -551,6 +551,45 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(requests[0]).toContain("Sandbox API subset");
 		expect(requests[0]).toContain("manage_code");
 	});
+	test("creating a Scenario with source saves that source and reports diagnostics", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-create-source-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Create with source" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const requests: string[] = [];
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+			streamFn: (model, context, options) => {
+				requests.push(JSON.stringify(context));
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		const source = "const admin = asServiceRole();\nconst count: string = 1;\n";
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Loan lifecycle", source })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create a scenario with source.", "scripted-model");
+
+		expect(workspace.getState().scenarios).toEqual([expect.objectContaining({ name: "Loan lifecycle", source })]);
+		const result = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult")?.payload as { details?: { action?: string; diagnostics?: string[] } };
+		expect(result.details?.action).toBe("write");
+		expect(result.details?.diagnostics?.some((diagnostic) => diagnostic.includes("Type 'number' is not assignable to type 'string'"))).toBe(true);
+		expect(result.details?.diagnostics?.some((diagnostic) => diagnostic.includes("asServiceRole"))).toBe(false);
+		expect(requests[0]).toContain("asServiceRole()");
+		expect(requests[0]).toContain("Do not import or create a Supabase client");
+	});
 	test("creates, renames, and removes Scenarios and Edge functions through workspace actions", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-lifecycle-"));
 		directories.push(directory);
