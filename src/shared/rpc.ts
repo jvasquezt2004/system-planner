@@ -169,6 +169,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean; confirmationRequired: boolean } };
 			updateAssistantConversationSelection: { params: { conversationId: string; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
 			confirmAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
+			rejectAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };

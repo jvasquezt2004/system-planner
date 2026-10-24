@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { applyAssistantDdl } from "./assistant-ddl";
 import { createAssistantRuntime } from "./assistant-runtime";
+import { openDesignStore } from "./store";
+import { generateDesignSql } from "./sql";
 import { createDesignWorkspace } from "./workspace";
 
 const directories: string[] = [];
@@ -239,7 +241,7 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "What changed?", "scripted-model", "high");
 
 		expect(requests).toHaveLength(3);
-		expect(requests[2]).toContain("Project changed since your last snapshot (scenarios, Edge functions)");
+		expect(requests[2]).toContain("Project changed since revision 1 (scenarios, Edge functions)");
 		expect(requests[2]).toContain("scenario");
 		expect(requests[2]).toContain("Edge functions");
 		expect(requests[0]).toContain("low");
@@ -317,5 +319,171 @@ describe("Assistant pi agent runtime", () => {
 		expect(runtime.isTurnPaused(conversation.id)).toBe(true);
 		expect(scripted.state.callCount).toBe(2);
 		expect(runtime.loadConversation(conversation.id)?.messages.some(({ kind }) => kind === "assistant-continue")).toBe(true);
+	});
+
+	test("keeps an Assistant write result bound to its conversation project during pending persistence", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-project-result-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		let targetProjectId = "";
+		let blockNextTargetSave = false;
+		const saveStarted = Promise.withResolvers<void>();
+		const saveGate = Promise.withResolvers<void>();
+		const workspace = await createDesignWorkspace({
+			databasePath,
+			openStore: (path) => {
+				const realStore = openDesignStore(path);
+				return {
+					...realStore,
+					async saveDesign(projectId, design, save) {
+						if (blockNextTargetSave && projectId === targetProjectId) {
+							blockNextTargetSave = false;
+							saveStarted.resolve();
+							await saveGate.promise;
+						}
+						realStore.saveDesign(projectId, design, save);
+					},
+				};
+			},
+		});
+		workspaces.push(workspace);
+		const target = await workspace.createProject({ name: "Conversation target" });
+		if (!target.project) throw new Error("Expected target project.");
+		targetProjectId = target.project.id;
+		const other = await workspace.createProject({ name: "Other project" });
+		if (!other.project) throw new Error("Expected other project.");
+		await workspace.addTable({ name: "private_other_table" });
+		await workspace.openProject({ projectId: targetProjectId });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(targetProjectId);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE created_in_target (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The target-project change is done.")]),
+		]);
+		blockNextTargetSave = true;
+		const send = runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
+		await saveStarted.promise;
+		await workspace.openProject({ projectId: other.project.id });
+		saveGate.resolve();
+		await send;
+
+		const result = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult");
+		expect(JSON.stringify(result?.payload)).toContain("created_in_target");
+		expect(JSON.stringify(result?.payload)).not.toContain("private_other_table");
+		expect(workspace.getState().project?.id).toBe(other.project.id);
+	});
+
+	test("adds column notes only to Assistant read_project SQL with safe comment formatting", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-notes-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Column notes" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		await applyAssistantDdl(workspace, "CREATE TABLE t (id integer PRIMARY KEY); COMMENT ON COLUMN t.id IS 'old private\nintent';");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("read_project", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("I read the column note.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Read this project.", "scripted-model");
+
+		const design = workspace.getState().design!;
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).not.toContain("COMMENT ON COLUMN");
+		const readResult = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult");
+		const readPayload = readResult?.payload as { content?: Array<{ text?: string }> } | undefined;
+		const readProject = JSON.parse(readPayload?.content?.[0]?.text ?? "{}") as { generatedSql?: string };
+		expect(readProject.generatedSql).toContain('-- Column notes\n-- "t"."id": old private intent');
+		expect(readProject.generatedSql).not.toContain("COMMENT ON COLUMN");
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("confirms staged table dependencies from a deterministic plan", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-staged-confirm-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Staged confirmation" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		await applyAssistantDdl(workspace, "CREATE TABLE parent (id integer PRIMARY KEY);");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE child (id integer PRIMARY KEY, parent_id integer REFERENCES parent(id)); DROP TABLE parent;" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The staged dependency was removed.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create then remove the dependent table.", "scripted-model");
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(true);
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["parent"]);
+		const saved = runtime.loadConversation(conversation.id)!;
+		const toolResult = saved.messages.find(({ role }) => role === "toolResult")!;
+		const payload = toolResult.payload as { toolCallId: string };
+
+		await runtime.confirmDdlDrop(conversation.id, payload.toolCallId);
+
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(false);
+		expect(scripted.state.callCount).toBe(2);
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["child"]);
+		expect(workspace.getState().design?.relationships).toEqual([]);
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("refreshes an invalidated destructive plan and rejects it without stranding the turn", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-reject-drop-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Reject confirmation" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		await applyAssistantDdl(workspace, "CREATE TABLE users (id integer PRIMARY KEY); CREATE TABLE posts (id integer PRIMARY KEY, user_id integer REFERENCES users(id));");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "DROP TABLE users;" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The designer rejected this destructive change.")]),
+			fauxAssistantMessage([fauxText("I will continue without the rejected change.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Drop users.", "scripted-model");
+		const firstPlan = runtime.loadConversation(conversation.id)!.messages.find(({ role }) => role === "toolResult")!;
+		const toolCallId = (firstPlan.payload as { toolCallId: string }).toolCallId;
+		await workspace.addTable({ name: "unrelated" });
+
+		const refreshed = await runtime.confirmDdlDrop(conversation.id, toolCallId);
+
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(true);
+		expect(refreshed?.messages.some(({ kind, payload }) => kind === "assistant-drop-confirmation" && JSON.stringify(payload).includes('"status":"updated"'))).toBe(true);
+		await runtime.rejectDdlDrop(conversation.id, toolCallId);
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(false);
+		expect(scripted.state.callCount).toBe(2);
+		expect(workspace.getState().design?.tables.map(({ name }) => name).sort()).toEqual(["posts", "unrelated", "users"]);
+		const saved = runtime.loadConversation(conversation.id)!;
+		expect(saved.messages.some(({ role, payload }) => role === "toolResult" && JSON.stringify(payload).includes("the designer rejected this destructive change"))).toBe(true);
+		await expect(runtime.sendMessage(conversation.id, "Continue.", "scripted-model")).resolves.toBeDefined();
 	});
 });

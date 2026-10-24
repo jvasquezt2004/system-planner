@@ -183,56 +183,69 @@ export async function createDesignWorkspace(
 		};
 	}
 
-	function rebaseManualEdits(aiAfter: unknown, manualAfter: unknown, aiBefore: unknown): unknown {
-		if (JSON.stringify(aiAfter) === JSON.stringify(manualAfter)) return structuredClone(aiBefore);
-		if (Array.isArray(aiAfter) && Array.isArray(manualAfter) && Array.isArray(aiBefore)) {
-			const keyed = [...aiAfter, ...manualAfter, ...aiBefore].every((item) =>
+	function applyManualDelta(target: unknown, manualBefore: unknown, manualAfter: unknown): unknown {
+		if (JSON.stringify(manualBefore) === JSON.stringify(manualAfter)) return structuredClone(target);
+		if (Array.isArray(manualBefore) && Array.isArray(manualAfter)) {
+			const keyed = [...manualBefore, ...manualAfter].every((item) =>
 				item !== null && typeof item === "object" && "id" in item && typeof item.id === "string",
 			);
-			if (!keyed) return structuredClone(manualAfter);
-			const beforeById = new Map(aiBefore.map((item) => [(item as { id: string }).id, item]));
-			const afterById = new Map(aiAfter.map((item) => [(item as { id: string }).id, item]));
-			const manualById = new Map(manualAfter.map((item) => [(item as { id: string }).id, item]));
-			const ids = new Set([...beforeById.keys(), ...afterById.keys(), ...manualById.keys()]);
-			const merged: unknown[] = [];
-			for (const id of ids) {
-				const oldValue = afterById.get(id);
-				const manualValue = manualById.get(id);
-				const baseValue = beforeById.get(id);
-				if (manualValue === undefined) {
-					if (oldValue === undefined) continue;
-					continue;
+			if (keyed && Array.isArray(target)) {
+				const beforeById = new Map(manualBefore.map((item) => [(item as { id: string }).id, item]));
+				const afterById = new Map(manualAfter.map((item) => [(item as { id: string }).id, item]));
+				const targetById = new Map(target.map((item) => [(item as { id: string }).id, item]));
+				const result = target.map((item) => structuredClone(item));
+				const resultById = new Map(result.map((item) => [(item as { id: string }).id, item]));
+				for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+					const before = beforeById.get(id);
+					const after = afterById.get(id);
+					if (before === undefined && after !== undefined) {
+						if (!resultById.has(id)) {
+							const added = structuredClone(after);
+							result.push(added);
+							resultById.set(id, added);
+						}
+					} else if (before !== undefined && after === undefined) {
+						const index = result.findIndex((item) => (item as { id: string }).id === id);
+						if (index >= 0) result.splice(index, 1);
+						resultById.delete(id);
+					} else if (before !== undefined && after !== undefined && resultById.has(id)) {
+						const next = applyManualDelta(targetById.get(id), before, after);
+						const index = result.findIndex((item) => (item as { id: string }).id === id);
+						if (index >= 0) result[index] = next;
+						resultById.set(id, next);
+					}
 				}
-				if (oldValue === undefined) {
-					merged.push(structuredClone(manualValue));
-					continue;
-				}
-				const value = rebaseManualEdits(oldValue, manualValue, baseValue);
-				if (value !== undefined) merged.push(value);
+				return result;
 			}
-			return merged;
+			if (Array.isArray(target) && manualBefore.length === manualAfter.length && target.length === manualBefore.length) {
+				return manualBefore.map((item, index) =>
+					applyManualDelta(target[index], item, manualAfter[index]),
+				);
+			}
+			return structuredClone(manualAfter);
 		}
-		if (aiAfter && manualAfter && aiBefore
-			&& typeof aiAfter === "object" && typeof manualAfter === "object" && typeof aiBefore === "object"
-			&& !Array.isArray(aiAfter) && !Array.isArray(manualAfter) && !Array.isArray(aiBefore)) {
-			const oldRecord = aiAfter as Record<string, unknown>;
-			const manualRecord = manualAfter as Record<string, unknown>;
-			const baseRecord = aiBefore as Record<string, unknown>;
-			const merged: Record<string, unknown> = structuredClone(baseRecord);
-			for (const key of new Set([...Object.keys(oldRecord), ...Object.keys(manualRecord)])) {
-				if (!(key in manualRecord)) {
-					delete merged[key];
-				} else if (!(key in oldRecord)) {
-					merged[key] = structuredClone(manualRecord[key]);
-				} else {
-					const value = rebaseManualEdits(oldRecord[key], manualRecord[key], baseRecord[key]);
-					if (value === undefined) delete merged[key];
-					else merged[key] = value;
+		if (manualBefore && manualAfter && target
+			&& typeof manualBefore === "object" && typeof manualAfter === "object" && typeof target === "object"
+			&& !Array.isArray(manualBefore) && !Array.isArray(manualAfter) && !Array.isArray(target)) {
+			const before = manualBefore as Record<string, unknown>;
+			const after = manualAfter as Record<string, unknown>;
+			const result = structuredClone(target) as Record<string, unknown>;
+			for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+				if (!(key in after)) delete result[key];
+				else if (!(key in before)) result[key] = structuredClone(after[key]);
+				else if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
+					if (before[key] && after[key] && typeof before[key] === "object" && typeof after[key] === "object"
+						&& key in result) {
+						result[key] = applyManualDelta(result[key], before[key], after[key]);
+					} else result[key] = structuredClone(after[key]);
 				}
 			}
-			return merged;
+			return result;
 		}
 		return structuredClone(manualAfter);
+	}
+	function rebaseManualEdits(manualBefore: unknown, manualAfter: unknown, base: unknown): unknown {
+		return applyManualDelta(base, manualBefore, manualAfter);
 	}
 	function recordDesignChange(
 		projectId: string,
@@ -263,9 +276,15 @@ export async function createDesignWorkspace(
 						rebased = next;
 					}
 				}
+				let rebasedAfter: Design = structuredClone(after);
+				for (let index = firstTurnEntry + 1; index < history.cursor; index += 1) {
+					const entry = history.entries[index];
+					if (entry.assistantTurnId) continue;
+					rebasedAfter = rebaseManualEdits(entry.before, entry.after, rebasedAfter) as Design;
+				}
 				const assistantEntry: DesignHistoryEntry = {
 					before: rebased,
-					after,
+					after: rebasedAfter,
 					structural: previous.structural || structural,
 					assistantTurnId,
 				};
@@ -661,10 +680,11 @@ export async function createDesignWorkspace(
 					? { status: "idle" }
 					: { status: "applied", ...lastApplied },
 		});
+		const committedState = state;
 		const preview = schedulePreview(projectId, revision, design);
 		await saveDocument(projectId, revision, nextDocumentRevision, design);
 		await preview;
-		return state;
+		return state.project?.id === projectId ? state : committedState;
 	}
 
 	/**

@@ -16,7 +16,7 @@ export interface AssistantStore {
 	getDefaultSelection(): { model: string | null; thinking: string | null };
 	updateDefaultSelection(model: string, thinking: string): void;
 	observeProjectRevision(conversationId: string, revision: number): number | null;
-	observeProjectSnapshot(conversationId: string, snapshot: string): string | null;
+	observeProjectSnapshot(conversationId: string, snapshot: string, revision: number): { snapshot: string; revision: number } | null;
 	appendMessage(conversationId: string, message: AssistantMessage): void;
 	listProviderConnections(): AssistantProviderConnection[];
 	saveProviderConnection(connectionId: AssistantProviderConnection["id"], credentialName: AssistantProviderConnection["credential_name"]): void;
@@ -109,12 +109,14 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		saveObservedRevision.run(conversationId, revision);
 		return previous;
 	});
-	const getObservedSnapshot = database.query<{ snapshot: string | null }, [string]>(`SELECT snapshot FROM assistant_project_observations WHERE conversation_id = ?`);
-	const saveObservedSnapshot = database.query(`INSERT INTO assistant_project_observations (conversation_id, revision, snapshot) VALUES (?, 0, ?) ON CONFLICT(conversation_id) DO UPDATE SET snapshot = excluded.snapshot`);
-	const readAndSaveSnapshot = database.transaction((conversationId: string, snapshot: string) => {
-		const previous = getObservedSnapshot.get(conversationId)?.snapshot ?? null;
-		saveObservedSnapshot.run(conversationId, snapshot);
-		return previous;
+	const getObservedSnapshot = database.query<{ snapshot: string | null; revision: number }, [string]>(`SELECT snapshot, revision FROM assistant_project_observations WHERE conversation_id = ?`);
+	const saveObservedSnapshot = database.query(`INSERT INTO assistant_project_observations (conversation_id, revision, snapshot) VALUES (?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET revision = excluded.revision, snapshot = excluded.snapshot`);
+	const readAndSaveSnapshot = database.transaction((conversationId: string, snapshot: string, revision: number) => {
+		const previous = getObservedSnapshot.get(conversationId);
+		saveObservedSnapshot.run(conversationId, revision, snapshot);
+		return previous === null || previous === undefined || previous.snapshot === null
+			? null
+			: { snapshot: previous.snapshot, revision: previous.revision };
 	});
 	const create = database.transaction((projectId: string, message: AssistantMessage, options: AssistantConversationOptions, now: number) => {
 		const id = options.id ?? crypto.randomUUID();
@@ -140,7 +142,7 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		getDefaultSelection: () => getSelection.get() ?? { model: null, thinking: null },
 		updateDefaultSelection: (model, thinking) => { saveSelection.run(model, thinking); },
 		observeProjectRevision: (conversationId, revision) => readAndSaveRevision.immediate(conversationId, revision),
-		observeProjectSnapshot: (conversationId, snapshot) => readAndSaveSnapshot.immediate(conversationId, snapshot),
+		observeProjectSnapshot: (conversationId, snapshot, revision) => readAndSaveSnapshot.immediate(conversationId, snapshot, revision),
 		appendMessage: (conversationId, message) => append.immediate(conversationId, message, Date.now()),
 		loadConversation: (id) => {
 			const conversation = selectConversation.get(id);

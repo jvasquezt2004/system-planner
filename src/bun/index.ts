@@ -89,6 +89,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await assistantPromise).updateConversationSelection(conversationId, modelId, thinkingLevel),
 			confirmAssistantDdlDrop: async ({ conversationId, toolCallId }) =>
 				(await assistantPromise).confirmDdlDrop(conversationId, toolCallId),
+			rejectAssistantDdlDrop: async ({ conversationId, toolCallId }) =>
+				(await assistantPromise).rejectDdlDrop(conversationId, toolCallId),
 			createProject: async ({ name }) => (await workspacePromise).createProject({ name }),
 			openProject: async ({ projectId }) =>
 				(await workspacePromise).openProject({ projectId }),

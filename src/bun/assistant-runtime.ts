@@ -1,13 +1,28 @@
 import { Agent, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { createHash } from "node:crypto";
 import { Type, createModels, type MutableModels } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { BunSecretCredentialStore } from "./assistant-credentials";
 import { applyAssistantDdl } from "./assistant-ddl";
 import type { AssistantStore } from "./assistant-store";
 import { openAssistantStore } from "./assistant-store";
-import { generateDesignSql } from "./sql";
+import { generateDesignSql, quoteIdentifier } from "./sql";
 import type { DesignWorkspace } from "./workspace";
 
+function deterministicDdlIdFactory(toolCallId: string) {
+	let counter = 0;
+	return () => {
+		const hex = createHash("sha256").update(`${toolCallId}:${counter++}`).digest("hex").slice(0, 32);
+		return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-${(Number.parseInt(hex[16]!, 16) & 3 | 8).toString(16)}${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+	};
+}
+
+function assistantColumnNotesSql(state: ReturnType<DesignWorkspace["getState"]>): string {
+	const notes = state.design?.tables.flatMap((table) => table.columns
+		.filter((column) => column.notes.trim())
+		.map((column) => `-- ${quoteIdentifier(table.name)}.${quoteIdentifier(column.name)}: ${column.notes.replace(/[\r\n]+/g, " ")}`)) ?? [];
+	return notes.length ? `\n-- Column notes\n${notes.join("\n")}` : "";
+}
 const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation. Keep existing card positions and viewport unchanged. Sandbox Scenarios use the documented PostgREST subset: table reads/projections/embeds, supported filters/order/range/count, CRUD/upsert, row-level security and design Function RPC; Edge functions run in the restricted Deno.serve environment with the documented Supabase imports. Unsupported requests must be treated as errors, never approximated. Report tool errors without claiming changes that were not applied.`;
 
 
@@ -68,13 +83,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		execute: async () => {
 			const { state } = requireBoundState(conversationId);
 			const generated = generateDesignSql(state.design);
-			store.observeProjectSnapshot(conversationId, projectSnapshot(state));
+			store.observeProjectSnapshot(conversationId, projectSnapshot(state), state.revision);
 			return {
 				content: [{ type: "text", text: JSON.stringify({
 					project: state.project,
 					revision: state.revision,
 					design: state.design,
-					generatedSql: generated.ok ? generated.sql : { errors: generated.errors },
+					generatedSql: generated.ok ? `${generated.sql}${assistantColumnNotesSql(state)}` : { errors: generated.errors },
 					sandbox: state.sandbox,
 					functions: state.design.functions,
 					triggers: state.design.triggers,
@@ -100,15 +115,20 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const result = await applyAssistantDdl(workspace, sql, {
 				assistantTurnId: turnIds.get(conversationId),
 				expectedProjectId: conversation.project_id,
+				idFactory: deterministicDdlIdFactory(_toolCallId),
 			});
 			if (result.status === "confirmation-required") {
 				pendingConfirmations.add(conversationId);
 				publish(conversationId, { type: "assistant_confirmation_required" });
 			}
 			let affectedTables: { id: string; name: string; removed?: boolean }[] = [];
+			if (result.status === "applied" && result.state.project?.id !== conversation.project_id) {
+				const changedProject = { applied: true, note: "project switched; re-read on next turn" };
+				return { content: [{ type: "text", text: JSON.stringify(changedProject) }], details: changedProject };
+			}
 			if (result.status === "applied") {
 				const after = result.state;
-				store.observeProjectSnapshot(conversationId, projectSnapshot(after));
+				store.observeProjectSnapshot(conversationId, projectSnapshot(after), after.revision);
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				affectedTables = (after.design?.tables ?? [])
 					.filter((table) => JSON.stringify(beforeById.get(table.id)) !== JSON.stringify(table))
@@ -195,11 +215,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			active.get(conversationId)?.abort();
 		},
 		async confirmDdlDrop(conversationId: string, toolCallId: string) {
-			const { conversation, state } = requireBoundState(conversationId);
+			const { conversation } = requireBoundState(conversationId);
 			if (confirmingDrops.has(toolCallId)) throw new Error("This DDL confirmation is already being processed.");
 			if (conversation.messages.some((message) => {
 				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
-				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId;
+				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId
+					&& "status" in message.payload && (message.payload.status === "consumed" || message.payload.status === "rejected");
 			})) throw new Error("This DDL confirmation has already been used.");
 			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
 			const confirmation = [...conversation.messages].reverse().find((message) => {
@@ -210,40 +231,59 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					&& "status" in details && details.status === "confirmation-required";
 			});
 			if (!confirmation) throw new Error("This DDL confirmation is no longer available.");
-			const payload = confirmation.payload;
-			if (!payload || typeof payload !== "object" || !("details" in payload) || !("toolCallId" in payload)) throw new Error("The saved DDL confirmation is malformed.");
-			const details = payload.details;
-			const savedPlan = details as {
+			const confirmationPayload = confirmation.payload;
+			if (!confirmationPayload || typeof confirmationPayload !== "object" || !("details" in confirmationPayload)) throw new Error("The saved DDL confirmation is malformed.");
+			const originalDetails = confirmationPayload.details;
+			const latestUpdate = [...conversation.messages].reverse().find((message) => {
+				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
+				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId
+					&& "status" in message.payload && message.payload.status === "updated" && "details" in message.payload;
+			});
+			const updatedDetails = latestUpdate?.payload as { details?: unknown } | undefined;
+			const savedPlan = (updatedDetails?.details ?? originalDetails) as {
 				statement: string;
 				projectId: string;
 				revision: number;
 				removal: unknown;
 				targets: { targetId: string }[];
 			};
-			if (!details || typeof details !== "object" || !("statement" in details) || typeof details.statement !== "string"
+			if (!originalDetails || typeof originalDetails !== "object" || !("statement" in originalDetails) || typeof savedPlan.statement !== "string"
 				|| !Array.isArray(savedPlan.targets) || savedPlan.targets.some((target) => !target || typeof target.targetId !== "string")
-				|| savedPlan.projectId !== conversation.project_id || savedPlan.revision !== state.revision) {
+				|| savedPlan.projectId !== conversation.project_id) {
+				throw new Error("The saved DDL confirmation is malformed or belongs to another project.");
 			}
 			const statement = savedPlan.statement;
 			confirmingDrops.add(toolCallId);
 			try {
-				const plan = await applyAssistantDdl(workspace, statement, { expectedProjectId: conversation.project_id });
-				if (plan.status !== "confirmation-required" || plan.projectId !== savedPlan.projectId || plan.revision !== savedPlan.revision
+				const plan = await applyAssistantDdl(workspace, statement, {
+					expectedProjectId: conversation.project_id,
+					idFactory: deterministicDdlIdFactory(toolCallId),
+					planOnly: true,
+				});
+				if (plan.status !== "confirmation-required") throw new Error("Could not refresh the destructive DDL plan.");
+				if (plan.projectId !== savedPlan.projectId || plan.revision !== savedPlan.revision
 					|| JSON.stringify(plan.removal) !== JSON.stringify(savedPlan.removal)
 					|| JSON.stringify(plan.targets) !== JSON.stringify(savedPlan.targets)) {
-					throw new Error("The destructive DDL plan changed. Review the updated plan before confirming.");
+					store.appendMessage(conversationId, {
+						role: "system",
+						kind: "assistant-drop-confirmation",
+						payload: {
+							toolCallId,
+							status: "updated",
+							details: plan,
+							note: "The plan changed. Review the updated plan before confirming.",
+						},
+					});
+					publish(conversationId, { type: "assistant_confirmation_plan_updated" });
+					return store.loadConversation(conversationId);
 				}
 				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
 				turnIds.set(conversationId, turnId);
-				store.appendMessage(conversationId, {
-					role: "system",
-					kind: "assistant-drop-confirmation",
-					payload: { toolCallId, status: "consumed" },
-				});
 				const result = await applyAssistantDdl(workspace, statement, {
 					assistantTurnId: turnId,
 					confirmedDrops: true,
 					expectedProjectId: conversation.project_id,
+					idFactory: deterministicDdlIdFactory(toolCallId),
 					confirmation: {
 						projectId: savedPlan.projectId,
 						revision: savedPlan.revision,
@@ -251,9 +291,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					},
 				});
 				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
+				store.appendMessage(conversationId, {
+					role: "system",
+					kind: "assistant-drop-confirmation",
+					payload: { toolCallId, status: "consumed" },
+				});
 				pendingConfirmations.delete(conversationId);
 				publish(conversationId, { type: "assistant_confirmation_resolved" });
-				store.observeProjectSnapshot(conversationId, projectSnapshot(workspace.getState()));
+				store.observeProjectSnapshot(conversationId, projectSnapshot(result.state), result.state.revision);
 				const message = { role: "user" as const, content: "The user confirmed the destructive DDL change. Report its result.", timestamp: Date.now() };
 				store.appendMessage(conversationId, { role: "user", kind: "assistant-drop-confirmation", payload: { ...message, toolCallId } });
 				const agent = active.get(conversationId);
@@ -268,6 +313,42 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				confirmingDrops.delete(toolCallId);
 			}
 		},
+		async rejectDdlDrop(conversationId: string, toolCallId: string) {
+			const { conversation } = requireBoundState(conversationId);
+			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
+			if (conversation.messages.some((message) => {
+				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
+				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId
+					&& "status" in message.payload && (message.payload.status === "consumed" || message.payload.status === "rejected");
+			})) throw new Error("This DDL confirmation has already been used.");
+			const exists = [...conversation.messages].reverse().some((message) => {
+				const payload = message.payload;
+				if (message.role !== "toolResult" || !payload || typeof payload !== "object" || !("toolCallId" in payload) || !("details" in payload)) return false;
+				const details = payload.details;
+				return payload.toolCallId === toolCallId && details !== null && typeof details === "object"
+					&& "status" in details && details.status === "confirmation-required";
+			});
+			if (!exists) throw new Error("This DDL confirmation is no longer available.");
+			store.appendMessage(conversationId, {
+				role: "system",
+				kind: "assistant-drop-confirmation",
+				payload: { toolCallId, status: "rejected" },
+			});
+			const toolResult = {
+				role: "toolResult" as const,
+				toolCallId,
+				content: [{ type: "text" as const, text: "the designer rejected this destructive change" }],
+			};
+			store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
+			pendingConfirmations.delete(conversationId);
+			publish(conversationId, { type: "assistant_confirmation_resolved" });
+			const agent = active.get(conversationId);
+			if (agent) {
+				agent.state.messages.push(toolResult as never);
+				await agent.prompt("Continue after the rejected destructive change.");
+			}
+			return store.loadConversation(conversationId);
+		},
 		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium") {
 			const conversation = requireBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
@@ -279,9 +360,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			store.updateConversationSelection(conversationId, modelId, thinkingLevel);
 			store.updateDefaultSelection(modelId, thinkingLevel);
 			const currentSnapshot = projectSnapshot(currentState);
-			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot);
-			if (previousSnapshot !== null && previousSnapshot !== currentSnapshot) {
-				const previous = JSON.parse(previousSnapshot) as { design?: unknown; scenarios?: unknown; edgeFunctions?: unknown };
+			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot, currentState.revision);
+			if (previousSnapshot !== null && previousSnapshot.snapshot !== currentSnapshot) {
+				const previous = JSON.parse(previousSnapshot.snapshot) as { design?: unknown; scenarios?: unknown; edgeFunctions?: unknown };
 				const changed = [
 					...(JSON.stringify(previous.design) !== JSON.stringify(currentState.design) ? ["schema design"] : []),
 					...(JSON.stringify(previous.scenarios) !== JSON.stringify(currentState.scenarios) ? ["scenarios"] : []),
@@ -289,7 +370,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				];
 				changeNote = {
 					role: "user",
-					content: `Project changed since your last snapshot (${changed.join(", ")}). These latest saved definitions are authoritative. Re-read the project before acting.`,
+					content: `Project changed since revision ${previousSnapshot.revision} (${changed.join(", ")}). These latest saved definitions are authoritative. Re-read the project before acting.`,
 					timestamp: Date.now(),
 				};
 				store.appendMessage(conversationId, { role: "user", kind: "assistant-change-note", payload: changeNote });

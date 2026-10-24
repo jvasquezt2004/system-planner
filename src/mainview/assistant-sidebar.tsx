@@ -23,6 +23,7 @@ type AssistantApi = Pick<
 	| "getAssistantTurnStatus"
 	| "updateAssistantConversationSelection"
 	| "confirmAssistantDdlDrop"
+	| "rejectAssistantDdlDrop"
 	| "subscribeAssistantEvents"
 >;
 
@@ -253,6 +254,27 @@ export function AssistantSidebar({
 			}
 		}
 	}
+	async function rejectDrop(toolCallId: string) {
+		const requestContext = contextRef.current;
+		if (!activeId || pending) return;
+		setPending(true);
+		setError("");
+		try {
+			const saved = await api.rejectAssistantDdlDrop(activeId, toolCallId);
+			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
+		} catch (cause) {
+			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
+		} finally {
+			if (contextRef.current.generation === requestContext.generation) {
+				setPending(false);
+				const status = await api.getAssistantTurnStatus(activeId);
+				if (contextRef.current.generation === requestContext.generation) {
+					setTurnPaused(status.paused);
+					setConfirmationRequired(status.confirmationRequired);
+				}
+			}
+		}
+	}
 	async function sendMessage() {
 		const message = text.trim();
 		if (!message || !activeId || !model || pending || confirmationRequired) return;
@@ -343,8 +365,8 @@ export function AssistantSidebar({
 						<p className="font-display text-lg">Start a conversation</p>
 						<p className="mt-2 text-xs text-ink-3">Ask about the open project.</p>
 					</div>
-				) : messages.map((message, index) => (
-					<MessageCard key={`${index}-${message.role}`} message={message} onConfirmDrop={confirmDrop} onSelectTable={onSelectTable} />
+				) : displayAssistantMessages(messages).map((message, index) => (
+					<MessageCard key={`${index}-${message.role}`} message={message} pending={pending} onConfirmDrop={confirmDrop} onRejectDrop={rejectDrop} onSelectTable={onSelectTable} />
 				))}
 			</div>
 			{error && <div role="alert" className="px-3 py-2 text-xs text-proof-red">{error}</div>}
@@ -400,13 +422,37 @@ export function AssistantSidebar({
 	);
 }
 
+function displayAssistantMessages(messages: AssistantMessage[]): AssistantMessage[] {
+	const updates = new Map<string, Record<string, unknown>>();
+	const resolutions = new Set<string>();
+	for (const message of messages) {
+		if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") continue;
+		const payload = message.payload as Record<string, unknown>;
+		if (typeof payload.toolCallId !== "string") continue;
+		if (payload.status === "updated" && payload.details && typeof payload.details === "object") updates.set(payload.toolCallId, payload.details as Record<string, unknown>);
+		if (payload.status === "consumed" || payload.status === "rejected") resolutions.add(payload.toolCallId);
+	}
+	return messages.map((message) => {
+		if (message.role !== "toolResult" || !message.payload || typeof message.payload !== "object") return message;
+		const payload = message.payload as Record<string, unknown>;
+		if (typeof payload.toolCallId !== "string" || !payload.details || typeof payload.details !== "object") return message;
+		const details = payload.details as Record<string, unknown>;
+		if (resolutions.has(payload.toolCallId)) return { ...message, payload: { ...payload, details: { ...details, status: "resolved" } } };
+		const updated = updates.get(payload.toolCallId);
+		return updated ? { ...message, payload: { ...payload, details: { ...updated, planUpdated: true, note: "The plan changed. Review the updated plan before confirming." } } } : message;
+	});
+}
 function MessageCard({
 	message,
 	onConfirmDrop,
+	onRejectDrop,
+	pending,
 	onSelectTable,
 }: {
 	message: AssistantMessage;
 	onConfirmDrop: (toolCallId: string) => void;
+	onRejectDrop: (toolCallId: string) => void;
+	pending: boolean;
 	onSelectTable: (tableId: string) => void;
 }) {
 	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
@@ -446,8 +492,12 @@ function MessageCard({
 			{confirmation && (
 				<div className="mt-2 rounded-sm border border-proof-red/30 p-2">
 					<p className="font-medium">Destructive change needs confirmation</p>
+					{details?.planUpdated === true && <p className="mt-1 text-ink-3">{typeof details.note === "string" ? details.note : "The plan changed. Review the updated plan before confirming."}</p>}
 					{affectedRelationships.length > 0 && <p className="mt-1 text-ink-3">This removes {affectedRelationships.length} relationship(s).</p>}
-					<button disabled={!toolCallId} onClick={() => onConfirmDrop(toolCallId)} className="mt-2 rounded-sm border border-proof-red/40 px-2 py-1 text-xs disabled:opacity-40">Confirm drop</button>
+					<div className="mt-2 flex gap-2">
+						<button disabled={!toolCallId || pending} onClick={() => onConfirmDrop(toolCallId)} className="rounded-sm border border-proof-red/40 px-2 py-1 text-xs disabled:opacity-40">Confirm drop</button>
+						<button disabled={!toolCallId || pending} onClick={() => onRejectDrop(toolCallId)} className="rounded-sm border border-ink/25 px-2 py-1 text-xs disabled:opacity-40">Reject</button>
+					</div>
 				</div>
 			)}
 		</div>

@@ -135,7 +135,7 @@ describe("assistant DDL translator", () => {
 		expect(result.sql).toContain("CREATE TRIGGER");
 		expect(result.sql).toContain("WHEN (NEW.created_at IS NOT NULL)");
 		expect(result.sql).toContain("USING (visibility = 'public')");
-		expect(result.sql).toContain("COMMENT ON COLUMN");
+		expect(result.sql).not.toContain("COMMENT ON COLUMN");
 		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
 	test("preserves enum storage and column notes in SQL accepted by the sandbox", async () => {
@@ -151,7 +151,8 @@ describe("assistant DDL translator", () => {
 		if (!result.ok) throw new Error(result.errors.join("; "));
 		expect(result.sql).toContain(`CREATE TYPE "visibility" AS ENUM ('public', 'private');`);
 		expect(result.sql).toContain('"visibility" "visibility" NOT NULL');
-		expect(result.sql).toContain(`COMMENT ON COLUMN "documents"."visibility" IS 'Visibility note';`);
+		expect(result.sql).not.toContain("COMMENT ON COLUMN");
+		expect(design.tables.find(({ name }) => name === "documents")?.columns.find(({ name }) => name === "visibility")?.notes).toBe("Visibility note");
 		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
 
@@ -196,7 +197,7 @@ describe("assistant DDL translator", () => {
 		expect(workspace.getState().design).toEqual(before);
 		await expect(applyAssistantDdl(workspace, "CREATE TABLE child_records (extra text) INHERITS (records);")).rejects.toThrow("table inheritance");
 		expect(workspace.getState().design).toEqual(before);
-		await expect(applyAssistantDdl(workspace, "CREATE INDEX records_label_idx ON records (label text_pattern_ops);")).rejects.toThrow("operator classes");
+		await expect(applyAssistantDdl(workspace, "CREATE INDEX records_label_idx ON records (label unsupported_ops);")).rejects.toThrow("no compatible operator class");
 		expect(workspace.getState().design).toEqual(before);
 		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
@@ -333,5 +334,122 @@ describe("assistant DDL translator", () => {
 			confirmedDrops: true,
 			confirmation: { projectId: pending.projectId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
 		})).rejects.toThrow("confirmation is stale");
+	});
+
+	test("rejects DROP VIEW before resolving its name as a table", async () => {
+		const workspace = await openWorkspace();
+		await applyAssistantDdl(workspace, "CREATE TABLE t (id integer PRIMARY KEY);");
+		const before = workspace.getState().design!;
+		const beforeSql = generateDesignSql(before);
+		if (!beforeSql.ok) throw new Error(beforeSql.errors.join("; "));
+
+		await expect(applyAssistantDdl(workspace, "DROP VIEW t;")).rejects.toThrow("DROP VIEW is not supported");
+
+		expect(workspace.getState().design).toEqual(before);
+		const afterSql = generateDesignSql(workspace.getState().design!);
+		if (!afterSql.ok) throw new Error(afterSql.errors.join("; "));
+		expect(afterSql.sql).toBe(beforeSql.sql);
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("recovers RLS predicates after UTF-8 text before the statement", async () => {
+		const workspace = await openWorkspace();
+		const sql = `/*${"é".repeat(90)}*/ CREATE TABLE t (id integer PRIMARY KEY); ALTER TABLE t ENABLE ROW LEVEL SECURITY; CREATE POLICY p ON t USING (false);`;
+		await applyAssistantDdl(workspace, sql);
+
+		const design = workspace.getState().design!;
+		expect(design.tables.find(({ name }) => name === "t")?.policies?.[0]?.using).toBe("false");
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).toContain("USING (false)");
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("emits project functions before policies that call them", async () => {
+		const workspace = await openWorkspace();
+		await applyAssistantDdl(workspace, `
+			CREATE TABLE t (id integer PRIMARY KEY);
+			CREATE OR REPLACE FUNCTION allowed() RETURNS boolean LANGUAGE SQL AS $$ SELECT true $$;
+			ALTER TABLE t ENABLE ROW LEVEL SECURITY;
+			CREATE POLICY p ON t USING (allowed());
+		`);
+
+		const generated = generateDesignSql(workspace.getState().design!);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql.indexOf('CREATE FUNCTION "allowed"')).toBeLessThan(generated.sql.indexOf("CREATE POLICY"));
+		expect(generated.sql).toContain("USING (allowed())");
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("preserves relationship-owned one-to-one uniqueness through unrelated ALTER", async () => {
+		const workspace = await openWorkspace();
+		const accountsState = await workspace.addTable({ name: "accounts" });
+		const profilesState = await workspace.addTable({ name: "profiles" });
+		const accounts = accountsState.design!.tables.find(({ name }) => name === "accounts")!;
+		const profiles = profilesState.design!.tables.find(({ name }) => name === "profiles")!;
+		await workspace.addRelationship({ referencingTableId: profiles.id, referencedTableId: accounts.id, cardinality: "one-to-one" });
+		const originalRelationship = workspace.getState().design!.relationships.find(({ referencingTableId }) => referencingTableId === profiles.id)!;
+		const localColumn = workspace.getState().design!.tables.find(({ id }) => id === profiles.id)!.columns.find(({ id }) => id === originalRelationship.referencingColumnId)!;
+
+		await applyAssistantDdl(workspace, "ALTER TABLE profiles ADD COLUMN note text;");
+
+		const design = workspace.getState().design!;
+		expect(design.relationships.find(({ id }) => id === originalRelationship.id)?.cardinality).toBe("one-to-one");
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).toContain(`UNIQUE ("${localColumn.name}")`);
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("preserves relationship-owned junction uniqueness through unrelated ALTER", async () => {
+		const workspace = await openWorkspace();
+		const aState = await workspace.addTable({ name: "a" });
+		const bState = await workspace.addTable({ name: "b" });
+		const a = aState.design!.tables.find(({ name }) => name === "a")!;
+		const b = bState.design!.tables.find(({ name }) => name === "b")!;
+		await workspace.addRelationship({ referencingTableId: a.id, referencedTableId: b.id, cardinality: "many-to-many" });
+		const designBefore = workspace.getState().design!;
+		const association = designBefore.manyToManyRelationships[0]!;
+		const junction = designBefore.tables.find(({ id }) => id === association.junctionTableId)!;
+		const endpointNames = designBefore.relationships
+			.filter(({ id }) => id === association.leftRelationshipId || id === association.rightRelationshipId)
+			.map(({ referencingColumnId }) => junction.columns.find(({ id }) => id === referencingColumnId)!.name);
+		await applyAssistantDdl(workspace, `ALTER TABLE "${junction.name}" ADD COLUMN note text;`);
+
+		const design = workspace.getState().design!;
+		expect(design.manyToManyRelationships).toContainEqual(association);
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).toContain(`UNIQUE ("${endpointNames[0]}", "${endpointNames[1]}")`);
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("places unrelated tables to the right of existing cards", async () => {
+		const workspace = await openWorkspace();
+		const created = await workspace.addTable({ name: "far_card" });
+		const farCard = created.design!.tables.find(({ name }) => name === "far_card")!;
+		await workspace.moveTable({ tableId: farCard.id, position: { x: 1700, y: 600 } });
+
+		await applyAssistantDdl(workspace, "CREATE TABLE unrelated (id integer PRIMARY KEY);");
+
+		const design = workspace.getState().design!;
+		expect(design.tables.find(({ name }) => name === "far_card")?.position).toEqual({ x: 1700, y: 600 });
+		expect(design.tables.find(({ name }) => name === "unrelated")?.position).toEqual({ x: 2000, y: 600 });
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).toContain('CREATE TABLE "unrelated"');
+		expect(workspace.getState().sandbox.status).toBe("applied");
+	});
+
+	test("translates a supported text operator class into accepted SQL", async () => {
+		const workspace = await openWorkspace();
+		await applyAssistantDdl(workspace, "CREATE TABLE t (id integer PRIMARY KEY, label text); CREATE INDEX assistant_opclass ON t (label text_pattern_ops);");
+
+		const design = workspace.getState().design!;
+		expect(design.tables.find(({ name }) => name === "t")?.indexes?.[0]?.keys[0]?.operatorClass).toBe("text_pattern_ops");
+		const generated = generateDesignSql(design);
+		if (!generated.ok) throw new Error(generated.errors.join("; "));
+		expect(generated.sql).toContain('"label" text_pattern_ops');
+		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
 });

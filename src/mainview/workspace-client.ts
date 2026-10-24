@@ -267,6 +267,9 @@ export const workspaceClient = {
 	confirmAssistantDdlDrop(conversationId: string, toolCallId: string) {
 		return rpc.request.confirmAssistantDdlDrop({ conversationId, toolCallId });
 	},
+	rejectAssistantDdlDrop(conversationId: string, toolCallId: string) {
+		return rpc.request.rejectAssistantDdlDrop({ conversationId, toolCallId });
+	},
 	subscribeAssistantEvents(listener: (event: { conversationId: string; event: unknown }) => void) {
 		assistantListeners.add(listener);
 		return () => { assistantListeners.delete(listener); };
