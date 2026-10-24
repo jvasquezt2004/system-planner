@@ -846,4 +846,78 @@ describe("Assistant provider connections", () => {
 		expect(deviceIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 		expect(new Set(deviceIds).size).toBe(1);
 	});
+	test("ChatGPT sign-in keeps the paste prompt open until it is answered or the callback server wins", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-oauth-prompt-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+
+		let callbackWins = false;
+		const promptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async (interaction) => {
+				// Mirrors pi's flow: a paste prompt races the local callback server.
+				const manualAbort = new AbortController();
+				const manual = interaction.prompt({
+					type: "manual_code",
+					message: "Paste the final redirect URL here:",
+					placeholder: "http://127.0.0.1:1455/auth/callback",
+					signal: manualAbort.signal,
+				}).then((input) => {
+					if (!input.includes("code=")) throw new Error("Pasted URL has no authorization code");
+					return input;
+				});
+				const callback = new Promise<string>((resolve) => {
+					if (callbackWins) setTimeout(() => resolve("callback-code"), 50);
+				});
+				try {
+					const code = await Promise.race([manual, callback]);
+					return { type: "oauth", access: `access-for-${code.length}`, refresh: "r", expires: Date.now() + 3600_000 };
+				} finally {
+					manualAbort.abort();
+				}
+			},
+			refresh: async (cred: OAuthCredential) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-4o", name: "GPT-4o" }] });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
+		models.setProvider({ ...fauxOpenAI.provider, auth: { oauth: promptOAuth } });
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+		const events: Array<{ type?: string; promptId?: string; success?: boolean }> = [];
+		runtime.subscribeOAuth((_providerId, event) => events.push(event as { type?: string }));
+
+		// 1. The prompt is not answered with an empty string; the designer pastes the URL.
+		const pasted = runtime.startOAuthLogin("openai");
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		const prompt = events.find((event) => event.type === "prompt");
+		expect(prompt?.promptId).toBeString();
+		expect(events.some((event) => event.type === "login_finished")).toBe(false);
+		expect(runtime.answerOAuthPrompt(prompt!.promptId!, "http://127.0.0.1:1455/auth/callback?code=abc&state=s")).toBe(true);
+		expect((await pasted).success).toBe(true);
+		expect(events.some((event) => event.type === "prompt_closed" && event.promptId === prompt!.promptId)).toBe(true);
+		expect(events[events.length - 1]).toEqual({ type: "login_finished", success: true });
+
+		// 2. The callback server wins: the open prompt is withdrawn and sign-in succeeds.
+		events.length = 0;
+		callbackWins = true;
+		expect((await runtime.startOAuthLogin("openai")).success).toBe(true);
+		const second = events.find((event) => event.type === "prompt");
+		expect(events.some((event) => event.type === "prompt_closed" && event.promptId === second?.promptId)).toBe(true);
+
+		// 3. Cancel ends a pending sign-in.
+		events.length = 0;
+		callbackWins = false;
+		const cancelled = runtime.startOAuthLogin("openai");
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		runtime.cancelOAuthLogin("openai");
+		const cancelResult = await cancelled;
+		expect(cancelResult.success).toBe(false);
+		expect(events[events.length - 1]?.type).toBe("login_finished");
+	});
 });
