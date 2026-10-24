@@ -494,6 +494,7 @@ describe("Assistant pi agent runtime", () => {
 		workspaces.push(workspace);
 		const state = await workspace.createProject({ name: "Code tools" });
 		if (!state.project) throw new Error("Expected the project to be open.");
+		await workspace.addTable({ name: "Books" });
 		const scenario = await workspace.createScenario({ name: "Original scenario" });
 		const scenarioId = scenario.scenarios[0]?.id;
 		if (!scenarioId) throw new Error("Expected a saved Scenario.");
@@ -518,8 +519,13 @@ describe("Assistant pi agent runtime", () => {
 		const conversation = runtime.createConversation(state.project.id);
 		scripted.setResponses([
 			fauxAssistantMessage([
-				fauxToolCall("manage_code", { action: "write", kind: "scenario", id: scenarioId, source: "const value: string = 42;\\nconst duplicate = 1; const duplicate = 2;" }),
-				fauxToolCall("manage_code", { action: "edit", kind: "edge-function", id: edgeId, oldText: '"OK"', newText: '"updated"' }),
+				fauxToolCall("manage_code", { action: "write", kind: "scenario", id: scenarioId, source: `import { createClient } from "@supabase/supabase-js";
+const client = createClient<Database>("http://scenario.local", "key");
+const query = client.from("Books").select("id");` }),
+				fauxToolCall("manage_code", { action: "write", kind: "edge-function", id: edgeId, source: `import { createClient } from "@supabase/supabase-js";
+const client = createClient<Database>("http://scenario.local", "key");
+Deno.serve(async () => { const result = await client.from("Books").select("id"); return new Response(String(result.data?.[0]?.id ?? 0)); });` }),
+				fauxToolCall("manage_code", { action: "write", kind: "scenario", id: scenarioId, source: "const value: string = 42; const duplicate = 1; const duplicate = 2;" }),
 				fauxToolCall("manage_code", { action: "edit", kind: "scenario", id: scenarioId, oldText: "const", newText: "let" }),
 				fauxToolCall("manage_code", { action: "edit", kind: "edge-function", id: edgeId, oldText: "not present", newText: "replacement" }),
 			], { stopReason: "toolUse" }),
@@ -528,17 +534,19 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "Update both source files.", "scripted-model");
 
 		expect(workspace.getState().scenarios[0]?.source).toContain("const value: string = 42;");
-		expect(workspace.getState().edgeFunctions[0]?.source).toContain('new Response("updated")');
+		expect(workspace.getState().edgeFunctions[0]?.source).toContain("Deno.serve");
 		const saved = runtime.loadConversation(conversation.id);
 		const toolResults = saved?.messages.filter(({ role }) => role === "toolResult") ?? [];
-		expect(toolResults).toHaveLength(4);
-		const first = toolResults[0]?.payload as { details?: { diagnostics?: string[] } };
-		expect(first.details?.diagnostics?.some((diagnostic) => diagnostic.includes("Type 'number' is not assignable to type 'string'"))).toBe(true);
-		const edgeWrite = toolResults[1]?.payload as { details?: { diagnostics?: string[] } };
-		expect(edgeWrite.details?.diagnostics).toBeArray();
-		const multipleMatches = toolResults[2]?.payload as { content?: Array<{ text?: string }> };
+		expect(toolResults).toHaveLength(5);
+		const validScenario = toolResults[0]?.payload as { details?: { diagnostics?: string[] } };
+		expect(validScenario.details?.diagnostics).toEqual([]);
+		const validEdgeFunction = toolResults[1]?.payload as { details?: { diagnostics?: string[] } };
+		expect(validEdgeFunction.details?.diagnostics).toEqual([]);
+		const invalidScenario = toolResults[2]?.payload as { details?: { diagnostics?: string[] } };
+		expect(invalidScenario.details?.diagnostics?.some((diagnostic) => diagnostic.includes("Type 'number' is not assignable to type 'string'"))).toBe(true);
+		const multipleMatches = toolResults[3]?.payload as { content?: Array<{ text?: string }> };
 		expect(multipleMatches.content?.[0]?.text).toContain("Exact-string edit expected exactly one match; found 3.");
-		const noMatches = toolResults[3]?.payload as { content?: Array<{ text?: string }> };
+		const noMatches = toolResults[4]?.payload as { content?: Array<{ text?: string }> };
 		expect(noMatches.content?.[0]?.text).toContain("Exact-string edit expected exactly one match; found 0.");
 		expect(requests[0]).toContain("Sandbox API subset");
 		expect(requests[0]).toContain("manage_code");
@@ -574,5 +582,50 @@ describe("Assistant pi agent runtime", () => {
 		expect(workspace.getState().scenarios).toEqual([]);
 		expect(workspace.getState().edgeFunctions).toEqual([]);
 		expect(runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult")).toHaveLength(6);
+	});
+	test("undoes and redoes a Function-body write together with DDL in one Assistant turn", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-function-turn-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Function undo" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const functionId = "turn-function";
+		await workspace.updateFunctions({ functions: [{
+			id: functionId,
+			name: "turn_function",
+			arguments: [],
+			returnType: "integer",
+			returnsSet: false,
+			language: "sql",
+			volatility: "immutable",
+			security: "invoker",
+			body: "SELECT 1",
+		}] });
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_records (id integer PRIMARY KEY);" }),
+				fauxToolCall("manage_code", { action: "edit", kind: "function-body", id: functionId, oldText: "SELECT 1", newText: "SELECT 2" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the table and updated the Function body.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create a table and update the Function.", "scripted-model");
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
+		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
+
+		await workspace.undo();
+		expect(workspace.getState().design?.tables).toEqual([]);
+		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 1");
+		await workspace.redo();
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
+		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 	});
 });

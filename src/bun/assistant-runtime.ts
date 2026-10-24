@@ -253,7 +253,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			else {
 				const design = bound.state.design;
 				if (!design) throw new Error("Open a project before writing a Function body.");
-				state = await workspace.updateFunctions({ functions: (design.functions ?? []).map((fn) => fn.id === input.id ? { ...fn, body: after } : fn) });
+				const functions = (design.functions ?? []).map((fn) => fn.id === input.id ? { ...fn, body: after } : fn);
+				state = await workspace.applyAssistantDesign(
+					{ ...design, functions },
+					turnIds.get(conversationId),
+				);
 			}
 			if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code write completed.");
 			const appliedSource = kind === "scenario"
