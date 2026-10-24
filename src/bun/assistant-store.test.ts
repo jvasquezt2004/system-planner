@@ -111,6 +111,21 @@ describe("Assistant conversations", () => {
 			store.close();
 		}
 	});
+	test("orders usages by insertion when turns share a created_at timestamp", async () => {
+		const { databasePath, projectId } = await setup();
+		const store = openAssistantStore(databasePath);
+		const database = new Database(databasePath);
+		try {
+			const conversation = store.createConversation(projectId, { role: "user", payload: "Same-time turns" });
+			store.saveTurnUsage(conversation.id, "turn-z-first", { inputTokens: 1, outputTokens: 0, cacheReadTokens: 0 });
+			store.saveTurnUsage(conversation.id, "turn-a-second", { inputTokens: 2, outputTokens: 0, cacheReadTokens: 0 });
+			database.query("UPDATE assistant_turn_usage SET created_at = 123456789 WHERE conversation_id = ?").run(conversation.id);
+			expect(store.getTurnUsages(conversation.id).map(({ turnId }) => turnId)).toEqual(["turn-z-first", "turn-a-second"]);
+		} finally {
+			database.close();
+			store.close();
+		}
+	});
 	test("persists the adjustable request cap across a store restart", async () => {
 		const { databasePath } = await setup();
 		const first = openAssistantStore(databasePath);
