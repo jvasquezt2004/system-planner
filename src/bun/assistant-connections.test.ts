@@ -794,4 +794,56 @@ describe("Assistant provider connections", () => {
 		expect(connections2[0]?.connected).toBe(true);
 		expect(connections2[0]?.id).toBe(conn.id);
 	});
+	test("ChatGPT sign-in gets a stable installation id, and a failed first sign-in leaves no connection behind", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-device-id-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+
+		const deviceIds: string[] = [];
+		let failNextLogin = true;
+		const deviceOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async (_interaction, options) => {
+				const deviceId = options?.getDeviceId?.();
+				if (!deviceId) throw new Error("Sign in with ChatGPT requires a device ID (UUID) for this installation");
+				deviceIds.push(deviceId);
+				if (failNextLogin) throw new Error("The browser sign-in was cancelled.");
+				return { type: "oauth", access: "device-access", refresh: "device-refresh", expires: Date.now() + 3600_000 };
+			},
+			refresh: async (cred: OAuthCredential) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-4o", name: "GPT-4o" }] });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
+		models.setProvider({ ...fauxOpenAI.provider, auth: { oauth: deviceOAuth } });
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+
+		const failed = await runtime.startOAuthLogin("openai");
+		expect(failed.success).toBe(false);
+		expect(failed.error).toContain("cancelled");
+		expect((await runtime.listConnections()).filter((c) => c.providerId === "openai" && c.authMethod === "oauth" && c.connected)).toHaveLength(0);
+		expect(new Database(databasePath).query("SELECT COUNT(*) AS n FROM assistant_provider_connections WHERE auth_method = 'oauth'").get()).toEqual({ n: 0 });
+
+		failNextLogin = false;
+		const succeeded = await runtime.startOAuthLogin("openai");
+		expect(succeeded.success).toBe(true);
+		runtime.close();
+		runtimes.splice(runtimes.indexOf(runtime), 1);
+
+		const reopened = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(reopened);
+		failNextLogin = true;
+		await reopened.startOAuthLogin("openai");
+		expect((await reopened.listConnections()).some((c) => c.providerId === "openai" && c.authMethod === "oauth" && c.connected)).toBe(true);
+
+		expect(deviceIds).toHaveLength(3);
+		expect(deviceIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+		expect(new Set(deviceIds).size).toBe(1);
+	});
 });

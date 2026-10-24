@@ -17,6 +17,8 @@ export interface AssistantStore {
 	updateDefaultSelection(connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: string): void;
 	getClaudeOptIn(): boolean;
 	setClaudeOptIn(optIn: boolean): void;
+	/** Stable id of this app installation, created on first use; sent to OpenAI as its agent host id. */
+	getOrCreateDeviceId(): string;
 	observeProjectRevision(conversationId: string, revision: number): number | null;
 	observeProjectSnapshot(conversationId: string, snapshot: string, revision: number): { snapshot: string; revision: number } | null;
 	appendMessage(conversationId: string, message: AssistantMessage): string;
@@ -74,7 +76,8 @@ const SCHEMA = `
 		model TEXT,
 		thinking TEXT,
 		claude_opt_in INTEGER DEFAULT 0,
-		max_requests_per_turn INTEGER NOT NULL DEFAULT 40
+		max_requests_per_turn INTEGER NOT NULL DEFAULT 40,
+		device_id TEXT
 	);
 	CREATE TABLE IF NOT EXISTS assistant_project_observations (
 		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
@@ -154,6 +157,9 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	if (!settingsColumns.some(({ name }) => name === "max_requests_per_turn")) {
 		database.exec("ALTER TABLE assistant_settings ADD COLUMN max_requests_per_turn INTEGER NOT NULL DEFAULT 40");
 	}
+	if (!settingsColumns.some(({ name }) => name === "device_id")) {
+		database.exec("ALTER TABLE assistant_settings ADD COLUMN device_id TEXT");
+	}
 	const messageColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_messages)").all();
 	if (!messageColumns.some(({ name }) => name === "id")) {
 		database.exec("ALTER TABLE assistant_messages ADD COLUMN id TEXT");
@@ -181,6 +187,8 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	const saveSelection = database.query(`INSERT INTO assistant_settings (id, connection_id, model, thinking) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET connection_id = excluded.connection_id, model = excluded.model, thinking = excluded.thinking`);
 	const getClaudeOptInQuery = database.query<{ claude_opt_in: number | null }, []>(`SELECT claude_opt_in FROM assistant_settings WHERE id = 1`);
 	const saveClaudeOptInQuery = database.query(`INSERT INTO assistant_settings (id, claude_opt_in) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET claude_opt_in = excluded.claude_opt_in`);
+	const getDeviceIdQuery = database.query<{ device_id: string | null }, []>(`SELECT device_id FROM assistant_settings WHERE id = 1`);
+	const saveDeviceIdQuery = database.query(`INSERT INTO assistant_settings (id, device_id) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET device_id = COALESCE(assistant_settings.device_id, excluded.device_id)`);
 	const getMaxRequestsQuery = database.query<{ max_requests_per_turn: number }, []>(`SELECT max_requests_per_turn FROM assistant_settings WHERE id = 1`);
 	const setMaxRequestsQuery = database.query(`INSERT INTO assistant_settings (id, max_requests_per_turn) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET max_requests_per_turn = excluded.max_requests_per_turn`);
 	const getObservedRevision = database.query<{ revision: number }, [string]>(`SELECT revision FROM assistant_project_observations WHERE conversation_id = ?`);
@@ -241,6 +249,12 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		},
 		getClaudeOptIn: () => (getClaudeOptInQuery.get()?.claude_opt_in ?? 0) === 1,
 		setClaudeOptIn: (optIn) => { saveClaudeOptInQuery.run(optIn ? 1 : 0); },
+		getOrCreateDeviceId() {
+			const existing = getDeviceIdQuery.get()?.device_id;
+			if (existing) return existing;
+			saveDeviceIdQuery.run(crypto.randomUUID());
+			return getDeviceIdQuery.get()!.device_id!;
+		},
 		getMaxRequestsPerTurn: () => getMaxRequestsQuery.get()?.max_requests_per_turn ?? 40,
 		setMaxRequestsPerTurn(limit) {
 			if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Request cap must be an integer between 1 and 500.");
