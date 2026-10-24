@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
+import { assistantError, assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
 import type { AssistantMessage } from "../shared/assistant";
 
 describe("assistant transcript model", () => {
@@ -51,5 +51,15 @@ describe("assistant transcript model", () => {
 			{ role: "system", kind: "assistant-drop-confirmation", payload: { toolCallId: "old", status: "consumed" } },
 			{ role: "system", kind: "assistant-drop-confirmation", payload: { toolCallId: "current", status: "rejected" } },
 		], true)).toEqual(new Map([["old", "confirmed"], ["current", "rejected"]]));
+	});
+	test("keeps failed assistant messages and exposes their provider error", () => {
+		const failed = { role: "assistant", content: [], stopReason: "error", errorMessage: "The ChatGPT user has reached their usage limit." };
+		let messages: AssistantMessage[] = [{ role: "user", payload: "Add a column" }];
+		messages = foldAssistantEvent(messages, { type: "message_start", message: { role: "assistant", content: [] } });
+		messages = foldAssistantEvent(messages, { type: "message_end", message: failed });
+		expect(messages).toHaveLength(2);
+		expect(assistantError(messages[1].payload)).toBe("The ChatGPT user has reached their usage limit.");
+		expect(assistantError({ role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop" })).toBeNull();
+		expect(assistantError({ role: "assistant", content: [], stopReason: "error" })).toBe("The model request failed.");
 	});
 });

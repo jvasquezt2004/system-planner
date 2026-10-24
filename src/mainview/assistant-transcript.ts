@@ -44,7 +44,7 @@ export function foldAssistantEvent(messages: AssistantMessage[], event: unknown)
 		if (type === "message_start") return [...messages, { role: "assistant", kind: "live-assistant", payload: message }];
 		const index = lastLiveAssistantIndex(messages);
 		if (index < 0) return messages;
-		if (!assistantText(message).trim()) return messages.filter((_item, itemIndex) => itemIndex !== index);
+		if (!assistantText(message).trim() && !assistantError(message)) return messages.filter((_item, itemIndex) => itemIndex !== index);
 		return messages.map((item, itemIndex) => itemIndex === index ? { ...item, payload: message } : item);
 	}
 
@@ -112,4 +112,14 @@ export function assistantText(payload: unknown): string {
 	return content.flatMap((part) => part && typeof part === "object" && (part as TranscriptRecord).type === "text" && typeof (part as TranscriptRecord).text === "string"
 		? [(part as TranscriptRecord).text as string]
 		: []).join("");
+}
+
+/** The provider error a failed assistant message carries, e.g. a usage limit, or null. */
+export function assistantError(payload: unknown): string | null {
+	if (!payload || typeof payload !== "object") return null;
+	const record = payload as TranscriptRecord;
+	if (record.stopReason !== "error") return null;
+	return typeof record.errorMessage === "string" && record.errorMessage.trim()
+		? record.errorMessage
+		: "The model request failed.";
 }
