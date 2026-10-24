@@ -785,6 +785,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (providerId === "anthropic" && !store.getClaudeOptIn()) {
 				throw new Error("Claude account sign-in requires enabling the opt-in setting.");
 			}
+			const existing = store.listProviderConnections().find((c) => c.provider_id === providerId && c.auth_method === "oauth");
+			const hadCredential = existing ? Boolean(await createConnectionScopedStore(credentials, existing.id, existing.provider_id).read(existing.provider_id)) : false;
 			const conn = store.saveProviderConnection(providerId, "oauth");
 			const connModels = getOrInitConnectionModels(conn);
 			try {
@@ -804,9 +806,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						}
 						publishOAuthEvent(providerId, event);
 					},
-				});
+				}, { getDeviceId: () => store.getOrCreateDeviceId(), agentName: "Schema Designer" });
 				return { success: true, connection: conn };
 			} catch (error) {
+				// A failed first sign-in must not leave a connection without a credential behind.
+				if (!hadCredential) {
+					await createConnectionScopedStore(credentials, conn.id, conn.provider_id).delete(conn.provider_id).catch(() => undefined);
+					connectionModelsMap.delete(conn.id);
+					store.removeProviderConnection(conn.id);
+				}
 				const message = error instanceof Error ? error.message : String(error);
 				publishOAuthEvent(providerId, { type: "error", error: message });
 				return { success: false, error: message };
