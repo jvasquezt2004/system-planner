@@ -1006,11 +1006,17 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
 			const state = workspace.getState();
 			if (state.project?.id !== checkpoint.projectId || !state.design) return false;
-			return JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === JSON.stringify({
+			const after = JSON.stringify({
 				design: { ...checkpoint.after.design, viewport: null },
 				scenarios: checkpoint.after.scenarios,
 				edgeFunctions: checkpoint.after.edgeFunctions,
 			});
+			const before = JSON.stringify({
+				design: { ...checkpoint.before.design, viewport: null },
+				scenarios: checkpoint.before.scenarios,
+				edgeFunctions: checkpoint.before.edgeFunctions,
+			});
+			return after !== before && JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === after;
 		},
 		async revertTurn(conversationId) {
 			const checkpoint = turnCheckpoints.get(conversationId);
