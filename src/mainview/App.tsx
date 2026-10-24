@@ -899,31 +899,31 @@ export function Masthead({
 	const project = state.project;
 	return (
 		<header
-			className="double-rule flex shrink-0 items-center justify-between gap-3 sm:gap-4 lg:gap-6 bg-paper px-3 sm:px-6"
-			style={{ height: "var(--masthead-height)" }}
+			className="double-rule flex shrink-0 flex-wrap items-center justify-between gap-x-2 sm:gap-x-3 lg:gap-x-4 gap-y-1 bg-paper px-3 sm:px-4 lg:px-6 py-1 md:py-0"
+			style={{ minHeight: "var(--masthead-height)" }}
 		>
-			<div className="flex min-w-0 items-center gap-2 sm:gap-3 md:gap-4">
+			<div className="flex min-w-0 items-center gap-1.5 sm:gap-2 md:gap-2.5 order-1">
 				<p className="kicker hidden shrink-0 leading-tight text-ink-2! md:block">
 					Schema
 					<br />
 					Designer
 				</p>
-				<span className="hidden h-8 w-px bg-rule md:block" aria-hidden="true" />
+				<span className="hidden h-7 w-px bg-rule md:block" aria-hidden="true" />
 				<DropdownMenu>
 					<h1 className="min-w-0">
 						<DropdownMenuTrigger
 							disabled={busy}
-							className="group flex max-w-full min-w-0 items-baseline gap-1.5 sm:gap-2 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
+							className="group flex max-w-full min-w-0 items-baseline gap-1.5 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
 						>
 							<span
 								className={cn(
-									"truncate font-display text-[20px] sm:text-[22px] md:text-[24px] 2xl:text-[26px] leading-none font-medium tracking-[-0.015em]",
+									"truncate font-display text-[18px] sm:text-[20px] md:text-[21px] xl:text-[24px] leading-none font-medium tracking-[-0.015em]",
 									project ? "text-ink" : "text-ink-3 italic",
 								)}
 							>
 								{project?.name ?? "No project open"}
 							</span>
-							<ChevronDown className="size-4 shrink-0 self-center text-ink-3 group-hover:text-ink" />
+							<ChevronDown className="size-3.5 shrink-0 self-center text-ink-3 group-hover:text-ink" />
 						</DropdownMenuTrigger>
 					</h1>
 					<DropdownMenuContent align="start" className="w-64">
@@ -991,23 +991,33 @@ export function Masthead({
 				)}
 			</div>
 
-			<div className="flex shrink-0 items-center gap-3 sm:gap-4 lg:gap-5">
-				{project && (
-					<dl className="hidden items-center gap-5 2xl:flex">
-						<StatusLine label="Saved">
-							<SaveStatus save={state.save} />
-						</StatusLine>
-						<StatusLine label="Sandbox">
-							<SandboxStatus sandbox={state.sandbox} draftRevision={state.revision} />
-						</StatusLine>
-						<StatusLine label="SQL">
-							<SqlStatus
-								sql={state.sql}
-								validationStatus={getSqlPreviewValidationStatus(state)}
-							/>
-						</StatusLine>
-					</dl>
-				)}
+			{project && (
+				<dl
+					className="order-3 2xl:order-2 w-full 2xl:w-auto flex items-center gap-2 sm:gap-2.5 lg:gap-3 2xl:gap-5 py-0.5 2xl:py-0 border-t border-rule/30 2xl:border-0"
+					data-testid="status-line"
+				>
+					<StatusLine label="Saved">
+						<SaveStatus save={state.save} />
+					</StatusLine>
+					<span className="h-3 w-px bg-rule 2xl:hidden" aria-hidden="true" />
+					<StatusLine label="Sandbox">
+						<SandboxStatus sandbox={state.sandbox} draftRevision={state.revision} />
+					</StatusLine>
+					<span className="h-3 w-px bg-rule 2xl:hidden" aria-hidden="true" />
+					<StatusLine label="SQL">
+						<SqlStatus
+							sql={state.sql}
+							validationStatus={getSqlPreviewValidationStatus(state)}
+						/>
+					</StatusLine>
+					<span className="h-3 w-px bg-rule md:hidden" aria-hidden="true" />
+					<span className="figures font-mono text-[11px] text-ink-3 md:hidden">
+						rev. {state.revision}
+					</span>
+				</dl>
+			)}
+
+			<div className="flex shrink-0 items-center order-2">
 				<ToggleGroup
 					type="single"
 					variant="outline"
@@ -1098,9 +1108,9 @@ export function Masthead({
 
 function StatusLine({ label, children }: { label: string; children: React.ReactNode }) {
 	return (
-		<div className="flex flex-col gap-0.5">
-			<dt className="kicker text-[9.5px]! text-ink-4!">{label}</dt>
-			<dd className="flex items-center gap-1.5 text-[12px] leading-none">{children}</dd>
+		<div className="flex flex-row 2xl:flex-col items-center 2xl:items-start gap-1 2xl:gap-0.5">
+			<dt className="kicker text-[9.5px]! text-ink-4! hidden 2xl:block">{label}</dt>
+			<dd className="flex items-center gap-1.5 text-[11px] 2xl:text-[12px] leading-none">{children}</dd>
 		</div>
 	);
 }
@@ -1126,15 +1136,25 @@ function SaveStatus({ save }: { save: SaveState }) {
 		<span className="flex items-center gap-1.5" data-testid="save-status">
 			<Mark tone={save.status === "failed" ? "bad" : save.status === "saved" ? "ok" : "muted"} />
 			{save.status === "saved" && (
-				<span className="figures font-mono text-[11px] text-ink-2">
-					{new Date(save.savedAt).toLocaleTimeString()}
+				<span
+					className="figures font-mono text-[11px] text-ink-2"
+					title={`Saved at ${new Date(save.savedAt).toLocaleTimeString()}`}
+				>
+					Saved
+					<span className="hidden 2xl:inline text-ink-3 ml-1">
+						{new Date(save.savedAt).toLocaleTimeString()}
+					</span>
 				</span>
 			)}
-			{save.status === "saving" && <span className="text-ink-3 italic">Saving…</span>}
-			{save.status === "idle" && <span className="text-ink-3">Not saved</span>}
+			{save.status === "saving" && <span className="text-ink-3 italic text-[11px]">Saving…</span>}
+			{save.status === "idle" && <span className="text-ink-3 text-[11px]">Not saved</span>}
 			{save.status === "failed" && (
-				<span className="max-w-56 truncate text-proof-red" data-testid="save-error" title={save.error}>
-					Failed — {save.error}
+				<span
+					className="inline-block max-w-48 sm:max-w-56 md:max-w-64 truncate text-proof-red text-[11px] font-medium align-bottom"
+					data-testid="save-error"
+					title={save.error}
+				>
+					Save failed{save.error ? ` — ${save.error}` : ""}
 				</span>
 			)}
 		</span>
@@ -1155,39 +1175,45 @@ function SandboxStatus({
 	if (sandbox.status === "applied") {
 		const current = sandbox.revision === draftRevision;
 		return (
-			<>
+			<span
+				className="flex items-center gap-1.5"
+				title={current ? `Sandbox accepted at revision ${sandbox.revision}` : `Sandbox out of date (revision ${sandbox.revision}, draft is ${draftRevision})`}
+			>
 				<Mark tone={current ? "ok" : "warn"} />
-				<span className={current ? "text-ink-2" : "text-ochre"}>
+				<span className={cn("text-[11px]", current ? "text-ink-2" : "text-ochre")}>
 					{current ? "Accepted" : "Out of date"}{" "}
-					<span className="figures font-mono text-[11px] text-ink-3">rev. {sandbox.revision}</span>
+					<span className="figures font-mono text-ink-3">rev. {sandbox.revision}</span>
 				</span>
-			</>
+			</span>
 		);
 	}
 	if (sandbox.status === "failed") {
 		return (
-			<>
+			<span
+				className="flex items-center gap-1.5"
+				title={sandbox.error}
+			>
 				<Mark tone="bad" />
-				<span className="text-proof-red" title={sandbox.error}>
+				<span className="text-proof-red text-[11px]" title={sandbox.error}>
 					{sandbox.failure === "sql-rejected" ? "Rejected" : "Sandbox error"}{" "}
 					<span className="figures font-mono text-[11px]">rev. {sandbox.revision}</span>
 				</span>
-			</>
+			</span>
 		);
 	}
 	if (sandbox.status === "applying") {
 		return (
-			<>
+			<span className="flex items-center gap-1.5" title="Rebuilding sandbox…">
 				<Mark tone="warn" />
-				<span className="text-ink-3 italic">Rebuilding…</span>
-			</>
+				<span className="text-ink-3 italic text-[11px]">Rebuilding…</span>
+			</span>
 		);
 	}
 	return (
-		<>
+		<span className="flex items-center gap-1.5" title="Sandbox not run">
 			<Mark tone="muted" />
-			<span className="text-ink-3">Not run</span>
-		</>
+			<span className="text-ink-3 text-[11px]">Not run</span>
+		</span>
 	);
 }
 
@@ -1200,21 +1226,25 @@ function SqlStatus({
 }) {
 	const status = sqlStatusLine(sql, validationStatus);
 	const errors = getSqlValidationErrors(sql);
+	const errorText = errors.length > 0 ? errors.join("; ") : undefined;
 	return (
-		<>
+		<span
+			className="flex items-center gap-1.5"
+			title={errorText ?? `SQL preview: ${status.label}`}
+		>
 			<Mark tone={status.tone} />
 			<span
 				className={cn(
+					"text-[11px]",
 					status.tone === "ok" && "text-ink-2",
 					status.tone === "warn" && "text-ochre",
 					status.tone === "bad" && "text-proof-red",
 					status.tone === "muted" && "text-ink-3",
 				)}
-				title={errors.length > 0 ? errors.join("\n") : undefined}
 			>
 				{status.label}
 			</span>
-		</>
+		</span>
 	);
 }
 
