@@ -1153,10 +1153,13 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const current = state;
 				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
-				const snapshot = { design: current.design, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
-				if (JSON.stringify(snapshot) !== JSON.stringify(input.expectedSnapshot)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
-				const restored = normalizeDesign(input.design);
-				await applyStructuralChange(input.projectId, restored, true);
+				const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
+				const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
+				if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
+				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
+				if (JSON.stringify({ ...restored, viewport: null }) !== JSON.stringify({ ...current.design, viewport: null })) {
+					await applyStructuralChange(input.projectId, restored, true);
+				}
 				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
 				await updateScenarios(input.projectId, () => structuredClone(input.scenarios));
 				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");

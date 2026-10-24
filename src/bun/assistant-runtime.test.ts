@@ -972,11 +972,14 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			fauxAssistantMessage([fauxText("Created the project changes.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Create the project changes.", "scripted-model");
+		await workspace.setViewport({ x: 140, y: -35, zoom: 1.4 });
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
 		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["assistant_scenario"]);
 		expect(workspace.getState().edgeFunctions.map(({ name }) => name)).toEqual(["assistant_edge"]);
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design?.viewport).toEqual({ x: 140, y: -35, zoom: 1.4 });
 		expect(workspace.getState().design?.tables).toEqual([]);
 		expect(workspace.getState().scenarios).toEqual([]);
 		expect(workspace.getState().edgeFunctions).toEqual([]);

@@ -885,7 +885,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
 			const state = workspace.getState();
 			if (state.project?.id !== checkpoint.projectId || !state.design) return false;
-			return JSON.stringify({ design: state.design, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === JSON.stringify(checkpoint.after);
+			return JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === JSON.stringify({
+				design: { ...checkpoint.after.design, viewport: null },
+				scenarios: checkpoint.after.scenarios,
+				edgeFunctions: checkpoint.after.edgeFunctions,
+			});
 		},
 		async revertTurn(conversationId) {
 			const checkpoint = turnCheckpoints.get(conversationId);
