@@ -920,4 +920,260 @@ describe("Assistant provider connections", () => {
 		expect(cancelResult.success).toBe(false);
 		expect(events[events.length - 1]?.type).toBe("login_finished");
 	});
+
+	test("ChatGPT sign-in: no cost per turn or in totals, and only usable models in picker", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-chatgpt-cost-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		await workspace.createProject({ name: "ChatGPT Cost Test" });
+		const state = workspace.getState();
+
+		const chatgptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async () => ({
+				type: "oauth",
+				access: "chatgpt-test-token",
+				refresh: "refresh-tok-chatgpt",
+				expires: Date.now() + 3600_000,
+			}),
+			refresh: async (cred) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+
+		const openaiFauxBase = fauxProvider({
+			provider: "openai",
+			models: [
+				{
+					id: "gpt-4o",
+					name: "GPT-4o",
+					contextWindow: 128000,
+					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+				},
+				{
+					id: "gpt-realtime-2.1",
+					name: "GPT-Realtime-2.1",
+					contextWindow: 128000,
+					cost: { input: 4, output: 24, cacheRead: 0.4, cacheWrite: 0 },
+				},
+				{
+					id: "gpt-4o-audio-preview",
+					name: "GPT-4o Audio Preview",
+					contextWindow: 128000,
+					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+				},
+			],
+		});
+
+		const customOpenAIProvider = {
+			...openaiFauxBase.provider,
+			auth: {
+				apiKey: {
+					name: "OpenAI API key",
+					resolve: async ({ credential }: { credential?: { key?: string } }) => ({ auth: { apiKey: credential?.key } }),
+				},
+				oauth: chatgptOAuth,
+			},
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const { credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels();
+		models.setProvider(customOpenAIProvider as never);
+
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+
+		const apiKeyConn = await runtime.setAssistantApiKey("openai", "sk-fake-openai-key");
+		const oauthResult = await runtime.startOAuthLogin("openai");
+		const oauthConn = oauthResult.connection!;
+
+		// 1. Model picker criteria:
+		// API-key connection gets the full catalog (including realtime and audio models)
+		// ChatGPT OAuth connection filters out realtime and audio models
+		const modelList = await runtime.listModels();
+		const apiKeyModels = modelList.filter((m) => m.connectionId === apiKeyConn.id);
+		const oauthModels = modelList.filter((m) => m.connectionId === oauthConn.id);
+
+		expect(apiKeyModels.map((m) => m.id)).toEqual(["gpt-4o", "gpt-realtime-2.1", "gpt-4o-audio-preview"]);
+		expect(oauthModels.map((m) => m.id)).toEqual(["gpt-4o"]);
+		expect(oauthModels.some((m) => m.id.includes("realtime") || m.id.includes("audio"))).toBe(false);
+
+		// Sending message with realtime model on OAuth connection should be rejected
+		const convOAuth = runtime.createConversation(state.project!.id);
+		await expect(
+			runtime.sendMessage(convOAuth.id, "Hello", "gpt-realtime-2.1", "medium", oauthConn.id),
+		).rejects.toThrow(/not usable/i);
+
+		// 2. Cost tracking:
+		// API-key connection tracks cost per turn and in total
+		const convApiKey = runtime.createConversation(state.project!.id);
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([fauxText("Response via API key.")]),
+		]);
+		await runtime.sendMessage(convApiKey.id, "Create tables via API key", "gpt-4o", "medium", apiKeyConn.id);
+
+		const loadedApiKey = runtime.loadConversation(convApiKey.id)!;
+		expect(loadedApiKey.usages).toHaveLength(1);
+		expect(typeof loadedApiKey.usages![0]!.cost).toBe("number");
+		expect(loadedApiKey.usages![0]!.cost!).toBeGreaterThan(0);
+		expect(typeof loadedApiKey.totalUsage?.cost).toBe("number");
+		expect(loadedApiKey.totalUsage!.cost!).toBeGreaterThan(0);
+		const apiKeyAssistantMsg = loadedApiKey.messages.find((m) => m.role === "assistant")!;
+		const apiKeyPayload = apiKeyAssistantMsg.payload as { usage?: { cost?: unknown } };
+		expect(apiKeyPayload.usage?.cost).toBeDefined();
+
+		// ChatGPT OAuth connection shows NO cost per turn or in totals
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([fauxText("Response via ChatGPT OAuth.")]),
+		]);
+		await runtime.sendMessage(convOAuth.id, "Create tables via ChatGPT", "gpt-4o", "medium", oauthConn.id);
+
+		const loadedOAuth = runtime.loadConversation(convOAuth.id)!;
+		expect(loadedOAuth.usages).toHaveLength(1);
+		expect(loadedOAuth.usages![0]!.cost).toBeNull();
+		expect(loadedOAuth.totalUsage?.cost).toBeNull();
+		expect(loadedOAuth.totalUsage!.inputTokens).toBeGreaterThan(0);
+		expect(loadedOAuth.totalUsage!.outputTokens).toBeGreaterThan(0);
+		const oauthAssistantMsg = loadedOAuth.messages.find((m) => m.role === "assistant")!;
+		const oauthPayload = oauthAssistantMsg.payload as { usage?: { cost?: unknown } };
+		expect(oauthPayload.usage?.cost).toBeUndefined();
+
+		// Stored assistant message payload in SQLite directly has no usage.cost
+		const db = new Database(databasePath, { readonly: true });
+		const storedOAuthMsg = db.query<{ payload: string }, [string]>(
+			"SELECT payload FROM assistant_messages WHERE conversation_id = ? AND role = 'assistant'",
+		).get(convOAuth.id);
+		expect(storedOAuthMsg).toBeDefined();
+		const rawOAuthPayload = JSON.parse(storedOAuthMsg!.payload);
+		expect(rawOAuthPayload.usage?.cost).toBeUndefined();
+	});
+
+	test("switching a conversation from API key to ChatGPT sign-in preserves first turn cost and suppresses second turn cost across restarts", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-switch-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		await workspace.createProject({ name: "Switch Test" });
+		const state = workspace.getState();
+
+		const chatgptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async () => ({
+				type: "oauth",
+				access: "chatgpt-test-token",
+				refresh: "refresh-tok-chatgpt",
+				expires: Date.now() + 3600_000,
+			}),
+			refresh: async (cred) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+
+		const openaiFauxBase = fauxProvider({
+			provider: "openai",
+			models: [
+				{
+					id: "gpt-4o",
+					name: "GPT-4o",
+					contextWindow: 128000,
+					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+				},
+			],
+		});
+
+		const customOpenAIProvider = {
+			...openaiFauxBase.provider,
+			auth: {
+				apiKey: {
+					name: "OpenAI API key",
+					resolve: async ({ credential }: { credential?: { key?: string } }) => ({ auth: { apiKey: credential?.key } }),
+				},
+				oauth: chatgptOAuth,
+			},
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const { credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels();
+		models.setProvider(customOpenAIProvider as never);
+
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+
+		const apiKeyConn = await runtime.setAssistantApiKey("openai", "sk-fake-openai-key");
+		const oauthResult = await runtime.startOAuthLogin("openai");
+		const oauthConn = oauthResult.connection!;
+
+		// Start conversation with API-key connection
+		const conversation = runtime.createConversation(state.project!.id);
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([fauxText("Turn 1 via API key.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Turn 1", "gpt-4o", "medium", apiKeyConn.id);
+
+		let loaded = runtime.loadConversation(conversation.id)!;
+		expect(loaded.usages).toHaveLength(1);
+		const turn1Cost = loaded.usages![0]!.cost;
+		expect(typeof turn1Cost).toBe("number");
+		expect(turn1Cost!).toBeGreaterThan(0);
+		expect(loaded.totalUsage?.cost).toBe(turn1Cost);
+
+		// Switch connection to ChatGPT sign-in via updateConversationSelection
+		runtime.updateConversationSelection(conversation.id, oauthConn.id, "gpt-4o");
+
+		// Send Turn 2 via ChatGPT sign-in
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([fauxText("Turn 2 via ChatGPT sign-in.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Turn 2", "gpt-4o");
+
+		loaded = runtime.loadConversation(conversation.id)!;
+		expect(loaded.usages).toHaveLength(2);
+		expect(loaded.usages![0]!.cost).toBe(turn1Cost);
+		expect(loaded.usages![1]!.cost).toBeNull();
+		expect(loaded.totalUsage?.cost).toBe(turn1Cost);
+
+		// (c) Stored assistant message payloads for the sign-in turn have no usage.cost
+		const msgs = loaded.messages.filter((m) => m.role === "assistant");
+		expect(msgs).toHaveLength(2);
+		const turn1Payload = msgs[0]!.payload as { usage?: { cost?: unknown } };
+		const turn2Payload = msgs[1]!.payload as { usage?: { cost?: unknown } };
+		expect(turn1Payload.usage?.cost).toBeDefined();
+		expect(turn2Payload.usage?.cost).toBeUndefined();
+
+		// Check raw stored payload in SQLite database directly
+		const db = new Database(databasePath, { readonly: true });
+		const storedMsgs = db.query<{ role: string; payload: string }, [string]>(
+			"SELECT role, payload FROM assistant_messages WHERE conversation_id = ? AND role = 'assistant' ORDER BY sequence ASC",
+		).all(conversation.id);
+		expect(storedMsgs).toHaveLength(2);
+		const rawTurn1Payload = JSON.parse(storedMsgs[0]!.payload);
+		const rawTurn2Payload = JSON.parse(storedMsgs[1]!.payload);
+		expect(rawTurn1Payload.usage?.cost).toBeDefined();
+		expect(rawTurn2Payload.usage?.cost).toBeUndefined();
+
+		// (b) After a restart, the same values come back
+		runtime.close();
+		const runtime2 = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime2);
+
+		const reloaded = runtime2.loadConversation(conversation.id)!;
+		expect(reloaded.usages).toHaveLength(2);
+		expect(reloaded.usages![0]!.cost).toBe(turn1Cost);
+		expect(reloaded.usages![1]!.cost).toBeNull();
+		expect(reloaded.totalUsage?.cost).toBe(turn1Cost);
+		const reloadedMsgs = reloaded.messages.filter((m) => m.role === "assistant");
+		expect((reloadedMsgs[0]!.payload as { usage?: { cost?: unknown } }).usage?.cost).toBeDefined();
+		expect((reloadedMsgs[1]!.payload as { usage?: { cost?: unknown } }).usage?.cost).toBeUndefined();
+	});
 });

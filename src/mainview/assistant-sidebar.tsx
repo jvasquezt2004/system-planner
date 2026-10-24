@@ -537,7 +537,9 @@ export function AssistantSidebar({
 					inputTokens: turnUsages.reduce((sum, u) => sum + (u.inputTokens || 0), 0),
 					outputTokens: turnUsages.reduce((sum, u) => sum + (u.outputTokens || 0), 0),
 					cacheReadTokens: turnUsages.reduce((sum, u) => sum + (u.cacheReadTokens || 0), 0),
-					cost: turnUsages.reduce((sum, u) => sum + (typeof u.cost === "number" ? u.cost : 0), 0),
+					cost: turnUsages.some((u) => typeof u.cost === "number")
+						? turnUsages.reduce((sum, u) => sum + (typeof u.cost === "number" ? u.cost : 0), 0)
+						: null,
 				};
 				if (effectiveTotal.inputTokens <= 0 && effectiveTotal.outputTokens <= 0 && effectiveTotal.cacheReadTokens <= 0) return null;
 				return (

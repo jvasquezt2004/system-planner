@@ -355,10 +355,31 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		return connections[0] ?? null;
 	}
 
+	const activeTurnIsApiKey = new Map<string, boolean>();
 	function isConversationApiKeyConnection(conversationId: string): boolean {
+		const turnOverride = activeTurnIsApiKey.get(conversationId);
+		if (turnOverride !== undefined) return turnOverride;
 		const conn = getConversationConnection(conversationId);
 		if (conn) return conn.auth_method === "api-key";
 		return Boolean(getApiKey);
+	}
+
+	// Note: @earendil-works/pi-ai does not expose subscription/OAuth model availability
+	// or refreshModels for the openai provider. Per ticket #90, we fall back to filtering
+	// out at least realtime and audio models for ChatGPT OAuth connections, while API-key
+	// connections keep the full catalog.
+	function isModelUsableWithConnection(conn: AssistantProviderConnection, model: { id: string; name?: string; input?: readonly string[] }): boolean {
+		if (conn.auth_method !== "oauth") return true;
+		if (conn.provider_id === "openai") {
+			const id = model.id.toLowerCase();
+			const name = (model.name ?? "").toLowerCase();
+			const isRealtime = id.includes("realtime") || name.includes("realtime");
+			const isAudio = id.includes("audio") || name.includes("audio") || Boolean(model.input?.includes("audio"));
+			if (isRealtime || isAudio) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	function getModelContext(conversationId: string, messages: AgentMessage[]): AgentMessage[] {
@@ -907,8 +928,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			for (const conn of connections) {
 				const connModels = getOrInitConnectionModels(conn);
 				const connName = getProviderDisplayName(conn.provider_id, conn.auth_method);
-				const providerModels = connModels.getModels(conn.provider_id);
+				const providerObj = connModels.getProvider(conn.provider_id);
+				let providerModels = connModels.getModels(conn.provider_id);
+				if (conn.auth_method === "oauth" && providerObj?.filterModels) {
+					providerModels = providerObj.filterModels(providerModels, { type: "oauth" } as never);
+				}
 				for (const m of providerModels) {
+					if (!isModelUsableWithConnection(conn, m)) continue;
 					result.push({
 						id: m.id,
 						name: m.name,
@@ -946,9 +972,22 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return result;
 		},
 		updateConversationSelection(conversationId: string, connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: ThinkingLevel) {
-			const connectionId = maybeThinking !== undefined ? connectionIdOrModel : null;
-			const model = maybeThinking !== undefined ? modelOrThinking : (connectionIdOrModel ?? "");
-			const thinking = (maybeThinking !== undefined ? maybeThinking : modelOrThinking) as ThinkingLevel;
+			let connectionId: string | null;
+			let model: string;
+			let thinking: ThinkingLevel;
+			if (maybeThinking !== undefined) {
+				connectionId = connectionIdOrModel;
+				model = modelOrThinking;
+				thinking = maybeThinking;
+			} else if (connectionIdOrModel && store.getConnection(connectionIdOrModel)) {
+				connectionId = connectionIdOrModel;
+				model = modelOrThinking;
+				thinking = "medium";
+			} else {
+				connectionId = null;
+				model = connectionIdOrModel ?? "";
+				thinking = (modelOrThinking || "medium") as ThinkingLevel;
+			}
 			store.updateConversationSelection(conversationId, connectionId, model, thinking);
 			store.updateDefaultSelection(connectionId, model, thinking);
 		},
@@ -1167,6 +1206,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				model = activeModels.getModels(targetConn.provider_id).find((m) => m.id === modelId)
 					?? (suppliedModels ? suppliedModels.getModel(targetConn.provider_id, modelId) : undefined);
 				if (!model) throw new Error(`Unknown model: ${modelId} for connection ${targetConn.id}`);
+				if (!isModelUsableWithConnection(targetConn, model)) {
+					throw new Error(`Model ${modelId} is not usable with ${getProviderDisplayName(targetConn.provider_id, targetConn.auth_method)}.`);
+				}
 				if (getApiKey) {
 					const key = await getApiKey().catch(() => undefined);
 					if (!key) throw new Error("Configure credentials before sending a message.");
@@ -1277,11 +1319,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					return { action: "end" };
 				};
 				instance.subscribe(async (event) => {
-					publish(conversationId, event);
+					const isApiKey = isConversationApiKeyConnection(conversationId);
 					if (event.type === "message_end" && event.message.role !== "user") {
+						const msg = event.message;
+						if (!isApiKey && typeof msg === "object" && msg !== null && "usage" in msg) {
+							const usageObj = (msg as { usage?: unknown }).usage;
+							if (usageObj && typeof usageObj === "object" && "cost" in usageObj) {
+								delete (usageObj as { cost?: unknown }).cost;
+							}
+						}
 						const rowId = store.appendMessage(conversationId, { role: event.message.role, payload: event.message });
 						(event.message as { id?: string }).id = rowId;
 					}
+					publish(conversationId, event);
 					if (event.type === "message_end" && event.message.role === "assistant") {
 						const assistantMsg = event.message as { usage?: Usage };
 						if (assistantMsg.usage) {
@@ -1291,10 +1341,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 							current.outputTokens += u.output || 0;
 							current.cacheReadTokens += u.cacheRead || 0;
 
-							const isApiKey = isConversationApiKeyConnection(conversationId);
 							const msgCost = computeUsageCost(instance.state.model, u, isApiKey);
 							if (msgCost !== null) {
 								current.cost = (current.cost ?? 0) + msgCost;
+							} else {
+								current.cost = null;
 							}
 							turnUsages.set(conversationId, current);
 
@@ -1314,6 +1365,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 
 							const usage = turnUsages.get(conversationId);
 							if (turnId && usage) {
+								if (!isApiKey) {
+									usage.cost = null;
+								}
 								store.saveTurnUsage(conversationId, turnId, usage);
 								publish(conversationId, {
 									type: "assistant_turn_usage",
@@ -1322,6 +1376,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 								});
 								turnUsages.delete(conversationId);
 							}
+							activeTurnIsApiKey.delete(conversationId);
 							turnIds.delete(conversationId);
 							const completedState = workspace.getState();
 							const checkpoint = turnCheckpoints.get(conversationId);
@@ -1338,7 +1393,17 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				});
 				active.set(conversationId, agent);
 			}
-			if (hadAgent && changeNote) agent.state.messages.push(changeNote);
+			if (hadAgent) {
+				if (changeNote) agent.state.messages.push(changeNote);
+				(agent as unknown as { streamFunction: unknown }).streamFunction = streamFn ?? activeModels.streamSimple.bind(activeModels);
+				(agent as unknown as { getApiKey: unknown }).getApiKey = async (provider: string) => {
+					if (getApiKey) return getApiKey();
+					const resolved = await activeModels.getAuth(provider);
+					return resolved?.auth.apiKey;
+				};
+			}
+			const turnIsApiKey = targetConn ? targetConn.auth_method === "api-key" : Boolean(getApiKey);
+			activeTurnIsApiKey.set(conversationId, turnIsApiKey);
 			agent.state.model = model;
 			agent.state.thinkingLevel = thinkingLevel;
 			requestsThisTurn.set(conversationId, 0);
