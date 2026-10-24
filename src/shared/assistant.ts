@@ -31,6 +31,7 @@ export type AssistantModel = {
 };
 
 export type AssistantMessage = {
+	id?: string;
 	role: string;
 	kind?: string;
 	payload: unknown;
@@ -51,4 +52,24 @@ export type AssistantConversation = {
 	thinking?: string | null;
 };
 
-export type AssistantConversationRecord = AssistantConversation & { messages: AssistantMessage[] };
+export type AssistantTurnUsage = {
+	turnId: string;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cost: number | null;
+	createdAt?: number;
+};
+
+export type AssistantTotalUsage = {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cost: number | null;
+};
+
+export type AssistantConversationRecord = AssistantConversation & {
+	messages: AssistantMessage[];
+	usages?: AssistantTurnUsage[];
+	totalUsage?: AssistantTotalUsage;
+};

@@ -1,6 +1,6 @@
-import { Agent, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { Agent, type AgentMessage, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-agent-core";
 import { createHash } from "node:crypto";
-import { Type, createModels, type MutableModels } from "@earendil-works/pi-ai";
+import { Type, createModels, normalizeContext, type MutableModels, calculateCost, type AnyModel, type Model, type Usage } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
@@ -46,6 +46,39 @@ Row-level security applies to anon, authenticated, and service_role requests. au
 supabase.functions.invoke(name, { body }) invokes a saved Edge function. Edge handlers support Deno.serve, Deno.env.get for SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, and Supabase imports from jsr:@supabase/supabase-js@2, npm:@supabase/supabase-js@2, https://esm.sh/@supabase/supabase-js@2, or @supabase/supabase-js. Network, WebSocket, XMLHttpRequest, script imports, other runtime imports, and nested Edge function invocations are unavailable.`;
 
 const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation. Keep existing card positions and viewport unchanged. ${SANDBOX_API_PROMPT} Report tool errors without claiming changes that were not applied.`;
+
+function estimateMessageTokens(msg: { content?: unknown }): number {
+	if (typeof msg.content === "string") return Math.ceil(msg.content.length / 4);
+	if (Array.isArray(msg.content)) {
+		let chars = 0;
+		for (const block of msg.content) {
+			if (block && typeof block === "object") {
+				if ("text" in block && typeof block.text === "string") chars += block.text.length;
+				if ("arguments" in block && block.arguments) chars += JSON.stringify(block.arguments).length;
+			}
+		}
+		return Math.ceil(chars / 4);
+	}
+	return 10;
+}
+
+function computeUsageCost(model: Model<string> | undefined, usage: Usage | undefined, isApiKeyConnection: boolean): number | null {
+	if (!isApiKeyConnection || !usage) return null;
+	if (usage.cost && typeof usage.cost.total === "number" && usage.cost.total > 0) {
+		return usage.cost.total;
+	}
+	if (model && model.cost && typeof model.cost === "object") {
+		try {
+			const calculated = calculateCost(model as AnyModel, usage);
+			if (calculated && typeof calculated.total === "number") {
+				return calculated.total;
+			}
+		} catch {
+			return null;
+		}
+	}
+	return null;
+}
 
 
 export type AssistantRuntimeOptions = {
@@ -259,6 +292,160 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const turnIds = new Map<string, string>();
 	const pendingConfirmations = new Set<string>();
 	const confirmingDrops = new Set<string>();
+	const turnUsages = new Map<string, {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cost: number | null;
+	}>();
+	const lastPromptTokens = new Map<string, number>();
+	function getConversationConnection(conversationId: string): AssistantProviderConnection | null {
+		const conv = store.loadConversation(conversationId);
+		if (conv?.connection_id) {
+			const conn = store.getConnection(conv.connection_id);
+			if (conn) return conn;
+		}
+		const connections = store.listProviderConnections();
+		if (conv?.provider) {
+			const byProvider = connections.find((c) => c.provider_id === conv.provider);
+			if (byProvider) return byProvider;
+		}
+		return connections[0] ?? null;
+	}
+
+	function isConversationApiKeyConnection(conversationId: string): boolean {
+		const conn = getConversationConnection(conversationId);
+		if (conn) return conn.auth_method === "api-key";
+		return Boolean(getApiKey);
+	}
+
+	function getModelContext(conversationId: string, messages: AgentMessage[]): AgentMessage[] {
+		const compaction = store.getCompaction(conversationId);
+		if (!compaction || !compaction.firstKeptMessageId) return messages;
+
+		const system = messages.length > 0 && messages[0]?.role === "system" ? messages[0] : null;
+		const conversationMessages = system ? messages.slice(1) : messages;
+
+		const cutIndex = (conversationMessages as Array<{ id?: string }>).findIndex((m) => m.id === compaction.firstKeptMessageId);
+		if (cutIndex <= 0) return messages;
+
+		const summaryMsg: AgentMessage & { id?: string } = {
+			id: `compaction-summary:${compaction.createdAt}`,
+			role: "user",
+			content: `Summary of earlier conversation:\n${compaction.summary}`,
+			timestamp: compaction.createdAt,
+		};
+
+		const kept = conversationMessages.slice(cutIndex);
+		return system ? [system, summaryMsg, ...kept] : [summaryMsg, ...kept];
+	}
+
+	async function performCompaction(conversationId: string, agent: Agent) {
+		const contextWindow = agent.state.model.contextWindow;
+		if (contextWindow <= 0) return;
+
+		const messages = agent.state.messages as Array<AgentMessage & { id?: string; kind?: string }>;
+		const conversationMessages = messages.length > 0 && messages[0]?.role === "system" ? messages.slice(1) : messages;
+
+		type TurnGroup = {
+			userMessage: AgentMessage & { id?: string };
+			messages: Array<AgentMessage & { id?: string }>;
+		};
+		const turns: TurnGroup[] = [];
+		let currentTurn: TurnGroup | null = null;
+		for (const msg of conversationMessages) {
+			if (msg.role === "user" && msg.kind !== "assistant-change-note") {
+				currentTurn = { userMessage: msg, messages: [msg] };
+				turns.push(currentTurn);
+			} else if (currentTurn) {
+				currentTurn.messages.push(msg);
+			}
+		}
+
+		if (turns.length < 2) return;
+
+		const targetKeptTokens = Math.floor(contextWindow * 0.2);
+		let firstKeptTurnIndex = turns.length - 1;
+		let keptTokens = turns[firstKeptTurnIndex]!.messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+
+		for (let i = turns.length - 2; i >= 1; i--) {
+			const turnTokens = turns[i]!.messages.reduce((sum, m) => sum + estimateMessageTokens(m), 0);
+			if (keptTokens + turnTokens <= targetKeptTokens) {
+				firstKeptTurnIndex = i;
+				keptTokens += turnTokens;
+			} else {
+				break;
+			}
+		}
+
+		const firstKeptTurn = turns[firstKeptTurnIndex]!;
+		const firstKeptMessageId = firstKeptTurn.userMessage.id;
+		if (!firstKeptMessageId) return;
+
+		const currentContext = getModelContext(conversationId, agent.state.messages);
+		const summaryInstruction = {
+			role: "user" as const,
+			content: "Summarise the conversation so far for your own future reference: decisions, schema/code changes applied, open issues",
+			timestamp: Date.now(),
+		};
+		const summaryMessages = [...currentContext, summaryInstruction];
+
+		const conn = getConversationConnection(conversationId);
+		const activeModels = conn ? getOrInitConnectionModels(conn) : (suppliedModels ?? createModels({ credentials }));
+		const effectiveStreamFn = streamFn ?? activeModels.streamSimple.bind(activeModels);
+		try {
+			const resolvedAuth = await activeModels.getAuth(agent.state.model).catch(() => undefined);
+			const apiKey = (getApiKey ? await getApiKey().catch(() => undefined) : undefined) ?? resolvedAuth?.auth.apiKey;
+			const summaryStream = await effectiveStreamFn(agent.state.model, normalizeContext({ messages: summaryMessages }), {
+				sessionId: conversationId,
+				...(apiKey ? { apiKey } : {}),
+			});
+			const summaryResult = await summaryStream.result();
+			if (summaryResult.stopReason === "error" || summaryResult.stopReason === "aborted") {
+				return;
+			}
+			const summaryText = summaryResult.content
+				.filter((c: unknown): c is { type: "text"; text: string } => Boolean(c && typeof c === "object" && "type" in c && c.type === "text"))
+				.map((c) => c.text)
+				.join("\n")
+				.trim();
+			if (!summaryText) {
+				return;
+			}
+
+			if (summaryResult.usage) {
+				const currentUsage = turnUsages.get(conversationId) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null };
+				currentUsage.inputTokens += summaryResult.usage.input || 0;
+				currentUsage.outputTokens += summaryResult.usage.output || 0;
+				currentUsage.cacheReadTokens += summaryResult.usage.cacheRead || 0;
+				const isApiKey = isConversationApiKeyConnection(conversationId);
+				const msgCost = computeUsageCost(agent.state.model, summaryResult.usage, isApiKey);
+				if (msgCost !== null) {
+					currentUsage.cost = (currentUsage.cost ?? 0) + msgCost;
+				}
+				turnUsages.set(conversationId, currentUsage);
+			}
+
+			store.saveCompaction(conversationId, summaryText, firstKeptMessageId);
+
+			const announcement = {
+				id: crypto.randomUUID(),
+				role: "system",
+				kind: "assistant-compaction",
+				payload: {
+					text: "Conversation context reached 80% of the model limit. Older turns have been summarised to preserve context space.",
+					timestamp: Date.now(),
+				},
+			};
+			store.appendMessage(conversationId, announcement);
+			publish(conversationId, {
+				type: "assistant_compaction_announced",
+				message: announcement,
+			});
+		} catch {
+			return;
+		}
+	}
 	const requestLimit = maxRequestsPerTurn;
 	type BoundWorkspaceState = ReturnType<DesignWorkspace["getState"]> & {
 		project: NonNullable<ReturnType<DesignWorkspace["getState"]>["project"]>;
@@ -782,7 +969,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				publish(conversationId, { type: "assistant_confirmation_resolved" });
 				store.observeProjectSnapshot(conversationId, projectSnapshot(result.state), result.state.revision);
 				const message = { role: "user" as const, content: "The user confirmed the destructive DDL change. Report its result.", timestamp: Date.now() };
-				store.appendMessage(conversationId, { role: "user", kind: "assistant-drop-confirmation", payload: { ...message, toolCallId } });
+				const rowId = store.appendMessage(conversationId, { role: "user", kind: "assistant-drop-confirmation", payload: { ...message, toolCallId } });
+				(message as { id?: string }).id = rowId;
 				const agent = active.get(conversationId);
 				if (agent) {
 					agent.clearAllQueues();
@@ -821,7 +1009,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				toolCallId,
 				content: [{ type: "text" as const, text: "the designer rejected this destructive change" }],
 			};
-			store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
+			const rowId = store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
+			(toolResult as { id?: string }).id = rowId;
 			pendingConfirmations.delete(conversationId);
 			publish(conversationId, { type: "assistant_confirmation_resolved" });
 			const agent = active.get(conversationId);
@@ -902,13 +1091,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					content: `Project changed since revision ${previousSnapshot.revision} (${changed.join(", ")}). These latest saved definitions are authoritative. Re-read the project before acting.`,
 					timestamp: Date.now(),
 				};
-				store.appendMessage(conversationId, { role: "user", kind: "assistant-change-note", payload: changeNote });
+				const rowId = store.appendMessage(conversationId, { role: "user", kind: "assistant-change-note", payload: changeNote });
+				(changeNote as { id?: string }).id = rowId;
 			}
 			const userMessage = { role: "user" as const, content: text, timestamp: Date.now() };
 			if (!conversation.messages.some((message) => message.role === "user")) {
 				store.renameConversation(conversationId, text.replace(/\s+/g, " ").trim().slice(0, 80) || "New conversation");
 			}
-			store.appendMessage(conversationId, { role: "user", payload: userMessage });
+			const userRowId = store.appendMessage(conversationId, { role: "user", payload: userMessage });
+			(userMessage as { id?: string }).id = userRowId;
 			let agent = active.get(conversationId);
 			if (agent?.state.isStreaming) {
 				if (changeNote) agent.steer(changeNote);
@@ -919,16 +1110,21 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!agent) {
 				const transcript = (store.loadConversation(conversationId)?.messages ?? [])
 					.slice(0, -1)
-					.map((message) => message.payload)
-					.filter((message): message is Record<string, unknown> => Boolean(message && typeof message === "object" && "role" in message))
+					.map((message) => {
+						const payload = message.payload && typeof message.payload === "object" ? message.payload as Record<string, unknown> : {};
+						return { ...payload, id: message.id, role: message.role };
+					})
 					.filter((message) => message.role === "user" || message.role === "assistant" || message.role === "toolResult");
-				agent = new Agent({
+				const instance = new Agent({
 					initialState: {
 						systemPrompt: SYSTEM_PROMPT,
 						model,
 						thinkingLevel,
 						tools: buildTools(conversationId),
 						messages: transcript as never[],
+					},
+					transformContext: async (messages) => {
+						return getModelContext(conversationId, messages);
 					},
 					streamFn: streamFn ?? activeModels.streamSimple.bind(activeModels),
 					getApiKey: async (provider) => {
@@ -942,7 +1138,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						? { block: true, reason: "Waiting for destructive DDL confirmation.", terminate: true }
 						: undefined,
 				});
-				agent.finishTurn = async ({ message }) => {
+				agent = instance;
+				instance.finishTurn = async ({ message }) => {
 					if (message.stopReason === "error" || message.stopReason === "aborted") return;
 					if (pendingConfirmations.has(conversationId)) return { action: "end" };
 					const requests = (requestsThisTurn.get(conversationId) ?? 0) + 1;
@@ -952,12 +1149,55 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					publish(conversationId, { type: "assistant_turn_paused", requestCount: requests });
 					return { action: "end" };
 				};
-				agent.subscribe((event) => {
+				instance.subscribe(async (event) => {
 					publish(conversationId, event);
 					if (event.type === "message_end" && event.message.role !== "user") {
-						store.appendMessage(conversationId, { role: event.message.role, payload: event.message });
+						const rowId = store.appendMessage(conversationId, { role: event.message.role, payload: event.message });
+						(event.message as { id?: string }).id = rowId;
 					}
-					if (event.type === "agent_end" && !pausedTurns.has(conversationId) && !pendingConfirmations.has(conversationId)) turnIds.delete(conversationId);
+					if (event.type === "message_end" && event.message.role === "assistant") {
+						const assistantMsg = event.message as { usage?: Usage };
+						if (assistantMsg.usage) {
+							const u = assistantMsg.usage;
+							const current = turnUsages.get(conversationId) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null };
+							current.inputTokens += u.input || 0;
+							current.outputTokens += u.output || 0;
+							current.cacheReadTokens += u.cacheRead || 0;
+
+							const isApiKey = isConversationApiKeyConnection(conversationId);
+							const msgCost = computeUsageCost(instance.state.model, u, isApiKey);
+							if (msgCost !== null) {
+								current.cost = (current.cost ?? 0) + msgCost;
+							}
+							turnUsages.set(conversationId, current);
+
+							const promptTokens = (u.cacheRead && u.cacheRead > 0) ? (u.input + u.cacheRead) : u.input;
+							lastPromptTokens.set(conversationId, promptTokens);
+						}
+					}
+					if (event.type === "agent_end") {
+						const turnId = turnIds.get(conversationId);
+						if (!pausedTurns.has(conversationId) && !pendingConfirmations.has(conversationId)) {
+							const promptTokens = lastPromptTokens.get(conversationId) ?? 0;
+							const contextWindow = instance.state.model.contextWindow;
+							if (contextWindow > 0 && promptTokens >= contextWindow * 0.8) {
+								await performCompaction(conversationId, instance);
+							}
+							lastPromptTokens.delete(conversationId);
+
+							const usage = turnUsages.get(conversationId);
+							if (turnId && usage) {
+								store.saveTurnUsage(conversationId, turnId, usage);
+								publish(conversationId, {
+									type: "assistant_turn_usage",
+									turnId,
+									usage,
+								});
+								turnUsages.delete(conversationId);
+							}
+							turnIds.delete(conversationId);
+						}
+					}
 				});
 				active.set(conversationId, agent);
 			}
@@ -966,8 +1206,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			agent.state.thinkingLevel = thinkingLevel;
 			requestsThisTurn.set(conversationId, 0);
 			pausedTurns.delete(conversationId);
+			turnUsages.set(conversationId, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null });
 			turnIds.set(conversationId, crypto.randomUUID());
-			await agent.prompt(text);
+			await agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
 			return store.loadConversation(conversationId);
 		},
 		close() {

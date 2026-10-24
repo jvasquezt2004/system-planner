@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
-import type { AssistantConversation, AssistantConversationRecord, AssistantMessage, AssistantProviderConnection } from "../shared/assistant";
+import type { AssistantConversation, AssistantConversationRecord, AssistantMessage, AssistantProviderConnection, AssistantTotalUsage, AssistantTurnUsage } from "../shared/assistant";
 export type AssistantConversationOptions = { id?: string; connectionId?: string | null; provider?: string | null; model?: string | null; thinking?: string | null; title?: string };
 
 export interface AssistantStore {
@@ -19,12 +19,17 @@ export interface AssistantStore {
 	setClaudeOptIn(optIn: boolean): void;
 	observeProjectRevision(conversationId: string, revision: number): number | null;
 	observeProjectSnapshot(conversationId: string, snapshot: string, revision: number): { snapshot: string; revision: number } | null;
-	appendMessage(conversationId: string, message: AssistantMessage): void;
+	appendMessage(conversationId: string, message: AssistantMessage): string;
 	listProviderConnections(): AssistantProviderConnection[];
 	getConnection(id: string): AssistantProviderConnection | null;
 	findConnection(providerId: string, authMethod: string): AssistantProviderConnection | null;
 	saveProviderConnection(providerId: string, authMethodOrCred?: string, credentialName?: string): AssistantProviderConnection;
 	removeProviderConnection(connectionId: string): void;
+	saveTurnUsage(conversationId: string, turnId: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cost?: number | null }): void;
+	getTurnUsages(conversationId: string): AssistantTurnUsage[];
+	getConversationTotalUsage(conversationId: string): AssistantTotalUsage;
+	saveCompaction(conversationId: string, summary: string, firstKeptMessageId: string): void;
+	getCompaction(conversationId: string): { summary: string; firstKeptMessageId: string | null; createdAt: number } | null;
 	close(): void;
 }
 
@@ -46,6 +51,7 @@ const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS assistant_messages (
 		conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
 		sequence INTEGER NOT NULL,
+		id TEXT,
 		role TEXT NOT NULL,
 		kind TEXT,
 		payload TEXT NOT NULL,
@@ -71,6 +77,22 @@ const SCHEMA = `
 		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
 		revision INTEGER NOT NULL,
 		snapshot TEXT
+	);
+	CREATE TABLE IF NOT EXISTS assistant_turn_usage (
+		conversation_id TEXT NOT NULL REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+		turn_id TEXT NOT NULL,
+		input_tokens INTEGER NOT NULL,
+		output_tokens INTEGER NOT NULL,
+		cache_read_tokens INTEGER NOT NULL,
+		cost REAL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (conversation_id, turn_id)
+	);
+	CREATE TABLE IF NOT EXISTS assistant_compactions (
+		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
+		summary TEXT NOT NULL,
+		first_kept_message_id TEXT NOT NULL,
+		created_at INTEGER NOT NULL
 	);
 `;
 
@@ -126,17 +148,25 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	if (!settingsColumns.some(({ name }) => name === "connection_id")) {
 		database.exec("ALTER TABLE assistant_settings ADD COLUMN connection_id TEXT");
 	}
+	const messageColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_messages)").all();
+	if (!messageColumns.some(({ name }) => name === "id")) {
+		database.exec("ALTER TABLE assistant_messages ADD COLUMN id TEXT");
+	}
+	const compactionColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_compactions)").all();
+	if (compactionColumns.length > 0 && !compactionColumns.some(({ name }) => name === "first_kept_message_id")) {
+		database.exec("ALTER TABLE assistant_compactions ADD COLUMN first_kept_message_id TEXT");
+	}
 	const list = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, connection_id, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC`);
 	const latest = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, connection_id, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1`);
 	const selectConversation = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, connection_id, provider, model, thinking FROM assistant_conversations WHERE id = ?`);
 	const insertConversation = database.query(`INSERT INTO assistant_conversations (id, project_id, title, created_at, updated_at, connection_id, provider, model, thinking) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
-	const insertMessage = database.query(`INSERT INTO assistant_messages (conversation_id, sequence, role, kind, payload, created_at) VALUES (?, ?, ?, ?, ?, ?)`);
+	const insertMessage = database.query(`INSERT INTO assistant_messages (conversation_id, sequence, id, role, kind, payload, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`);
 	const nextSequence = database.query<{ sequence: number }, [string]>(`SELECT COALESCE(MAX(sequence), 0) + 1 AS sequence FROM assistant_messages WHERE conversation_id = ?`);
 	const touchConversation = database.query(`UPDATE assistant_conversations SET updated_at = ? WHERE id = ?`);
 	const rename = database.query(`UPDATE assistant_conversations SET title = ?, updated_at = ? WHERE id = ?`);
 	const remove = database.query(`DELETE FROM assistant_conversations WHERE id = ?`);
 	const updateSelection = database.query(`UPDATE assistant_conversations SET connection_id = ?, model = ?, thinking = ?, updated_at = ? WHERE id = ?`);
-	const messages = database.query<{ role: string; kind: string | null; payload: string; created_at: number }, [string]>(`SELECT role, kind, payload, created_at FROM assistant_messages WHERE conversation_id = ? ORDER BY sequence ASC`);
+	const messages = database.query<{ rowid: number; sequence: number; id: string | null; role: string; kind: string | null; payload: string; created_at: number }, [string]>(`SELECT rowid, sequence, id, role, kind, payload, created_at FROM assistant_messages WHERE conversation_id = ? ORDER BY sequence ASC`);
 	const listProviderConnections = database.query<AssistantProviderConnection, []>(`SELECT id, provider_id, auth_method, credential_name, created_at, updated_at FROM assistant_provider_connections ORDER BY created_at ASC`);
 	const selectConnection = database.query<AssistantProviderConnection, [string]>(`SELECT id, provider_id, auth_method, credential_name, created_at, updated_at FROM assistant_provider_connections WHERE id = ?`);
 	const selectConnectionByProviderAuth = database.query<AssistantProviderConnection, [string, string]>(`SELECT id, provider_id, auth_method, credential_name, created_at, updated_at FROM assistant_provider_connections WHERE provider_id = ? AND auth_method = ?`);
@@ -161,17 +191,23 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 			? null
 			: { snapshot: previous.snapshot, revision: previous.revision };
 	});
+	const insertTurnUsage = database.query(`INSERT INTO assistant_turn_usage (conversation_id, turn_id, input_tokens, output_tokens, cache_read_tokens, cost, created_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(conversation_id, turn_id) DO UPDATE SET input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens, cache_read_tokens = excluded.cache_read_tokens, cost = excluded.cost`);
+	const selectTurnUsages = database.query<{ turn_id: string; input_tokens: number; output_tokens: number; cache_read_tokens: number; cost: number | null; created_at: number }, [string]>(`SELECT turn_id, input_tokens, output_tokens, cache_read_tokens, cost, created_at FROM assistant_turn_usage WHERE conversation_id = ? ORDER BY created_at ASC`);
+	const selectTotalUsage = database.query<{ input_tokens: number | null; output_tokens: number | null; cache_read_tokens: number | null; cost: number | null }, [string]>(`SELECT SUM(input_tokens) AS input_tokens, SUM(output_tokens) AS output_tokens, SUM(cache_read_tokens) AS cache_read_tokens, SUM(cost) AS cost FROM assistant_turn_usage WHERE conversation_id = ?`);
+	const insertCompaction = database.query(`INSERT INTO assistant_compactions (conversation_id, summary, first_kept_message_id, created_at) VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id) DO UPDATE SET summary = excluded.summary, first_kept_message_id = excluded.first_kept_message_id, created_at = excluded.created_at`);
+	const selectCompaction = database.query<{ summary: string; first_kept_message_id: string | null; created_at: number }, [string]>(`SELECT summary, first_kept_message_id, created_at FROM assistant_compactions WHERE conversation_id = ?`);
 	const create = database.transaction((projectId: string, message: AssistantMessage, options: AssistantConversationOptions, now: number) => {
 		const id = options.id ?? crypto.randomUUID();
 		insertConversation.run(id, projectId, options.title ?? titleFromMessage(message), now, now, options.connectionId ?? null, options.provider ?? null, options.model ?? null, options.thinking ?? null);
-		insertMessage.run(id, 1, message.role, message.kind ?? null, JSON.stringify(message.payload), message.created_at ?? now);
+		insertMessage.run(id, 1, message.id ?? null, message.role, message.kind ?? null, JSON.stringify(message.payload), message.created_at ?? now);
 		return selectConversation.get(id)!;
 	});
 	const append = database.transaction((conversationId: string, message: AssistantMessage, now: number) => {
 		const row = nextSequence.get(conversationId);
 		if (!row) throw new Error(`Conversation not found: ${conversationId}`);
-		insertMessage.run(conversationId, row.sequence, message.role, message.kind ?? null, JSON.stringify(message.payload), message.created_at ?? now);
+		const result = insertMessage.run(conversationId, row.sequence, message.id ?? null, message.role, message.kind ?? null, JSON.stringify(message.payload), message.created_at ?? now);
 		touchConversation.run(now, conversationId);
+		return String(result.lastInsertRowid);
 	});
 	return {
 		listConversations: (projectId) => list.all(projectId),
@@ -203,7 +239,68 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		loadConversation: (id) => {
 			const conversation = selectConversation.get(id);
 			if (!conversation) return null;
-			return { ...conversation, messages: messages.all(id).map((message) => ({ role: message.role, ...(message.kind === null ? {} : { kind: message.kind }), payload: JSON.parse(message.payload), created_at: message.created_at })) };
+			const turnUsages = selectTurnUsages.all(id).map((row) => ({
+				turnId: row.turn_id,
+				inputTokens: row.input_tokens,
+				outputTokens: row.output_tokens,
+				cacheReadTokens: row.cache_read_tokens,
+				cost: row.cost,
+				createdAt: row.created_at,
+			}));
+			const totalRow = selectTotalUsage.get(id);
+			return {
+				...conversation,
+				messages: messages.all(id).map((message) => {
+					const parsedPayload = JSON.parse(message.payload);
+					const rowId = String(message.rowid);
+					if (parsedPayload && typeof parsedPayload === "object") {
+						parsedPayload.id = rowId;
+					}
+					return {
+						id: rowId,
+						role: message.role,
+						...(message.kind === null ? {} : { kind: message.kind }),
+						payload: parsedPayload,
+						created_at: message.created_at,
+					};
+				}),
+				usages: turnUsages,
+				totalUsage: {
+					inputTokens: totalRow?.input_tokens ?? 0,
+					outputTokens: totalRow?.output_tokens ?? 0,
+					cacheReadTokens: totalRow?.cache_read_tokens ?? 0,
+					cost: totalRow?.cost ?? null,
+				},
+			};
+		},
+		saveTurnUsage(conversationId, turnId, usage) {
+			insertTurnUsage.run(conversationId, turnId, usage.inputTokens, usage.outputTokens, usage.cacheReadTokens, usage.cost ?? null, Date.now());
+		},
+		getTurnUsages(conversationId) {
+			return selectTurnUsages.all(conversationId).map((row) => ({
+				turnId: row.turn_id,
+				inputTokens: row.input_tokens,
+				outputTokens: row.output_tokens,
+				cacheReadTokens: row.cache_read_tokens,
+				cost: row.cost,
+				createdAt: row.created_at,
+			}));
+		},
+		getConversationTotalUsage(conversationId) {
+			const row = selectTotalUsage.get(conversationId);
+			return {
+				inputTokens: row?.input_tokens ?? 0,
+				outputTokens: row?.output_tokens ?? 0,
+				cacheReadTokens: row?.cache_read_tokens ?? 0,
+				cost: row?.cost ?? null,
+			};
+		},
+		saveCompaction(conversationId, summary, firstKeptMessageId) {
+			insertCompaction.run(conversationId, summary, firstKeptMessageId, Date.now());
+		},
+		getCompaction(conversationId) {
+			const row = selectCompaction.get(conversationId);
+			return row ? { summary: row.summary, firstKeptMessageId: row.first_kept_message_id, createdAt: row.created_at } : null;
 		},
 		listProviderConnections: () => listProviderConnections.all(),
 		getConnection: (id) => selectConnection.get(id) ?? null,
