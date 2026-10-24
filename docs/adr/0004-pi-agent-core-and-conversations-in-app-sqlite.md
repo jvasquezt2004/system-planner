@@ -1,0 +1,3 @@
+# Build the Assistant on pi-ai and pi-agent-core, storing conversations ourselves
+
+The Assistant runs in the Bun main process on `@earendil-works/pi-ai` (provider catalog, API keys, account sign-in, prompt caching) and `@earendil-works/pi-agent-core` (a tool-agnostic agent loop), with project-specific tools and no coding-agent file tools. Conversations are stored in the existing application SQLite next to projects. pi is the only candidate offering account sign-in (Claude, ChatGPT) alongside API keys; Mastra and the Vercel AI SDK do not, and Mastra's saved conversations require a separate LibSQL database we would also have to package for Electrobun.
