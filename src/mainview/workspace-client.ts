@@ -271,6 +271,12 @@ export const workspaceClient = {
 	startAssistantOAuthLogin(providerId: string) {
 		return rpc.request.startAssistantOAuthLogin({ providerId });
 	},
+	answerAssistantOAuthPrompt(promptId: string, value: string) {
+		return rpc.request.answerAssistantOAuthPrompt({ promptId, value });
+	},
+	cancelAssistantOAuthLogin(providerId: string) {
+		return rpc.request.cancelAssistantOAuthLogin({ providerId });
+	},
 	getClaudeOptIn() {
 		return rpc.request.getClaudeOptIn({});
 	},

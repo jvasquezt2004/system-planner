@@ -170,7 +170,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			listAssistantConnections: { params: Record<string, never>; response: AssistantConnectionStatus[] };
 			setAssistantApiKey: { params: { providerId: string; apiKey: string }; response: void };
 			removeAssistantConnection: { params: { connectionId: string }; response: void };
-			startAssistantOAuthLogin: { params: { providerId: string }; response: { success: boolean; error?: string } };
+			/** Starts sign-in and returns at once; the outcome arrives as an assistantOAuthEvent "login_finished". */
+			startAssistantOAuthLogin: { params: { providerId: string }; response: { started: boolean } };
+			answerAssistantOAuthPrompt: { params: { promptId: string; value: string }; response: boolean };
+			cancelAssistantOAuthLogin: { params: { providerId: string }; response: void };
 			getClaudeOptIn: { params: Record<string, never>; response: boolean };
 			setClaudeOptIn: { params: { enabled: boolean }; response: void };
 			getAssistantRequestCap: { params: Record<string, never>; response: number };

@@ -26,6 +26,8 @@ type AssistantApi = Pick<
 	| "setAssistantApiKey"
 	| "removeAssistantConnection"
 	| "startAssistantOAuthLogin"
+	| "answerAssistantOAuthPrompt"
+	| "cancelAssistantOAuthLogin"
 	| "getClaudeOptIn"
 	| "setClaudeOptIn"
 	| "sendAssistantMessage"
@@ -73,6 +75,8 @@ export function AssistantSidebar({
 	const [claudeOptIn, setClaudeOptIn] = useState(false);
 	const [deviceCode, setDeviceCode] = useState<{ providerId: string; userCode: string; verificationUri: string } | null>(null);
 	const [oAuthProgress, setOAuthProgress] = useState<{ providerId: string; message: string } | null>(null);
+	const [oAuthPrompt, setOAuthPrompt] = useState<{ providerId: string; promptId: string; message: string; placeholder?: string; secret: boolean } | null>(null);
+	const [oAuthAnswer, setOAuthAnswer] = useState("");
 	const [cacheWarning, setCacheWarning] = useState<string | null>(null);
 	const [requestCap, setRequestCap] = useState(40);
 	const [apiKeys, setApiKeys] = useState<Record<string, string>>({ anthropic: "", openai: "", google: "" });
@@ -204,11 +208,38 @@ export function AssistantSidebar({
 	useEffect(() => {
 		return api.subscribeAssistantOAuthEvents(({ providerId, event }) => {
 			if (!event || typeof event !== "object") return;
-			const record = event as { type?: string; userCode?: string; verificationUri?: string; message?: string };
+			const record = event as {
+				type?: string;
+				userCode?: string;
+				verificationUri?: string;
+				message?: string;
+				promptId?: string;
+				promptType?: string;
+				placeholder?: string;
+				success?: boolean;
+				error?: string;
+			};
 			if (record.type === "device_code" && record.userCode && record.verificationUri) {
 				setDeviceCode({ providerId, userCode: record.userCode, verificationUri: record.verificationUri });
 			} else if (record.type === "progress" && record.message) {
 				setOAuthProgress({ providerId, message: record.message });
+			} else if (record.type === "prompt" && record.promptId) {
+				setOAuthAnswer("");
+				setOAuthPrompt({
+					providerId,
+					promptId: record.promptId,
+					message: record.message ?? "Complete sign-in in your browser.",
+					placeholder: record.placeholder,
+					secret: record.promptType === "secret",
+				});
+			} else if (record.type === "prompt_closed" && record.promptId) {
+				setOAuthPrompt((current) => (current?.promptId === record.promptId ? null : current));
+			} else if (record.type === "login_finished") {
+				setOAuthProgress(null);
+				setDeviceCode(null);
+				setOAuthPrompt(null);
+				if (record.success === false && record.error) setError(record.error);
+				void reloadConnections();
 			}
 		});
 	}, [api]);
@@ -314,19 +345,23 @@ export function AssistantSidebar({
 
 	async function startOAuthLogin(providerId: string) {
 		setError("");
-		setOAuthProgress({ providerId, message: "Connecting..." });
+		setOAuthProgress({ providerId, message: "Complete sign-in in your browser…" });
 		try {
-			const result = await api.startAssistantOAuthLogin(providerId);
-			if (!result.success && result.error) {
-				setError(result.error);
-			}
-			await reloadConnections();
+			// The outcome arrives as a "login_finished" sign-in event.
+			await api.startAssistantOAuthLogin(providerId);
 		} catch (cause) {
 			setError(String(cause));
-		} finally {
 			setOAuthProgress(null);
 			setDeviceCode(null);
 		}
+	}
+
+	async function submitOAuthAnswer() {
+		if (!oAuthPrompt || !oAuthAnswer.trim()) return;
+		const { promptId } = oAuthPrompt;
+		setOAuthPrompt(null);
+		await api.answerAssistantOAuthPrompt(promptId, oAuthAnswer.trim());
+		setOAuthAnswer("");
 	}
 
 	async function toggleClaudeOptIn(enabled: boolean) {
@@ -548,9 +583,40 @@ export function AssistantSidebar({
 					</div>
 				)}
 				{oAuthProgress && (
-					<div className="mb-2 rounded border border-ink/20 p-2 text-xs text-ink-2">
-						{oAuthProgress.message}
+					<div className="mb-2 flex items-center justify-between gap-2 rounded border border-ink/20 p-2 text-xs text-ink-2">
+						<span className="min-w-0 flex-1">{oAuthProgress.message}</span>
+						<button
+							onClick={() => void api.cancelAssistantOAuthLogin(oAuthProgress.providerId)}
+							className="shrink-0 rounded border border-ink/30 bg-paper px-2 py-1 text-xs font-medium text-ink"
+						>
+							Cancel
+						</button>
 					</div>
+				)}
+				{oAuthPrompt && (
+					<form
+						className="mb-2 rounded border border-ink/20 p-2 text-xs text-ink-2"
+						onSubmit={(event) => {
+							event.preventDefault();
+							void submitOAuthAnswer();
+						}}
+					>
+						<label htmlFor="assistant-oauth-answer" className="block">{oAuthPrompt.message}</label>
+						<div className="mt-1 flex gap-2">
+							<Input
+								id="assistant-oauth-answer"
+								aria-label="Sign-in answer"
+								type={oAuthPrompt.secret ? "password" : "text"}
+								value={oAuthAnswer}
+								placeholder={oAuthPrompt.placeholder}
+								onChange={(event: ChangeEvent<HTMLInputElement>) => setOAuthAnswer(event.target.value)}
+								className="h-8 min-w-0 flex-1 text-xs"
+							/>
+							<button type="submit" className="shrink-0 rounded border border-ink/30 bg-paper px-2 py-1 text-xs font-medium text-ink">
+								Submit
+							</button>
+						</div>
+					</form>
 				)}
 				{isConnectionRemoved && (
 					<div role="alert" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs">

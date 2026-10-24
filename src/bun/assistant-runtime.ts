@@ -116,6 +116,10 @@ export interface AssistantRuntime {
 	getMaxRequestsPerTurn: () => number;
 	setMaxRequestsPerTurn: (limit: number) => void;
 	subscribeOAuth: (subscriber: (providerId: string, event: unknown) => void) => () => void;
+	/** Answers a sign-in prompt the designer was shown, such as a pasted redirect URL. */
+	answerOAuthPrompt: (promptId: string, value: string) => boolean;
+	/** Cancels an in-progress sign-in for a provider. */
+	cancelOAuthLogin: (providerId: string) => void;
 	listModels: () => Promise<AssistantModel[]>;
 	updateConversationSelection: (conversationId: string, connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: ThinkingLevel) => void;
 	subscribe: (subscriber: (conversationId: string, event: unknown) => void) => () => void;
@@ -198,6 +202,25 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const oAuthSubscribers = new Set<(providerId: string, event: unknown) => void>();
 	function publishOAuthEvent(providerId: string, event: unknown) {
 		for (const subscriber of oAuthSubscribers) subscriber(providerId, event);
+	}
+	// Prompts stay open until the designer answers, the flow aborts them (e.g. the
+	// local callback server won the race), or the sign-in is cancelled.
+	const pendingOAuthPrompts = new Map<string, { providerId: string; resolve: (value: string) => void; reject: (error: Error) => void }>();
+	const oAuthLogins = new Map<string, AbortController>();
+	/** Withdraws the login's leftover prompts, then reports its outcome last. */
+	function finishOAuthLogin(providerId: string, loginAbort: AbortController, outcome: { type: "login_finished"; success: boolean; error?: string }) {
+		if (oAuthLogins.get(providerId) === loginAbort) oAuthLogins.delete(providerId);
+		for (const [promptId, pending] of pendingOAuthPrompts) {
+			if (pending.providerId === providerId) closeOAuthPrompt(promptId)?.reject(new Error("Sign-in finished"));
+		}
+		publishOAuthEvent(providerId, outcome);
+	}
+	function closeOAuthPrompt(promptId: string) {
+		const pending = pendingOAuthPrompts.get(promptId);
+		if (!pending) return undefined;
+		pendingOAuthPrompts.delete(promptId);
+		publishOAuthEvent(pending.providerId, { type: "prompt_closed", promptId });
+		return pending;
 	}
 	function getProviderDisplayName(providerId: string, authMethod?: string): string {
 		if (providerId === "anthropic") {
@@ -789,14 +812,32 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const hadCredential = existing ? Boolean(await createConnectionScopedStore(credentials, existing.id, existing.provider_id).read(existing.provider_id)) : false;
 			const conn = store.saveProviderConnection(providerId, "oauth");
 			const connModels = getOrInitConnectionModels(conn);
+			oAuthLogins.get(providerId)?.abort();
+			const loginAbort = new AbortController();
+			oAuthLogins.set(providerId, loginAbort);
 			try {
 				await connModels.login(providerId, "oauth", {
+					signal: loginAbort.signal,
 					prompt: async (prompt) => {
-						publishOAuthEvent(providerId, { type: "prompt", prompt });
 						if (prompt.type === "select" && prompt.options[0]) {
 							return prompt.options[0].id;
 						}
-						return "";
+						const promptId = crypto.randomUUID();
+						const signal = prompt.signal;
+						return await new Promise<string>((resolve, reject) => {
+							if (signal?.aborted) return reject(new Error("Prompt cancelled"));
+							pendingOAuthPrompts.set(promptId, { providerId, resolve, reject });
+							signal?.addEventListener("abort", () => {
+								closeOAuthPrompt(promptId)?.reject(new Error("Prompt cancelled"));
+							}, { once: true });
+							publishOAuthEvent(providerId, {
+								type: "prompt",
+								promptId,
+								promptType: prompt.type,
+								message: prompt.message,
+								placeholder: "placeholder" in prompt ? prompt.placeholder : undefined,
+							});
+						});
 					},
 					notify: (event) => {
 						if (event.type === "auth_url") {
@@ -807,6 +848,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						publishOAuthEvent(providerId, event);
 					},
 				}, { getDeviceId: () => store.getOrCreateDeviceId(), agentName: "Schema Designer" });
+				finishOAuthLogin(providerId, loginAbort, { type: "login_finished", success: true });
 				return { success: true, connection: conn };
 			} catch (error) {
 				// A failed first sign-in must not leave a connection without a credential behind.
@@ -816,9 +858,18 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					store.removeProviderConnection(conn.id);
 				}
 				const message = error instanceof Error ? error.message : String(error);
-				publishOAuthEvent(providerId, { type: "error", error: message });
+				finishOAuthLogin(providerId, loginAbort, { type: "login_finished", success: false, error: message });
 				return { success: false, error: message };
 			}
+		},
+		answerOAuthPrompt(promptId, value) {
+			const pending = closeOAuthPrompt(promptId);
+			if (!pending) return false;
+			pending.resolve(value);
+			return true;
+		},
+		cancelOAuthLogin(providerId) {
+			oAuthLogins.get(providerId)?.abort();
 		},
 		getClaudeOptIn: () => store.getClaudeOptIn(),
 		setClaudeOptIn: (enabled: boolean) => { store.setClaudeOptIn(enabled); },

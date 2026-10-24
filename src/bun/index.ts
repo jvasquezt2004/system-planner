@@ -140,8 +140,16 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			},
 			removeAssistantConnection: async ({ connectionId }) =>
 				(await assistantPromise).removeAssistantConnection(connectionId),
-			startAssistantOAuthLogin: async ({ providerId }) =>
-				(await assistantPromise).startOAuthLogin(providerId),
+			// Browser sign-in can outlast the RPC request timeout, so it reports its
+			// outcome through assistantOAuthEvent instead of this response.
+			startAssistantOAuthLogin: async ({ providerId }) => {
+				void (await assistantPromise).startOAuthLogin(providerId);
+				return { started: true };
+			},
+			answerAssistantOAuthPrompt: async ({ promptId, value }) =>
+				(await assistantPromise).answerOAuthPrompt(promptId, value),
+			cancelAssistantOAuthLogin: async ({ providerId }) =>
+				(await assistantPromise).cancelOAuthLogin(providerId),
 			getClaudeOptIn: async () => (await assistantPromise).getClaudeOptIn(),
 			setClaudeOptIn: async ({ enabled }) => (await assistantPromise).setClaudeOptIn(enabled),
 			getAssistantRequestCap: async () => (await assistantPromise).getMaxRequestsPerTurn(),
