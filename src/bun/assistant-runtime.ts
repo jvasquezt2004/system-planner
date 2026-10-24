@@ -9,8 +9,9 @@ import type {
 	AssistantConversation,
 	AssistantConversationRecord,
 	AssistantModel,
+	AssistantProviderConnection,
 } from "../shared/assistant";
-import { BunSecretCredentialStore } from "./assistant-credentials";
+import { BunSecretCredentialStore, createConnectionScopedStore } from "./assistant-credentials";
 import { applyAssistantDdl } from "./assistant-ddl";
 import type { AssistantStore } from "./assistant-store";
 import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
@@ -63,17 +64,14 @@ export interface AssistantRuntime {
 	deleteConversation: (conversationId: string) => boolean;
 	listConnections: () => Promise<AssistantConnectionStatus[]>;
 	getConnectionStatus: (connectionId: string) => Promise<AssistantConnectionStatus>;
-	setAssistantApiKey: (providerId: string, apiKey: string) => Promise<void>;
+	setAssistantApiKey: (providerId: string, apiKey: string) => Promise<AssistantProviderConnection>;
 	removeAssistantConnection: (connectionId: string) => Promise<void>;
-	startOAuthLogin: (providerId: string) => Promise<{ success: boolean; error?: string }>;
+	startOAuthLogin: (providerId: string) => Promise<{ success: boolean; connection?: AssistantProviderConnection; error?: string }>;
 	getClaudeOptIn: () => boolean;
 	setClaudeOptIn: (enabled: boolean) => void;
 	subscribeOAuth: (subscriber: (providerId: string, event: unknown) => void) => () => void;
-	setAnthropicApiKey: (apiKey: string) => Promise<void>;
-	removeAnthropicApiKey: () => Promise<void>;
-	getAnthropicConnectionStatus: () => Promise<{ connected: boolean; error: string | null }>;
 	listModels: () => Promise<AssistantModel[]>;
-	updateConversationSelection: (conversationId: string, model: string, thinking: ThinkingLevel, provider?: string) => void;
+	updateConversationSelection: (conversationId: string, connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: ThinkingLevel) => void;
 	subscribe: (subscriber: (conversationId: string, event: unknown) => void) => () => void;
 	isTurnPaused: (conversationId: string) => boolean;
 	isConfirmationPending: (conversationId: string) => boolean;
@@ -81,7 +79,7 @@ export interface AssistantRuntime {
 	stop: (conversationId: string) => void;
 	confirmDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
 	rejectDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
-	sendMessage: (conversationId: string, text: string, modelId: string, thinkingLevel?: ThinkingLevel) => Promise<AssistantConversationRecord | null>;
+	sendMessage: (conversationId: string, text: string, modelId: string, thinkingLevel?: ThinkingLevel, connectionId?: string) => Promise<AssistantConversationRecord | null>;
 	close: () => void;
 }
 
@@ -89,11 +87,25 @@ export interface AssistantRuntime {
 export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal }: AssistantRuntimeOptions): AssistantRuntime {
 	const store: AssistantStore = openAssistantStore(databasePath);
 	const credentials = new BunSecretCredentialStore(databasePath);
-	const models = suppliedModels ?? createModels({ credentials });
-	if (!suppliedModels) {
-		models.setProvider(anthropicProvider());
-		models.setProvider(openaiProvider());
-		models.setProvider(googleProvider());
+	const connectionModelsMap = new Map<string, MutableModels>();
+	function getOrInitConnectionModels(conn: AssistantProviderConnection): MutableModels {
+		let connModels = connectionModelsMap.get(conn.id);
+		if (!connModels) {
+			const scopedStore = createConnectionScopedStore(credentials, conn.id, conn.provider_id);
+			connModels = createModels({ credentials: scopedStore });
+			const customProvider = suppliedModels?.getProvider(conn.provider_id);
+			if (customProvider) {
+				connModels.setProvider(customProvider);
+			} else if (conn.provider_id === "anthropic") {
+				connModels.setProvider(anthropicProvider());
+			} else if (conn.provider_id === "openai") {
+				connModels.setProvider(openaiProvider());
+			} else if (conn.provider_id === "google") {
+				connModels.setProvider(googleProvider());
+			}
+			connectionModelsMap.set(conn.id, connModels);
+		}
+		return connModels;
 	}
 	const oAuthSubscribers = new Set<(providerId: string, event: unknown) => void>();
 	function publishOAuthEvent(providerId: string, event: unknown) {
@@ -111,52 +123,57 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		}
 		return providerId;
 	}
-	async function getConnectionStatus(providerId: string): Promise<AssistantConnectionStatus> {
-		const saved = store.listProviderConnections().find((c) => c.id === providerId);
-		const authMethod = (saved?.auth_method === "oauth" ? "oauth" : "api-key") as "api-key" | "oauth";
-		const name = getProviderDisplayName(providerId, authMethod);
-		if (!saved) {
+	async function getConnectionStatus(connectionIdOrProviderId: string): Promise<AssistantConnectionStatus> {
+		let conn = store.getConnection(connectionIdOrProviderId);
+		if (!conn) {
+			const savedList = store.listProviderConnections();
+			conn = savedList.find((c) => c.provider_id === connectionIdOrProviderId) ?? null;
+		}
+		if (!conn) {
+			const name = getProviderDisplayName(connectionIdOrProviderId);
 			return {
-				id: providerId,
-				providerId,
+				id: connectionIdOrProviderId,
+				providerId: connectionIdOrProviderId,
 				name,
-				authMethod,
+				authMethod: "api-key",
 				connected: false,
 				error: null,
-				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+				claudeOptIn: connectionIdOrProviderId === "anthropic" ? store.getClaudeOptIn() : undefined,
 			};
 		}
+		const name = getProviderDisplayName(conn.provider_id, conn.auth_method);
+		const connModels = getOrInitConnectionModels(conn);
 		try {
-			const auth = await models.getAuth(providerId);
+			const auth = await connModels.getAuth(conn.provider_id);
 			if (auth) {
 				return {
-					id: providerId,
-					providerId,
+					id: conn.id,
+					providerId: conn.provider_id,
 					name,
-					authMethod,
+					authMethod: conn.auth_method as "api-key" | "oauth",
 					connected: true,
 					error: null,
-					claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+					claudeOptIn: conn.provider_id === "anthropic" ? store.getClaudeOptIn() : undefined,
 				};
 			}
 			return {
-				id: providerId,
-				providerId,
+				id: conn.id,
+				providerId: conn.provider_id,
 				name,
-				authMethod,
+				authMethod: conn.auth_method as "api-key" | "oauth",
 				connected: false,
 				error: `${name} credentials missing from credential store.`,
-				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+				claudeOptIn: conn.provider_id === "anthropic" ? store.getClaudeOptIn() : undefined,
 			};
 		} catch (error) {
 			return {
-				id: providerId,
-				providerId,
+				id: conn.id,
+				providerId: conn.provider_id,
 				name,
-				authMethod,
+				authMethod: conn.auth_method as "api-key" | "oauth",
 				connected: false,
 				error: error instanceof Error ? error.message : String(error),
-				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+				claudeOptIn: conn.provider_id === "anthropic" ? store.getClaudeOptIn() : undefined,
 			};
 		}
 	}
@@ -405,7 +422,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				role: "system",
 				kind: "assistant-context",
 				payload: { text: "Conversation initialized." },
-			}, { model: selection.model, thinking: selection.thinking });
+			}, { connectionId: selection.connectionId, model: selection.model, thinking: selection.thinking });
 		},
 		renameConversation: (conversationId: string, title: string) => store.renameConversation(conversationId, title),
 		deleteConversation(conversationId: string) {
@@ -414,29 +431,33 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return store.deleteConversation(conversationId);
 		},
 		async listConnections(): Promise<AssistantConnectionStatus[]> {
-			const candidateIds = ["anthropic", "openai", "google"];
 			const saved = store.listProviderConnections();
-			for (const conn of saved) {
-				if (!candidateIds.includes(conn.id)) candidateIds.push(conn.id);
-			}
 			const statuses: AssistantConnectionStatus[] = [];
-			for (const id of candidateIds) {
-				statuses.push(await getConnectionStatus(id));
+			for (const conn of saved) {
+				statuses.push(await getConnectionStatus(conn.id));
 			}
 			return statuses;
 		},
 		async getConnectionStatus(connectionId: string): Promise<AssistantConnectionStatus> {
 			return getConnectionStatus(connectionId);
 		},
-		async setAssistantApiKey(providerId: string, apiKey: string) {
+		async setAssistantApiKey(providerId: string, apiKey: string): Promise<AssistantProviderConnection> {
 			const normalized = apiKey.trim();
 			if (!normalized) throw new Error(`Enter an API key for ${providerId}.`);
-			await credentials.modify(providerId, async () => ({ type: "api_key", key: normalized }));
-			store.saveProviderConnection(providerId, "api-key", `${providerId}-api-key`);
+			const conn = store.saveProviderConnection(providerId, "api-key");
+			const scopedStore = createConnectionScopedStore(credentials, conn.id, conn.provider_id);
+			await scopedStore.modify(conn.provider_id, async () => ({ type: "api_key", key: normalized }));
+			connectionModelsMap.delete(conn.id);
+			return conn;
 		},
-		async removeAssistantConnection(connectionId: string) {
-			await credentials.delete(connectionId);
-			store.removeProviderConnection(connectionId);
+		async removeAssistantConnection(connectionId: string): Promise<void> {
+			const conn = store.getConnection(connectionId);
+			if (conn) {
+				const scopedStore = createConnectionScopedStore(credentials, conn.id, conn.provider_id);
+				await scopedStore.delete(conn.provider_id);
+				connectionModelsMap.delete(conn.id);
+				store.removeProviderConnection(conn.id);
+			}
 		},
 		async startOAuthLogin(providerId: string) {
 			if (providerId === "google") {
@@ -445,8 +466,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (providerId === "anthropic" && !store.getClaudeOptIn()) {
 				throw new Error("Claude account sign-in requires enabling the opt-in setting.");
 			}
+			const conn = store.saveProviderConnection(providerId, "oauth");
+			const connModels = getOrInitConnectionModels(conn);
 			try {
-				await models.login(providerId, "oauth", {
+				await connModels.login(providerId, "oauth", {
 					prompt: async (prompt) => {
 						publishOAuthEvent(providerId, { type: "prompt", prompt });
 						if (prompt.type === "select" && prompt.options[0]) {
@@ -463,8 +486,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						publishOAuthEvent(providerId, event);
 					},
 				});
-				store.saveProviderConnection(providerId, "oauth", `${providerId}-oauth`);
-				return { success: true };
+				return { success: true, connection: conn };
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				publishOAuthEvent(providerId, { type: "error", error: message });
@@ -477,46 +499,56 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			oAuthSubscribers.add(subscriber);
 			return () => oAuthSubscribers.delete(subscriber);
 		},
-		async setAnthropicApiKey(apiKey: string) {
-			await this.setAssistantApiKey("anthropic", apiKey);
-		},
-		async removeAnthropicApiKey() {
-			await this.removeAssistantConnection("anthropic");
-		},
-		async getAnthropicConnectionStatus() {
-			const status = await getConnectionStatus("anthropic");
-			return { connected: status.connected, error: status.error };
-		},
 		async listModels(): Promise<AssistantModel[]> {
-			const connections = await this.listConnections();
+			const connections = store.listProviderConnections();
 			const result: AssistantModel[] = [];
-			const allRegistered = models.getProviders().map((p) => p.id);
-			const hasConfigured = store.listProviderConnections().length > 0;
-			const targetProviders = hasConfigured
-				? Array.from(new Set(store.listProviderConnections().map((c) => c.id)))
-				: (allRegistered.length > 0 ? allRegistered : ["anthropic", "openai", "google"]);
-
-			for (const providerId of targetProviders) {
-				const conn = connections.find((c) => c.providerId === providerId);
-				const connName = conn ? conn.name : getProviderDisplayName(providerId);
-				const providerModels = models.getModels(providerId);
+			for (const conn of connections) {
+				const connModels = getOrInitConnectionModels(conn);
+				const connName = getProviderDisplayName(conn.provider_id, conn.auth_method);
+				const providerModels = connModels.getModels(conn.provider_id);
 				for (const m of providerModels) {
 					result.push({
 						id: m.id,
 						name: m.name,
-						provider: m.provider,
-						connectionId: providerId,
+						provider: conn.provider_id,
+						connectionId: conn.id,
 						connectionName: connName,
 						reasoning: Boolean(m.reasoning),
 						contextWindow: m.contextWindow ?? 0,
 					});
 				}
 			}
+			if (connections.length === 0) {
+				const defaultProviders = suppliedModels
+					? suppliedModels.getProviders().map((p) => p.id)
+					: ["anthropic", "openai", "google"];
+				for (const providerId of defaultProviders) {
+					const fallbackModels = suppliedModels
+						? suppliedModels.getModels(providerId)
+						: (providerId === "anthropic" ? anthropicProvider().getModels() :
+							providerId === "openai" ? openaiProvider().getModels() :
+							providerId === "google" ? googleProvider().getModels() : []);
+					for (const m of fallbackModels) {
+						result.push({
+							id: m.id,
+							name: m.name,
+							provider: providerId,
+							connectionId: providerId,
+							connectionName: getProviderDisplayName(providerId, "api-key"),
+							reasoning: Boolean(m.reasoning),
+							contextWindow: m.contextWindow ?? 0,
+						});
+					}
+				}
+			}
 			return result;
 		},
-		updateConversationSelection(conversationId: string, model: string, thinking: ThinkingLevel, provider?: string) {
-			store.updateConversationSelection(conversationId, model, thinking, provider);
-			store.updateDefaultSelection(model, thinking);
+		updateConversationSelection(conversationId: string, connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: ThinkingLevel) {
+			const connectionId = maybeThinking !== undefined ? connectionIdOrModel : null;
+			const model = maybeThinking !== undefined ? modelOrThinking : (connectionIdOrModel ?? "");
+			const thinking = (maybeThinking !== undefined ? maybeThinking : modelOrThinking) as ThinkingLevel;
+			store.updateConversationSelection(conversationId, connectionId, model, thinking);
+			store.updateDefaultSelection(connectionId, model, thinking);
 		},
 		subscribe(subscriber: (conversationId: string, event: unknown) => void) {
 			subscribers.add(subscriber);
@@ -672,33 +704,62 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			}
 			return store.loadConversation(conversationId);
 		},
-		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium") {
+		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium", connectionId?: string) {
 			const conversation = requireBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
-			const model = models.getModels().find((m) => m.id === modelId)
-				?? models.getModel("anthropic", modelId)
-				?? models.getModel("openai", modelId)
-				?? models.getModel("google", modelId);
-			if (!model) throw new Error(`Unknown model: ${modelId}`);
-			if (getApiKey) {
-				const key = await getApiKey().catch(() => undefined);
-				if (!key) throw new Error("Configure credentials before sending a message.");
+			const effectiveConnectionId = connectionId ?? conversation.connection_id;
+			let targetConn = effectiveConnectionId ? store.getConnection(effectiveConnectionId) : null;
+			if (effectiveConnectionId && !targetConn) {
+				throw new Error("The provider connection for this conversation was removed. Select a connection and model to continue.");
+			}
+			if (!targetConn && store.listProviderConnections().length > 0) {
+				for (const c of store.listProviderConnections()) {
+					const cm = getOrInitConnectionModels(c);
+					if (cm.getModels(c.provider_id).some((m) => m.id === modelId)) {
+						targetConn = c;
+						break;
+					}
+				}
+			}
+			let activeModels: MutableModels;
+			let model: ReturnType<MutableModels["getModel"]> | undefined;
+			if (targetConn) {
+				activeModels = getOrInitConnectionModels(targetConn);
+				model = activeModels.getModels(targetConn.provider_id).find((m) => m.id === modelId)
+					?? (suppliedModels ? suppliedModels.getModel(targetConn.provider_id, modelId) : undefined);
+				if (!model) throw new Error(`Unknown model: ${modelId} for connection ${targetConn.id}`);
+				if (getApiKey) {
+					const key = await getApiKey().catch(() => undefined);
+					if (!key) throw new Error("Configure credentials before sending a message.");
+				} else {
+					let authResult: unknown;
+					try {
+						authResult = await activeModels.getAuth(model);
+					} catch (err) {
+						throw new Error(`Authentication failed for ${targetConn.provider_id}: ${err instanceof Error ? err.message : String(err)}`);
+					}
+					if (!authResult) {
+						const name = getProviderDisplayName(targetConn.provider_id, targetConn.auth_method);
+						throw new Error(`Configure credentials for ${name} before sending a message.`);
+					}
+				}
+				store.updateConversationSelection(conversationId, targetConn.id, modelId, thinkingLevel);
+				store.updateDefaultSelection(targetConn.id, modelId, thinkingLevel);
+			} else if (suppliedModels) {
+				activeModels = suppliedModels;
+				model = suppliedModels.getModels().find((m) => m.id === modelId);
+				if (!model) throw new Error(`Unknown model: ${modelId}`);
+				if (getApiKey) {
+					const key = await getApiKey().catch(() => undefined);
+					if (!key) throw new Error("Configure credentials before sending a message.");
+				}
+				store.updateConversationSelection(conversationId, null, modelId, thinkingLevel);
+				store.updateDefaultSelection(null, modelId, thinkingLevel);
 			} else {
-				let authResult: unknown;
-				try {
-					authResult = await models.getAuth(model);
-				} catch (err) {
-					throw new Error(`Authentication failed for ${model.provider}: ${err instanceof Error ? err.message : String(err)}`);
-				}
-				if (!authResult) {
-					const name = getProviderDisplayName(model.provider);
-					throw new Error(`Configure credentials for ${name} before sending a message.`);
-				}
+				throw new Error("No provider connection selected for this conversation. Choose a connection and model to continue.");
 			}
 			const currentState = requireBoundState(conversationId).state;
 			let changeNote: { role: "user"; content: string; timestamp: number } | undefined;
-			store.updateConversationSelection(conversationId, modelId, thinkingLevel, model.provider);
-			store.updateDefaultSelection(modelId, thinkingLevel);
 			const currentSnapshot = projectSnapshot(currentState);
 			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot, currentState.revision);
 			if (previousSnapshot !== null && previousSnapshot.snapshot !== currentSnapshot) {
@@ -741,10 +802,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						tools: buildTools(conversationId),
 						messages: transcript as never[],
 					},
-					streamFn: streamFn ?? models.streamSimple.bind(models),
+					streamFn: streamFn ?? activeModels.streamSimple.bind(activeModels),
 					getApiKey: async (provider) => {
 						if (getApiKey) return getApiKey();
-						const resolved = await models.getAuth(provider);
+						const resolved = await activeModels.getAuth(provider);
 						return resolved?.auth.apiKey;
 					},
 					sessionId: conversationId,

@@ -244,20 +244,11 @@ export const workspaceClient = {
 	listAssistantModels() {
 		return rpc.request.listAssistantModels({});
 	},
-	setAnthropicApiKey(apiKey: string) {
-		return rpc.request.setAnthropicApiKey({ apiKey });
-	},
-	sendAssistantMessage(conversationId: string, text: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
-		return rpc.request.sendAssistantMessage({ conversationId, text, modelId, thinkingLevel });
+	sendAssistantMessage(conversationId: string, text: string, modelId: string, thinkingLevel: AssistantThinkingLevel, connectionId?: string) {
+		return rpc.request.sendAssistantMessage({ conversationId, text, modelId, thinkingLevel, connectionId });
 	},
 	stopAssistantTurn(conversationId: string) {
 		return rpc.request.stopAssistantTurn({ conversationId });
-	},
-	getAnthropicConnectionStatus() {
-		return rpc.request.getAnthropicConnectionStatus({});
-	},
-	removeAnthropicApiKey() {
-		return rpc.request.removeAnthropicApiKey({});
 	},
 	listAssistantConnections() {
 		return rpc.request.listAssistantConnections({});
@@ -287,8 +278,8 @@ export const workspaceClient = {
 	getAssistantTurnStatus(conversationId: string) {
 		return rpc.request.getAssistantTurnStatus({ conversationId });
 	},
-	updateAssistantConversationSelection(conversationId: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
-		return rpc.request.updateAssistantConversationSelection({ conversationId, modelId, thinkingLevel });
+	updateAssistantConversationSelection(conversationId: string, connectionId: string | null, modelId: string, thinkingLevel: AssistantThinkingLevel) {
+		return rpc.request.updateAssistantConversationSelection({ conversationId, connectionId, modelId, thinkingLevel });
 	},
 	confirmAssistantDdlDrop(conversationId: string, toolCallId: string) {
 		return rpc.request.confirmAssistantDdlDrop({ conversationId, toolCallId });

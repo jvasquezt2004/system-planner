@@ -314,20 +314,21 @@ describe("Assistant provider connections", () => {
 		runtimes.push(runtime);
 
 		// Perform initial login
-		await runtime.startOAuthLogin("openai");
+		const login = await runtime.startOAuthLogin("openai");
+		const oauthConnId = login.connection!.id;
 
 		// List models: models must be grouped with connectionId and connectionName
 		let modelList = await runtime.listModels();
 		expect(modelList.length).toBeGreaterThan(0);
 		for (const m of modelList.filter((m) => m.provider === "openai")) {
-			expect(m.connectionId).toBe("openai");
+			expect(m.connectionId).toBe(oauthConnId);
 			expect(m.connectionName).toContain("ChatGPT");
 		}
 
 		// Now simulate expired token and refresh failure
 		refreshShouldFail = true;
 		const credStore = new BunSecretCredentialStore(databasePath);
-		await credStore.modify("openai", async (curr) => {
+		await credStore.modify(`connection-${oauthConnId}`, async (curr) => {
 			if (curr?.type === "oauth") {
 				return { ...curr, expires: Date.now() - 50_000 };
 			}
@@ -335,13 +336,13 @@ describe("Assistant provider connections", () => {
 		});
 
 		// Connection status reflects failure with error message
-		const status = await runtime.getConnectionStatus("openai");
+		const status = await runtime.getConnectionStatus(oauthConnId);
 		expect(status.connected).toBe(false);
 		expect(status.error).toContain("Invalid OAuth refresh token");
 
 		// Acceptance criterion: Picker grouped by connection; failing connections stay listed
 		modelList = await runtime.listModels();
-		const failingModels = modelList.filter((m) => m.connectionId === "openai");
+		const failingModels = modelList.filter((m) => m.connectionId === oauthConnId);
 		expect(failingModels.length).toBe(2);
 		expect(failingModels.map((m) => m.id)).toEqual(["gpt-4o", "o1"]);
 
@@ -415,19 +416,19 @@ describe("Assistant provider connections", () => {
 		db.close();
 
 		// Step 2: Open fresh runtime across restart on the same database
-		const credStore2 = new BunSecretCredentialStore(databasePath);
-		const models2 = createModels({ credentials: credStore2 });
+		const models2 = createModels();
 		models2.setProvider(fauxOpenAI);
 		const runtime2 = createAssistantRuntime({ databasePath, workspace, models: models2 });
 		runtimes.push(runtime2);
 
-		// Resolve auth: triggers automatic token refresh
-		const auth = await models2.getAuth("openai");
+		// Resolve auth through runtime: triggers automatic token refresh
+		const status = await runtime2.getConnectionStatus("openai");
 		expect(refreshCalled).toBe(true);
-		expect(auth?.auth.apiKey).toBe("refreshed-shiny-access-token");
+		expect(status.connected).toBe(true);
 
-		// Credential store now holds the refreshed token
-		const stored = await credStore2.read("openai");
+		// Credential store now holds the refreshed token under connection id
+		const credStore2 = new BunSecretCredentialStore(databasePath);
+		const stored = await credStore2.read(`connection-${status.id}`);
 		expect(stored?.type).toBe("oauth");
 		if (stored?.type === "oauth") {
 			expect(stored.access).toBe("refreshed-shiny-access-token");
@@ -480,5 +481,145 @@ describe("Assistant provider connections", () => {
 		const switched = runtime.loadConversation(conv1.id);
 		expect(switched?.model).toBe("claude-haiku-4-5");
 		expect(switched?.thinking).toBe("low");
+	});
+
+	test("OpenAI API-key and ChatGPT sign-in coexist, stream with distinct credentials, survive restarts, and removal of one leaves the other intact", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-coexist-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Coexistence Project" });
+		if (!state.project) throw new Error("Expected project to be open.");
+
+		const openaiApiKey = "sk-secret-key-111";
+		const chatgptToken = "token-chatgpt-222";
+		const receivedKeys: string[] = [];
+
+		const chatgptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async () => ({
+				type: "oauth",
+				access: chatgptToken,
+				refresh: "refresh-tok-222",
+				expires: Date.now() + 3600_000,
+			}),
+			refresh: async (cred) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+
+		const openaiFauxBase = fauxProvider({
+			provider: "openai",
+			models: [{ id: "gpt-4o", name: "GPT-4o" }],
+		});
+		const customOpenAIProvider = {
+			...openaiFauxBase.provider,
+			auth: {
+				apiKey: {
+					name: "OpenAI API key",
+					resolve: async ({ credential }: { credential?: { key?: string } }) => ({ auth: { apiKey: credential?.key } }),
+				},
+				oauth: chatgptOAuth,
+			},
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				if (options?.apiKey) receivedKeys.push(options.apiKey);
+				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const models = createModels();
+		models.setProvider(customOpenAIProvider as never);
+
+		const runtime = createAssistantRuntime({ databasePath, workspace, models });
+		runtimes.push(runtime);
+
+		// (a) An OpenAI API-key connection and a ChatGPT sign-in coexist:
+		const apiKeyConn = await runtime.setAssistantApiKey("openai", openaiApiKey);
+		const oauthResult = await runtime.startOAuthLogin("openai");
+		const oauthConn = oauthResult.connection!;
+
+		expect(apiKeyConn.id).not.toBe(oauthConn.id);
+		expect(apiKeyConn.auth_method).toBe("api-key");
+		expect(oauthConn.auth_method).toBe("oauth");
+
+		const connections = await runtime.listConnections();
+		expect(connections.length).toBe(2);
+		expect(connections.map((c) => c.id).sort()).toEqual([apiKeyConn.id, oauthConn.id].sort());
+
+		// Both are listed in model picker
+		const modelList = await runtime.listModels();
+		expect(modelList.some((m) => m.connectionId === apiKeyConn.id && m.connectionName.includes("API key"))).toBe(true);
+		expect(modelList.some((m) => m.connectionId === oauthConn.id && m.connectionName.includes("ChatGPT"))).toBe(true);
+
+		// Both stream with their own credentials:
+		// Conversation 1 using API-key connection
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t_api_key (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created via API key.")]),
+		]);
+		const conv1 = runtime.createConversation(state.project.id);
+		await runtime.sendMessage(conv1.id, "Create t_api_key", "gpt-4o", "medium", apiKeyConn.id);
+		expect(receivedKeys[receivedKeys.length - 1]).toBe(openaiApiKey);
+		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_api_key");
+
+		// Conversation 2 using ChatGPT sign-in connection
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t_oauth (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created via ChatGPT.")]),
+		]);
+		const conv2 = runtime.createConversation(state.project.id);
+		await runtime.sendMessage(conv2.id, "Create t_oauth", "gpt-4o", "medium", oauthConn.id);
+		expect(receivedKeys[receivedKeys.length - 1]).toBe(chatgptToken);
+		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_oauth");
+
+		// (c) A conversation bound to the sign-in connection keeps using it after a restart:
+		runtime.close();
+		const runtime2 = createAssistantRuntime({ databasePath, workspace, models });
+		runtimes.push(runtime2);
+
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t_oauth_restarted (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created after restart.")]),
+		]);
+		await runtime2.sendMessage(conv2.id, "Create t_oauth_restarted", "gpt-4o");
+		expect(receivedKeys[receivedKeys.length - 1]).toBe(chatgptToken);
+		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_oauth_restarted");
+
+		// (b) Removing one leaves the other working:
+		await runtime2.removeAssistantConnection(oauthConn.id);
+		expect((await runtime2.listConnections()).map((c) => c.id)).toEqual([apiKeyConn.id]);
+
+		// Conversation 1 (API key) still works after removing ChatGPT connection
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t_api_still_works (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Still works.")]),
+		]);
+		await runtime2.sendMessage(conv1.id, "Create t_api_still_works", "gpt-4o");
+		expect(receivedKeys[receivedKeys.length - 1]).toBe(openaiApiKey);
+		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_api_still_works");
+
+		// Conversation 2 (whose connection was removed) throws error asking for a model
+		await expect(runtime2.sendMessage(conv2.id, "Should fail", "gpt-4o")).rejects.toThrow(/connection for this conversation was removed/i);
+
+		// (d) Nothing secret in SQLite:
+		const db = new Database(databasePath, { readonly: true });
+		const tables = db.query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type='table'").all();
+		for (const { name } of tables) {
+			const rows = db.query<Record<string, unknown>, []>(`SELECT * FROM "${name}"`).all();
+			const json = JSON.stringify(rows);
+			expect(json).not.toContain(openaiApiKey);
+			expect(json).not.toContain(chatgptToken);
+		}
+		db.close();
 	});
 });

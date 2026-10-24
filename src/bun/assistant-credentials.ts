@@ -8,8 +8,10 @@ const NAME_BY_PROVIDER: Readonly<Record<string, string>> = {
 	google: "google-credential",
 };
 
-function credentialSecretName(providerId: string): string {
-	return NAME_BY_PROVIDER[providerId] ?? `${providerId}-credential`;
+function credentialSecretName(id: string): string {
+	if (id === "anthropic") return "anthropic-api-key";
+	if (id.startsWith("connection-")) return id;
+	return `connection-${id}`;
 }
 const PROTECT_SCRIPT = "$ErrorActionPreference='Stop'; $plain=[Console]::In.ReadToEnd(); $secure=ConvertTo-SecureString -String $plain -AsPlainText -Force; [Console]::Out.Write((ConvertFrom-SecureString -SecureString $secure))";
 const UNPROTECT_SCRIPT = "$ErrorActionPreference='Stop'; $cipher=[Console]::In.ReadToEnd().Trim(); $secure=ConvertTo-SecureString -String $cipher; $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }";
@@ -167,6 +169,34 @@ export class BunSecretCredentialStore implements CredentialStore {
 		if (stored.size === 0) unlinkSync(this.fallbackPath);
 		else writeFileSync(this.fallbackPath, JSON.stringify(Object.fromEntries(stored)), { mode: 0o600 });
 	}
+}
+
+/** Wraps a base CredentialStore so a connection's Models instance writes to connection-<connectionId>. */
+export function createConnectionScopedStore(
+	baseStore: CredentialStore,
+	connectionId: string,
+	expectedProviderId: string,
+): CredentialStore {
+	const secretId = `connection-${connectionId}`;
+	return {
+		async read(_providerId: string, options?: { signal?: AbortSignal }): Promise<Credential | undefined> {
+			return baseStore.read(secretId, options);
+		},
+		async list(options?: { signal?: AbortSignal }): Promise<readonly CredentialInfo[]> {
+			const cred = await baseStore.read(secretId, options);
+			return cred ? [{ providerId: expectedProviderId, type: cred.type }] : [];
+		},
+		async modify(
+			_providerId: string,
+			fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+			options?: { signal?: AbortSignal },
+		): Promise<Credential | undefined> {
+			return baseStore.modify(secretId, fn, options);
+		},
+		async delete(_providerId: string, options?: { signal?: AbortSignal }): Promise<void> {
+			return baseStore.delete(secretId, options);
+		},
+	};
 }
 
 async function runDpapi(value: string, protect: boolean): Promise<string> {

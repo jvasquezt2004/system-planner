@@ -21,9 +21,6 @@ type AssistantApi = Pick<
 	| "deleteAssistantConversation"
 	| "listAssistantModels"
 	| "listAssistantConnections"
-	| "getAnthropicConnectionStatus"
-	| "setAnthropicApiKey"
-	| "removeAnthropicApiKey"
 	| "setAssistantApiKey"
 	| "removeAssistantConnection"
 	| "startAssistantOAuthLogin"
@@ -67,6 +64,7 @@ export function AssistantSidebar({
 	const [messages, setMessages] = useState<AssistantMessage[]>([]);
 	const [models, setModels] = useState<AssistantModel[]>([]);
 	const [connections, setConnections] = useState<AssistantConnectionStatus[]>([]);
+	const [selectedConnectionId, setSelectedConnectionId] = useState("");
 	const [claudeOptIn, setClaudeOptIn] = useState(false);
 	const [deviceCode, setDeviceCode] = useState<{ providerId: string; userCode: string; verificationUri: string } | null>(null);
 	const [oAuthProgress, setOAuthProgress] = useState<{ providerId: string; message: string } | null>(null);
@@ -109,10 +107,12 @@ export function AssistantSidebar({
 				if (!live) return;
 				const recent = [...items].sort((a, b) => b.updated_at - a.updated_at);
 				setConversations(recent);
-				setModels(available);
 				setConnections(connectionList);
 				setClaudeOptIn(optIn);
-				if (available[0]) setModel(available[0].id);
+				if (available[0]) {
+					setModel(available[0].id);
+					setSelectedConnectionId(available[0].connectionId);
+				}
 				if (recent[0]) setActiveId(recent[0].id);
 			})
 			.catch((cause: unknown) => {
@@ -139,9 +139,10 @@ export function AssistantSidebar({
 			.then((conversation: AssistantConversationRecord | null) => {
 				if (live && conversation) {
 					setMessages(conversation.messages);
+					if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
 					if (conversation.model) {
 						setModel(conversation.model);
-						initialConversationModelRef.current = conversation.model;
+						initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
 					}
 					if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 					setCacheWarning(null);
@@ -203,9 +204,10 @@ export function AssistantSidebar({
 		setError("");
 		try {
 			const conversation = await api.createAssistantConversation(projectId);
+			if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
 			if (conversation.model) {
 				setModel(conversation.model);
-				initialConversationModelRef.current = conversation.model;
+				initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
 			}
 			if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 			setCacheWarning(null);
@@ -241,16 +243,18 @@ export function AssistantSidebar({
 			setError(String(cause));
 		}
 	}
-	function persistSelection(nextModel: string, nextThinking: AssistantThinkingLevel) {
+	function persistSelection(nextConnectionId: string | null, nextModel: string, nextThinking: AssistantThinkingLevel) {
+		setSelectedConnectionId(nextConnectionId ?? "");
 		setModel(nextModel);
 		setThinking(nextThinking);
-		if (activeId && messages.length > 0 && initialConversationModelRef.current && nextModel !== initialConversationModelRef.current) {
+		const key = `${nextConnectionId ?? ""}:${nextModel}`;
+		if (activeId && messages.length > 0 && initialConversationModelRef.current && key !== initialConversationModelRef.current) {
 			setCacheWarning("Switching models mid-conversation means the next request won't hit the prompt cache.");
 		} else {
 			setCacheWarning(null);
 		}
 		if (activeId) {
-			void api.updateAssistantConversationSelection(activeId, nextModel, nextThinking)
+			void api.updateAssistantConversationSelection(activeId, nextConnectionId, nextModel, nextThinking)
 				.catch((cause: unknown) => setError(String(cause)));
 		}
 	}
@@ -391,7 +395,7 @@ export function AssistantSidebar({
 		setPending(true);
 		setError("");
 		try {
-			const saved = await api.sendAssistantMessage(activeId, message, model, thinking) as AssistantConversationRecord | null;
+			const saved = await api.sendAssistantMessage(activeId, message, model, thinking, selectedConnectionId || undefined) as AssistantConversationRecord | null;
 			if (contextRef.current.generation !== requestContext.generation) return;
 			if (saved) {
 				setMessages(saved.messages);
@@ -404,11 +408,11 @@ export function AssistantSidebar({
 		}
 	}
 
-	const selectedModel = models.find((m) => m.id === model);
-	const selectedConnection = connections.find((c) => c.providerId === selectedModel?.connectionId);
+	const selectedConnection = connections.find((c) => c.id === selectedConnectionId);
+	const isConnectionRemoved = Boolean(selectedConnectionId && !selectedConnection && connections.length > 0);
 
 	const connectionGroups = connections.map((conn) => {
-		const connModels = models.filter((m) => m.connectionId === conn.providerId);
+		const connModels = models.filter((m) => m.connectionId === conn.id);
 		return {
 			...conn,
 			models: connModels,
@@ -502,6 +506,11 @@ export function AssistantSidebar({
 						{oAuthProgress.message}
 					</div>
 				)}
+				{isConnectionRemoved && (
+					<div role="alert" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs">
+						The provider connection for this conversation was removed. Please select a connection and model to continue.
+					</div>
+				)}
 				{selectedConnection?.error && (
 					<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
 						<span className="min-w-0 flex-1">{selectedConnection.name}: {selectedConnection.error}</span>
@@ -525,8 +534,11 @@ export function AssistantSidebar({
 				<div className="mb-2 flex gap-2">
 					<select
 						aria-label="Model"
-						value={model}
-						onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(event.target.value, thinking)}
+						value={`${selectedConnectionId}::${model}`}
+						onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+							const [connId, modelId] = event.target.value.split("::");
+							persistSelection(connId ?? null, modelId ?? "", thinking);
+						}}
 						className="min-w-0 flex-1 bg-transparent text-xs"
 					>
 						{pickerGroups.map((group) => (
@@ -535,14 +547,14 @@ export function AssistantSidebar({
 								label={group.error ? `${group.name} (${group.error})` : group.name}
 							>
 								{group.models.map((item) => (
-									<option key={item.id} value={item.id}>
+									<option key={`${group.id}::${item.id}`} value={`${group.id}::${item.id}`}>
 										{item.name}
 									</option>
 								))}
 							</optgroup>
 						))}
 					</select>
-					<select aria-label="Thinking level" value={thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(model, event.target.value as AssistantThinkingLevel)} className="bg-transparent text-xs">
+					<select aria-label="Thinking level" value={thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(selectedConnectionId, model, event.target.value as AssistantThinkingLevel)} className="bg-transparent text-xs">
 						<option value="off">Off</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
 					</select>
 				</div>
@@ -569,7 +581,7 @@ export function AssistantSidebar({
 					) : turnPaused ? (
 						<button aria-label="Continue assistant response" onClick={() => void continueTurn()} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Continue</button>
 					) : (
-						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
+						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
 							<Send className="size-4" />
 						</button>
 					)}

@@ -1,8 +1,10 @@
+export type AssistantProviderId = "anthropic" | "openai" | "google";
 export type AssistantAuthMethod = "api-key" | "oauth";
 
 export type AssistantProviderConnection = {
 	id: string;
-	auth_method: AssistantAuthMethod | string;
+	provider_id: AssistantProviderId | string;
+	auth_method: AssistantAuthMethod;
 	credential_name: string;
 	created_at: number;
 	updated_at: number;
@@ -43,6 +45,7 @@ export type AssistantConversation = {
 	title: string;
 	created_at: number;
 	updated_at: number;
+	connection_id?: string | null;
 	provider?: string | null;
 	model?: string | null;
 	thinking?: string | null;
