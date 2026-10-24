@@ -5,8 +5,10 @@ import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { BunSecretCredentialStore } from "./assistant-credentials";
 import { applyAssistantDdl } from "./assistant-ddl";
 import type { AssistantStore } from "./assistant-store";
+import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
 import { openAssistantStore } from "./assistant-store";
 import { generateDesignSql, quoteIdentifier } from "./sql";
+import { getLastAppliedSandbox, type WorkspaceState } from "../shared/design";
 import type { DesignWorkspace } from "./workspace";
 
 function deterministicDdlIdFactory(toolCallId: string) {
@@ -23,7 +25,15 @@ function assistantColumnNotesSql(state: ReturnType<DesignWorkspace["getState"]>)
 		.map((column) => `-- ${quoteIdentifier(table.name)}.${quoteIdentifier(column.name)}: ${column.notes.replace(/[\r\n]+/g, " ")}`)) ?? [];
 	return notes.length ? `\n-- Column notes\n${notes.join("\n")}` : "";
 }
-const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation. Keep existing card positions and viewport unchanged. Sandbox Scenarios use the documented PostgREST subset: table reads/projections/embeds, supported filters/order/range/count, CRUD/upsert, row-level security and design Function RPC; Edge functions run in the restricted Deno.serve environment with the documented Supabase imports. Unsupported requests must be treated as errors, never approximated. Report tool errors without claiming changes that were not applied.`;
+const SANDBOX_API_PROMPT = `Sandbox API subset (unsupported features must be treated as errors):
+
+Scenarios use the Supabase client against a fresh Sandbox. Reads support select=* or comma-separated columns, nested foreign-key embeds (including !inner and !relationship hints), eq/neq/gt/gte/lt/lte/like/ilike/is/in/not/or filters, ordering, non-negative limit/offset, inclusive Range, exact count and head requests, single() and maybeSingle(). Writes support insert, update (PATCH), delete, upsert with merge/ignore duplicates and optional on_conflict, minimal or representation returns, and exact counts. PostgreSQL constraint errors retain SQLSTATE; each request is transactional.
+
+Row-level security applies to anon, authenticated, and service_role requests. auth.uid(), auth.role(), and auth.jwt() expose request claims. Scenario clients can invoke design Functions by POST /rpc/<name>; GET is only for stable or immutable Functions. Set-returning and named table-row results support the documented projections; other query operations on function results are unsupported.
+
+supabase.functions.invoke(name, { body }) invokes a saved Edge function. Edge handlers support Deno.serve, Deno.env.get for SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY, and Supabase imports from jsr:@supabase/supabase-js@2, npm:@supabase/supabase-js@2, https://esm.sh/@supabase/supabase-js@2, or @supabase/supabase-js. Network, WebSocket, XMLHttpRequest, script imports, other runtime imports, and nested Edge function invocations are unavailable.`;
+
+const SYSTEM_PROMPT = `You are the Assistant for Schema Designer. The current project is the only project in scope; the Design is authoritative. Read the current project before making changes and use only its project tools. Apply schema changes only through the apply_ddl tool. The accepted DDL subset is CREATE/ALTER/DROP TABLE; ADD/RENAME/ALTER TYPE/DROP COLUMN; NOT NULL, UNIQUE, single-column PRIMARY KEY; structured defaults (typed literals, now(), gen_random_uuid(), identity); REFERENCES with referential actions; CREATE INDEX; CREATE TYPE AS ENUM; CREATE OR REPLACE FUNCTION; CREATE TRIGGER; CREATE POLICY; ENABLE ROW LEVEL SECURITY; COMMENT ON COLUMN. Composite primary keys, CHECK constraints, views and arbitrary defaults are unsupported and must be rejected, never approximated. A destructive drop with dependents requires user confirmation. Keep existing card positions and viewport unchanged. ${SANDBOX_API_PROMPT} Report tool errors without claiming changes that were not applied.`;
 
 
 export type AssistantRuntimeOptions = {
@@ -144,6 +154,137 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				details: confirmationDetails,
 				...(result.status === "confirmation-required" ? { terminate: true } : {}),
 			};
+		},
+	},
+	{
+		name: "manage_code",
+		label: "Manage project code",
+		description: "Create, rename, or remove a Scenario or Edge function; write or exact-string-edit a Scenario, Edge function, or design Function body. Every edit must match exactly once. Code writes use ordinary workspace saves; tool results include the complete source diff and TypeScript diagnostics from the same declarations as Monaco (Function bodies are SQL, not TypeScript).",
+		parameters: Type.Object({
+			action: Type.Union([
+				Type.Literal("create"),
+				Type.Literal("rename"),
+				Type.Literal("remove"),
+				Type.Literal("write"),
+				Type.Literal("edit"),
+			]),
+			kind: Type.Union([Type.Literal("scenario"), Type.Literal("edge-function"), Type.Literal("function-body")]),
+			id: Type.Optional(Type.String()),
+			name: Type.Optional(Type.String()),
+			source: Type.Optional(Type.String()),
+			oldText: Type.Optional(Type.String()),
+			newText: Type.Optional(Type.String()),
+		}),
+		executionMode: "sequential",
+		execute: async (_toolCallId, params) => {
+			const input = params as {
+				action: "create" | "rename" | "remove" | "write" | "edit";
+				kind: "scenario" | "edge-function" | "function-body";
+				id?: string;
+				name?: string;
+				source?: string;
+				oldText?: string;
+				newText?: string;
+			};
+			const { conversation } = requireBoundState(conversationId);
+			const kind = input.kind;
+			if (input.action === "create") {
+				if (kind === "function-body") throw new Error("Function bodies cannot be created; define a Function through apply_ddl.");
+				if (!input.name) throw new Error("A name is required to create a code item.");
+				const state = kind === "scenario"
+					? await workspace.createScenario({ name: input.name })
+					: await workspace.createEdgeFunction({ name: input.name });
+				if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code item was created.");
+				const item = kind === "scenario"
+					? state.scenarios.find((candidate) => candidate.name === input.name?.trim())
+					: state.edgeFunctions.find((candidate) => candidate.name === input.name?.trim());
+				if (!item) throw new Error("The created code item could not be found in the bound project.");
+				return { content: [{ type: "text", text: JSON.stringify({ action: "created", kind, id: item.id, name: item.name }) }], details: { action: "created", kind, id: item.id, name: item.name } };
+			}
+			if (input.action === "rename" || input.action === "remove") {
+				if (kind === "function-body") throw new Error("Function bodies cannot be renamed or removed through code tools.");
+				if (!input.id) throw new Error("An item id is required to rename or remove a code item.");
+				if (input.action === "rename" && !input.name) throw new Error("A new name is required to rename a code item.");
+				const state = kind === "scenario"
+					? input.action === "rename"
+						? await workspace.renameScenario({ scenarioId: input.id, name: input.name! })
+						: await workspace.removeScenario({ scenarioId: input.id })
+					: input.action === "rename"
+						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name! })
+						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id });
+				if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code item was updated.");
+				return { content: [{ type: "text", text: JSON.stringify({ action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name }) }], details: { action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name } };
+			}
+
+			const bound = requireBoundState(conversationId);
+			if (!input.id) throw new Error("An item id is required to write code.");
+			let itemName: string;
+			let before: string;
+			if (kind === "scenario") {
+				const item = bound.state.scenarios.find(({ id }) => id === input.id);
+				if (!item) throw new Error("That Scenario could not be found in the bound project.");
+				itemName = item.name;
+				before = item.source;
+			} else if (kind === "edge-function") {
+				const item = bound.state.edgeFunctions.find(({ id }) => id === input.id);
+				if (!item) throw new Error("That Edge function could not be found in the bound project.");
+				itemName = item.name;
+				before = item.source;
+			} else {
+				const item = bound.state.design?.functions?.find(({ id }) => id === input.id);
+				if (!item) throw new Error("That Function could not be found in the bound project.");
+				itemName = item.name;
+				before = item.body;
+			}
+			let after: string;
+			if (input.action === "write") {
+				if (input.source === undefined) throw new Error("A complete source string is required for a whole-file write.");
+				after = input.source;
+			} else {
+				if (input.oldText === undefined || input.newText === undefined) throw new Error("Exact-string edit requires oldText and newText.");
+				let matches = 0;
+				for (let position = 0; input.oldText.length > 0 && (position = before.indexOf(input.oldText, position)) !== -1; position += 1) matches += 1;
+				if (matches !== 1) throw new Error(`Exact-string edit expected exactly one match; found ${matches}.`);
+				after = before.replace(input.oldText, input.newText);
+			}
+			let state: WorkspaceState;
+			if (kind === "scenario") state = await workspace.updateScenarioSource({ scenarioId: input.id, source: after });
+			else if (kind === "edge-function") state = await workspace.updateEdgeFunctionSource({ edgeFunctionId: input.id, source: after });
+			else {
+				const design = bound.state.design;
+				if (!design) throw new Error("Open a project before writing a Function body.");
+				const functions = (design.functions ?? []).map((fn) => fn.id === input.id ? { ...fn, body: after } : fn);
+				state = await workspace.applyAssistantDesign(
+					{ ...design, functions },
+					turnIds.get(conversationId),
+				);
+			}
+			if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code write completed.");
+			const appliedSource = kind === "scenario"
+				? state.scenarios.find(({ id }) => id === input.id)?.source
+				: kind === "edge-function"
+					? state.edgeFunctions.find(({ id }) => id === input.id)?.source
+					: state.design?.functions?.find(({ id }) => id === input.id)?.body;
+			if (appliedSource !== after) throw new Error("The code write was not saved to the bound project.");
+			const snapshot = getLastAppliedSandbox(state.sandbox);
+			const diagnostics = kind === "function-body" ? [] : getAssistantCodeDiagnostics(
+				kind,
+				after,
+				snapshot?.tables ?? [],
+				snapshot?.enumTypes ?? [],
+				snapshot?.functions ?? [],
+			);
+			const details = {
+				action: input.action,
+				kind,
+				id: input.id,
+				name: itemName,
+				before,
+				after,
+				diagnostics,
+				diagnosticsNote: kind === "function-body" ? "TypeScript diagnostics do not apply to SQL Function bodies." : undefined,
+			};
+			return { content: [{ type: "text", text: JSON.stringify({ ...details, before: undefined, after: undefined }) }], details };
 		},
 	},
 ];

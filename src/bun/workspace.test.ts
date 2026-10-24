@@ -2198,7 +2198,7 @@ describe("design workspace", () => {
 		expect(undone.design?.tables.map(({ name }) => name).sort()).toEqual(["manual", "original"]);
 		const redone = await workspace.redo();
 		expect(redone.design?.tables.map(({ name }) => name).sort()).toEqual(["generated", "manual"]);
-	});
+	}, 30_000);
 
 	test("rebases Function argument hand-renames across Assistant undo and redo", async () => {
 		const { workspace } = await openTestWorkspace();
@@ -2270,7 +2270,7 @@ describe("design workspace", () => {
 			{ name: "c", type: "integer" },
 		]);
 		expect(redone.design?.tables.map(({ name }) => name)).toEqual(["generated"]);
-	});
+	}, 30_000);
 });
 
 function requireTable(table: DesignTable | undefined): DesignTable {

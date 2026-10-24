@@ -27,6 +27,7 @@ const allSupabaseTypeDeclarations = {
 };
 
 type Props = {
+	initialSelectedId?: string | null;
 	scenarios: Scenario[];
 	appliedTables: SandboxAppliedTable[];
 	appliedEnums: DesignEnumType[];
@@ -48,6 +49,7 @@ type Props = {
 };
 /** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
+	initialSelectedId,
 	scenarios,
 	appliedTables,
 	appliedEnums,
@@ -67,7 +69,7 @@ export function ScenarioView({
 	onRun,
 	onStop,
 }: Props) {
-	const [selectedId, setSelectedId] = useState<string | null>(scenarios[0]?.id ?? null);
+	const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? scenarios[0]?.id ?? null);
 	const [newName, setNewName] = useState("");
 	const [nameDraft, setNameDraft] = useState("");
 	const [sourceDraft, setSourceDraft] = useState(scenarios[0]?.source ?? "");
@@ -87,6 +89,9 @@ export function ScenarioView({
 	);
 
 	useEffect(() => {
+		if (initialSelectedId) setSelectedId(initialSelectedId);
+	}, [initialSelectedId]);
+	useEffect(() => {
 		if (!selected || !scenarios.some((scenario) => scenario.id === selectedId)) {
 			setSelectedId(scenarios[0]?.id ?? null);
 		}
@@ -97,7 +102,7 @@ export function ScenarioView({
 	}, [selected?.id, selected?.name]);
 	useEffect(() => {
 		setSourceDraft(selected?.source ?? "");
-	}, [selected?.id]);
+	}, [selected?.id, selected?.source]);
 	useEffect(() => {
 		if (!selected || sourceDraft === selected.source) {
 			if (pendingSourceSave.current?.scenarioId === selected?.id) {

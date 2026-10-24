@@ -8,6 +8,12 @@ The model picker uses pi-ai's Anthropic catalog. Model and thinking selections p
 
 The accepted DDL subset is documented in [ADR 0003](adr/0003-assistant-writes-the-design-through-sql.md) and the parent Assistant spec, issue #68. Translation deliberately rejects constructs that the design model cannot represent. Tool calls and results are shown in collapsible conversation cards; applied changes are linked to the affected design tables.
 
+## Code tools
+
+`manage_code` creates, renames, and removes Scenarios and Edge functions, and writes or exact-string-edits their TypeScript source or a design Function body. Exact-string edits must find one occurrence; zero or multiple matches return the observed count without saving. Source writes use the existing workspace actions, preserving autosave, save-failure state, and stale-save protection.
+
+After every Scenario or Edge function source write, the Bun runtime checks the source with the TypeScript compiler API using the shared declaration generators and module-path declarations from `src/shared/scenario-types.ts` and `src/shared/edge-function-types.ts`, the same definitions used by Monaco. Function bodies are SQL and return an explicit note that TypeScript diagnostics do not apply. Function-body writes use the Assistant design-history path, so they undo and redo together with other design changes in that turn. The transcript displays source changes as diff cards linked to the corresponding editor. TypeScript standard-library declarations and the referenced Supabase package declarations are copied beside the bundled main process; runtime diagnostics resolve them there in packaged apps and from the repository root in development/tests. The documented Sandbox API subset in [sandbox-api.md](sandbox-api.md) is included in the fixed system prompt; prompt text and tool definitions do not vary by request.
+
 ## Credential verification
 
 The Windows credential fallback is platform-specific and cannot be exercised by the Linux test suite. Before release, build and run the packaged Windows application and verify both paths: with Bun's secret store available, save/restart/read/remove an Anthropic key and confirm no key appears in SQLite; with the store unavailable, repeat and confirm the adjacent fallback file contains only DPAPI ciphertext, can be decrypted only by the same Windows user, and is removed on credential deletion. Do not use a live provider call for this storage check.

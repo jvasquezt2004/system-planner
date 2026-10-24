@@ -27,6 +27,7 @@ const allSupabaseTypeDeclarations = {
 	...phoenixTypeDeclarations,
 };
 type Props = {
+	initialSelectedId?: string | null;
 	edgeFunctions: EdgeFunction[];
 	save: EdgeFunctionSaveState;
 	appliedTables: SandboxAppliedTable[];
@@ -42,10 +43,11 @@ type Props = {
 
 /** Manage project Edge functions as saved source, separate from design history. */
 export function EdgeFunctionsView({
+	initialSelectedId,
 	edgeFunctions, save, appliedTables, appliedEnums, appliedFunctions,
 	onCreate, onRename, onRemove, onUpdateSource,
 }: Props) {
-	const [selectedId, setSelectedId] = useState<string | null>(edgeFunctions[0]?.id ?? null);
+	const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? edgeFunctions[0]?.id ?? null);
 	const [newName, setNewName] = useState("");
 	const [nameDraft, setNameDraft] = useState("");
 	const [sourceDraft, setSourceDraft] = useState("");
@@ -55,12 +57,15 @@ export function EdgeFunctionsView({
 	const monacoApi = useRef<Monaco | null>(null);
 	const monacoEditor = useRef<Parameters<OnMount>[0] | null>(null);
 	const selected = edgeFunctions.find((item) => item.id === selectedId) ?? null;
+	useEffect(() => {
+		if (initialSelectedId) setSelectedId(initialSelectedId);
+	}, [initialSelectedId]);
 
 	useEffect(() => {
 		if (!selected) setSelectedId(edgeFunctions[0]?.id ?? null);
 	}, [edgeFunctions, selected]);
 	useEffect(() => setNameDraft(selected?.name ?? ""), [selected?.id, selected?.name]);
-	useEffect(() => setSourceDraft(selected?.source ?? ""), [selected?.id]);
+	useEffect(() => setSourceDraft(selected?.source ?? ""), [selected?.id, selected?.source]);
 	useEffect(() => {
 		if (!selected || sourceDraft === selected.source) {
 			if (pendingSave.current?.id === selected?.id) pendingSave.current = null;

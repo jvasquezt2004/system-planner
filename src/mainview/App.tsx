@@ -66,6 +66,7 @@ type RunAllOperation = { projectId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
 type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
+type AssistantCodeTarget = { kind: "scenario" | "edge-function" | "function-body"; id: string };
 
 function App() {
 	const [state, setState] = useState<WorkspaceState | null>(null);
@@ -76,6 +77,7 @@ function App() {
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
 	const [relating, setRelating] = useState(false);
 	const [view, setView] = useState<WorkspaceView>("canvas");
+	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
 	const [pendingRemoval, setPendingRemoval] = useState<{
 		target: RemovalTarget;
@@ -631,6 +633,7 @@ function App() {
 							<FunctionsView
 								key={state.project.id}
 								functions={state.design.functions ?? []}
+								initialSelectedId={assistantCodeTarget?.kind === "function-body" ? assistantCodeTarget.id : null}
 								busy={busy}
 								onSave={(functions) => void run(() => workspaceClient.updateFunctions(functions))}
 								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId })}
@@ -657,6 +660,7 @@ function App() {
 							<ScenarioView
 								key={state.project.id}
 								scenarios={state.scenarios}
+								initialSelectedId={assistantCodeTarget?.kind === "scenario" ? assistantCodeTarget.id : null}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
 								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
 								save={state.scenarioSave}
@@ -692,6 +696,7 @@ function App() {
 							<EdgeFunctionsView
 								key={state.project.id}
 								edgeFunctions={state.edgeFunctions}
+								initialSelectedId={assistantCodeTarget?.kind === "edge-function" ? assistantCodeTarget.id : null}
 								save={state.edgeFunctionSave}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
 								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
@@ -722,6 +727,10 @@ function App() {
 								event.currentTarget.setPointerCapture(event.pointerId);
 							}}
 							onSelectTable={(tableId) => { setView("canvas"); handleSelectTable(tableId); }}
+							onSelectCodeSource={(kind, id) => {
+								setAssistantCodeTarget({ kind, id });
+								setView(kind === "scenario" ? "scenarios" : kind === "edge-function" ? "edge-functions" : "functions");
+							}}
 						/>
 					)}
 					</>
