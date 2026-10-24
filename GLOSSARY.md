@@ -176,3 +176,31 @@ _Avoid_: Unique columns (which suggests each is independently unique)
 The configured PostgreSQL action for updating or deleting a row referenced by a
 foreign key.
 _Avoid_: Cascade (unless the action is specifically CASCADE)
+
+## Assistant
+
+**Assistant**:
+The AI agent inside a project that reads and changes the design, Scenarios,
+and Edge functions on the designer's behalf. Its changes are ordinary project
+changes the designer can keep refining by hand.
+_Avoid_: Copilot, bot, AI
+
+**Conversation**:
+One saved exchange between the designer and the Assistant, belonging to
+exactly one project. A project may hold many conversations.
+_Avoid_: Chat thread, session
+
+**Assistant turn**:
+One designer message and everything the Assistant does in response to it. Its
+project changes can be reverted together.
+_Avoid_: Step, run (reserved for Scenario run)
+
+**Provider connection**:
+One configured way of reaching a model vendor, either an API key or an account
+sign-in. The same vendor reached by key and by sign-in is two connections.
+_Avoid_: Provider (ambiguous between vendor and credential), account
+
+**Model**:
+A language model offered through a provider connection and chosen for a
+conversation.
+_Avoid_: Engine, LLM
