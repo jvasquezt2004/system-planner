@@ -32,14 +32,14 @@ describe("Assistant conversations", () => {
 		try {
 			store.saveProviderConnection("anthropic", "anthropic-api-key");
 			expect(store.listProviderConnections()).toEqual([
-				expect.objectContaining({ id: "anthropic", auth_method: "api-key", credential_name: "anthropic-api-key" }),
+				expect.objectContaining({ provider_id: "anthropic", auth_method: "api-key", credential_name: "anthropic-api-key" }),
 			]);
-			expect(Object.keys(store.listProviderConnections()[0] ?? {}).sort()).toEqual(["auth_method", "created_at", "credential_name", "id", "updated_at"]);
+			expect(Object.keys(store.listProviderConnections()[0] ?? {}).sort()).toEqual(["auth_method", "created_at", "credential_name", "id", "provider_id", "updated_at"]);
 			const conversation = store.createConversation(projectId, { role: "user", payload: { role: "user", content: "Add authors" } });
 			expect(store.updateConversationSelection(conversation.id, "claude-sonnet-4-6", "high")).toBe(true);
-			expect(store.getDefaultSelection()).toEqual({ model: null, thinking: null });
+			expect(store.getDefaultSelection()).toEqual({ connectionId: null, model: null, thinking: null });
 			store.updateDefaultSelection("claude-haiku-4-5", "low");
-			expect(store.getDefaultSelection()).toEqual({ model: "claude-haiku-4-5", thinking: "low" });
+			expect(store.getDefaultSelection()).toEqual({ connectionId: null, model: "claude-haiku-4-5", thinking: "low" });
 			expect(store.observeProjectRevision(conversation.id, 4)).toBeNull();
 			expect(store.observeProjectRevision(conversation.id, 4)).toBe(4);
 			expect(store.observeProjectRevision(conversation.id, 5)).toBe(4);

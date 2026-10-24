@@ -1,8 +1,14 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { ChevronLeft, ChevronRight, MessageSquare, MoreHorizontal, Plus, Send, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import type { AssistantThinkingLevel } from "../shared/assistant";
-import type { AssistantConversation, AssistantConversationRecord, AssistantMessage } from "../shared/assistant";
+import type {
+	AssistantConnectionStatus,
+	AssistantConversation,
+	AssistantConversationRecord,
+	AssistantMessage,
+	AssistantModel,
+	AssistantThinkingLevel,
+} from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
@@ -14,9 +20,12 @@ type AssistantApi = Pick<
 	| "renameAssistantConversation"
 	| "deleteAssistantConversation"
 	| "listAssistantModels"
-	| "getAnthropicConnectionStatus"
-	| "setAnthropicApiKey"
-	| "removeAnthropicApiKey"
+	| "listAssistantConnections"
+	| "setAssistantApiKey"
+	| "removeAssistantConnection"
+	| "startAssistantOAuthLogin"
+	| "getClaudeOptIn"
+	| "setClaudeOptIn"
 	| "sendAssistantMessage"
 	| "stopAssistantTurn"
 	| "continueAssistantTurn"
@@ -25,9 +34,8 @@ type AssistantApi = Pick<
 	| "confirmAssistantDdlDrop"
 	| "rejectAssistantDdlDrop"
 	| "subscribeAssistantEvents"
+	| "subscribeAssistantOAuthEvents"
 >;
-
-type AssistantModel = { id: string; name: string; reasoning: boolean; contextWindow: number };
 type StreamEnvelope = { conversationId: string; event: unknown };
 
 export function AssistantSidebar({
@@ -55,15 +63,22 @@ export function AssistantSidebar({
 	const [activeId, setActiveId] = useState("");
 	const [messages, setMessages] = useState<AssistantMessage[]>([]);
 	const [models, setModels] = useState<AssistantModel[]>([]);
+	const [connections, setConnections] = useState<AssistantConnectionStatus[]>([]);
+	const [selectedConnectionId, setSelectedConnectionId] = useState("");
+	const [claudeOptIn, setClaudeOptIn] = useState(false);
+	const [deviceCode, setDeviceCode] = useState<{ providerId: string; userCode: string; verificationUri: string } | null>(null);
+	const [oAuthProgress, setOAuthProgress] = useState<{ providerId: string; message: string } | null>(null);
+	const [cacheWarning, setCacheWarning] = useState<string | null>(null);
+	const [expandedSettings, setExpandedSettings] = useState(false);
+	const [apiKeys, setApiKeys] = useState<Record<string, string>>({ anthropic: "", openai: "", google: "" });
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState<AssistantThinkingLevel>("medium");
 	const [text, setText] = useState("");
-	const [key, setKey] = useState("");
 	const [error, setError] = useState("");
 	const [pending, setPending] = useState(false);
-	const [connection, setConnection] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
 	const [turnPaused, setTurnPaused] = useState(false);
 	const [confirmationRequired, setConfirmationRequired] = useState(false);
+	const initialConversationModelRef = useRef<string | null>(null);
 	const contextRef = useRef({ projectId, activeId, generation: 0 });
 	if (contextRef.current.projectId !== projectId || contextRef.current.activeId !== activeId) {
 		contextRef.current = {
@@ -85,15 +100,19 @@ export function AssistantSidebar({
 		Promise.all([
 			api.listAssistantConversations(projectId),
 			api.listAssistantModels(),
-			api.getAnthropicConnectionStatus(),
+			api.listAssistantConnections(),
+			api.getClaudeOptIn(),
 		])
-			.then(([items, available, status]) => {
+			.then(([items, available, connectionList, optIn]) => {
 				if (!live) return;
 				const recent = [...items].sort((a, b) => b.updated_at - a.updated_at);
 				setConversations(recent);
-				setModels(available);
-				setConnection(status);
-				if (available[0]) setModel(available[0].id);
+				setConnections(connectionList);
+				setClaudeOptIn(optIn);
+				if (available[0]) {
+					setModel(available[0].id);
+					setSelectedConnectionId(available[0].connectionId);
+				}
 				if (recent[0]) setActiveId(recent[0].id);
 			})
 			.catch((cause: unknown) => {
@@ -120,8 +139,13 @@ export function AssistantSidebar({
 			.then((conversation: AssistantConversationRecord | null) => {
 				if (live && conversation) {
 					setMessages(conversation.messages);
-					if (conversation.model) setModel(conversation.model);
+					if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
+					if (conversation.model) {
+						setModel(conversation.model);
+						initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
+					}
 					if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
+					setCacheWarning(null);
 				}
 			})
 			.catch((cause: unknown) => {
@@ -160,6 +184,17 @@ export function AssistantSidebar({
 			}]);
 		});
 	}, [activeId, api]);
+	useEffect(() => {
+		return api.subscribeAssistantOAuthEvents(({ providerId, event }) => {
+			if (!event || typeof event !== "object") return;
+			const record = event as { type?: string; userCode?: string; verificationUri?: string; message?: string };
+			if (record.type === "device_code" && record.userCode && record.verificationUri) {
+				setDeviceCode({ providerId, userCode: record.userCode, verificationUri: record.verificationUri });
+			} else if (record.type === "progress" && record.message) {
+				setOAuthProgress({ providerId, message: record.message });
+			}
+		});
+	}, [api]);
 
 	useEffect(() => {
 		scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -169,9 +204,13 @@ export function AssistantSidebar({
 		setError("");
 		try {
 			const conversation = await api.createAssistantConversation(projectId);
-			if (conversation.model) setModel(conversation.model);
+			if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
+			if (conversation.model) {
+				setModel(conversation.model);
+				initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
+			}
 			if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
-			setConversations((current) => [conversation, ...current]);
+			setCacheWarning(null);
 			setActiveId(conversation.id);
 		} catch (cause) {
 			setError(String(cause));
@@ -204,12 +243,82 @@ export function AssistantSidebar({
 			setError(String(cause));
 		}
 	}
-	function persistSelection(nextModel: string, nextThinking: AssistantThinkingLevel) {
+	function persistSelection(nextConnectionId: string | null, nextModel: string, nextThinking: AssistantThinkingLevel) {
+		setSelectedConnectionId(nextConnectionId ?? "");
 		setModel(nextModel);
 		setThinking(nextThinking);
+		const key = `${nextConnectionId ?? ""}:${nextModel}`;
+		if (activeId && messages.length > 0 && initialConversationModelRef.current && key !== initialConversationModelRef.current) {
+			setCacheWarning("Switching models mid-conversation means the next request won't hit the prompt cache.");
+		} else {
+			setCacheWarning(null);
+		}
 		if (activeId) {
-			void api.updateAssistantConversationSelection(activeId, nextModel, nextThinking)
+			void api.updateAssistantConversationSelection(activeId, nextConnectionId, nextModel, nextThinking)
 				.catch((cause: unknown) => setError(String(cause)));
+		}
+	}
+
+	async function reloadConnections() {
+		try {
+			const [available, connectionList] = await Promise.all([
+				api.listAssistantModels(),
+				api.listAssistantConnections(),
+			]);
+			setModels(available);
+			setConnections(connectionList);
+		} catch (cause) {
+			setError(String(cause));
+		}
+	}
+
+	async function saveApiKey(providerId: string) {
+		const apiKey = apiKeys[providerId]?.trim();
+		if (!apiKey) return;
+		try {
+			await api.setAssistantApiKey(providerId, apiKey);
+			setApiKeys((current) => ({ ...current, [providerId]: "" }));
+			setError("");
+			await reloadConnections();
+		} catch (cause) {
+			setError(String(cause));
+		}
+	}
+
+	async function removeConnection(connectionId: string) {
+		try {
+			await api.removeAssistantConnection(connectionId);
+			setError("");
+			await reloadConnections();
+		} catch (cause) {
+			setError(String(cause));
+		}
+	}
+
+	async function startOAuthLogin(providerId: string) {
+		setError("");
+		setOAuthProgress({ providerId, message: "Connecting..." });
+		try {
+			const result = await api.startAssistantOAuthLogin(providerId);
+			if (!result.success && result.error) {
+				setError(result.error);
+			}
+			await reloadConnections();
+		} catch (cause) {
+			setError(String(cause));
+		} finally {
+			setOAuthProgress(null);
+			setDeviceCode(null);
+		}
+	}
+
+	async function toggleClaudeOptIn(enabled: boolean) {
+		try {
+			await api.setClaudeOptIn(enabled);
+			setClaudeOptIn(enabled);
+			await reloadConnections();
+		} catch (cause) {
+			setError(String(cause));
 		}
 	}
 
@@ -286,7 +395,7 @@ export function AssistantSidebar({
 		setPending(true);
 		setError("");
 		try {
-			const saved = await api.sendAssistantMessage(activeId, message, model, thinking) as AssistantConversationRecord | null;
+			const saved = await api.sendAssistantMessage(activeId, message, model, thinking, selectedConnectionId || undefined) as AssistantConversationRecord | null;
 			if (contextRef.current.generation !== requestContext.generation) return;
 			if (saved) {
 				setMessages(saved.messages);
@@ -299,26 +408,28 @@ export function AssistantSidebar({
 		}
 	}
 
-	async function saveApiKey() {
-		try {
-			await api.setAnthropicApiKey(key);
-			setKey("");
-			setError("");
-			setConnection(await api.getAnthropicConnectionStatus());
-		} catch (cause) {
-			setError(String(cause));
-		}
-	}
+	const selectedConnection = connections.find((c) => c.id === selectedConnectionId);
+	const isConnectionRemoved = Boolean(selectedConnectionId && !selectedConnection && connections.length > 0);
 
-	async function removeApiKey() {
-		try {
-			await api.removeAnthropicApiKey();
-			setConnection(await api.getAnthropicConnectionStatus());
-			setError("");
-		} catch (cause) {
-			setError(String(cause));
-		}
-	}
+	const connectionGroups = connections.map((conn) => {
+		const connModels = models.filter((m) => m.connectionId === conn.id);
+		return {
+			...conn,
+			models: connModels,
+		};
+	}).filter((g) => g.models.length > 0);
+
+	const pickerGroups = connectionGroups.length > 0 ? connectionGroups : Array.from(
+		new Set(models.map((m) => m.provider)),
+	).map((providerId) => ({
+		id: providerId,
+		providerId,
+		name: providerId === "anthropic" ? "Anthropic" : providerId === "openai" ? "OpenAI" : providerId === "google" ? "Google Gemini" : providerId,
+		authMethod: "api-key" as const,
+		connected: false,
+		error: null,
+		models: models.filter((m) => m.provider === providerId),
+	}));
 
 	if (collapsed) {
 		return (
@@ -373,11 +484,77 @@ export function AssistantSidebar({
 			</div>
 			{error && <div role="alert" className="px-3 py-2 text-xs text-proof-red">{error}</div>}
 			<div className="shrink-0 border-t border-ink/15 p-3">
+				{cacheWarning && (
+					<div role="status" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs text-ink-2">
+						{cacheWarning}
+					</div>
+				)}
+				{deviceCode && (
+					<div className="mb-2 rounded border border-ink/25 bg-surface p-2 text-xs">
+						<p className="font-semibold">Sign in with device code</p>
+						<p className="mt-1">Code: <strong className="font-mono text-sm tracking-wider">{deviceCode.userCode}</strong></p>
+						<p className="mt-1 text-ink-3">
+							Verification URL:{" "}
+							<a href={deviceCode.verificationUri} target="_blank" rel="noreferrer" className="underline underline-offset-2">
+								{deviceCode.verificationUri}
+							</a>
+						</p>
+					</div>
+				)}
+				{oAuthProgress && (
+					<div className="mb-2 rounded border border-ink/20 p-2 text-xs text-ink-2">
+						{oAuthProgress.message}
+					</div>
+				)}
+				{isConnectionRemoved && (
+					<div role="alert" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs">
+						The provider connection for this conversation was removed. Please select a connection and model to continue.
+					</div>
+				)}
+				{selectedConnection?.error && (
+					<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
+						<span className="min-w-0 flex-1">{selectedConnection.name}: {selectedConnection.error}</span>
+						{selectedConnection.authMethod === "oauth" ? (
+							<button
+								onClick={() => void startOAuthLogin(selectedConnection.providerId)}
+								className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink"
+							>
+								Re-sign in
+							</button>
+						) : (
+							<button
+								onClick={() => setExpandedSettings(true)}
+								className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink"
+							>
+								Update key
+							</button>
+						)}
+					</div>
+				)}
 				<div className="mb-2 flex gap-2">
-					<select aria-label="Model" value={model} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(event.target.value, thinking)} className="min-w-0 flex-1 bg-transparent text-xs">
-						{models.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+					<select
+						aria-label="Model"
+						value={`${selectedConnectionId}::${model}`}
+						onChange={(event: ChangeEvent<HTMLSelectElement>) => {
+							const [connId, modelId] = event.target.value.split("::");
+							persistSelection(connId ?? null, modelId ?? "", thinking);
+						}}
+						className="min-w-0 flex-1 bg-transparent text-xs"
+					>
+						{pickerGroups.map((group) => (
+							<optgroup
+								key={group.id}
+								label={group.error ? `${group.name} (${group.error})` : group.name}
+							>
+								{group.models.map((item) => (
+									<option key={`${group.id}::${item.id}`} value={`${group.id}::${item.id}`}>
+										{item.name}
+									</option>
+								))}
+							</optgroup>
+						))}
 					</select>
-					<select aria-label="Thinking level" value={thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(model, event.target.value as AssistantThinkingLevel)} className="bg-transparent text-xs">
+					<select aria-label="Thinking level" value={thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(selectedConnectionId, model, event.target.value as AssistantThinkingLevel)} className="bg-transparent text-xs">
 						<option value="off">Off</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
 					</select>
 				</div>
@@ -404,20 +581,162 @@ export function AssistantSidebar({
 					) : turnPaused ? (
 						<button aria-label="Continue assistant response" onClick={() => void continueTurn()} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Continue</button>
 					) : (
-						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
+						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
 							<Send className="size-4" />
 						</button>
 					)}
 				</div>
-				<details className="mt-2">
-					<summary className="cursor-pointer text-[11px] text-ink-3">Anthropic API key · {connection.connected ? "Connected" : "Not connected"}</summary>
-					{connection.error && <p role="alert" className="mt-2 text-[11px] text-proof-red">{connection.error}</p>}
-					<div className="mt-2 flex gap-2">
-						<Input type="password" value={key} onChange={(event: ChangeEvent<HTMLInputElement>) => setKey(event.target.value)} placeholder={connection.connected ? "Replace API key" : "Paste API key"} autoComplete="off" />
-						<button onClick={() => void saveApiKey()} disabled={!key} className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40">Save</button>
+				<details className="mt-2" open={expandedSettings} onToggle={(event) => setExpandedSettings((event.target as HTMLDetailsElement).open)}>
+					<summary className="cursor-pointer text-[11px] text-ink-3">
+						Provider connections · {connections.filter((c) => c.connected).length} connected
+					</summary>
+					<div className="mt-2 space-y-3">
+						{/* Anthropic / Claude connection */}
+						<div className="rounded border border-ink/10 p-2 text-xs">
+							<div className="flex items-center justify-between font-medium">
+								<span>Anthropic / Claude</span>
+								<span className="text-[11px] text-ink-3">
+									{connections.find((c) => c.providerId === "anthropic")?.connected ? "Connected" : "Not connected"}
+								</span>
+							</div>
+							{connections.find((c) => c.providerId === "anthropic")?.error && (
+								<p role="alert" className="mt-1 text-[11px] text-proof-red">
+									{connections.find((c) => c.providerId === "anthropic")?.error}
+								</p>
+							)}
+							<div className="mt-2 border-t border-ink/10 pt-2">
+								<label className="flex items-start gap-2 text-xs">
+									<input
+										type="checkbox"
+										checked={claudeOptIn}
+										onChange={(event) => void toggleClaudeOptIn(event.target.checked)}
+										className="mt-0.5"
+									/>
+									<div>
+										<span className="font-medium">Enable Claude account sign-in (Pro/Max)</span>
+										<p className="mt-0.5 text-[10px] text-ink-3">
+											Anthropic's consumer terms restrict using a Pro/Max sign-in in third-party apps. Use at your own risk.
+										</p>
+									</div>
+								</label>
+								{claudeOptIn && (
+									<div className="mt-2 flex gap-2">
+										<button
+											onClick={() => void startOAuthLogin("anthropic")}
+											className="rounded border border-ink/20 px-2 py-1 text-xs hover:bg-ink/5"
+										>
+											{connections.find((c) => c.providerId === "anthropic" && c.authMethod === "oauth")?.error ? "Re-sign in with Claude" : "Sign in with Claude"}
+										</button>
+									</div>
+								)}
+							</div>
+							<div className="mt-2 border-t border-ink/10 pt-2">
+								<div className="flex gap-2">
+									<Input
+										type="password"
+										value={apiKeys.anthropic ?? ""}
+										onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, anthropic: event.target.value }))}
+										placeholder="Paste Anthropic API key"
+										autoComplete="off"
+									/>
+									<button
+										onClick={() => void saveApiKey("anthropic")}
+										disabled={!apiKeys.anthropic}
+										className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
+									>
+										Save
+									</button>
+								</div>
+							</div>
+							{connections.find((c) => c.providerId === "anthropic")?.connected && (
+								<button onClick={() => void removeConnection("anthropic")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
+									Remove connection
+								</button>
+							)}
+						</div>
+
+						{/* OpenAI / ChatGPT connection */}
+						<div className="rounded border border-ink/10 p-2 text-xs">
+							<div className="flex items-center justify-between font-medium">
+								<span>OpenAI / ChatGPT</span>
+								<span className="text-[11px] text-ink-3">
+									{connections.find((c) => c.providerId === "openai")?.connected ? "Connected" : "Not connected"}
+								</span>
+							</div>
+							{connections.find((c) => c.providerId === "openai")?.error && (
+								<p role="alert" className="mt-1 text-[11px] text-proof-red">
+									{connections.find((c) => c.providerId === "openai")?.error}
+								</p>
+							)}
+							<div className="mt-2 flex gap-2">
+								<button
+									onClick={() => void startOAuthLogin("openai")}
+									className="rounded border border-ink/20 px-2 py-1 text-xs hover:bg-ink/5"
+								>
+									{connections.find((c) => c.providerId === "openai" && c.authMethod === "oauth")?.error ? "Re-sign in with ChatGPT" : "Sign in with ChatGPT"}
+								</button>
+							</div>
+							<div className="mt-2 border-t border-ink/10 pt-2 flex gap-2">
+								<Input
+									type="password"
+									value={apiKeys.openai ?? ""}
+									onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, openai: event.target.value }))}
+									placeholder="Paste OpenAI API key"
+									autoComplete="off"
+								/>
+								<button
+									onClick={() => void saveApiKey("openai")}
+									disabled={!apiKeys.openai}
+									className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
+								>
+									Save
+								</button>
+							</div>
+							{connections.find((c) => c.providerId === "openai")?.connected && (
+								<button onClick={() => void removeConnection("openai")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
+									Remove connection
+								</button>
+							)}
+						</div>
+
+						{/* Google Gemini connection */}
+						<div className="rounded border border-ink/10 p-2 text-xs">
+							<div className="flex items-center justify-between font-medium">
+								<span>Google Gemini</span>
+								<span className="text-[11px] text-ink-3">
+									{connections.find((c) => c.providerId === "google")?.connected ? "Connected" : "Not connected"}
+								</span>
+							</div>
+							{connections.find((c) => c.providerId === "google")?.error && (
+								<p role="alert" className="mt-1 text-[11px] text-proof-red">
+									{connections.find((c) => c.providerId === "google")?.error}
+								</p>
+							)}
+							<div className="mt-2 flex gap-2">
+								<Input
+									type="password"
+									value={apiKeys.google ?? ""}
+									onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, google: event.target.value }))}
+									placeholder="Paste Google Gemini API key"
+									autoComplete="off"
+								/>
+								<button
+									onClick={() => void saveApiKey("google")}
+									disabled={!apiKeys.google}
+									className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
+								>
+									Save
+								</button>
+							</div>
+							{connections.find((c) => c.providerId === "google")?.connected && (
+								<button onClick={() => void removeConnection("google")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
+									Remove connection
+								</button>
+							)}
+							<p className="mt-1.5 text-[10px] text-ink-3">Google account sign-in is not offered. Gemini connections require an API key.</p>
+						</div>
 					</div>
-					{connection.connected && <button onClick={() => void removeApiKey()} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">Remove connection</button>}
-					<p className="mt-1 text-[10px] text-ink-3">Stored in the operating-system credential service, never in conversation content.</p>
+					<p className="mt-2 text-[10px] text-ink-3">Stored in the operating-system credential service, never in conversation content or SQLite.</p>
 				</details>
 			</div>
 		</aside>

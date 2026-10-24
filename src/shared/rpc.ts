@@ -1,5 +1,11 @@
 import type { ElectrobunRPCSchema } from "electrobun/rpc";
-import type { AssistantConversation, AssistantConversationRecord, AssistantThinkingLevel } from "./assistant";
+import type {
+	AssistantConnectionStatus,
+	AssistantConversation,
+	AssistantConversationRecord,
+	AssistantModel,
+	AssistantThinkingLevel,
+} from "./assistant";
 import type {
 	AddRelationshipAction,
 	CanvasPoint,
@@ -159,21 +165,25 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			createAssistantConversation: { params: { projectId: string }; response: AssistantConversation };
 			renameAssistantConversation: { params: { conversationId: string; title: string }; response: boolean };
 			deleteAssistantConversation: { params: { conversationId: string }; response: boolean };
-			listAssistantModels: { params: Record<string, never>; response: Array<{ id: string; name: string; reasoning: boolean; contextWindow: number }> };
-			getAnthropicConnectionStatus: { params: Record<string, never>; response: { connected: boolean; error: string | null } };
-			setAnthropicApiKey: { params: { apiKey: string }; response: void };
-			removeAnthropicApiKey: { params: Record<string, never>; response: void };
-			sendAssistantMessage: { params: { conversationId: string; text: string; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: unknown };
+			listAssistantModels: { params: Record<string, never>; response: AssistantModel[] };
+			listAssistantConnections: { params: Record<string, never>; response: AssistantConnectionStatus[] };
+			setAssistantApiKey: { params: { providerId: string; apiKey: string }; response: void };
+			removeAssistantConnection: { params: { connectionId: string }; response: void };
+			startAssistantOAuthLogin: { params: { providerId: string }; response: { success: boolean; error?: string } };
+			getClaudeOptIn: { params: Record<string, never>; response: boolean };
+			setClaudeOptIn: { params: { enabled: boolean }; response: void };
+			sendAssistantMessage: { params: { conversationId: string; text: string; modelId: string; thinkingLevel: AssistantThinkingLevel; connectionId?: string }; response: unknown };
 			stopAssistantTurn: { params: { conversationId: string }; response: void };
 			continueAssistantTurn: { params: { conversationId: string }; response: unknown };
 			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean; confirmationRequired: boolean } };
-			updateAssistantConversationSelection: { params: { conversationId: string; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
+			updateAssistantConversationSelection: { params: { conversationId: string; connectionId: string | null; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
 			confirmAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
 			rejectAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };
+			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
 	};
 	webview: {
@@ -182,6 +192,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
 			assistantEvent: { conversationId: string; event: unknown };
+			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
 	};
 }

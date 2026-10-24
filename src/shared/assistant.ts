@@ -1,9 +1,33 @@
+export type AssistantProviderId = "anthropic" | "openai" | "google";
+export type AssistantAuthMethod = "api-key" | "oauth";
+
 export type AssistantProviderConnection = {
-	id: "anthropic";
-	auth_method: "api-key";
-	credential_name: "anthropic-api-key";
+	id: string;
+	provider_id: AssistantProviderId | string;
+	auth_method: AssistantAuthMethod;
+	credential_name: string;
 	created_at: number;
 	updated_at: number;
+};
+
+export type AssistantConnectionStatus = {
+	id: string;
+	providerId: string;
+	name: string;
+	authMethod: AssistantAuthMethod;
+	connected: boolean;
+	error: string | null;
+	claudeOptIn?: boolean;
+};
+
+export type AssistantModel = {
+	id: string;
+	name: string;
+	provider: string;
+	connectionId: string;
+	connectionName: string;
+	reasoning: boolean;
+	contextWindow: number;
 };
 
 export type AssistantMessage = {
@@ -21,6 +45,7 @@ export type AssistantConversation = {
 	title: string;
 	created_at: number;
 	updated_at: number;
+	connection_id?: string | null;
 	provider?: string | null;
 	model?: string | null;
 	thinking?: string | null;

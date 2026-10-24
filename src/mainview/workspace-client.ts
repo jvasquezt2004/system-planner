@@ -39,6 +39,7 @@ import { errorMessage } from "../shared/error-message";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
 const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
+const assistantOAuthListeners = new Set<(event: { providerId: string; event: unknown }) => void>();
 let latestState: WorkspaceState | null = null;
 
 const pendingSqlExports = new Map<
@@ -63,6 +64,9 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 			},
 			assistantEvent({ conversationId, event }) {
 				for (const listener of assistantListeners) listener({ conversationId, event });
+			},
+			assistantOAuthEvent({ providerId, event }) {
+				for (const listener of assistantOAuthListeners) listener({ providerId, event });
 			},
 		},
 	},
@@ -240,20 +244,33 @@ export const workspaceClient = {
 	listAssistantModels() {
 		return rpc.request.listAssistantModels({});
 	},
-	setAnthropicApiKey(apiKey: string) {
-		return rpc.request.setAnthropicApiKey({ apiKey });
-	},
-	sendAssistantMessage(conversationId: string, text: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
-		return rpc.request.sendAssistantMessage({ conversationId, text, modelId, thinkingLevel });
+	sendAssistantMessage(conversationId: string, text: string, modelId: string, thinkingLevel: AssistantThinkingLevel, connectionId?: string) {
+		return rpc.request.sendAssistantMessage({ conversationId, text, modelId, thinkingLevel, connectionId });
 	},
 	stopAssistantTurn(conversationId: string) {
 		return rpc.request.stopAssistantTurn({ conversationId });
 	},
-	getAnthropicConnectionStatus() {
-		return rpc.request.getAnthropicConnectionStatus({});
+	listAssistantConnections() {
+		return rpc.request.listAssistantConnections({});
 	},
-	removeAnthropicApiKey() {
-		return rpc.request.removeAnthropicApiKey({});
+	setAssistantApiKey(providerId: string, apiKey: string) {
+		return rpc.request.setAssistantApiKey({ providerId, apiKey });
+	},
+	removeAssistantConnection(connectionId: string) {
+		return rpc.request.removeAssistantConnection({ connectionId });
+	},
+	startAssistantOAuthLogin(providerId: string) {
+		return rpc.request.startAssistantOAuthLogin({ providerId });
+	},
+	getClaudeOptIn() {
+		return rpc.request.getClaudeOptIn({});
+	},
+	setClaudeOptIn(enabled: boolean) {
+		return rpc.request.setClaudeOptIn({ enabled });
+	},
+	subscribeAssistantOAuthEvents(listener: (event: { providerId: string; event: unknown }) => void) {
+		assistantOAuthListeners.add(listener);
+		return () => { assistantOAuthListeners.delete(listener); };
 	},
 	continueAssistantTurn(conversationId: string) {
 		return rpc.request.continueAssistantTurn({ conversationId });
@@ -261,8 +278,8 @@ export const workspaceClient = {
 	getAssistantTurnStatus(conversationId: string) {
 		return rpc.request.getAssistantTurnStatus({ conversationId });
 	},
-	updateAssistantConversationSelection(conversationId: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
-		return rpc.request.updateAssistantConversationSelection({ conversationId, modelId, thinkingLevel });
+	updateAssistantConversationSelection(conversationId: string, connectionId: string | null, modelId: string, thinkingLevel: AssistantThinkingLevel) {
+		return rpc.request.updateAssistantConversationSelection({ conversationId, connectionId, modelId, thinkingLevel });
 	},
 	confirmAssistantDdlDrop(conversationId: string, toolCallId: string) {
 		return rpc.request.confirmAssistantDdlDrop({ conversationId, toolCallId });

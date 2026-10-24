@@ -2,39 +2,115 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 const SERVICE = "com.dbplanner.schema-designer";
-const NAME_BY_PROVIDER: Readonly<Record<string, string>> = { anthropic: "anthropic-api-key" };
+
+export interface SecretStoreBackend {
+	get(query: { service: string; name: string }): Promise<string | null>;
+	set(query: { service: string; name: string; value: string }): Promise<unknown>;
+	delete(query: { service: string; name: string }): Promise<unknown>;
+}
+
+export interface BunSecretCredentialStoreOptions {
+	secrets?: SecretStoreBackend;
+	service?: string;
+}
+
+export function createInMemorySecretBackend(initial?: Record<string, string>): SecretStoreBackend & { map: Map<string, string> } {
+	const map = new Map<string, string>(Object.entries(initial ?? {}));
+	return {
+		map,
+		async get({ service, name }) {
+			return map.get(`${service}:${name}`) ?? map.get(name) ?? null;
+		},
+		async set({ service, name, value }) {
+			map.set(`${service}:${name}`, value);
+			map.set(name, value);
+		},
+		async delete({ service, name }) {
+			map.delete(`${service}:${name}`);
+			map.delete(name);
+		},
+	};
+}
+const NAME_BY_PROVIDER: Readonly<Record<string, string>> = {
+	anthropic: "anthropic-api-key",
+	openai: "openai-credential",
+	google: "google-credential",
+};
+
+function credentialSecretName(id: string): string {
+	if (id === "anthropic" || id === "anthropic-api-key") return "anthropic-api-key";
+	if (id.startsWith("connection-")) return id;
+	return `connection-${id}`;
+}
 const PROTECT_SCRIPT = "$ErrorActionPreference='Stop'; $plain=[Console]::In.ReadToEnd(); $secure=ConvertTo-SecureString -String $plain -AsPlainText -Force; [Console]::Out.Write((ConvertFrom-SecureString -SecureString $secure))";
 const UNPROTECT_SCRIPT = "$ErrorActionPreference='Stop'; $cipher=[Console]::In.ReadToEnd().Trim(); $secure=ConvertTo-SecureString -String $cipher; $ptr=[Runtime.InteropServices.Marshal]::SecureStringToBSTR($secure); try { [Console]::Out.Write([Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)) } finally { [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr) }";
 
 /** pi-ai credential storage uses Bun.secrets; DPAPI ciphertext is the Windows fallback. */
 export class BunSecretCredentialStore implements CredentialStore {
 	private readonly writes = new Map<string, Promise<unknown>>();
+	private readonly seenProviders = new Set<string>();
 	private readonly fallbackPath: string | null;
+	private readonly secretsBackend: SecretStoreBackend;
+	private readonly serviceName: string;
 
-	constructor(databasePath?: string) {
+	constructor(databasePath?: string, options?: BunSecretCredentialStoreOptions) {
 		this.fallbackPath = databasePath ? `${databasePath}.assistant-credentials.dpapi` : null;
+		this.secretsBackend = options?.secrets ?? Bun.secrets;
+		this.serviceName = options?.service ?? SERVICE;
 	}
 
 	async read(providerId: string, options?: { signal?: AbortSignal }): Promise<Credential | undefined> {
 		options?.signal?.throwIfAborted();
-		const name = NAME_BY_PROVIDER[providerId];
-		if (!name) return undefined;
-		let key: string | null;
+		const name = credentialSecretName(providerId);
+		let raw: string | null;
 		try {
-			key = await Bun.secrets.get({ service: SERVICE, name });
+			raw = await this.secretsBackend.get({ service: this.serviceName, name });
 		} catch (error) {
 			if (process.platform !== "win32") throw error;
-			key = null;
+			raw = null;
 		}
-		if (key) return { type: "api_key", key };
-		const encrypted = this.readFallback(name);
-		if (!encrypted) return undefined;
-		return { type: "api_key", key: await runDpapi(encrypted, false) };
+		if (!raw) {
+			const encrypted = this.readFallback(name);
+			if (encrypted) {
+				raw = await runDpapi(encrypted, false);
+			}
+		}
+		if (!raw) return undefined;
+		this.seenProviders.add(providerId);
+		try {
+			const parsed: unknown = JSON.parse(raw);
+			if (parsed && typeof parsed === "object" && "type" in parsed && (parsed.type === "api_key" || parsed.type === "oauth")) {
+				return parsed as Credential;
+			}
+		} catch {
+			// Plain legacy API key string
+		}
+		return { type: "api_key", key: raw };
 	}
 
 	async list(options?: { signal?: AbortSignal }): Promise<readonly CredentialInfo[]> {
 		options?.signal?.throwIfAborted();
-		return (await this.read("anthropic", options)) ? [{ providerId: "anthropic", type: "api_key" }] : [];
+		const providerCandidates = new Set(["anthropic", "openai", "google", ...this.seenProviders]);
+		if (this.fallbackPath && existsSync(this.fallbackPath)) {
+			try {
+				const parsed: unknown = JSON.parse(readFileSync(this.fallbackPath, "utf8"));
+				if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+					for (const key of Object.keys(parsed)) {
+						const matched = Object.entries(NAME_BY_PROVIDER).find(([, val]) => val === key)?.[0];
+						if (matched) providerCandidates.add(matched);
+						else if (key.endsWith("-credential")) providerCandidates.add(key.slice(0, -"-credential".length));
+					}
+				}
+			} catch {
+				// ignore malformed fallback listing
+			}
+		}
+		const results: CredentialInfo[] = [];
+		for (const providerId of providerCandidates) {
+			const credential = await this.read(providerId, options);
+			if (credential) results.push({ providerId, type: credential.type });
+		}
+		return results;
 	}
 
 	async modify(
@@ -42,23 +118,25 @@ export class BunSecretCredentialStore implements CredentialStore {
 		fn: (current: Credential | undefined) => Promise<Credential | undefined>,
 		options?: { signal?: AbortSignal },
 	): Promise<Credential | undefined> {
-		const name = NAME_BY_PROVIDER[providerId];
-		if (!name) throw new Error(`Unsupported credential provider: ${providerId}`);
+		const name = credentialSecretName(providerId);
 		const previous = this.writes.get(providerId) ?? Promise.resolve();
 		let result: Credential | undefined;
 		const write = previous.then(async () => {
 			options?.signal?.throwIfAborted();
 			const current = await this.read(providerId, options);
 			result = await fn(current);
-			if (result?.type === "api_key" && result.key) {
+			if (result !== undefined) {
+				const serialized = JSON.stringify(result);
 				try {
-					await Bun.secrets.set({ service: SERVICE, name, value: result.key });
+					await this.secretsBackend.set({ service: this.serviceName, name, value: serialized });
 					this.removeFallback(name);
+					this.seenProviders.add(providerId);
 				} catch (error) {
 					if (process.platform !== "win32" || !this.fallbackPath) throw error;
-					this.writeFallback(name, await runDpapi(result.key, true));
+					this.writeFallback(name, await runDpapi(serialized, true));
+					this.seenProviders.add(providerId);
 				}
-			} else if (result === undefined) {
+			} else {
 				result = current;
 			}
 		});
@@ -72,17 +150,17 @@ export class BunSecretCredentialStore implements CredentialStore {
 	}
 
 	async delete(providerId: string, options?: { signal?: AbortSignal }): Promise<void> {
-		const name = NAME_BY_PROVIDER[providerId];
-		if (!name) return;
+		const name = credentialSecretName(providerId);
 		const previous = this.writes.get(providerId) ?? Promise.resolve();
 		const write = previous.then(async () => {
 			options?.signal?.throwIfAborted();
 			try {
-				await Bun.secrets.delete({ service: SERVICE, name });
+				await this.secretsBackend.delete({ service: this.serviceName, name });
 			} catch (error) {
 				if (process.platform !== "win32" || !this.fallbackPath) throw error;
 			}
 			this.removeFallback(name);
+			this.seenProviders.delete(providerId);
 		});
 		this.writes.set(providerId, write);
 		try {
@@ -125,6 +203,34 @@ export class BunSecretCredentialStore implements CredentialStore {
 		if (stored.size === 0) unlinkSync(this.fallbackPath);
 		else writeFileSync(this.fallbackPath, JSON.stringify(Object.fromEntries(stored)), { mode: 0o600 });
 	}
+}
+
+/** Wraps a base CredentialStore so a connection's Models instance writes to connection-<connectionId>. */
+export function createConnectionScopedStore(
+	baseStore: CredentialStore,
+	connectionId: string,
+	expectedProviderId: string,
+): CredentialStore {
+	const secretId = `connection-${connectionId}`;
+	return {
+		async read(_providerId: string, options?: { signal?: AbortSignal }): Promise<Credential | undefined> {
+			return baseStore.read(secretId, options);
+		},
+		async list(options?: { signal?: AbortSignal }): Promise<readonly CredentialInfo[]> {
+			const cred = await baseStore.read(secretId, options);
+			return cred ? [{ providerId: expectedProviderId, type: cred.type }] : [];
+		},
+		async modify(
+			_providerId: string,
+			fn: (current: Credential | undefined) => Promise<Credential | undefined>,
+			options?: { signal?: AbortSignal },
+		): Promise<Credential | undefined> {
+			return baseStore.modify(secretId, fn, options);
+		},
+		async delete(_providerId: string, options?: { signal?: AbortSignal }): Promise<void> {
+			return baseStore.delete(secretId, options);
+		},
+	};
 }
 
 async function runDpapi(value: string, protect: boolean): Promise<string> {
