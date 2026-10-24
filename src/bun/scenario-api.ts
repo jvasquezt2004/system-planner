@@ -111,7 +111,7 @@ export async function handleSandboxApiRequest(
 				throw unsupported("endpoint");
 			}
 			const schemaTable = tables.find((candidate) => candidate.name === tableName);
-			if (!schemaTable) throw unsupported("unknown table");
+			if (!schemaTable) throw missingTable(tableName, tables);
 			const columns = new Set(schemaTable.columns.map((column) => column.name));
 			const select = url.searchParams.get("select");
 			const preferences = (request.headers.prefer ?? "").split(",").map((value) => value.trim()).filter(Boolean);
@@ -337,7 +337,7 @@ export async function handleSandboxApiRequest(
 	} catch (error) {
 		if (error instanceof UnsupportedError || error instanceof PostgrestError) {
 			response = {
-				status: error instanceof UnsupportedError ? 501 : error.code === "PGRST202" ? 404 : error.code === "PGRST201" ? 300 : error.code === "PGRST200" ? 400 : 406,
+				status: error instanceof UnsupportedError ? 501 : error.code === "PGRST202" || error.code === "PGRST205" ? 404 : error.code === "PGRST201" ? 300 : error.code === "PGRST200" ? 400 : 406,
 				headers: { "content-type": "application/json" },
 				body: {
 					code: error instanceof PostgrestError ? error.code : UNSUPPORTED_CODE,
@@ -485,6 +485,38 @@ class PostgrestError extends Error {
 	) {
 		super(message);
 	}
+}
+function missingTable(name: string, tables: SandboxAppliedTable[]): PostgrestError {
+	const normalizedName = name.toLowerCase();
+	const closeMatches = tables
+		.map((table) => ({ name: table.name, distance: editDistance(normalizedName, table.name.toLowerCase()) }))
+		.filter(({ name: candidate, distance }) => distance <= Math.max(1, Math.floor(Math.max(name.length, candidate.length) / 5)))
+		.sort((left, right) => left.distance - right.distance);
+	const hint = closeMatches.length > 0 && (closeMatches.length === 1 || closeMatches[0]!.distance < closeMatches[1]!.distance)
+		? `Perhaps you meant the table 'public.${closeMatches[0]!.name}'`
+		: null;
+	return new PostgrestError(
+		"PGRST205",
+		`Could not find the table 'public.${name}' in the schema cache`,
+		hint,
+	);
+}
+function editDistance(left: string, right: string): number {
+	const distances = Array.from({ length: right.length + 1 }, (_, index) => index);
+	for (let row = 1; row <= left.length; row += 1) {
+		let diagonal = distances[0]!;
+		distances[0] = row;
+		for (let column = 1; column <= right.length; column += 1) {
+			const above = distances[column]!;
+			distances[column] = Math.min(
+				distances[column]! + 1,
+				distances[column - 1]! + 1,
+				diagonal + (left[row - 1] === right[column - 1] ? 0 : 1),
+			);
+			diagonal = above;
+		}
+	}
+	return distances[right.length]!;
 }
 function missingRelationship(source: string, target: string): PostgrestError {
 	return new PostgrestError(

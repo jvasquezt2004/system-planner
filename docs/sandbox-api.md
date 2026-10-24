@@ -2,6 +2,13 @@
 
 The Sandbox API is the in-process PostgREST-compatible interface used by Scenarios. It operates on a fresh Sandbox for each Scenario run. Unsupported requests return `PGRST_SANDBOX_UNSUPPORTED`; they are not approximated.
 
+Requests for tables absent from the applied design return HTTP 404 with
+`PGRST205` and the message `Could not find the table 'public.<name>' in the
+schema cache`. When a close table name exists, the error's `details` field is
+`Perhaps you meant the table 'public.<table>'`; `hint` remains `null`. This is
+distinct from `PGRST_SANDBOX_UNSUPPORTED`, which remains for unsupported
+features.
+
 ## Supported reads
 
 | Feature | Supported form | Notes |

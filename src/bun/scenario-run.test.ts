@@ -82,6 +82,28 @@ afterEach(async () => {
 });
 
 describe("Scenario runs", () => {
+	test("unknown tables return PostgREST PGRST205 through the real supabase-js client", async () => {
+		const { workspace, scenarioId } = await openWorkspace();
+		await workspace.addTable({ name: "Customers" });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const supabase = clientFor(workspace, runId);
+
+		const missing = await supabase.from("missing_table").select("*");
+		expect(missing.data).toBeNull();
+		expect(missing.error?.code).toBe("PGRST205");
+		expect(missing.status).toBe(404);
+		expect(missing.error?.message).toBe("Could not find the table 'public.missing_table' in the schema cache");
+		expect(missing.error?.details).toBeNull();
+		expect(missing.error?.hint).toBeNull();
+
+		const nearMiss = await supabase.from("customers").select("*");
+		expect(nearMiss.error?.code).toBe("PGRST205");
+		expect(nearMiss.status).toBe(404);
+		expect(nearMiss.error?.message).toBe("Could not find the table 'public.customers' in the schema cache");
+		expect(nearMiss.error?.details).toBe("Perhaps you meant the table 'public.Customers'");
+		expect(nearMiss.error?.hint).toBeNull();
+		await workspace.finishScenarioRun({ runId, status: "passed", console: [] });
+	}, 30_000);
 	test("the real supabase-js client inserts, selects by eq, and receives PostgreSQL SQLSTATE errors", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		requireState(workspace.getState());
