@@ -42,6 +42,7 @@ export type ScenarioRun = {
 	id: string;
 	status: ScenarioRunStatus;
 	revision: number;
+	edgeFunctionRevision: number;
 	stale: boolean;
 	requests: ScenarioRequestLogEntry[];
 	console: string[];

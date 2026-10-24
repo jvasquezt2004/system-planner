@@ -31,8 +31,14 @@ scope.onmessage = async ({ data }) => {
 		const compiled = ts.transpileModule(rewritten, {
 			compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None },
 		}).outputText;
+		const callerAuthorization = new Headers(request.headers).get("authorization");
+		let nestedInvocationAttempted = false;
 		const apiFetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
 			const url = new URL(input instanceof Request ? input.url : String(input));
+			if (url.pathname.startsWith("/functions/v1/")) {
+				nestedInvocationAttempted = true;
+				throw new Error("Nested Edge function invocation is not supported.");
+			}
 			const requestId = String(++sequence);
 			const { promise, resolve } = Promise.withResolvers<{ status: number; headers: Record<string, string>; body: unknown }>();
 			pending.set(requestId, resolve);
@@ -40,6 +46,8 @@ scope.onmessage = async ({ data }) => {
 			if (headers.authorization === "Bearer scenario-service-role-key") {
 				const payload = btoa(JSON.stringify({ role: "service_role" })).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
 				headers.authorization = `Bearer eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.${payload}.`;
+			} else if (callerAuthorization) {
+				headers.authorization = callerAuthorization;
 			}
 			send({ type: "request", requestId, request: {
 				method: init?.method ?? (input instanceof Request ? input.method : "GET"), path: url.pathname, query: url.search.slice(1),
@@ -77,6 +85,7 @@ scope.onmessage = async ({ data }) => {
 			headers: request.headers,
 			body: request.method === "GET" || request.method === "HEAD" ? undefined : request.body,
 		}));
+		if (nestedInvocationAttempted) throw new Error("Nested Edge function invocation is not supported.");
 		send({ type: "finished", status: result.status, headers: Object.fromEntries(result.headers), body: await result.text(), logs });
 		restoreRuntime();
 	} catch (error) {

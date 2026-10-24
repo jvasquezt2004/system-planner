@@ -75,15 +75,29 @@ supports `Deno.serve`, `Deno.env.get` for `SUPABASE_URL`, `SUPABASE_ANON_KEY`,
 and `SUPABASE_SERVICE_ROLE_KEY`, and imports of
 `jsr:@supabase/supabase-js@2`, `npm:@supabase/supabase-js@2`,
 `https://esm.sh/@supabase/supabase-js@2`, and `@supabase/supabase-js`.
-The bundled supabase-js client sends its Sandbox API traffic to the same run;
-the service-role key executes requests as `service_role`. Other runtime
-imports are refused before the handler executes, and network, WebSocket,
-XMLHttpRequest, and script-import access are unavailable to the handler.
+The bundled supabase-js client sends its Sandbox API traffic to the same run.
+The incoming `Authorization` header is forwarded to the handler; an anon-key
+client created there uses that caller identity, so user JWT claims and RLS apply.
+The service-role key executes requests as `service_role`, and an anon-key client
+without caller authorization acts as `anon`. Other runtime imports are refused
+before the handler executes, and network, WebSocket, XMLHttpRequest, and
+script-import access are unavailable to the handler.
 
-The handler's response is returned through supabase-js. The run request log
-includes the invocation and its response, with Sandbox API requests attributed
-to that invocation. Handler console output is labelled with the Edge function
-name; writes are included in the run's result grids.
+The handler's response is returned through supabase-js. A thrown or rejected
+handler returns HTTP 500 with `{ "error": "<message>" }`; a handler that never
+calls `Deno.serve` returns HTTP 500 with a diagnostic message. Unknown names
+return 404. These non-2xx responses are surfaced by supabase-js as
+`FunctionsHttpError`. Edge functions cannot invoke other Edge functions; a
+nested invocation is refused with an explicit error.
+
+Invocations share the Scenario run timeout. Stop and timeout terminate the
+Scenario worker and all active Edge function workers. Each Scenario run records
+the project's Edge function revision; any Edge function edit makes existing
+runs stale, independently of the design revision.
+
+The run request log includes the invocation and its response, with Sandbox API
+requests attributed to that invocation. Handler console output is labelled
+with the Edge function name; writes are included in the run's result grids.
 
 ## Unsupported read features
 
