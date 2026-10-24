@@ -108,6 +108,116 @@ Deno.serve(async (request) => {
 			driver.dispose();
 		}
 	}, 60_000);
+	test("forwards caller Authorization through the Edge function to caller-scoped clients under RLS", async () => {
+		const { workspace, scenarios } = await fixture([
+			`const missingHeader = await asUser("11111111-1111-4111-8111-111111111111").functions.invoke("without-forwarding");
+const one = await asUser("11111111-1111-4111-8111-111111111111").functions.invoke("visible-books");
+const two = await asUser("22222222-2222-4222-8222-222222222222").functions.invoke("visible-books");
+const anon = await supabase.functions.invoke("visible-books");
+const service = await asServiceRole().functions.invoke("visible-books");
+expect(missingHeader).returnsDataEqual([]);
+expect(one).returnsDataEqual(["first user's book"]);
+expect(two).returnsDataEqual(["second user's book"]);
+expect(anon).returnsDataEqual([]);
+expect(service).returnsDataEqual(["first user's book", "second user's book"]);`,
+		]);
+		const table = workspace.getState().design?.tables[0];
+		if (!table) throw new Error("Expected Books table.");
+		await workspace.addColumn({ tableId: table.id, name: "owner_id", type: "uuid" });
+		await workspace.updatePolicies({
+			tableId: table.id,
+			rowLevelSecurity: true,
+			policies: [{
+				id: "owners-read",
+				name: "owners_read",
+				command: "SELECT",
+				roles: ["authenticated"],
+				mode: "permissive",
+				using: "owner_id = auth.uid()",
+				withCheck: "",
+			}],
+		});
+		for (const [name, forwardAuthorization] of [["visible-books", true], ["without-forwarding", false]] as const) {
+			const created = await workspace.createEdgeFunction({ name });
+			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
+			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
+			await workspace.updateEdgeFunctionSource({
+				edgeFunctionId: edgeFunction.id,
+				source: `import { createClient } from "jsr:@supabase/supabase-js@2";
+Deno.serve(async (request) => {
+	const client = createClient(
+		Deno.env.get("SUPABASE_URL")!,
+		Deno.env.get("SUPABASE_ANON_KEY")!,
+		${forwardAuthorization ? `{
+			global: { headers: { Authorization: request.headers.get("Authorization")! } },
+		}` : "{}"},
+	);
+	const { data, error } = await client.from("Books").select("title").order("title");
+	if (error) throw new Error(error.message);
+	return Response.json(data.map(({ title }) => title));
+});`,
+			});
+		}
+		const seed = `await asServiceRole().from("Books").insert([
+			{ title: "first user's book", owner_id: "11111111-1111-4111-8111-111111111111" },
+			{ title: "second user's book", owner_id: "22222222-2222-4222-8222-222222222222" },
+		]);`;
+		const savedScenario = await workspace.updateScenarioSource({
+			scenarioId: scenarios[0]!.id,
+			source: `${seed}\n${scenarios[0]!.source}`,
+		});
+		const currentScenario = savedScenario.scenarios.find(({ id }) => id === scenarios[0]!.id);
+		if (!currentScenario) throw new Error("Expected the saved Scenario.");
+		const driver = driverFor(workspace);
+		try {
+			const run = await driver.run(currentScenario);
+			expect(run?.status).toBe("passed");
+			expect(run?.requests.filter(({ method }) => method === "INVOKE")).toHaveLength(5);
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
+	test("returns FunctionsHttpError responses for handler, serve, unknown-name, and nested invocation failures", async () => {
+		const { workspace, scenarios } = await fixture([
+			`for (const [name, message] of [["throws", "handler exploded"], ["no-serve", "Edge function did not call Deno.serve()."], ["missing", "Edge function not found: missing"], ["nested", "Nested Edge function invocation is not supported."]]) {
+	const result = await supabase.functions.invoke(name);
+	if (result.error?.name !== "FunctionsHttpError") throw new Error(\`Expected FunctionsHttpError for \${name}.\`);
+	const body = await result.error.context.json();
+	if (result.error.context.status !== (name === "missing" ? 404 : 500) || body.error !== message) {
+		throw new Error(\`Unexpected \${name} response: \${result.error.context.status} \${body.error}\`);
+	}
+	expect(result).fails();
+}`,
+		]);
+		for (const [name, source] of [
+			["throws", `Deno.serve(() => { throw new Error("handler exploded"); });`],
+			["no-serve", `console.log("no handler");`],
+			["nested", `import { createClient } from "jsr:@supabase/supabase-js@2";
+Deno.serve(async () => {
+	const client = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!);
+	await client.functions.invoke("nested");
+	return Response.json({ ok: true });
+});`],
+		] as const) {
+			const created = await workspace.createEdgeFunction({ name });
+			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
+			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
+			await workspace.updateEdgeFunctionSource({ edgeFunctionId: edgeFunction.id, source });
+		}
+		const driver = driverFor(workspace);
+		try {
+			const run = await driver.run(scenarios[0]!);
+			expect(run?.status).toBe("passed");
+			expect(run?.requests.filter(({ method }) => method === "INVOKE").map(({ status, result }) => ({ status, result }))).toEqual([
+				{ status: 500, result: { error: "handler exploded" } },
+				{ status: 500, result: { error: "Edge function did not call Deno.serve()." } },
+				{ status: 404, result: { error: "Edge function not found: missing" } },
+				{ status: 500, result: { error: "Nested Edge function invocation is not supported." } },
+			]);
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
 	test("supported supabase-js import forms resolve and unsupported imports are refused before handler execution", async () => {
 		const imports = [
 			["jsr-form", "jsr:@supabase/supabase-js@2"],
@@ -148,6 +258,92 @@ Deno.serve(async (request) => {
 			expect(run?.requests.filter(({ method }) => method === "INVOKE")).toHaveLength(6);
 			expect(JSON.stringify(run?.requests.find(({ table }) => table === "functions/bad-import")?.result)).toContain("Runtime import is not supported: node:fs");
 			expect(run?.console).not.toContain("[bad-import] must not execute");
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
+	test("Stop during an Edge function invocation terminates its worker and errors the run", async () => {
+		const { workspace, scenarios } = await fixture([
+			'await supabase.functions.invoke("wait-forever");',
+		]);
+		const created = await workspace.createEdgeFunction({ name: "wait-forever" });
+		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "wait-forever");
+		if (!edgeFunction) throw new Error("Expected saved Edge function.");
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: edgeFunction.id,
+			source: `import { createClient } from "jsr:@supabase/supabase-js@2";
+Deno.serve(async () => {
+	const client = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+	await client.from("Books").select("*");
+	await new Promise(() => {});
+	return Response.json({ ok: true });
+});`,
+		});
+		let edgeWorkerTerminated = false;
+		const driver = createScenarioRunDriver({
+			workspace,
+			createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => {
+				const worker = new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" });
+				const terminate = worker.terminate.bind(worker);
+				worker.terminate = () => {
+					edgeWorkerTerminated = true;
+					terminate();
+				};
+				return worker;
+			},
+			timeoutMs: 30_000,
+		});
+		const requestSeen = Promise.withResolvers<void>();
+		const unsubscribe = workspace.subscribe((state) => {
+			if (state.scenarioRuns[scenarios[0]!.id]?.requests.some(({ invocationRef }) => invocationRef)) requestSeen.resolve();
+		});
+		try {
+			const pending = driver.run(scenarios[0]!);
+			await requestSeen.promise;
+			const running = workspace.getState().scenarioRuns[scenarios[0]!.id];
+			if (!running) throw new Error("Expected the running Scenario.");
+			await driver.stop(running.id);
+			expect(await pending).toMatchObject({ status: "errored", reason: "stopped" });
+			expect(edgeWorkerTerminated).toBe(true);
+		} finally {
+			unsubscribe();
+			driver.dispose();
+		}
+	}, 60_000);
+
+	test("run timeout during an Edge function invocation terminates its worker", async () => {
+		const { workspace, scenarios } = await fixture([
+			'await supabase.functions.invoke("wait-forever");',
+		]);
+		const created = await workspace.createEdgeFunction({ name: "wait-forever" });
+		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "wait-forever");
+		if (!edgeFunction) throw new Error("Expected saved Edge function.");
+		await workspace.updateEdgeFunctionSource({
+			edgeFunctionId: edgeFunction.id,
+			source: `Deno.serve(async () => {
+	await new Promise(() => {});
+	return Response.json({ ok: true });
+});`,
+		});
+		let edgeWorkerTerminated = false;
+		const driver = createScenarioRunDriver({
+			workspace,
+			createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => {
+				const worker = new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" });
+				const terminate = worker.terminate.bind(worker);
+				worker.terminate = () => {
+					edgeWorkerTerminated = true;
+					terminate();
+				};
+				return worker;
+			},
+			timeoutMs: 2_000,
+		});
+		try {
+			expect(await driver.run(scenarios[0]!)).toMatchObject({ status: "errored", reason: "timed out" });
+			expect(edgeWorkerTerminated).toBe(true);
 		} finally {
 			driver.dispose();
 		}

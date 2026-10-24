@@ -9,7 +9,7 @@ const scenarios: Scenario[] = [
 ];
 
 function run(id: string, status: ScenarioRun["status"], reason?: ScenarioRun["reason"]): ScenarioRun {
-	return { id, status, reason, revision: 1, stale: false, requests: [], console: [], grids: [], expectations: [] };
+	return { id, status, reason, revision: 1, edgeFunctionRevision: 1, stale: false, requests: [], console: [], grids: [], expectations: [] };
 }
 
 describe("Run all coordination", () => {

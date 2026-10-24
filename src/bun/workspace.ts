@@ -225,6 +225,7 @@ export async function createDesignWorkspace(
 		scenarioId: string;
 		projectId: string;
 		revision: number;
+		edgeFunctionRevision: number;
 		database: ScenarioRunDatabase | null;
 		tables: SandboxAppliedTable[];
 		relationships: SandboxSnapshot["relationships"];
@@ -244,7 +245,10 @@ export async function createDesignWorkspace(
 				scenarioRuns: Object.fromEntries(
 					Object.entries(next.scenarioRuns).map(([scenarioId, run]) => [
 						scenarioId,
-						run ? { ...run, stale: run.revision < next.revision } : null,
+						run ? {
+							...run,
+							stale: run.revision < next.revision || run.edgeFunctionRevision < edgeFunctionRevision,
+						} : null,
 					]),
 				),
 			};
@@ -868,6 +872,7 @@ export async function createDesignWorkspace(
 					scenarioId: scenario.id,
 					projectId,
 					revision: snapshot.revision,
+					edgeFunctionRevision,
 					database: null as ScenarioRunDatabase | null,
 					tables: snapshot.tables,
 					relationships: snapshot.relationships,
@@ -882,7 +887,8 @@ export async function createDesignWorkspace(
 							id: run.id,
 							status: "running",
 							revision: run.revision,
-							stale: run.revision < state.revision,
+							edgeFunctionRevision: run.edgeFunctionRevision,
+							stale: run.revision < state.revision || run.edgeFunctionRevision < edgeFunctionRevision,
 							requests: [],
 							console: [],
 							grids: [],
