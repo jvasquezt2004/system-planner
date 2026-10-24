@@ -139,6 +139,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await assistantPromise).startOAuthLogin(providerId),
 			getClaudeOptIn: async () => (await assistantPromise).getClaudeOptIn(),
 			setClaudeOptIn: async ({ enabled }) => (await assistantPromise).setClaudeOptIn(enabled),
+			getAssistantRequestCap: async () => (await assistantPromise).getMaxRequestsPerTurn(),
+			setAssistantRequestCap: async ({ limit }) => (await assistantPromise).setMaxRequestsPerTurn(limit),
 			sendAssistantMessage: async ({ conversationId, text, modelId, thinkingLevel, connectionId }) =>
 				(await assistantPromise).sendMessage(conversationId, text, modelId, thinkingLevel, connectionId),
 			stopAssistantTurn: async ({ conversationId }) =>
@@ -148,7 +150,10 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			getAssistantTurnStatus: async ({ conversationId }) => ({
 				paused: (await assistantPromise).isTurnPaused(conversationId),
 				confirmationRequired: (await assistantPromise).isConfirmationPending(conversationId),
+				revertAvailable: (await assistantPromise).canRevertTurn(conversationId),
 			}),
+			revertAssistantTurn: async ({ conversationId }) =>
+				(await assistantPromise).revertTurn(conversationId),
 			updateAssistantConversationSelection: async ({ conversationId, connectionId, modelId, thinkingLevel }) =>
 				(await assistantPromise).updateConversationSelection(conversationId, connectionId, modelId, thinkingLevel),
 			confirmAssistantDdlDrop: async ({ conversationId, toolCallId }) =>

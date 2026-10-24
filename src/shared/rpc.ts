@@ -173,10 +173,13 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			startAssistantOAuthLogin: { params: { providerId: string }; response: { success: boolean; error?: string } };
 			getClaudeOptIn: { params: Record<string, never>; response: boolean };
 			setClaudeOptIn: { params: { enabled: boolean }; response: void };
+			getAssistantRequestCap: { params: Record<string, never>; response: number };
+			setAssistantRequestCap: { params: { limit: number }; response: void };
 			sendAssistantMessage: { params: { conversationId: string; text: string; modelId: string; thinkingLevel: AssistantThinkingLevel; connectionId?: string }; response: unknown };
 			stopAssistantTurn: { params: { conversationId: string }; response: void };
 			continueAssistantTurn: { params: { conversationId: string }; response: unknown };
-			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean; confirmationRequired: boolean } };
+			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean; confirmationRequired: boolean; revertAvailable: boolean } };
+			revertAssistantTurn: { params: { conversationId: string }; response: AssistantConversationRecord | null };
 			updateAssistantConversationSelection: { params: { conversationId: string; connectionId: string | null; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
 			confirmAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };
 			rejectAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: AssistantConversationRecord | null };

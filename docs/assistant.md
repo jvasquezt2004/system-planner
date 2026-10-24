@@ -18,6 +18,8 @@ After every Scenario or Edge function source write, the Bun runtime checks the s
 
 `run_scenarios` starts one saved Scenario or all saved Scenarios through the view's Scenario run driver and waits for completion. Runs use the same workspace lifecycle as manual runs, remain visible and stale in the Scenarios view, and queue behind an active run. The tool returns run status and staleness, up to 20 failed expectations, at most 20 trailing console lines, a request summary capped at 50 request kinds, and up to three sampled rows for each of ten result grids; neither the run tool nor `read_project` sends whole grids to the model. Stop is reported as `stopped`; transcript run cards link back to the saved Scenario.
 
+The model-request cap defaults to 40 requests per Assistant turn and is adjustable from the Assistant settings (1–500). The cap is stored in application SQLite and survives restarts. While a turn is streaming, the composer accepts steering messages; pi-agent-core delivers them after the current tool call. Stop aborts the turn without undoing already-applied project changes.
+
 ## Credential verification
 
 The Windows credential fallback is platform-specific and cannot be exercised by the Linux test suite. Before release, build and run the packaged Windows application and verify both paths: with Bun's secret store available, save/restart/read/remove an Anthropic key and confirm no key appears in SQLite; with the store unavailable, repeat and confirm the adjacent fallback file contains only DPAPI ciphertext, can be decrypted only by the same Windows user, and is removed on credential deletion. Do not use a live provider call for this storage check.

@@ -949,4 +949,123 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		});
 		expect(containsTurn3).toBe(true);
 	});
+	test("revert is available only while the project matches the latest completed turn", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-revert-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Revert turn" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the table.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design?.tables).toEqual([]);
+		expect(workspace.getState().undoRedo.canUndo).toBe(true);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the table again.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create the table again.", "scripted-model");
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+		await workspace.addTable({ name: "hand_table" });
+		expect(runtime.canRevertTurn(conversation.id)).toBe(false);
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(/can no longer be reverted/);
+	});
+	test("delivers a message sent mid-turn as steering after the current tool call", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-steering-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Steering" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		let runtime: ReturnType<typeof createAssistantRuntime>;
+		let conversationId = "";
+		let requestCount = 0;
+		let steeringPrompt = "";
+		runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+			streamFn: async (model, context, options) => {
+				requestCount += 1;
+				if (requestCount === 2) {
+					await runtime.sendMessage(conversationId, "Keep the next table name exact.", "scripted-model");
+				}
+				if (requestCount === 3) steeringPrompt = JSON.stringify(context.messages);
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		conversationId = conversation.id;
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE first_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE second_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Both tables are ready.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create two tables.", "scripted-model");
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["first_table", "second_table"]);
+		expect(steeringPrompt).toContain("Keep the next table name exact.");
+	});
+	test("Stop keeps applied changes and leaves the stopped turn revertable", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-stop-revert-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Stop then revert" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const requestStarted = Promise.withResolvers<void>();
+		const releaseRequest = Promise.withResolvers<void>();
+		let requests = 0;
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+			streamFn: async (model, context, options) => {
+				requests += 1;
+				if (requests === 2) {
+					requestStarted.resolve();
+					await releaseRequest.promise;
+				}
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE kept_after_stop (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("I would continue.")]),
+		]);
+		const turn = runtime.sendMessage(conversation.id, "Create and explain.", "scripted-model");
+		await requestStarted.promise;
+		runtime.stop(conversation.id);
+		releaseRequest.resolve();
+		await turn;
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["kept_after_stop"]);
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design?.tables).toEqual([]);
+	});
 });
