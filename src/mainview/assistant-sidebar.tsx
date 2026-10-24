@@ -12,7 +12,7 @@ import type {
 	AssistantTurnUsage,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
-import { assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
+import { assistantError, assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
 type AssistantApi = Pick<
@@ -938,7 +938,7 @@ function MessageCard({
 	}
 	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
 	const payload = message.payload;
-	if (message.kind === "live-assistant" && !assistantText(payload).trim()) return null;
+	if (message.kind === "live-assistant" && !assistantText(payload).trim() && !assistantError(payload)) return null;
 	const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
 	const usage = record && "usage" in record && record.usage && typeof record.usage === "object"
 		? record.usage as { input?: number; output?: number; cacheRead?: number; cost?: { total?: number } }
@@ -1042,6 +1042,11 @@ function MessageCard({
 		<div className="text-sm leading-relaxed">
 			<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">{summary}</p>
 			<p className="whitespace-pre-wrap">{message.role === "assistant" ? assistantText(payload) : printable}</p>
+			{message.role === "assistant" && assistantError(payload) && (
+				<p role="alert" className="mt-1 whitespace-pre-wrap rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
+					{assistantError(payload)}
+				</p>
+			)}
 			{usage && (
 				<div aria-label="Turn usage" className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
 					<span>{(usage.input ?? 0).toLocaleString()} in</span>
