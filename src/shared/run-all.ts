@@ -1,4 +1,6 @@
+
 import type { Scenario, ScenarioRun } from "./design";
+export const SCENARIO_RUN_TIMEOUT_MS = 30_000;
 
 export type RunAllResult = { scenario: Scenario; run: ScenarioRun };
 

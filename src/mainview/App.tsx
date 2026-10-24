@@ -22,8 +22,9 @@ import {
 	type Scenario,
 	type WorkspaceState,
 } from "../shared/design";
-import { runAllScenarios, type RunAllResult } from "../shared/run-all";
+import { SCENARIO_RUN_TIMEOUT_MS, runAllScenarios, type RunAllResult } from "../shared/run-all";
 import { createScenarioRunDriver, type ScenarioRunDriver } from "./scenario-run-driver";
+import { createAssistantScenarioRunBridge } from "./assistant-scenario-run-bridge";
 import { relationshipsForTable } from "../shared/relationships";
 import { Button } from "@/components/ui/button";
 import {
@@ -117,6 +118,7 @@ function App() {
 	const runAllOperation = useRef<RunAllOperation | null>(null);
 	const scenarioStartOperation = useRef<object | null>(null);
 	const scenarioStateRef = useRef<WorkspaceState | null>(null);
+	const assistantScenarioRunBridge = useRef<ReturnType<typeof createAssistantScenarioRunBridge> | null>(null);
 
 	const resetScenarioExecution = useCallback(() => {
 		scenarioRunDriver.current?.cancel();
@@ -147,37 +149,30 @@ function App() {
 			},
 			createWorker: () => new Worker(new URL("./scenario-worker.ts", import.meta.url), { type: "module" }),
 			createEdgeWorker: () => new Worker(new URL("./edge-function-worker.ts", import.meta.url), { type: "module" }),
-			timeoutMs: 30_000,
+			timeoutMs: SCENARIO_RUN_TIMEOUT_MS,
 			getToken: () => projectGeneration.current,
 			onState: receiveWorkspaceState,
 		});
 	}
-	useEffect(() => workspaceClient.subscribeAssistantScenarioRuns((request) => {
-		const current = scenarioStateRef.current;
-		if (!current || current.project?.id !== request.projectId || projectIdRef.current !== request.projectId) {
-			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The project changed before the Scenario run could start.");
-			return;
-		}
-		const scenario = current.scenarios.find(({ id }) => id === request.scenario.id);
-		if (!scenario) {
-			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The requested Scenario no longer exists in this project.");
-			return;
-		}
-		void scenarioRunDriver.current?.runQueued(() => {
-			const latest = scenarioStateRef.current;
-			return latest?.project?.id === request.projectId
-				? latest.scenarios.find(({ id }) => id === request.scenario.id) ?? null
-				: null;
-		}).then((run) => {
-			if (projectIdRef.current !== request.projectId) {
-				void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The project changed while the Scenario was running.");
-				return;
-			}
-			void workspaceClient.completeAssistantScenarioRun(request.requestId, run);
-		}).catch((cause: unknown) => {
-			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, errorMessage(cause));
+	if (!assistantScenarioRunBridge.current && scenarioRunDriver.current) {
+		assistantScenarioRunBridge.current = createAssistantScenarioRunBridge({
+			driver: scenarioRunDriver.current,
+			getWorkspaceState: () => scenarioStateRef.current,
+			complete: (requestId, run, error) => {
+				void workspaceClient.completeAssistantScenarioRun(requestId, run, error);
+			},
 		});
-	}), []);
+	}
+	useEffect(() => {
+		const bridge = assistantScenarioRunBridge.current;
+		if (!bridge) return;
+		const unsubscribeRequests = workspaceClient.subscribeAssistantScenarioRuns((request) => bridge.request(request));
+		const unsubscribeCancels = workspaceClient.subscribeAssistantScenarioRunCancels((requestId) => bridge.cancel(requestId));
+		return () => {
+			unsubscribeRequests();
+			unsubscribeCancels();
+		};
+	}, []);
 
 	useEffect(() => {
 		let active = true;
@@ -334,7 +329,10 @@ function App() {
 		}
 	}, [runScenario, scenarioIsRunning, scenarioStarting, state]);
 
-	useEffect(() => () => scenarioRunDriver.current?.cancel(), []);
+	useEffect(() => () => {
+		assistantScenarioRunBridge.current?.dispose();
+		scenarioRunDriver.current?.cancel();
+	}, []);
 
 	// Selection belongs to the open project, never to a previously open one.
 	useEffect(() => {

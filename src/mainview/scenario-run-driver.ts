@@ -28,8 +28,8 @@ export type ScenarioRunDriverOptions = {
 };
 
 export type ScenarioRunDriver = {
-	run(scenario: Scenario): Promise<ScenarioRun | null>;
-	runQueued(scenario: Scenario | (() => Scenario | null)): Promise<ScenarioRun | null>;
+	run(scenario: Scenario, onStarted?: (runId: string) => void): Promise<ScenarioRun | null>;
+	runQueued(scenario: Scenario | (() => Scenario | null), options?: { signal?: AbortSignal; onStarted?: (runId: string) => void }): Promise<ScenarioRun | null>;
 	stop(runId: string): Promise<ScenarioRun | null>;
 	cancel(): void;
 	dispose(): void;
@@ -56,6 +56,19 @@ type ActiveRun = {
 	finishing: boolean;
 	cancelled: boolean;
 };
+async function waitForRunOrAbort(run: Promise<ScenarioRun | null>, signal?: AbortSignal) {
+	if (!signal) return run;
+	if (signal.aborted) return null;
+	const { promise, resolve } = Promise.withResolvers<null>();
+	const abort = () => resolve(null);
+	signal.addEventListener("abort", abort, { once: true });
+	try {
+		return await Promise.race([run, promise]);
+	} finally {
+		signal.removeEventListener("abort", abort);
+	}
+}
+
 
 /** Drives the real Scenario Worker and its Sandbox API traffic without React. */
 export function createScenarioRunDriver(options: ScenarioRunDriverOptions): ScenarioRunDriver {
@@ -105,7 +118,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 	};
 
 	return {
-		async run(scenario) {
+		async run(scenario, onStarted) {
 			if (disposed || active || !isCurrent()) return null;
 			const token = options.getToken?.();
 			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
@@ -133,6 +146,8 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 					return promise;
 				}
 				run.projectId = begun.state.project.id;
+				onStarted?.(run.runId);
+				if (run.finishing) return promise;
 				if (pendingStops.delete(run.runId)) {
 					finish(run, { status: "errored", reason: "stopped", console: [] });
 					return promise;
@@ -254,17 +269,18 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 			}
 			return promise;
 		},
-		runQueued(scenario) {
+		runQueued(scenario, runOptions) {
 			const queued = queueTail.then(async () => {
 				while (!disposed && isCurrent()) {
+					if (runOptions?.signal?.aborted) return null;
 					if (active) {
-						await active.promise;
+						const completed = await waitForRunOrAbort(active.promise, runOptions?.signal);
+						if (completed === null && runOptions?.signal?.aborted) return null;
 						continue;
 					}
 					const currentScenario = typeof scenario === "function" ? scenario() : scenario;
 					if (!currentScenario) return null;
-					const result = await this.run(currentScenario);
-					if (result) return result;
+					return this.run(currentScenario, runOptions?.onStarted);
 				}
 				return null;
 			});

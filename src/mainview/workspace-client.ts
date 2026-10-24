@@ -42,6 +42,7 @@ const listeners = new Set<(state: WorkspaceState) => void>();
 const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
 const assistantOAuthListeners = new Set<(event: { providerId: string; event: unknown }) => void>();
 const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; scenario: Scenario }) => void>();
+const assistantScenarioRunCancelListeners = new Set<(requestId: string) => void>();
 let latestState: WorkspaceState | null = null;
 
 const pendingSqlExports = new Map<
@@ -69,8 +70,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 			},
 			assistantOAuthEvent({ providerId, event }) {
 				for (const listener of assistantOAuthListeners) listener({ providerId, event });
+			},
 			assistantScenarioRunRequest(request) {
 				for (const listener of assistantScenarioRunListeners) listener(request);
+			},
+			assistantScenarioRunCancel({ requestId }) {
+				for (const listener of assistantScenarioRunCancelListeners) listener(requestId);
 			},
 		},
 	},
@@ -298,6 +303,10 @@ export const workspaceClient = {
 	subscribeAssistantScenarioRuns(listener: (request: { requestId: string; projectId: string; scenario: Scenario }) => void) {
 		assistantScenarioRunListeners.add(listener);
 		return () => { assistantScenarioRunListeners.delete(listener); };
+	},
+	subscribeAssistantScenarioRunCancels(listener: (requestId: string) => void) {
+		assistantScenarioRunCancelListeners.add(listener);
+		return () => { assistantScenarioRunCancelListeners.delete(listener); };
 	},
 	completeAssistantScenarioRun(requestId: string, run: ScenarioRun | null, error?: string) {
 		return rpc.send.assistantScenarioRunCompleted({ requestId, run, error });

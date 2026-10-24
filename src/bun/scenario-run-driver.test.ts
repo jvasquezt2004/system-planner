@@ -409,6 +409,34 @@ Deno.serve(async () => {
 		}
 	}, 60_000);
 
+	test("runQueued returns a cancelled run without retrying the Scenario", async () => {
+		const { workspace, scenarios } = await fixture(["console.log(\"must not run\");"]);
+		let token = 0;
+		let beginCount = 0;
+		const driver = createScenarioRunDriver({
+			workspace: {
+				beginScenarioRun: async (action) => {
+					beginCount += 1;
+					const begun = await workspace.beginScenarioRun(action);
+					token += 1;
+					return begun;
+				},
+				handleSandboxApiRequest: (action) => workspace.handleSandboxApiRequest(action),
+				finishScenarioRun: (action) => workspace.finishScenarioRun(action),
+			},
+			createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
+			timeoutMs: 30_000,
+			getToken: () => token,
+		});
+		try {
+			expect(await driver.runQueued(scenarios[0]!)).toBeNull();
+			expect(beginCount).toBe(1);
+		} finally {
+			driver.dispose();
+		}
+	}, 60_000);
+
 	test("timeout finishes the run as errored and releases its Sandbox", async () => {
 		const { workspace, scenarios } = await fixture(["while (true) {}"]);
 		const driver = driverFor(workspace, 30);

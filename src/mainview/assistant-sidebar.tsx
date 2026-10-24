@@ -803,10 +803,10 @@ function MessageCard({
 		? { before: details.before, after: details.after, kind: details.kind as "scenario" | "edge-function" | "function-body", id: details.id, name: details.name }
 		: null;
 	const scenarioRuns = Array.isArray(details?.runs)
-		? details.runs.filter((run): run is { scenarioId: string; scenario: string; status: string; runId: string } =>
+		? details.runs.filter((run): run is { scenarioId: string; scenario: string; status: string; runId?: string } =>
 			Boolean(run && typeof run === "object" && "scenarioId" in run && typeof run.scenarioId === "string"
 				&& "scenario" in run && typeof run.scenario === "string" && "status" in run && typeof run.status === "string"
-				&& "runId" in run && typeof run.runId === "string"),
+				&& (!("runId" in run) || typeof run.runId === "string")),
 		)
 		: [];
 	const isTool = message.role === "toolResult" || message.kind === "tool-result" || Boolean(toolCall);
@@ -820,7 +820,7 @@ function MessageCard({
 				<pre className="mt-2 whitespace-pre-wrap break-words text-ink-3">{printable}</pre>
 			</details>
 			{scenarioRuns.map((run) => (
-				<div key={run.runId} className="mt-2 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1.5">
+				<div key={run.runId ?? run.scenarioId} className="mt-2 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1.5">
 					<span>{run.scenario}: {run.status}</span>
 					<button type="button" onClick={() => onSelectCodeSource("scenario", run.scenarioId)} className="underline underline-offset-2">
 						Open Scenario

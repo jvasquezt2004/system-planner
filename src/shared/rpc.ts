@@ -194,6 +194,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
 			assistantScenarioRunRequest: { requestId: string; projectId: string; scenario: Scenario };
+			assistantScenarioRunCancel: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
 		};

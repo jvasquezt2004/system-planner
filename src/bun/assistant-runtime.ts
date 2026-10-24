@@ -22,7 +22,7 @@ import type { DesignWorkspace } from "./workspace";
 
 import type { ScenarioRun } from "../shared/design";
 import type { Scenario } from "../shared/design";
-import { runAllScenarios } from "../shared/run-all";
+import { runAllScenarios, SCENARIO_RUN_TIMEOUT_MS } from "../shared/run-all";
 function deterministicDdlIdFactory(toolCallId: string) {
 	let counter = 0;
 	return () => {
@@ -57,7 +57,8 @@ export type AssistantRuntimeOptions = {
 	streamFn?: ConstructorParameters<typeof Agent>[0]["streamFn"];
 	maxRequestsPerTurn?: number;
 	openExternal?: (url: string) => unknown;
-	runScenario?: (projectId: string, scenario: Scenario) => Promise<ScenarioRun | null>;
+	scenarioRunTimeoutMs?: number;
+	runScenario?: (projectId: string, scenario: Scenario, signal: AbortSignal | undefined, timeoutMs: number) => Promise<ScenarioRun | null>;
 };
 function compactExpectationMessage(message: string) {
 	const receivedAt = message.search(/,\s*received\b/i);
@@ -93,7 +94,6 @@ export interface AssistantRuntime {
 	close: () => void;
 }
 
-/** Main-process Assistant entry point; credentials remain outside application SQLite. */
 function compactScenarioRun(scenarioId: string, name: string, run: ScenarioRun) {
 	const stopped = run.reason === "stopped";
 	const requestCounts = new Map<string, number>();
@@ -134,7 +134,8 @@ function scenarioToolResult(details: unknown) {
 	return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 }
 
-export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal, runScenario }: AssistantRuntimeOptions): AssistantRuntime {
+/** Main-process Assistant entry point; credentials remain outside application SQLite. */
+export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal, scenarioRunTimeoutMs = SCENARIO_RUN_TIMEOUT_MS + 15_000, runScenario }: AssistantRuntimeOptions): AssistantRuntime {
 	const store: AssistantStore = openAssistantStore(databasePath);
 	const credentials = new BunSecretCredentialStore(databasePath, credentialsOptions);
 	const connectionModelsMap = new Map<string, MutableModels>();
@@ -319,7 +320,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			scenarioId: Type.Optional(Type.String()),
 		}),
 		executionMode: "sequential",
-		execute: async (_toolCallId, params) => {
+		execute: async (_toolCallId, params, signal) => {
 			const input = params as { mode: "one" | "all"; scenarioId?: string };
 			const { conversation, state } = requireBoundState(conversationId);
 			if (!runScenario) throw new Error("Scenario runs are unavailable because the view is not connected.");
@@ -329,22 +330,35 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				: state.scenarios.map((scenario) => ({ ...scenario }));
 			if (input.mode === "one" && scenarios.length === 0) throw new Error("That Scenario does not exist in the bound project.");
 			if (input.mode === "all" && scenarios.length === 0) return scenarioToolResult({ mode: "all", runs: [] });
-			const results = await runAllScenarios(scenarios, (scenario) => {
+			const stoppedScenarios: Scenario[] = [];
+			const results = await runAllScenarios(scenarios, async (scenario) => {
 				const current = requireBoundState(conversationId);
 				if (current.conversation.project_id !== conversation.project_id) throw new Error("The project changed before the Scenario run started.");
-				return runScenario(conversation.project_id, scenario);
+				try {
+					const run = await runScenario(conversation.project_id, scenario, signal, scenarioRunTimeoutMs);
+					if (!run && signal?.aborted) stoppedScenarios.push(scenario);
+					return run;
+				} catch (cause) {
+					if (!signal?.aborted) throw cause;
+					stoppedScenarios.push(scenario);
+					return null;
+				}
 			}, () => {
 				const current = workspace.getState();
 				return current.project?.id === conversation.project_id;
 			});
 			const current = workspace.getState();
 			if (current.project?.id !== conversation.project_id) throw new Error("The project changed while the Scenario run was in progress.");
-			return scenarioToolResult({
-				mode: input.mode,
-				runs: results.map(({ scenario, run }) => compactScenarioRun(scenario.id, scenario.name, run)),
-			});
-		},
+			const runs: Record<string, unknown>[] = results.map(({ scenario, run }) =>
+				compactScenarioRun(scenario.id, scenario.name, run),
+			);
+			const stoppedScenario = stoppedScenarios[0];
+			if (stoppedScenario) {
+				runs.push({ scenario: stoppedScenario.name, scenarioId: stoppedScenario.id, status: "stopped", reason: "stopped" });
+			}
+			return scenarioToolResult({ mode: input.mode, runs });
 	},
+		},
 	{
 		name: "apply_ddl",
 		label: "Apply PostgreSQL DDL",

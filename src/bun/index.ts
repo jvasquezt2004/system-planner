@@ -33,21 +33,64 @@ const databasePath =
 
 // Keep the authoritative design and the disposable sandbox behind one public
 // workspace interface. The view only sees this interface through typed RPC.
-const pendingAssistantScenarioRuns = new Map<string, {
+type PendingAssistantScenarioRun = {
 	resolve: (run: ScenarioRun | null) => void;
 	reject: (error: Error) => void;
-}>();
+	cleanup: () => void;
+};
+const pendingAssistantScenarioRuns = new Map<string, PendingAssistantScenarioRun>();
+function rejectPendingAssistantScenarioRun(requestId: string, error: Error) {
+	const pending = pendingAssistantScenarioRuns.get(requestId);
+	if (!pending) return;
+	pendingAssistantScenarioRuns.delete(requestId);
+	pending.cleanup();
+	pending.reject(error);
+}
+function completePendingAssistantScenarioRun(requestId: string, run: ScenarioRun | null, error?: string) {
+	const pending = pendingAssistantScenarioRuns.get(requestId);
+	if (!pending) return;
+	pendingAssistantScenarioRuns.delete(requestId);
+	pending.cleanup();
+	if (error) pending.reject(new Error(error));
+	else pending.resolve(run);
+}
 const workspacePromise = createDesignWorkspace({ databasePath });
 const assistantPromise = workspacePromise.then((workspace) =>
 	createAssistantRuntime({
 		databasePath,
 		workspace,
 		openExternal: (url) => Utils.openExternal(url),
-		runScenario: (projectId, scenario) => {
+		runScenario: (projectId, scenario, signal, timeoutMs) => {
 			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
 			const requestId = crypto.randomUUID();
-			pendingAssistantScenarioRuns.set(requestId, { resolve, reject });
-			rpc.send.assistantScenarioRunRequest({ requestId, projectId, scenario });
+			const onAbort = () => {
+				const error = new Error("The Assistant turn stopped the Scenario run.");
+				error.name = "AbortError";
+				void rpc.send.assistantScenarioRunCancel({ requestId });
+				rejectPendingAssistantScenarioRun(requestId, error);
+			};
+			const timer = setTimeout(() => {
+				void rpc.send.assistantScenarioRunCancel({ requestId });
+				rejectPendingAssistantScenarioRun(
+					requestId,
+					new Error("The view did not report the Scenario run result in time."),
+				);
+			}, timeoutMs);
+			const cleanup = () => {
+				clearTimeout(timer);
+				signal?.removeEventListener("abort", onAbort);
+			};
+			pendingAssistantScenarioRuns.set(requestId, { resolve, reject, cleanup });
+			if (signal?.aborted) onAbort();
+			else {
+				signal?.addEventListener("abort", onAbort, { once: true });
+				void Promise.resolve(rpc.send.assistantScenarioRunRequest({ requestId, projectId, scenario })).catch((cause: unknown) => {
+					rejectPendingAssistantScenarioRun(
+						requestId,
+						cause instanceof Error ? cause : new Error(String(cause)),
+					);
+				});
+			}
 			return promise;
 		},
 	}),
@@ -206,13 +249,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 					rpc.send.sqlPreviewExportCompleted({ requestId, result });
 				});
 			},
-			assistantScenarioRunCompleted: ({ requestId, run, error }) => {
-				const pending = pendingAssistantScenarioRuns.get(requestId);
-				if (!pending) return;
-				pendingAssistantScenarioRuns.delete(requestId);
-				if (error) pending.reject(new Error(error));
-				else pending.resolve(run);
-			},
+			assistantScenarioRunCompleted: ({ requestId, run, error }) =>
+				completePendingAssistantScenarioRun(requestId, run, error),
 		},
 	},
 });

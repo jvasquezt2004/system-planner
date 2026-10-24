@@ -1,12 +1,15 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test, vi } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import type { Scenario } from "../shared/design";
+import type { Scenario, ScenarioRun } from "../shared/design";
+import type { AssistantRuntimeOptions } from "./assistant-runtime";
+import { createAssistantScenarioRunBridge } from "../mainview/assistant-scenario-run-bridge";
 import { createScenarioRunDriver } from "../mainview/scenario-run-driver";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createDesignWorkspace } from "./workspace";
+import type { DesignWorkspace } from "./workspace";
 
 const directories: string[] = [];
 const workspaces: Awaited<ReturnType<typeof createDesignWorkspace>>[] = [];
@@ -20,7 +23,10 @@ afterEach(async () => {
 	for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-async function setup(sources: string[]) {
+type SetupOptions = Pick<AssistantRuntimeOptions, "scenarioRunTimeoutMs" | "runScenario"> & {
+	runScenarioFactory?: (workspace: DesignWorkspace, driver: ReturnType<typeof createScenarioRunDriver>) => AssistantRuntimeOptions["runScenario"];
+};
+async function setup(sources: string[], options: SetupOptions = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-scenario-runs-"));
 	directories.push(directory);
 	const databasePath = join(directory, "project.sqlite");
@@ -55,15 +61,16 @@ async function setup(sources: string[]) {
 		databasePath,
 		workspace,
 		models,
-		getApiKey: async () => "test-key",
-		streamFn: (model, context, options) => {
-			requests.push(JSON.stringify(context));
-			return models.streamSimple(model, context, options);
+		getApiKey: async () => "test-api-key",
+		streamFn: (model, context, streamOptions) => {
+			requests.push(JSON.stringify({ context, options: streamOptions }));
+			return models.streamSimple(model, context, streamOptions);
 		},
-		runScenario: async (projectId, scenario) => {
+		scenarioRunTimeoutMs: options.scenarioRunTimeoutMs,
+		runScenario: options.runScenario ?? options.runScenarioFactory?.(workspace, driver) ?? (async (projectId, scenario) => {
 			if (workspace.getState().project?.id !== projectId) throw new Error("Bound project changed.");
 			return driver.runQueued(scenario);
-		},
+		}),
 	});
 	runtimes.push(runtime);
 	return { databasePath, workspace, scenarios, scripted, runtime, projectId: opened.project.id, requests };
@@ -130,6 +137,106 @@ describe("Assistant Scenario runs", () => {
 		expect(requests[2]).toContain("capturedRows");
 		expect(requests[2]).toContain("failedExpectationCount");
 	});
+	test("finishes the Assistant turn when the view never reports a run", async () => {
+		const timeoutMessage = "The view did not report the Scenario run result in time.";
+		const requestStarted = Promise.withResolvers<void>();
+		const { scenarios, scripted, runtime, projectId, requests } = await setup(
+			['console.log("never started");'],
+			{
+				scenarioRunTimeoutMs: 20,
+				runScenario: async (_projectId, _scenario, _signal, timeoutMs) => {
+					requestStarted.resolve();
+					const { promise, reject } = Promise.withResolvers<null>();
+					setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+					return promise;
+				},
+			},
+		);
+		const conversation = runtime.createConversation(projectId);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("run_scenarios", { mode: "one", scenarioId: scenarios[0]!.id })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The view did not return the Scenario result.")]),
+		]);
+		vi.useFakeTimers();
+		try {
+			const turn = runtime.sendMessage(conversation.id, "Run the Scenario.", "scripted-model");
+			await requestStarted.promise;
+			vi.advanceTimersByTime(20);
+			await turn;
+			expect(scripted.state.callCount).toBe(2);
+			expect(requests[1]).toContain(timeoutMessage);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	test("stops an active Assistant Scenario through the view bridge and reports stopped", async () => {
+		const { workspace, scenarios, scripted, runtime, projectId } = await setup(["while (true) {}",], {
+			runScenarioFactory: (boundWorkspace, driver) => {
+				const pending = new Map<string, { resolve: (run: ScenarioRun | null) => void; reject: (cause: unknown) => void }>();
+				const bridge = createAssistantScenarioRunBridge({
+					driver,
+					getWorkspaceState: () => boundWorkspace.getState(),
+					complete: (requestId, run, error) => {
+						const completion = pending.get(requestId);
+						if (!completion) return;
+						pending.delete(requestId);
+						if (error) completion.reject(new Error(error));
+						else completion.resolve(run);
+					},
+				});
+				return (boundProjectId, scenario, signal) => {
+					const requestId = crypto.randomUUID();
+					const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
+					pending.set(requestId, { resolve, reject });
+					const onAbort = () => {
+						bridge.cancel(requestId);
+						const error = new Error("Scenario run was stopped.");
+						error.name = "AbortError";
+						reject(error);
+					};
+					bridge.request({ requestId, projectId: boundProjectId, scenario });
+					signal?.addEventListener("abort", onAbort, { once: true });
+					if (signal?.aborted) onAbort();
+					return promise.then(
+						(run) => {
+							signal?.removeEventListener("abort", onAbort);
+							return run;
+						},
+						(cause: unknown) => {
+							signal?.removeEventListener("abort", onAbort);
+							throw cause;
+						},
+					);
+				};
+			},
+		});
+		const conversation = runtime.createConversation(projectId);
+		const started = Promise.withResolvers<void>();
+		const stopped = Promise.withResolvers<void>();
+		const unsubscribe = workspace.subscribe((state) => {
+			const run = state.scenarioRuns[scenarios[0]!.id];
+			if (run?.status === "running") started.resolve();
+			if (run?.status === "errored" && run.reason === "stopped") stopped.resolve();
+		});
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("run_scenarios", { mode: "one", scenarioId: scenarios[0]!.id })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Scenario stopped.")]),
+		]);
+		try {
+			const turn = runtime.sendMessage(conversation.id, "Run and stop the Scenario.", "scripted-model");
+			await started.promise;
+			runtime.stop(conversation.id);
+			await turn;
+			await stopped.promise;
+		} finally {
+			unsubscribe();
+		}
+
+		expect(runDetails(runtime, conversation.id)[0]![0]).toMatchObject({ scenario: "Scenario 1", status: "stopped" });
+		expect(workspace.getState().scenarioRuns[scenarios[0]!.id]).toMatchObject({ status: "errored", reason: "stopped" });
+	});
+
 	test("queues an Assistant request behind an active manual run and preserves run staleness", async () => {
 		const { workspace, scenarios, scripted, runtime, projectId } = await setup([
 			"while (true) {}",
