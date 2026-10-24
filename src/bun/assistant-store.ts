@@ -232,9 +232,22 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		renameConversation: (id, title) => Number(rename.run(title, Date.now(), id).changes) > 0,
 		deleteConversation: (id) => Number(remove.run(id).changes) > 0,
 		updateConversationSelection(id, connectionIdOrModel, modelOrThinking, maybeThinking) {
-			const connectionId = maybeThinking !== undefined ? connectionIdOrModel : null;
-			const model = maybeThinking !== undefined ? modelOrThinking : (connectionIdOrModel ?? "");
-			const thinking = maybeThinking !== undefined ? maybeThinking : modelOrThinking;
+			let connectionId: string | null;
+			let model: string;
+			let thinking: string;
+			if (maybeThinking !== undefined) {
+				connectionId = connectionIdOrModel;
+				model = modelOrThinking;
+				thinking = maybeThinking;
+			} else if (connectionIdOrModel && selectConnection.get(connectionIdOrModel)) {
+				connectionId = connectionIdOrModel;
+				model = modelOrThinking;
+				thinking = "medium";
+			} else {
+				connectionId = null;
+				model = connectionIdOrModel ?? "";
+				thinking = modelOrThinking ?? "medium";
+			}
 			return Number(updateSelection.run(connectionId, model, thinking, Date.now(), id).changes) > 0;
 		},
 		getDefaultSelection: () => {
