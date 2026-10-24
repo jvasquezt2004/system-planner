@@ -2,6 +2,35 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import type { Credential, CredentialInfo, CredentialStore } from "@earendil-works/pi-ai";
 
 const SERVICE = "com.dbplanner.schema-designer";
+
+export interface SecretStoreBackend {
+	get(query: { service: string; name: string }): Promise<string | null>;
+	set(query: { service: string; name: string; value: string }): Promise<unknown>;
+	delete(query: { service: string; name: string }): Promise<unknown>;
+}
+
+export interface BunSecretCredentialStoreOptions {
+	secrets?: SecretStoreBackend;
+	service?: string;
+}
+
+export function createInMemorySecretBackend(initial?: Record<string, string>): SecretStoreBackend & { map: Map<string, string> } {
+	const map = new Map<string, string>(Object.entries(initial ?? {}));
+	return {
+		map,
+		async get({ service, name }) {
+			return map.get(`${service}:${name}`) ?? map.get(name) ?? null;
+		},
+		async set({ service, name, value }) {
+			map.set(`${service}:${name}`, value);
+			map.set(name, value);
+		},
+		async delete({ service, name }) {
+			map.delete(`${service}:${name}`);
+			map.delete(name);
+		},
+	};
+}
 const NAME_BY_PROVIDER: Readonly<Record<string, string>> = {
 	anthropic: "anthropic-api-key",
 	openai: "openai-credential",
@@ -21,8 +50,13 @@ export class BunSecretCredentialStore implements CredentialStore {
 	private readonly writes = new Map<string, Promise<unknown>>();
 	private readonly seenProviders = new Set<string>();
 	private readonly fallbackPath: string | null;
-	constructor(databasePath?: string) {
+	private readonly secretsBackend: SecretStoreBackend;
+	private readonly serviceName: string;
+
+	constructor(databasePath?: string, options?: BunSecretCredentialStoreOptions) {
 		this.fallbackPath = databasePath ? `${databasePath}.assistant-credentials.dpapi` : null;
+		this.secretsBackend = options?.secrets ?? Bun.secrets;
+		this.serviceName = options?.service ?? SERVICE;
 	}
 
 	async read(providerId: string, options?: { signal?: AbortSignal }): Promise<Credential | undefined> {
@@ -30,7 +64,7 @@ export class BunSecretCredentialStore implements CredentialStore {
 		const name = credentialSecretName(providerId);
 		let raw: string | null;
 		try {
-			raw = await Bun.secrets.get({ service: SERVICE, name });
+			raw = await this.secretsBackend.get({ service: this.serviceName, name });
 		} catch (error) {
 			if (process.platform !== "win32") throw error;
 			raw = null;
@@ -94,7 +128,7 @@ export class BunSecretCredentialStore implements CredentialStore {
 			if (result !== undefined) {
 				const serialized = JSON.stringify(result);
 				try {
-					await Bun.secrets.set({ service: SERVICE, name, value: serialized });
+					await this.secretsBackend.set({ service: this.serviceName, name, value: serialized });
 					this.removeFallback(name);
 					this.seenProviders.add(providerId);
 				} catch (error) {
@@ -121,7 +155,7 @@ export class BunSecretCredentialStore implements CredentialStore {
 		const write = previous.then(async () => {
 			options?.signal?.throwIfAborted();
 			try {
-				await Bun.secrets.delete({ service: SERVICE, name });
+				await this.secretsBackend.delete({ service: this.serviceName, name });
 			} catch (error) {
 				if (process.platform !== "win32" || !this.fallbackPath) throw error;
 			}

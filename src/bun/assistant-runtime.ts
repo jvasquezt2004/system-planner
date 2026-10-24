@@ -11,7 +11,7 @@ import type {
 	AssistantModel,
 	AssistantProviderConnection,
 } from "../shared/assistant";
-import { BunSecretCredentialStore, createConnectionScopedStore } from "./assistant-credentials";
+import { BunSecretCredentialStore, createConnectionScopedStore, type BunSecretCredentialStoreOptions } from "./assistant-credentials";
 import { applyAssistantDdl } from "./assistant-ddl";
 import type { AssistantStore } from "./assistant-store";
 import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
@@ -49,6 +49,7 @@ export type AssistantRuntimeOptions = {
 	databasePath: string;
 	workspace: DesignWorkspace;
 	models?: MutableModels;
+	credentialsOptions?: BunSecretCredentialStoreOptions;
 	getApiKey?: () => Promise<string | undefined>;
 	streamFn?: ConstructorParameters<typeof Agent>[0]["streamFn"];
 	maxRequestsPerTurn?: number;
@@ -84,9 +85,9 @@ export interface AssistantRuntime {
 }
 
 /** Main-process Assistant entry point; credentials remain outside application SQLite. */
-export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal }: AssistantRuntimeOptions): AssistantRuntime {
+export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal }: AssistantRuntimeOptions): AssistantRuntime {
 	const store: AssistantStore = openAssistantStore(databasePath);
-	const credentials = new BunSecretCredentialStore(databasePath);
+	const credentials = new BunSecretCredentialStore(databasePath, credentialsOptions);
 	const connectionModelsMap = new Map<string, MutableModels>();
 	function getOrInitConnectionModels(conn: AssistantProviderConnection): MutableModels {
 		let connModels = connectionModelsMap.get(conn.id);

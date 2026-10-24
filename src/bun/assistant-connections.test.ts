@@ -15,12 +15,37 @@ import {
 } from "@earendil-works/pi-ai";
 import { createAssistantRuntime, type AssistantRuntime } from "./assistant-runtime";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
-import { BunSecretCredentialStore } from "./assistant-credentials";
+import {
+	BunSecretCredentialStore,
+	createInMemorySecretBackend,
+	type BunSecretCredentialStoreOptions,
+} from "./assistant-credentials";
 
 const directories: string[] = [];
 const workspaces: DesignWorkspace[] = [];
 const runtimes: AssistantRuntime[] = [];
 
+function createTestCredentials(databasePath: string, initialSecrets?: Record<string, string>) {
+	const backend = createInMemorySecretBackend(initialSecrets);
+	if ((backend as unknown) === Bun.secrets) {
+		throw new Error("Guard failed: tests must never use real Bun.secrets!");
+	}
+	const credentialsOptions: BunSecretCredentialStoreOptions = {
+		secrets: backend,
+		service: "com.dbplanner.schema-designer.test",
+	};
+	const store = new BunSecretCredentialStore(databasePath, credentialsOptions);
+	return { store, backend, credentialsOptions };
+}
+
+function createGuardedAssistantRuntime(
+	options: Parameters<typeof createAssistantRuntime>[0] & { credentialsOptions: BunSecretCredentialStoreOptions },
+): AssistantRuntime {
+	if (!options.credentialsOptions?.secrets || (options.credentialsOptions.secrets as unknown) === Bun.secrets) {
+		throw new Error("Guard failed: tests must pass an in-memory secrets backend, never real Bun.secrets!");
+	}
+	return createAssistantRuntime(options);
+}
 afterEach(async () => {
 	for (const runtime of runtimes.splice(0)) runtime.close();
 	for (const workspace of workspaces.splice(0)) await workspace.close();
@@ -49,14 +74,16 @@ describe("Assistant provider connections", () => {
 			models: [{ id: "gemini-2.5-pro", name: "Gemini 2.5 Pro" }],
 		});
 
-		const models = createModels({ credentials: new BunSecretCredentialStore(databasePath) });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
 		models.setProvider(openaiFaux.provider);
 		models.setProvider(googleFaux.provider);
 
-		const runtime = createAssistantRuntime({
+		const runtime = createGuardedAssistantRuntime({
 			databasePath,
 			workspace,
 			models,
+			credentialsOptions,
 		});
 		runtimes.push(runtime);
 
@@ -179,19 +206,20 @@ describe("Assistant provider connections", () => {
 			auth: { oauth: claudeOAuth },
 		};
 
-		const models = createModels({ credentials: new BunSecretCredentialStore(databasePath) });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
 		models.setProvider(fauxOpenAI);
 		models.setProvider(fauxAnthropic);
 
-		const runtime = createAssistantRuntime({
+		const runtime = createGuardedAssistantRuntime({
 			databasePath,
 			workspace,
 			models,
+			credentialsOptions,
 			openExternal: (url) => {
 				surfacedUrls.push(url);
 			},
 		});
-		runtimes.push(runtime);
 
 		runtime.subscribeOAuth((_providerId, event) => {
 			surfacedEvents.push(event);
@@ -253,8 +281,8 @@ describe("Assistant provider connections", () => {
 		const workspace = await createDesignWorkspace({ databasePath });
 		workspaces.push(workspace);
 
-		const runtime = createAssistantRuntime({ databasePath, workspace });
-		runtimes.push(runtime);
+		const { credentialsOptions } = createTestCredentials(databasePath);
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, credentialsOptions });
 
 		// Attempting OAuth login for Google must be rejected explicitly
 		await expect(runtime.startOAuthLogin("google")).rejects.toThrow(/not offered|not supported/i);
@@ -307,11 +335,11 @@ describe("Assistant provider connections", () => {
 			auth: { oauth: failingOAuth },
 		};
 
-		const models = createModels({ credentials: new BunSecretCredentialStore(databasePath) });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
 		models.setProvider(fauxOpenAI);
 
-		const runtime = createAssistantRuntime({ databasePath, workspace, models });
-		runtimes.push(runtime);
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
 
 		// Perform initial login
 		const login = await runtime.startOAuthLogin("openai");
@@ -327,7 +355,6 @@ describe("Assistant provider connections", () => {
 
 		// Now simulate expired token and refresh failure
 		refreshShouldFail = true;
-		const credStore = new BunSecretCredentialStore(databasePath);
 		await credStore.modify(`connection-${oauthConnId}`, async (curr) => {
 			if (curr?.type === "oauth") {
 				return { ...curr, expires: Date.now() - 50_000 };
@@ -396,10 +423,10 @@ describe("Assistant provider connections", () => {
 		};
 
 		// Step 1: Initial runtime saves OAuth connection with expired token
-		const credStore1 = new BunSecretCredentialStore(databasePath);
+		const { store: credStore1, credentialsOptions } = createTestCredentials(databasePath);
 		const models1 = createModels({ credentials: credStore1 });
 		models1.setProvider(fauxOpenAI);
-		const runtime1 = createAssistantRuntime({ databasePath, workspace, models: models1 });
+		const runtime1 = createGuardedAssistantRuntime({ databasePath, workspace, models: models1, credentialsOptions });
 		await runtime1.startOAuthLogin("openai");
 		runtime1.close();
 
@@ -418,7 +445,7 @@ describe("Assistant provider connections", () => {
 		// Step 2: Open fresh runtime across restart on the same database
 		const models2 = createModels();
 		models2.setProvider(fauxOpenAI);
-		const runtime2 = createAssistantRuntime({ databasePath, workspace, models: models2 });
+		const runtime2 = createGuardedAssistantRuntime({ databasePath, workspace, models: models2, credentialsOptions });
 		runtimes.push(runtime2);
 
 		// Resolve auth through runtime: triggers automatic token refresh
@@ -427,7 +454,7 @@ describe("Assistant provider connections", () => {
 		expect(status.connected).toBe(true);
 
 		// Credential store now holds the refreshed token under connection id
-		const credStore2 = new BunSecretCredentialStore(databasePath);
+		const credStore2 = new BunSecretCredentialStore(databasePath, credentialsOptions);
 		const stored = await credStore2.read(`connection-${status.id}`);
 		expect(stored?.type).toBe("oauth");
 		if (stored?.type === "oauth") {
@@ -451,16 +478,17 @@ describe("Assistant provider connections", () => {
 				{ id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
 			],
 		});
-		const models = createModels({ credentials: new BunSecretCredentialStore(databasePath) });
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
 		models.setProvider(faux.provider);
 
-		const runtime = createAssistantRuntime({
+		const runtime = createGuardedAssistantRuntime({
 			databasePath,
 			workspace,
 			models,
+			credentialsOptions,
 			getApiKey: async () => "test-key",
 		});
-		runtimes.push(runtime);
 
 		// Create conversation 1 and update selection
 		const conv1 = runtime.createConversation(state.project.id);
@@ -528,12 +556,11 @@ describe("Assistant provider connections", () => {
 				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
 			},
 		};
-
+		const { credentialsOptions } = createTestCredentials(databasePath);
 		const models = createModels();
 		models.setProvider(customOpenAIProvider as never);
 
-		const runtime = createAssistantRuntime({ databasePath, workspace, models });
-		runtimes.push(runtime);
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
 
 		// (a) An OpenAI API-key connection and a ChatGPT sign-in coexist:
 		const apiKeyConn = await runtime.setAssistantApiKey("openai", openaiApiKey);
@@ -580,7 +607,7 @@ describe("Assistant provider connections", () => {
 
 		// (c) A conversation bound to the sign-in connection keeps using it after a restart:
 		runtime.close();
-		const runtime2 = createAssistantRuntime({ databasePath, workspace, models });
+		const runtime2 = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
 		runtimes.push(runtime2);
 
 		openaiFauxBase.setResponses([
@@ -686,13 +713,13 @@ describe("Assistant provider connections", () => {
 		);
 		db.close();
 
-		// 2. Seed legacy secret into OS secret store under 'anthropic-api-key'
-		await Bun.secrets.set({
-			service: "com.dbplanner.schema-designer",
+		// 2. Seed legacy secret into in-memory backend under 'anthropic-api-key'
+		const { backend, credentialsOptions } = createTestCredentials(databasePath);
+		await backend.set({
+			service: credentialsOptions.service!,
 			name: "anthropic-api-key",
 			value: legacyKey,
 		});
-
 		// 3. Open workspace and runtime (which triggers migration)
 		const workspace = await createDesignWorkspace({ databasePath });
 		workspaces.push(workspace);
@@ -718,8 +745,7 @@ describe("Assistant provider connections", () => {
 
 		const models = createModels();
 		models.setProvider(customAnthropicProvider as never);
-
-		const runtime = createAssistantRuntime({ databasePath, workspace, models });
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
 		runtimes.push(runtime);
 
 		// Assert the connection is connected
@@ -744,15 +770,15 @@ describe("Assistant provider connections", () => {
 		expect(receivedKeys).toContain(legacyKey);
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_migrated");
 
-		// Assert legacy secret is gone from OS secret store
-		const legacySecret = await Bun.secrets.get({
-			service: "com.dbplanner.schema-designer",
+		// Assert legacy secret is gone from in-memory test backend
+		const legacySecret = await backend.get({
+			service: credentialsOptions.service!,
 			name: "anthropic-api-key",
 		});
 		expect(legacySecret).toBeNull();
 
 		// Assert secret is preserved under connection-<id>
-		const credStore = new BunSecretCredentialStore(databasePath);
+		const credStore = new BunSecretCredentialStore(databasePath, credentialsOptions);
 		const migratedSecret = await credStore.read(`connection-${conn.id}`);
 		expect(migratedSecret?.type).toBe("api_key");
 		if (migratedSecret?.type === "api_key") {
@@ -761,7 +787,7 @@ describe("Assistant provider connections", () => {
 
 		// Assert idempotency: restarting runtime does not re-delete or fail
 		runtime.close();
-		const runtimeRestart = createAssistantRuntime({ databasePath, workspace, models });
+		const runtimeRestart = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
 		runtimes.push(runtimeRestart);
 		const connections2 = await runtimeRestart.listConnections();
 		expect(connections2.length).toBe(1);
