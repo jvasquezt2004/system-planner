@@ -12,14 +12,16 @@ export interface AssistantStore {
 	createConversation(projectId: string, firstMessage: AssistantMessage, options?: AssistantConversationOptions): AssistantConversation;
 	renameConversation(id: string, title: string): boolean;
 	deleteConversation(id: string): boolean;
-	updateConversationSelection(id: string, model: string, thinking: string): boolean;
+	updateConversationSelection(id: string, model: string, thinking: string, provider?: string): boolean;
 	getDefaultSelection(): { model: string | null; thinking: string | null };
 	updateDefaultSelection(model: string, thinking: string): void;
+	getClaudeOptIn(): boolean;
+	setClaudeOptIn(optIn: boolean): void;
 	observeProjectRevision(conversationId: string, revision: number): number | null;
 	observeProjectSnapshot(conversationId: string, snapshot: string, revision: number): { snapshot: string; revision: number } | null;
 	appendMessage(conversationId: string, message: AssistantMessage): void;
 	listProviderConnections(): AssistantProviderConnection[];
-	saveProviderConnection(connectionId: AssistantProviderConnection["id"], credentialName: AssistantProviderConnection["credential_name"]): void;
+	saveProviderConnection(connectionId: string, authMethodOrCredential: string, credentialName?: string): void;
 	removeProviderConnection(connectionId: string): void;
 	close(): void;
 }
@@ -57,7 +59,8 @@ const SCHEMA = `
 	CREATE TABLE IF NOT EXISTS assistant_settings (
 		id INTEGER PRIMARY KEY CHECK (id = 1),
 		model TEXT,
-		thinking TEXT
+		thinking TEXT,
+		claude_opt_in INTEGER DEFAULT 0
 	);
 	CREATE TABLE IF NOT EXISTS assistant_project_observations (
 		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
@@ -86,6 +89,10 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	if (!observationColumns.some(({ name }) => name === "snapshot")) {
 		database.exec("ALTER TABLE assistant_project_observations ADD COLUMN snapshot TEXT");
 	}
+	const settingsColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_settings)").all();
+	if (!settingsColumns.some(({ name }) => name === "claude_opt_in")) {
+		database.exec("ALTER TABLE assistant_settings ADD COLUMN claude_opt_in INTEGER DEFAULT 0");
+	}
 	const list = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC`);
 	const latest = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1`);
 	const selectConversation = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE id = ?`);
@@ -95,13 +102,15 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	const touchConversation = database.query(`UPDATE assistant_conversations SET updated_at = ? WHERE id = ?`);
 	const rename = database.query(`UPDATE assistant_conversations SET title = ?, updated_at = ? WHERE id = ?`);
 	const remove = database.query(`DELETE FROM assistant_conversations WHERE id = ?`);
-	const updateSelection = database.query(`UPDATE assistant_conversations SET provider = 'anthropic', model = ?, thinking = ?, updated_at = ? WHERE id = ?`);
+	const updateSelection = database.query(`UPDATE assistant_conversations SET provider = ?, model = ?, thinking = ?, updated_at = ? WHERE id = ?`);
 	const messages = database.query<{ role: string; kind: string | null; payload: string; created_at: number }, [string]>(`SELECT role, kind, payload, created_at FROM assistant_messages WHERE conversation_id = ? ORDER BY sequence ASC`);
 	const listProviderConnections = database.query<AssistantProviderConnection, []>(`SELECT id, auth_method, credential_name, created_at, updated_at FROM assistant_provider_connections ORDER BY id`);
-	const saveProviderConnection = database.query(`INSERT INTO assistant_provider_connections (id, auth_method, credential_name, created_at, updated_at) VALUES (?, 'api-key', ?, ?, ?) ON CONFLICT(id) DO UPDATE SET auth_method = excluded.auth_method, credential_name = excluded.credential_name, updated_at = excluded.updated_at`);
+	const saveProviderConnection = database.query(`INSERT INTO assistant_provider_connections (id, auth_method, credential_name, created_at, updated_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET auth_method = excluded.auth_method, credential_name = excluded.credential_name, updated_at = excluded.updated_at`);
 	const removeProviderConnection = database.query(`DELETE FROM assistant_provider_connections WHERE id = ?`);
 	const getSelection = database.query<{ model: string | null; thinking: string | null }, []>(`SELECT model, thinking FROM assistant_settings WHERE id = 1`);
 	const saveSelection = database.query(`INSERT INTO assistant_settings (id, model, thinking) VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET model = excluded.model, thinking = excluded.thinking`);
+	const getClaudeOptInQuery = database.query<{ claude_opt_in: number | null }, []>(`SELECT claude_opt_in FROM assistant_settings WHERE id = 1`);
+	const saveClaudeOptInQuery = database.query(`INSERT INTO assistant_settings (id, claude_opt_in) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET claude_opt_in = excluded.claude_opt_in`);
 	const getObservedRevision = database.query<{ revision: number }, [string]>(`SELECT revision FROM assistant_project_observations WHERE conversation_id = ?`);
 	const saveObservedRevision = database.query(`INSERT INTO assistant_project_observations (conversation_id, revision) VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET revision = excluded.revision`);
 	const readAndSaveRevision = database.transaction((conversationId: string, revision: number) => {
@@ -136,11 +145,15 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		createConversation: (projectId, message, options = {}) => create.immediate(projectId, message, options, Date.now()),
 		renameConversation: (id, title) => Number(rename.run(title, Date.now(), id).changes) > 0,
 		deleteConversation: (id) => Number(remove.run(id).changes) > 0,
-		updateConversationSelection(id, model, thinking) {
-			return Number(updateSelection.run(model, thinking, Date.now(), id).changes) > 0;
+		updateConversationSelection(id, model, thinking, provider) {
+			const current = selectConversation.get(id);
+			const effectiveProvider = provider ?? current?.provider ?? "anthropic";
+			return Number(updateSelection.run(effectiveProvider, model, thinking, Date.now(), id).changes) > 0;
 		},
 		getDefaultSelection: () => getSelection.get() ?? { model: null, thinking: null },
 		updateDefaultSelection: (model, thinking) => { saveSelection.run(model, thinking); },
+		getClaudeOptIn: () => (getClaudeOptInQuery.get()?.claude_opt_in ?? 0) === 1,
+		setClaudeOptIn: (optIn) => { saveClaudeOptInQuery.run(optIn ? 1 : 0); },
 		observeProjectRevision: (conversationId, revision) => readAndSaveRevision.immediate(conversationId, revision),
 		observeProjectSnapshot: (conversationId, snapshot, revision) => readAndSaveSnapshot.immediate(conversationId, snapshot, revision),
 		appendMessage: (conversationId, message) => append.immediate(conversationId, message, Date.now()),
@@ -150,10 +163,12 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 			return { ...conversation, messages: messages.all(id).map((message) => ({ role: message.role, ...(message.kind === null ? {} : { kind: message.kind }), payload: JSON.parse(message.payload), created_at: message.created_at })) };
 		},
 		listProviderConnections: () => listProviderConnections.all(),
-		saveProviderConnection(connectionId, credentialName) {
+		saveProviderConnection(connectionId, authMethodOrCredential, credentialName) {
 			const now = Date.now();
+			const authMethod = credentialName ? authMethodOrCredential : "api-key";
+			const effectiveCredentialName = credentialName ?? authMethodOrCredential;
 			const existing = listProviderConnections.all().find((connection) => connection.id === connectionId);
-			saveProviderConnection.run(connectionId, credentialName, existing?.created_at ?? now, now);
+			saveProviderConnection.run(connectionId, authMethod, effectiveCredentialName, existing?.created_at ?? now, now);
 		},
 		removeProviderConnection(connectionId) {
 			removeProviderConnection.run(connectionId);

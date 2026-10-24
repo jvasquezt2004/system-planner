@@ -2,6 +2,14 @@ import { Agent, type AgentTool, type ThinkingLevel } from "@earendil-works/pi-ag
 import { createHash } from "node:crypto";
 import { Type, createModels, type MutableModels } from "@earendil-works/pi-ai";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
+import { googleProvider } from "@earendil-works/pi-ai/providers/google";
+import type {
+	AssistantConnectionStatus,
+	AssistantConversation,
+	AssistantConversationRecord,
+	AssistantModel,
+} from "../shared/assistant";
 import { BunSecretCredentialStore } from "./assistant-credentials";
 import { applyAssistantDdl } from "./assistant-ddl";
 import type { AssistantStore } from "./assistant-store";
@@ -43,18 +51,115 @@ export type AssistantRuntimeOptions = {
 	getApiKey?: () => Promise<string | undefined>;
 	streamFn?: ConstructorParameters<typeof Agent>[0]["streamFn"];
 	maxRequestsPerTurn?: number;
+	openExternal?: (url: string) => unknown;
 };
 
+export interface AssistantRuntime {
+	listConversations: (projectId: string) => AssistantConversation[];
+	getLatestConversation: (projectId: string) => AssistantConversation | null;
+	loadConversation: (conversationId: string) => AssistantConversationRecord | null;
+	createConversation: (projectId: string) => AssistantConversation;
+	renameConversation: (conversationId: string, title: string) => boolean;
+	deleteConversation: (conversationId: string) => boolean;
+	listConnections: () => Promise<AssistantConnectionStatus[]>;
+	getConnectionStatus: (connectionId: string) => Promise<AssistantConnectionStatus>;
+	setAssistantApiKey: (providerId: string, apiKey: string) => Promise<void>;
+	removeAssistantConnection: (connectionId: string) => Promise<void>;
+	startOAuthLogin: (providerId: string) => Promise<{ success: boolean; error?: string }>;
+	getClaudeOptIn: () => boolean;
+	setClaudeOptIn: (enabled: boolean) => void;
+	subscribeOAuth: (subscriber: (providerId: string, event: unknown) => void) => () => void;
+	setAnthropicApiKey: (apiKey: string) => Promise<void>;
+	removeAnthropicApiKey: () => Promise<void>;
+	getAnthropicConnectionStatus: () => Promise<{ connected: boolean; error: string | null }>;
+	listModels: () => Promise<AssistantModel[]>;
+	updateConversationSelection: (conversationId: string, model: string, thinking: ThinkingLevel, provider?: string) => void;
+	subscribe: (subscriber: (conversationId: string, event: unknown) => void) => () => void;
+	isTurnPaused: (conversationId: string) => boolean;
+	isConfirmationPending: (conversationId: string) => boolean;
+	continueTurn: (conversationId: string) => Promise<AssistantConversationRecord | null>;
+	stop: (conversationId: string) => void;
+	confirmDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
+	rejectDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
+	sendMessage: (conversationId: string, text: string, modelId: string, thinkingLevel?: ThinkingLevel) => Promise<AssistantConversationRecord | null>;
+	close: () => void;
+}
+
 /** Main-process Assistant entry point; credentials remain outside application SQLite. */
-export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, streamFn, getApiKey, maxRequestsPerTurn = 40 }: AssistantRuntimeOptions) {
+export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal }: AssistantRuntimeOptions): AssistantRuntime {
 	const store: AssistantStore = openAssistantStore(databasePath);
 	const credentials = new BunSecretCredentialStore(databasePath);
 	const models = suppliedModels ?? createModels({ credentials });
-	if (!suppliedModels) models.setProvider(anthropicProvider());
-	const resolveApiKey = getApiKey ?? (async () => {
-		const credential = await credentials.read("anthropic");
-		return credential?.type === "api_key" ? credential.key : undefined;
-	});
+	if (!suppliedModels) {
+		models.setProvider(anthropicProvider());
+		models.setProvider(openaiProvider());
+		models.setProvider(googleProvider());
+	}
+	const oAuthSubscribers = new Set<(providerId: string, event: unknown) => void>();
+	function publishOAuthEvent(providerId: string, event: unknown) {
+		for (const subscriber of oAuthSubscribers) subscriber(providerId, event);
+	}
+	function getProviderDisplayName(providerId: string, authMethod?: string): string {
+		if (providerId === "anthropic") {
+			return authMethod === "oauth" ? "Claude (Account sign-in)" : "Anthropic (API key)";
+		}
+		if (providerId === "openai") {
+			return authMethod === "oauth" ? "ChatGPT (Account sign-in)" : "OpenAI (API key)";
+		}
+		if (providerId === "google") {
+			return "Google Gemini (API key)";
+		}
+		return providerId;
+	}
+	async function getConnectionStatus(providerId: string): Promise<AssistantConnectionStatus> {
+		const saved = store.listProviderConnections().find((c) => c.id === providerId);
+		const authMethod = (saved?.auth_method === "oauth" ? "oauth" : "api-key") as "api-key" | "oauth";
+		const name = getProviderDisplayName(providerId, authMethod);
+		if (!saved) {
+			return {
+				id: providerId,
+				providerId,
+				name,
+				authMethod,
+				connected: false,
+				error: null,
+				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+			};
+		}
+		try {
+			const auth = await models.getAuth(providerId);
+			if (auth) {
+				return {
+					id: providerId,
+					providerId,
+					name,
+					authMethod,
+					connected: true,
+					error: null,
+					claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+				};
+			}
+			return {
+				id: providerId,
+				providerId,
+				name,
+				authMethod,
+				connected: false,
+				error: `${name} credentials missing from credential store.`,
+				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+			};
+		} catch (error) {
+			return {
+				id: providerId,
+				providerId,
+				name,
+				authMethod,
+				connected: false,
+				error: error instanceof Error ? error.message : String(error),
+				claudeOptIn: providerId === "anthropic" ? store.getClaudeOptIn() : undefined,
+			};
+		}
+	}
 	const active = new Map<string, Agent>();
 	const subscribers = new Set<(conversationId: string, event: unknown) => void>();
 	const pausedTurns = new Set<string>();
@@ -308,32 +413,109 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			active.delete(conversationId);
 			return store.deleteConversation(conversationId);
 		},
-		async setAnthropicApiKey(apiKey: string) {
+		async listConnections(): Promise<AssistantConnectionStatus[]> {
+			const candidateIds = ["anthropic", "openai", "google"];
+			const saved = store.listProviderConnections();
+			for (const conn of saved) {
+				if (!candidateIds.includes(conn.id)) candidateIds.push(conn.id);
+			}
+			const statuses: AssistantConnectionStatus[] = [];
+			for (const id of candidateIds) {
+				statuses.push(await getConnectionStatus(id));
+			}
+			return statuses;
+		},
+		async getConnectionStatus(connectionId: string): Promise<AssistantConnectionStatus> {
+			return getConnectionStatus(connectionId);
+		},
+		async setAssistantApiKey(providerId: string, apiKey: string) {
 			const normalized = apiKey.trim();
-			if (!normalized) throw new Error("Enter an Anthropic API key.");
-			await credentials.modify("anthropic", async () => ({ type: "api_key", key: normalized }));
-			store.saveProviderConnection("anthropic", "anthropic-api-key");
+			if (!normalized) throw new Error(`Enter an API key for ${providerId}.`);
+			await credentials.modify(providerId, async () => ({ type: "api_key", key: normalized }));
+			store.saveProviderConnection(providerId, "api-key", `${providerId}-api-key`);
 		},
-		async removeAnthropicApiKey() {
-			await credentials.delete("anthropic");
-			store.removeProviderConnection("anthropic");
+		async removeAssistantConnection(connectionId: string) {
+			await credentials.delete(connectionId);
+			store.removeProviderConnection(connectionId);
 		},
-		async getAnthropicConnectionStatus() {
-			if (!store.listProviderConnections().some(({ id }) => id === "anthropic")) return { connected: false, error: null };
+		async startOAuthLogin(providerId: string) {
+			if (providerId === "google") {
+				throw new Error("Google account sign-in is explicitly not offered.");
+			}
+			if (providerId === "anthropic" && !store.getClaudeOptIn()) {
+				throw new Error("Claude account sign-in requires enabling the opt-in setting.");
+			}
 			try {
-				const credential = await credentials.read("anthropic");
-				return credential?.type === "api_key" && credential.key
-					? { connected: true, error: null }
-					: { connected: false, error: "Anthropic API key is missing from the operating-system credential store." };
+				await models.login(providerId, "oauth", {
+					prompt: async (prompt) => {
+						publishOAuthEvent(providerId, { type: "prompt", prompt });
+						if (prompt.type === "select" && prompt.options[0]) {
+							return prompt.options[0].id;
+						}
+						return "";
+					},
+					notify: (event) => {
+						if (event.type === "auth_url") {
+							if (openExternal) {
+								void openExternal(event.url);
+							}
+						}
+						publishOAuthEvent(providerId, event);
+					},
+				});
+				store.saveProviderConnection(providerId, "oauth", `${providerId}-oauth`);
+				return { success: true };
 			} catch (error) {
-				return { connected: false, error: error instanceof Error ? error.message : String(error) };
+				const message = error instanceof Error ? error.message : String(error);
+				publishOAuthEvent(providerId, { type: "error", error: message });
+				return { success: false, error: message };
 			}
 		},
-		listModels() {
-			return models.getModels("anthropic").map(({ id, name, reasoning, contextWindow }) => ({ id, name, reasoning, contextWindow }));
+		getClaudeOptIn: () => store.getClaudeOptIn(),
+		setClaudeOptIn: (enabled: boolean) => { store.setClaudeOptIn(enabled); },
+		subscribeOAuth(subscriber: (providerId: string, event: unknown) => void) {
+			oAuthSubscribers.add(subscriber);
+			return () => oAuthSubscribers.delete(subscriber);
 		},
-		updateConversationSelection(conversationId: string, model: string, thinking: ThinkingLevel) {
-			store.updateConversationSelection(conversationId, model, thinking);
+		async setAnthropicApiKey(apiKey: string) {
+			await this.setAssistantApiKey("anthropic", apiKey);
+		},
+		async removeAnthropicApiKey() {
+			await this.removeAssistantConnection("anthropic");
+		},
+		async getAnthropicConnectionStatus() {
+			const status = await getConnectionStatus("anthropic");
+			return { connected: status.connected, error: status.error };
+		},
+		async listModels(): Promise<AssistantModel[]> {
+			const connections = await this.listConnections();
+			const result: AssistantModel[] = [];
+			const allRegistered = models.getProviders().map((p) => p.id);
+			const hasConfigured = store.listProviderConnections().length > 0;
+			const targetProviders = hasConfigured
+				? Array.from(new Set(store.listProviderConnections().map((c) => c.id)))
+				: (allRegistered.length > 0 ? allRegistered : ["anthropic", "openai", "google"]);
+
+			for (const providerId of targetProviders) {
+				const conn = connections.find((c) => c.providerId === providerId);
+				const connName = conn ? conn.name : getProviderDisplayName(providerId);
+				const providerModels = models.getModels(providerId);
+				for (const m of providerModels) {
+					result.push({
+						id: m.id,
+						name: m.name,
+						provider: m.provider,
+						connectionId: providerId,
+						connectionName: connName,
+						reasoning: Boolean(m.reasoning),
+						contextWindow: m.contextWindow ?? 0,
+					});
+				}
+			}
+			return result;
+		},
+		updateConversationSelection(conversationId: string, model: string, thinking: ThinkingLevel, provider?: string) {
+			store.updateConversationSelection(conversationId, model, thinking, provider);
 			store.updateDefaultSelection(model, thinking);
 		},
 		subscribe(subscriber: (conversationId: string, event: unknown) => void) {
@@ -493,12 +675,29 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium") {
 			const conversation = requireBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
-			const model = models.getModel("anthropic", modelId);
-			if (!model) throw new Error(`Unknown Anthropic model: ${modelId}`);
-			if (!(await resolveApiKey())) throw new Error("Configure an Anthropic API key before sending a message.");
+			const model = models.getModels().find((m) => m.id === modelId)
+				?? models.getModel("anthropic", modelId)
+				?? models.getModel("openai", modelId)
+				?? models.getModel("google", modelId);
+			if (!model) throw new Error(`Unknown model: ${modelId}`);
+			if (getApiKey) {
+				const key = await getApiKey().catch(() => undefined);
+				if (!key) throw new Error("Configure credentials before sending a message.");
+			} else {
+				let authResult: unknown;
+				try {
+					authResult = await models.getAuth(model);
+				} catch (err) {
+					throw new Error(`Authentication failed for ${model.provider}: ${err instanceof Error ? err.message : String(err)}`);
+				}
+				if (!authResult) {
+					const name = getProviderDisplayName(model.provider);
+					throw new Error(`Configure credentials for ${name} before sending a message.`);
+				}
+			}
 			const currentState = requireBoundState(conversationId).state;
 			let changeNote: { role: "user"; content: string; timestamp: number } | undefined;
-			store.updateConversationSelection(conversationId, modelId, thinkingLevel);
+			store.updateConversationSelection(conversationId, modelId, thinkingLevel, model.provider);
 			store.updateDefaultSelection(modelId, thinkingLevel);
 			const currentSnapshot = projectSnapshot(currentState);
 			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot, currentState.revision);
@@ -543,7 +742,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						messages: transcript as never[],
 					},
 					streamFn: streamFn ?? models.streamSimple.bind(models),
-					getApiKey: resolveApiKey,
+					getApiKey: async (provider) => {
+						if (getApiKey) return getApiKey();
+						const resolved = await models.getAuth(provider);
+						return resolved?.auth.apiKey;
+					},
 					sessionId: conversationId,
 					identity: { attribution: { name: "Schema Designer", url: "https://github.com/jvasquezt2004/db-planner" } },
 					beforeToolCall: async () => pendingConfirmations.has(conversationId)

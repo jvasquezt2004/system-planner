@@ -35,7 +35,11 @@ const databasePath =
 // workspace interface. The view only sees this interface through typed RPC.
 const workspacePromise = createDesignWorkspace({ databasePath });
 const assistantPromise = workspacePromise.then((workspace) =>
-	createAssistantRuntime({ databasePath, workspace }),
+	createAssistantRuntime({
+		databasePath,
+		workspace,
+		openExternal: (url) => Utils.openExternal(url),
+	}),
 );
 
 /** Exports waiting for the view to start the folder picker, by request id. */
@@ -71,10 +75,19 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			deleteAssistantConversation: async ({ conversationId }) =>
 				(await assistantPromise).deleteConversation(conversationId),
 			listAssistantModels: async () => (await assistantPromise).listModels(),
+			listAssistantConnections: async () => (await assistantPromise).listConnections(),
 			getAnthropicConnectionStatus: async () => (await assistantPromise).getAnthropicConnectionStatus(),
 			removeAnthropicApiKey: async () => (await assistantPromise).removeAnthropicApiKey(),
 			setAnthropicApiKey: async ({ apiKey }) =>
 				(await assistantPromise).setAnthropicApiKey(apiKey),
+			setAssistantApiKey: async ({ providerId, apiKey }) =>
+				(await assistantPromise).setAssistantApiKey(providerId, apiKey),
+			removeAssistantConnection: async ({ connectionId }) =>
+				(await assistantPromise).removeAssistantConnection(connectionId),
+			startAssistantOAuthLogin: async ({ providerId }) =>
+				(await assistantPromise).startOAuthLogin(providerId),
+			getClaudeOptIn: async () => (await assistantPromise).getClaudeOptIn(),
+			setClaudeOptIn: async ({ enabled }) => (await assistantPromise).setClaudeOptIn(enabled),
 			sendAssistantMessage: async ({ conversationId, text, modelId, thinkingLevel }) =>
 				(await assistantPromise).sendMessage(conversationId, text, modelId, thinkingLevel),
 			stopAssistantTurn: async ({ conversationId }) =>
@@ -191,6 +204,9 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 void assistantPromise.then((assistant) => {
 	assistant.subscribe((conversationId, event) => {
 		rpc.send.assistantEvent({ conversationId, event });
+	});
+	assistant.subscribeOAuth((providerId, event) => {
+		rpc.send.assistantOAuthEvent({ providerId, event });
 	});
 });
 

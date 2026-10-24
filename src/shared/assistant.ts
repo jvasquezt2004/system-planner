@@ -1,9 +1,31 @@
+export type AssistantAuthMethod = "api-key" | "oauth";
+
 export type AssistantProviderConnection = {
-	id: "anthropic";
-	auth_method: "api-key";
-	credential_name: "anthropic-api-key";
+	id: string;
+	auth_method: AssistantAuthMethod | string;
+	credential_name: string;
 	created_at: number;
 	updated_at: number;
+};
+
+export type AssistantConnectionStatus = {
+	id: string;
+	providerId: string;
+	name: string;
+	authMethod: AssistantAuthMethod;
+	connected: boolean;
+	error: string | null;
+	claudeOptIn?: boolean;
+};
+
+export type AssistantModel = {
+	id: string;
+	name: string;
+	provider: string;
+	connectionId: string;
+	connectionName: string;
+	reasoning: boolean;
+	contextWindow: number;
 };
 
 export type AssistantMessage = {
