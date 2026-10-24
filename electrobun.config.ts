@@ -20,6 +20,8 @@ export default {
 			"node_modules/@electric-sql/pglite/dist/pglite.wasm": "bun/pglite.wasm",
 			"node_modules/@electric-sql/pglite/dist/pglite.data": "bun/pglite.data",
 			"node_modules/@electric-sql/pglite/dist/initdb.wasm": "bun/initdb.wasm",
+			// pgvector is loaded as an extension bundle from the same place.
+			"node_modules/@electric-sql/pglite-pgvector/dist/vector.tar.gz": "bun/vector.tar.gz",
 		},
 		// Ignore Vite output in watch mode — HMR handles view rebuilds separately
 		watchIgnore: ["dist/**"],
