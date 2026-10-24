@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
-import "./monaco-setup";
+import { configureTypeScript } from "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { DesignEnumType, DesignFunction, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
@@ -350,26 +350,13 @@ export function ScenarioView({
 										})),
 									);
 								}}
-								beforeMount={(monaco) => {
-									monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-										target: monaco.languages.typescript.ScriptTarget.ES2022,
-										module: monaco.languages.typescript.ModuleKind.ESNext,
-										moduleResolution: monaco.languages.typescript.ModuleResolutionKind.Bundler,
-										baseUrl: "/",
-										paths: scenarioSupabaseTypePaths,
-										strict: true,
-										noEmit: true,
-									});
-									monaco.languages.typescript.typescriptDefaults.addExtraLib(
-										generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions),
-										"file:///scenario-globals.d.ts",
-									);
-									for (const [filename, contents] of Object.entries(allSupabaseTypeDeclarations)) {
-										monaco.languages.typescript.typescriptDefaults.addExtraLib(
-											contents,
-											scenarioTypeLibraryUri(filename),
-										);
-									}
+								beforeMount={() => {
+									configureTypeScript(scenarioSupabaseTypePaths, [
+										[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), "file:///scenario-globals.d.ts"],
+										...Object.entries(allSupabaseTypeDeclarations).map(
+											([filename, contents]): [string, string] => [contents, scenarioTypeLibraryUri(filename)],
+										),
+									]);
 								}}
 								options={{
 									ariaLabel: "Scenario TypeScript source",

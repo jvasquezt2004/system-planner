@@ -12,3 +12,25 @@ monacoEnvironment.MonacoEnvironment = {
 };
 
 loader.config({ monaco });
+
+/** TypeScript's `ModuleResolutionKind.Bundler`; Monaco's exported enum only lists Classic and NodeJs. */
+const BUNDLER_MODULE_RESOLUTION = 100 as monaco.typescript.ModuleResolutionKind;
+
+/**
+ * Configures the TypeScript language service shared by the Scenario and Edge
+ * function editors. Monaco 0.57 exposes it as the top-level `typescript`
+ * namespace; `languages.typescript` is only a deprecated, empty stub at runtime.
+ */
+export function configureTypeScript(paths: Record<string, string[]>, libraries: Array<[content: string, uri: string]>) {
+	const { typescriptDefaults, ScriptTarget, ModuleKind } = monaco.typescript;
+	typescriptDefaults.setCompilerOptions({
+		target: ScriptTarget.ESNext,
+		module: ModuleKind.ESNext,
+		moduleResolution: BUNDLER_MODULE_RESOLUTION,
+		baseUrl: "/",
+		paths,
+		strict: true,
+		noEmit: true,
+	});
+	for (const [content, uri] of libraries) typescriptDefaults.addExtraLib(content, uri);
+}

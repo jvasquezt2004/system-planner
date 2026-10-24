@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
-import "./monaco-setup";
+import { configureTypeScript } from "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { EdgeFunction, EdgeFunctionSaveState, DesignEnumType, DesignFunction, SandboxAppliedTable } from "../shared/design";
 import { generateScenarioDatabaseTypes, scenarioTypeLibraryUri } from "../shared/scenario-types";
@@ -129,17 +129,11 @@ export function EdgeFunctionsView({
 							if (!monaco || !model || !markers.some((marker) => marker.severity === monaco.MarkerSeverity.Error)) return;
 							monaco.editor.setModelMarkers(model, "typescript", markers.map((marker) => ({ ...marker, severity: monaco.MarkerSeverity.Warning })));
 						}}
-							beforeMount={(monaco) => {
-							monaco.languages.typescript.typescriptDefaults.setCompilerOptions({
-								target: monaco.languages.typescript.ScriptTarget.ES2022,
-								module: monaco.languages.typescript.ModuleKind.ESNext,
-								moduleResolution: monaco.languages.typescript.ModuleResolutionKind.Bundler,
-								baseUrl: "/", paths: edgeFunctionSupabaseTypePaths, strict: true, noEmit: true,
-							});
-							monaco.languages.typescript.typescriptDefaults.addExtraLib(edgeFunctionDenoDeclarations, "file:///edge-function-deno.d.ts");
-							monaco.languages.typescript.typescriptDefaults.addExtraLib(generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), "file:///edge-function-database.d.ts");
-							for (const [filename, contents] of Object.entries(allSupabaseTypeDeclarations)) monaco.languages.typescript.typescriptDefaults.addExtraLib(contents, scenarioTypeLibraryUri(filename));
-						}}
+							beforeMount={() => configureTypeScript(edgeFunctionSupabaseTypePaths, [
+							[edgeFunctionDenoDeclarations, "file:///edge-function-deno.d.ts"],
+							[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), "file:///edge-function-database.d.ts"],
+							...Object.entries(allSupabaseTypeDeclarations).map(([filename, contents]): [string, string] => [contents, scenarioTypeLibraryUri(filename)]),
+						])}
 							options={{ ariaLabel: "Edge function TypeScript source", fontFamily: "IBM Plex Mono, monospace", fontSize: 13, minimap: { enabled: false }, scrollBeyondLastLine: false, wordWrap: "on" }}
 						/>
 					</section> : <div className="flex min-w-0 flex-col items-center justify-center px-8 text-center"><FileCode2 className="size-6 text-ink-4" /><p className="mt-3 font-display text-[18px] italic text-ink-3">Your next Edge function starts here.</p><p className="mt-1 max-w-sm text-[12.5px] text-ink-3">Create a named handler to edit its saved TypeScript source.</p></div>}
