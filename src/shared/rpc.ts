@@ -38,6 +38,7 @@ import type {
 	SandboxApiResponse,
 	ScenarioRun,
 	WorkspaceState,
+	Scenario,
 } from "./design";
 import type { SchemaCodeSnapshot } from "./schema-code";
 export type SqlPreviewExportRequest = Readonly<{
@@ -182,6 +183,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };
+			assistantScenarioRunCompleted: { requestId: string; run: ScenarioRun | null; error?: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
@@ -191,6 +193,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		messages: {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
+			assistantScenarioRunRequest: { requestId: string; projectId: string; scenario: Scenario };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
 		};

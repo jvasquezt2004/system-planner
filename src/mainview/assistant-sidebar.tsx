@@ -802,6 +802,13 @@ function MessageCard({
 		&& typeof details.name === "string"
 		? { before: details.before, after: details.after, kind: details.kind as "scenario" | "edge-function" | "function-body", id: details.id, name: details.name }
 		: null;
+	const scenarioRuns = Array.isArray(details?.runs)
+		? details.runs.filter((run): run is { scenarioId: string; scenario: string; status: string; runId: string } =>
+			Boolean(run && typeof run === "object" && "scenarioId" in run && typeof run.scenarioId === "string"
+				&& "scenario" in run && typeof run.scenario === "string" && "status" in run && typeof run.status === "string"
+				&& "runId" in run && typeof run.runId === "string"),
+		)
+		: [];
 	const isTool = message.role === "toolResult" || message.kind === "tool-result" || Boolean(toolCall);
 	const summary = message.kind === "event" ? "Assistant activity" : isTool ? "Tool call and result" : message.role === "user" ? "You" : "Assistant";
 	const content = record && "content" in record ? record.content : payload;
@@ -812,6 +819,14 @@ function MessageCard({
 				<summary className="cursor-pointer font-medium">{summary}</summary>
 				<pre className="mt-2 whitespace-pre-wrap break-words text-ink-3">{printable}</pre>
 			</details>
+			{scenarioRuns.map((run) => (
+				<div key={run.runId} className="mt-2 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1.5">
+					<span>{run.scenario}: {run.status}</span>
+					<button type="button" onClick={() => onSelectCodeSource("scenario", run.scenarioId)} className="underline underline-offset-2">
+						Open Scenario
+					</button>
+				</div>
+			))}
 			{codeDiff && (
 				<div className="mt-2 rounded-sm border border-ink/15 p-2">
 					<button type="button" onClick={() => onSelectCodeSource(codeDiff.kind, codeDiff.id)} className="font-medium underline underline-offset-2">

@@ -29,6 +29,7 @@ export type ScenarioRunDriverOptions = {
 
 export type ScenarioRunDriver = {
 	run(scenario: Scenario): Promise<ScenarioRun | null>;
+	runQueued(scenario: Scenario | (() => Scenario | null)): Promise<ScenarioRun | null>;
 	stop(runId: string): Promise<ScenarioRun | null>;
 	cancel(): void;
 	dispose(): void;
@@ -61,6 +62,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 	let active: ActiveRun | null = null;
 	let disposed = false;
 	const pendingStops = new Set<string>();
+	let queueTail: Promise<void> = Promise.resolve();
 
 	const isCurrent = (run?: ActiveRun) =>
 		!disposed &&
@@ -251,6 +253,23 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 				}
 			}
 			return promise;
+		},
+		runQueued(scenario) {
+			const queued = queueTail.then(async () => {
+				while (!disposed && isCurrent()) {
+					if (active) {
+						await active.promise;
+						continue;
+					}
+					const currentScenario = typeof scenario === "function" ? scenario() : scenario;
+					if (!currentScenario) return null;
+					const result = await this.run(currentScenario);
+					if (result) return result;
+				}
+				return null;
+			});
+			queueTail = queued.then(() => undefined, () => undefined);
+			return queued;
 		},
 		stop(runId) {
 			const run = active;

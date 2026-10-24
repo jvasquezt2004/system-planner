@@ -116,6 +116,7 @@ function App() {
 	const scenarioRunDriver = useRef<ScenarioRunDriver | null>(null);
 	const runAllOperation = useRef<RunAllOperation | null>(null);
 	const scenarioStartOperation = useRef<object | null>(null);
+	const scenarioStateRef = useRef<WorkspaceState | null>(null);
 
 	const resetScenarioExecution = useCallback(() => {
 		scenarioRunDriver.current?.cancel();
@@ -133,6 +134,7 @@ function App() {
 			resetScenarioExecution();
 		}
 		setState(next);
+		scenarioStateRef.current = next;
 	}, [resetScenarioExecution]);
 
 	if (!scenarioRunDriver.current) {
@@ -150,6 +152,32 @@ function App() {
 			onState: receiveWorkspaceState,
 		});
 	}
+	useEffect(() => workspaceClient.subscribeAssistantScenarioRuns((request) => {
+		const current = scenarioStateRef.current;
+		if (!current || current.project?.id !== request.projectId || projectIdRef.current !== request.projectId) {
+			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The project changed before the Scenario run could start.");
+			return;
+		}
+		const scenario = current.scenarios.find(({ id }) => id === request.scenario.id);
+		if (!scenario) {
+			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The requested Scenario no longer exists in this project.");
+			return;
+		}
+		void scenarioRunDriver.current?.runQueued(() => {
+			const latest = scenarioStateRef.current;
+			return latest?.project?.id === request.projectId
+				? latest.scenarios.find(({ id }) => id === request.scenario.id) ?? null
+				: null;
+		}).then((run) => {
+			if (projectIdRef.current !== request.projectId) {
+				void workspaceClient.completeAssistantScenarioRun(request.requestId, null, "The project changed while the Scenario was running.");
+				return;
+			}
+			void workspaceClient.completeAssistantScenarioRun(request.requestId, run);
+		}).catch((cause: unknown) => {
+			void workspaceClient.completeAssistantScenarioRun(request.requestId, null, errorMessage(cause));
+		});
+	}), []);
 
 	useEffect(() => {
 		let active = true;

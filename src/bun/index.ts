@@ -1,7 +1,7 @@
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { join } from "node:path";
-import type { SqlPreviewExportResult } from "../shared/design";
+import type { ScenarioRun, SqlPreviewExportResult } from "../shared/design";
 import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
@@ -33,12 +33,23 @@ const databasePath =
 
 // Keep the authoritative design and the disposable sandbox behind one public
 // workspace interface. The view only sees this interface through typed RPC.
+const pendingAssistantScenarioRuns = new Map<string, {
+	resolve: (run: ScenarioRun | null) => void;
+	reject: (error: Error) => void;
+}>();
 const workspacePromise = createDesignWorkspace({ databasePath });
 const assistantPromise = workspacePromise.then((workspace) =>
 	createAssistantRuntime({
 		databasePath,
 		workspace,
 		openExternal: (url) => Utils.openExternal(url),
+		runScenario: (projectId, scenario) => {
+			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
+			const requestId = crypto.randomUUID();
+			pendingAssistantScenarioRuns.set(requestId, { resolve, reject });
+			rpc.send.assistantScenarioRunRequest({ requestId, projectId, scenario });
+			return promise;
+		},
 	}),
 );
 
@@ -194,6 +205,13 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				void runExport().then((result) => {
 					rpc.send.sqlPreviewExportCompleted({ requestId, result });
 				});
+			},
+			assistantScenarioRunCompleted: ({ requestId, run, error }) => {
+				const pending = pendingAssistantScenarioRuns.get(requestId);
+				if (!pending) return;
+				pendingAssistantScenarioRuns.delete(requestId);
+				if (error) pending.reject(new Error(error));
+				else pending.resolve(run);
 			},
 		},
 	},
