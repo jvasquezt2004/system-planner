@@ -16,6 +16,7 @@ export interface AssistantStore {
 	getDefaultSelection(): { model: string | null; thinking: string | null };
 	updateDefaultSelection(model: string, thinking: string): void;
 	observeProjectRevision(conversationId: string, revision: number): number | null;
+	observeProjectSnapshot(conversationId: string, snapshot: string): string | null;
 	appendMessage(conversationId: string, message: AssistantMessage): void;
 	listProviderConnections(): AssistantProviderConnection[];
 	saveProviderConnection(connectionId: AssistantProviderConnection["id"], credentialName: AssistantProviderConnection["credential_name"]): void;
@@ -60,7 +61,8 @@ const SCHEMA = `
 	);
 	CREATE TABLE IF NOT EXISTS assistant_project_observations (
 		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
-		revision INTEGER NOT NULL
+		revision INTEGER NOT NULL,
+		snapshot TEXT
 	);
 `;
 
@@ -80,6 +82,10 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	mkdirSync(dirname(databasePath), { recursive: true });
 	const database = new Database(databasePath, { create: true });
 	database.exec(SCHEMA);
+	const observationColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_project_observations)").all();
+	if (!observationColumns.some(({ name }) => name === "snapshot")) {
+		database.exec("ALTER TABLE assistant_project_observations ADD COLUMN snapshot TEXT");
+	}
 	const list = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC`);
 	const latest = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE project_id = ? ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1`);
 	const selectConversation = database.query<AssistantConversation, [string]>(`SELECT id, project_id, title, created_at, updated_at, provider, model, thinking FROM assistant_conversations WHERE id = ?`);
@@ -101,6 +107,13 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	const readAndSaveRevision = database.transaction((conversationId: string, revision: number) => {
 		const previous = getObservedRevision.get(conversationId)?.revision ?? null;
 		saveObservedRevision.run(conversationId, revision);
+		return previous;
+	});
+	const getObservedSnapshot = database.query<{ snapshot: string | null }, [string]>(`SELECT snapshot FROM assistant_project_observations WHERE conversation_id = ?`);
+	const saveObservedSnapshot = database.query(`INSERT INTO assistant_project_observations (conversation_id, revision, snapshot) VALUES (?, 0, ?) ON CONFLICT(conversation_id) DO UPDATE SET snapshot = excluded.snapshot`);
+	const readAndSaveSnapshot = database.transaction((conversationId: string, snapshot: string) => {
+		const previous = getObservedSnapshot.get(conversationId)?.snapshot ?? null;
+		saveObservedSnapshot.run(conversationId, snapshot);
 		return previous;
 	});
 	const create = database.transaction((projectId: string, message: AssistantMessage, options: AssistantConversationOptions, now: number) => {
@@ -127,6 +140,7 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		getDefaultSelection: () => getSelection.get() ?? { model: null, thinking: null },
 		updateDefaultSelection: (model, thinking) => { saveSelection.run(model, thinking); },
 		observeProjectRevision: (conversationId, revision) => readAndSaveRevision.immediate(conversationId, revision),
+		observeProjectSnapshot: (conversationId, snapshot) => readAndSaveSnapshot.immediate(conversationId, snapshot),
 		appendMessage: (conversationId, message) => append.immediate(conversationId, message, Date.now()),
 		loadConversation: (id) => {
 			const conversation = selectConversation.get(id);

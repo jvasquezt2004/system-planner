@@ -43,6 +43,8 @@ describe("Assistant conversations", () => {
 			expect(store.observeProjectRevision(conversation.id, 4)).toBeNull();
 			expect(store.observeProjectRevision(conversation.id, 4)).toBe(4);
 			expect(store.observeProjectRevision(conversation.id, 5)).toBe(4);
+			expect(store.observeProjectSnapshot(conversation.id, "{\"scenarios\":[]}")).toBeNull();
+			expect(store.observeProjectSnapshot(conversation.id, "{\"scenarios\":[\"review\"]}")).toBe("{\"scenarios\":[]}");
 			store.appendMessage(conversation.id, { role: "assistant", payload: { role: "assistant", content: [{ type: "toolCall", name: "apply_ddl", arguments: { sql: "CREATE TABLE authors (id integer);" } }] } });
 			store.appendMessage(conversation.id, { role: "toolResult", kind: "tool-result", payload: { toolCallId: "t1", content: [{ type: "text", text: "applied" }] } });
 			const loaded = store.loadConversation(conversation.id);

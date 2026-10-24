@@ -593,6 +593,10 @@ function App() {
 			<section className="relative min-h-0 flex-1">
 				{state.project && state.design ? (
 					<>
+						<div
+							className="h-full"
+							style={{ marginRight: assistantCollapsed ? 40 : assistantWidth }}
+						>
 						{/*
 						 * The canvas stays mounted behind the SQL preview, so its pan, zoom,
 						 * and pending layout save survive switching views.
@@ -704,6 +708,7 @@ function App() {
 								}
 							/>
 						)}
+						</div>
 					{state.project && (
 						<AssistantSidebar
 							api={workspaceClient}

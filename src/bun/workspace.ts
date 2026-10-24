@@ -183,6 +183,57 @@ export async function createDesignWorkspace(
 		};
 	}
 
+	function rebaseManualEdits(aiAfter: unknown, manualAfter: unknown, aiBefore: unknown): unknown {
+		if (JSON.stringify(aiAfter) === JSON.stringify(manualAfter)) return structuredClone(aiBefore);
+		if (Array.isArray(aiAfter) && Array.isArray(manualAfter) && Array.isArray(aiBefore)) {
+			const keyed = [...aiAfter, ...manualAfter, ...aiBefore].every((item) =>
+				item !== null && typeof item === "object" && "id" in item && typeof item.id === "string",
+			);
+			if (!keyed) return structuredClone(manualAfter);
+			const beforeById = new Map(aiBefore.map((item) => [(item as { id: string }).id, item]));
+			const afterById = new Map(aiAfter.map((item) => [(item as { id: string }).id, item]));
+			const manualById = new Map(manualAfter.map((item) => [(item as { id: string }).id, item]));
+			const ids = new Set([...beforeById.keys(), ...afterById.keys(), ...manualById.keys()]);
+			const merged: unknown[] = [];
+			for (const id of ids) {
+				const oldValue = afterById.get(id);
+				const manualValue = manualById.get(id);
+				const baseValue = beforeById.get(id);
+				if (manualValue === undefined) {
+					if (oldValue === undefined) continue;
+					continue;
+				}
+				if (oldValue === undefined) {
+					merged.push(structuredClone(manualValue));
+					continue;
+				}
+				const value = rebaseManualEdits(oldValue, manualValue, baseValue);
+				if (value !== undefined) merged.push(value);
+			}
+			return merged;
+		}
+		if (aiAfter && manualAfter && aiBefore
+			&& typeof aiAfter === "object" && typeof manualAfter === "object" && typeof aiBefore === "object"
+			&& !Array.isArray(aiAfter) && !Array.isArray(manualAfter) && !Array.isArray(aiBefore)) {
+			const oldRecord = aiAfter as Record<string, unknown>;
+			const manualRecord = manualAfter as Record<string, unknown>;
+			const baseRecord = aiBefore as Record<string, unknown>;
+			const merged: Record<string, unknown> = structuredClone(baseRecord);
+			for (const key of new Set([...Object.keys(oldRecord), ...Object.keys(manualRecord)])) {
+				if (!(key in manualRecord)) {
+					delete merged[key];
+				} else if (!(key in oldRecord)) {
+					merged[key] = structuredClone(manualRecord[key]);
+				} else {
+					const value = rebaseManualEdits(oldRecord[key], manualRecord[key], baseRecord[key]);
+					if (value === undefined) delete merged[key];
+					else merged[key] = value;
+				}
+			}
+			return merged;
+		}
+		return structuredClone(manualAfter);
+	}
 	function recordDesignChange(
 		projectId: string,
 		before: Design,
@@ -196,14 +247,35 @@ export async function createDesignWorkspace(
 			histories.set(projectId, history);
 		}
 		history.entries.length = history.cursor;
-		const previous = assistantTurnId ? history.entries[history.cursor - 1] : undefined;
-		if (assistantTurnId && previous?.assistantTurnId === assistantTurnId) {
-			previous.after = after;
-			previous.structural ||= structural;
-		} else {
-			history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
-			history.cursor = history.entries.length;
+		if (assistantTurnId) {
+			let firstTurnEntry = history.cursor - 1;
+			while (firstTurnEntry >= 0 && history.entries[firstTurnEntry].assistantTurnId === undefined) firstTurnEntry -= 1;
+			const previous = history.entries[firstTurnEntry];
+			if (previous?.assistantTurnId === assistantTurnId) {
+				let rebased = previous.before;
+				const manualEntries: DesignHistoryEntry[] = [];
+				for (let index = firstTurnEntry + 1; index < history.cursor; index += 1) {
+					const entry = history.entries[index];
+					if (entry.assistantTurnId) continue;
+					const next = rebaseManualEdits(entry.before, entry.after, rebased) as Design;
+					if (JSON.stringify(rebased) !== JSON.stringify(next)) {
+						manualEntries.push({ before: rebased, after: next, structural: entry.structural });
+						rebased = next;
+					}
+				}
+				const assistantEntry: DesignHistoryEntry = {
+					before: rebased,
+					after,
+					structural: previous.structural || structural,
+					assistantTurnId,
+				};
+				history.entries.splice(firstTurnEntry, history.cursor - firstTurnEntry, ...manualEntries, assistantEntry);
+				history.cursor = firstTurnEntry + manualEntries.length + 1;
+				return getUndoRedoState(projectId);
+			}
 		}
+		history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
+		history.cursor = history.entries.length;
 		return getUndoRedoState(projectId);
 	}
 	let state: WorkspaceState = {

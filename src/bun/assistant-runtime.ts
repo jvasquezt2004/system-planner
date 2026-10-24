@@ -36,8 +36,26 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const requestsThisTurn = new Map<string, number>();
 	const turnIds = new Map<string, string>();
 	const pendingConfirmations = new Set<string>();
+	const confirmingDrops = new Set<string>();
 	const requestLimit = maxRequestsPerTurn;
+	type BoundWorkspaceState = ReturnType<DesignWorkspace["getState"]> & {
+		project: NonNullable<ReturnType<DesignWorkspace["getState"]>["project"]>;
+		design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>;
+	};
 
+
+	function requireBoundState(conversationId: string) {
+		const conversation = store.loadConversation(conversationId);
+		if (!conversation) throw new Error("Conversation not found.");
+		const state = workspace.getState();
+		if (!state.project || !state.design || state.project.id !== conversation.project_id) {
+			throw new Error("This conversation is bound to a different project. Reopen its project before using project tools.");
+		}
+		return { conversation, state: state as BoundWorkspaceState };
+	}
+	function projectSnapshot(state: ReturnType<DesignWorkspace["getState"]>): string {
+		return JSON.stringify({ design: state.design, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions });
+	}
 	function publish(conversationId: string, event: unknown) {
 		for (const subscriber of subscribers) subscriber(conversationId, event);
 	}
@@ -48,10 +66,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		description: "Read the current project design, generated SQL, sandbox status, Functions, Triggers, Policies, Scenarios, Edge functions, and Scenario run results. Always use this before proposing changes.",
 		parameters: Type.Object({}),
 		execute: async () => {
-			const state = workspace.getState();
-			if (!state.project || !state.design) throw new Error("No project is open.");
+			const { state } = requireBoundState(conversationId);
 			const generated = generateDesignSql(state.design);
-			store.observeProjectRevision(conversationId, state.revision);
+			store.observeProjectSnapshot(conversationId, projectSnapshot(state));
 			return {
 				content: [{ type: "text", text: JSON.stringify({
 					project: state.project,
@@ -77,14 +94,21 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		parameters: Type.Object({ sql: Type.String({ description: "PostgreSQL DDL to parse and apply" }) }),
 		executionMode: "sequential",
 		execute: async (_toolCallId, params) => {
+			const { conversation } = requireBoundState(conversationId);
 			const { sql } = params as { sql: string };
 			const before = workspace.getState().design;
-			const result = await applyAssistantDdl(workspace, sql, { assistantTurnId: turnIds.get(conversationId) });
-			if (result.status === "confirmation-required") pendingConfirmations.add(conversationId);
+			const result = await applyAssistantDdl(workspace, sql, {
+				assistantTurnId: turnIds.get(conversationId),
+				expectedProjectId: conversation.project_id,
+			});
+			if (result.status === "confirmation-required") {
+				pendingConfirmations.add(conversationId);
+				publish(conversationId, { type: "assistant_confirmation_required" });
+			}
 			let affectedTables: { id: string; name: string; removed?: boolean }[] = [];
 			if (result.status === "applied") {
-				const after = workspace.getState();
-				store.observeProjectRevision(conversationId, after.revision);
+				const after = result.state;
+				store.observeProjectSnapshot(conversationId, projectSnapshot(after));
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				affectedTables = (after.design?.tables ?? [])
 					.filter((table) => JSON.stringify(beforeById.get(table.id)) !== JSON.stringify(table))
@@ -94,8 +118,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					if (!afterIds.has(table.id)) affectedTables.push({ id: table.id, name: table.name, removed: true });
 				}
 			}
-			const details = result.status === "applied" ? { ...result, affectedTables } : result;
-			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+			const confirmationDetails = result.status === "applied" ? { ...result, affectedTables } : result;
+			return {
+				content: [{ type: "text", text: JSON.stringify(confirmationDetails) }],
+				details: confirmationDetails,
+				...(result.status === "confirmation-required" ? { terminate: true } : {}),
+			};
 		},
 	},
 ];
@@ -151,10 +179,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			subscribers.add(subscriber);
 			return () => subscribers.delete(subscriber);
 		},
-		isTurnPaused: (conversationId: string) => pausedTurns.has(conversationId),
+		isTurnPaused: (conversationId: string) => pausedTurns.has(conversationId) || pendingConfirmations.has(conversationId),
+		isConfirmationPending: (conversationId: string) => pendingConfirmations.has(conversationId),
 		async continueTurn(conversationId: string) {
 			const agent = active.get(conversationId);
-			if (!agent || !pausedTurns.delete(conversationId)) throw new Error("This Assistant turn is not waiting to continue.");
+			if (!agent || pendingConfirmations.has(conversationId) || !pausedTurns.delete(conversationId)) throw new Error("This Assistant turn is not waiting to continue.");
 			requestsThisTurn.set(conversationId, 0);
 			const message = { role: "user" as const, content: "Continue the interrupted Assistant task.", timestamp: Date.now() };
 			store.appendMessage(conversationId, { role: "user", kind: "assistant-continue", payload: message });
@@ -166,65 +195,104 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			active.get(conversationId)?.abort();
 		},
 		async confirmDdlDrop(conversationId: string, toolCallId: string) {
-			const conversation = store.loadConversation(conversationId);
-			if (!conversation) throw new Error("Conversation not found.");
+			const { conversation, state } = requireBoundState(conversationId);
+			if (confirmingDrops.has(toolCallId)) throw new Error("This DDL confirmation is already being processed.");
+			if (conversation.messages.some((message) => {
+				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
+				return "toolCallId" in message.payload && message.payload.toolCallId === toolCallId;
+			})) throw new Error("This DDL confirmation has already been used.");
+			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
 			const confirmation = [...conversation.messages].reverse().find((message) => {
 				const payload = message.payload;
 				if (message.role !== "toolResult" || !payload || typeof payload !== "object" || !("toolCallId" in payload) || !("details" in payload)) return false;
 				const details = payload.details;
-				return payload.toolCallId === toolCallId
-					&& details !== null
-					&& typeof details === "object"
-					&& "status" in details
-					&& details.status === "confirmation-required";
+				return payload.toolCallId === toolCallId && details !== null && typeof details === "object"
+					&& "status" in details && details.status === "confirmation-required";
 			});
 			if (!confirmation) throw new Error("This DDL confirmation is no longer available.");
 			const payload = confirmation.payload;
-			if (!payload || typeof payload !== "object" || !("details" in payload)) throw new Error("The saved DDL confirmation is malformed.");
+			if (!payload || typeof payload !== "object" || !("details" in payload) || !("toolCallId" in payload)) throw new Error("The saved DDL confirmation is malformed.");
 			const details = payload.details;
-			if (!details || typeof details !== "object" || !("statement" in details) || typeof details.statement !== "string") {
-				throw new Error("The saved DDL confirmation is malformed.");
+			const savedPlan = details as {
+				statement: string;
+				projectId: string;
+				revision: number;
+				removal: unknown;
+				targets: { targetId: string }[];
+			};
+			if (!details || typeof details !== "object" || !("statement" in details) || typeof details.statement !== "string"
+				|| !Array.isArray(savedPlan.targets) || savedPlan.targets.some((target) => !target || typeof target.targetId !== "string")
+				|| savedPlan.projectId !== conversation.project_id || savedPlan.revision !== state.revision) {
 			}
-			const statement = details.statement;
-			const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
-			turnIds.set(conversationId, turnId);
-			const result = await applyAssistantDdl(workspace, statement, { assistantTurnId: turnId, confirmedDrops: true });
-			if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
-			pendingConfirmations.delete(conversationId);
-			store.observeProjectRevision(conversationId, workspace.getState().revision);
-			const message = { role: "user" as const, content: "The user confirmed the destructive DDL change. Report its result.", timestamp: Date.now() };
-			store.appendMessage(conversationId, { role: "user", kind: "assistant-drop-confirmation", payload: message });
-			const agent = active.get(conversationId);
-			if (agent) {
-				pausedTurns.delete(conversationId);
-				if (agent.state.isStreaming) agent.steer(message);
-				else await agent.prompt(message.content);
+			const statement = savedPlan.statement;
+			confirmingDrops.add(toolCallId);
+			try {
+				const plan = await applyAssistantDdl(workspace, statement, { expectedProjectId: conversation.project_id });
+				if (plan.status !== "confirmation-required" || plan.projectId !== savedPlan.projectId || plan.revision !== savedPlan.revision
+					|| JSON.stringify(plan.removal) !== JSON.stringify(savedPlan.removal)
+					|| JSON.stringify(plan.targets) !== JSON.stringify(savedPlan.targets)) {
+					throw new Error("The destructive DDL plan changed. Review the updated plan before confirming.");
+				}
+				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
+				turnIds.set(conversationId, turnId);
+				store.appendMessage(conversationId, {
+					role: "system",
+					kind: "assistant-drop-confirmation",
+					payload: { toolCallId, status: "consumed" },
+				});
+				const result = await applyAssistantDdl(workspace, statement, {
+					assistantTurnId: turnId,
+					confirmedDrops: true,
+					expectedProjectId: conversation.project_id,
+					confirmation: {
+						projectId: savedPlan.projectId,
+						revision: savedPlan.revision,
+						targetIds: savedPlan.targets.map(({ targetId }) => targetId),
+					},
+				});
+				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
+				pendingConfirmations.delete(conversationId);
+				publish(conversationId, { type: "assistant_confirmation_resolved" });
+				store.observeProjectSnapshot(conversationId, projectSnapshot(workspace.getState()));
+				const message = { role: "user" as const, content: "The user confirmed the destructive DDL change. Report its result.", timestamp: Date.now() };
+				store.appendMessage(conversationId, { role: "user", kind: "assistant-drop-confirmation", payload: { ...message, toolCallId } });
+				const agent = active.get(conversationId);
+				if (agent) {
+					agent.clearAllQueues();
+					pausedTurns.delete(conversationId);
+					if (agent.state.isStreaming) agent.steer(message);
+					else await agent.prompt(message.content);
+				}
+				return store.loadConversation(conversationId);
+			} finally {
+				confirmingDrops.delete(toolCallId);
 			}
-			return store.loadConversation(conversationId);
 		},
 		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium") {
-			const conversation = store.loadConversation(conversationId);
-			if (!conversation) throw new Error("Conversation not found.");
+			const conversation = requireBoundState(conversationId).conversation;
+			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
 			const model = models.getModel("anthropic", modelId);
 			if (!model) throw new Error(`Unknown Anthropic model: ${modelId}`);
 			if (!(await resolveApiKey())) throw new Error("Configure an Anthropic API key before sending a message.");
+			const currentState = requireBoundState(conversationId).state;
+			let changeNote: { role: "user"; content: string; timestamp: number } | undefined;
 			store.updateConversationSelection(conversationId, modelId, thinkingLevel);
 			store.updateDefaultSelection(modelId, thinkingLevel);
-			const currentState = workspace.getState();
-			const currentRevision = currentState.revision;
-			const previousRevision = store.observeProjectRevision(conversationId, currentRevision);
-			if (previousRevision !== null && previousRevision !== currentRevision) {
-				const summary = {
-					tables: currentState.design?.tables.map(({ name }) => name) ?? [],
-					scenarios: currentState.scenarios.map(({ name }) => name),
-					edgeFunctions: currentState.edgeFunctions.map(({ name }) => name),
-				};
-				const note = `Project changed since revision ${previousRevision}; it is now revision ${currentRevision}. Current project summary: ${JSON.stringify(summary)}. Re-read the project before acting.`;
-				store.appendMessage(conversationId, {
+			const currentSnapshot = projectSnapshot(currentState);
+			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot);
+			if (previousSnapshot !== null && previousSnapshot !== currentSnapshot) {
+				const previous = JSON.parse(previousSnapshot) as { design?: unknown; scenarios?: unknown; edgeFunctions?: unknown };
+				const changed = [
+					...(JSON.stringify(previous.design) !== JSON.stringify(currentState.design) ? ["schema design"] : []),
+					...(JSON.stringify(previous.scenarios) !== JSON.stringify(currentState.scenarios) ? ["scenarios"] : []),
+					...(JSON.stringify(previous.edgeFunctions) !== JSON.stringify(currentState.edgeFunctions) ? ["Edge functions"] : []),
+				];
+				changeNote = {
 					role: "user",
-					kind: "assistant-change-note",
-					payload: { role: "user", content: note, timestamp: Date.now() },
-				});
+					content: `Project changed since your last snapshot (${changed.join(", ")}). These latest saved definitions are authoritative. Re-read the project before acting.`,
+					timestamp: Date.now(),
+				};
+				store.appendMessage(conversationId, { role: "user", kind: "assistant-change-note", payload: changeNote });
 			}
 			const userMessage = { role: "user" as const, content: text, timestamp: Date.now() };
 			if (!conversation.messages.some((message) => message.role === "user")) {
@@ -233,9 +301,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			store.appendMessage(conversationId, { role: "user", payload: userMessage });
 			let agent = active.get(conversationId);
 			if (agent?.state.isStreaming) {
+				if (changeNote) agent.steer(changeNote);
 				agent.steer(userMessage);
 				return store.loadConversation(conversationId);
 			}
+			const hadAgent = Boolean(agent);
 			if (!agent) {
 				const transcript = (store.loadConversation(conversationId)?.messages ?? [])
 					.slice(0, -1)
@@ -254,9 +324,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					getApiKey: resolveApiKey,
 					sessionId: conversationId,
 					identity: { attribution: { name: "Schema Designer", url: "https://github.com/jvasquezt2004/db-planner" } },
+					beforeToolCall: async () => pendingConfirmations.has(conversationId)
+						? { block: true, reason: "Waiting for destructive DDL confirmation.", terminate: true }
+						: undefined,
 				});
 				agent.finishTurn = async ({ message }) => {
 					if (message.stopReason === "error" || message.stopReason === "aborted") return;
+					if (pendingConfirmations.has(conversationId)) return { action: "end" };
 					const requests = (requestsThisTurn.get(conversationId) ?? 0) + 1;
 					requestsThisTurn.set(conversationId, requests);
 					if (requests < requestLimit) return;
@@ -273,7 +347,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				});
 				active.set(conversationId, agent);
 			}
+			if (hadAgent && changeNote) agent.state.messages.push(changeNote);
 			agent.state.model = model;
+			agent.state.thinkingLevel = thinkingLevel;
 			requestsThisTurn.set(conversationId, 0);
 			pausedTurns.delete(conversationId);
 			turnIds.set(conversationId, crypto.randomUUID());

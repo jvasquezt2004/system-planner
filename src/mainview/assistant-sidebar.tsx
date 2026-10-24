@@ -60,13 +60,25 @@ export function AssistantSidebar({
 	const [pending, setPending] = useState(false);
 	const [connection, setConnection] = useState<{ connected: boolean; error: string | null }>({ connected: false, error: null });
 	const [turnPaused, setTurnPaused] = useState(false);
-	const scrollRef = useRef<HTMLDivElement>(null);
+	const [confirmationRequired, setConfirmationRequired] = useState(false);
+	const contextRef = useRef({ projectId, activeId, generation: 0 });
+	if (contextRef.current.projectId !== projectId || contextRef.current.activeId !== activeId) {
+		contextRef.current = {
+			projectId,
+			activeId,
+			generation: contextRef.current.generation + 1,
+		};
+	}
 
+	const scrollRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
 		let live = true;
+		setPending(false);
 		setConversations([]);
 		setMessages([]);
 		setActiveId("");
+		setTurnPaused(false);
+		setConfirmationRequired(false);
 		Promise.all([
 			api.listAssistantConversations(projectId),
 			api.listAssistantModels(),
@@ -90,12 +102,16 @@ export function AssistantSidebar({
 	}, [api, projectId]);
 
 	useEffect(() => {
+		let live = true;
+		setPending(false);
 		if (!activeId) {
 			setMessages([]);
 			setTurnPaused(false);
-			return;
+			setConfirmationRequired(false);
+			return () => {
+				live = false;
+			};
 		}
-		let live = true;
 		setMessages([]);
 		api.getAssistantConversation(activeId)
 			.then((conversation: AssistantConversationRecord | null) => {
@@ -108,8 +124,11 @@ export function AssistantSidebar({
 			.catch((cause: unknown) => {
 				if (live) setError(String(cause));
 			});
-		api.getAssistantTurnStatus(activeId).then(({ paused }) => {
-			if (live) setTurnPaused(paused);
+		api.getAssistantTurnStatus(activeId).then(({ paused, confirmationRequired: requiresConfirmation }) => {
+			if (live) {
+				setTurnPaused(paused);
+				setConfirmationRequired(requiresConfirmation);
+			}
 		}).catch((cause: unknown) => { if (live) setError(String(cause)); });
 		return () => {
 			live = false;
@@ -120,7 +139,17 @@ export function AssistantSidebar({
 		if (!activeId) return;
 		return api.subscribeAssistantEvents((envelope: StreamEnvelope) => {
 			if (envelope.conversationId !== activeId) return;
-			if (envelope.event && typeof envelope.event === "object" && "type" in envelope.event && envelope.event.type === "assistant_turn_paused") setTurnPaused(true);
+			if (envelope.event && typeof envelope.event === "object" && "type" in envelope.event) {
+				if (envelope.event.type === "assistant_turn_paused") setTurnPaused(true);
+				if (envelope.event.type === "assistant_confirmation_required") {
+					setTurnPaused(true);
+					setConfirmationRequired(true);
+				}
+				if (envelope.event.type === "assistant_confirmation_resolved") {
+					setTurnPaused(false);
+					setConfirmationRequired(false);
+				}
+			}
 			setMessages((current) => [...current, {
 				role: "assistant",
 				kind: "event",
@@ -137,7 +166,8 @@ export function AssistantSidebar({
 		setError("");
 		try {
 			const conversation = await api.createAssistantConversation(projectId);
-			if (model) await api.updateAssistantConversationSelection(conversation.id, model, thinking);
+			if (conversation.model) setModel(conversation.model);
+			if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 			setConversations((current) => [conversation, ...current]);
 			setActiveId(conversation.id);
 		} catch (cause) {
@@ -181,51 +211,67 @@ export function AssistantSidebar({
 	}
 
 	async function continueTurn() {
+		const requestContext = contextRef.current;
 		if (!activeId || pending) return;
 		setPending(true);
 		setError("");
 		try {
 			const saved = await api.continueAssistantTurn(activeId) as AssistantConversationRecord | null;
-			if (saved) setMessages(saved.messages);
+			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
 		} catch (cause) {
-			setError(String(cause));
+			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
 		} finally {
-			setPending(false);
-			const status = await api.getAssistantTurnStatus(activeId);
-			setTurnPaused(status.paused);
+			if (contextRef.current.generation === requestContext.generation) {
+				setPending(false);
+				const status = await api.getAssistantTurnStatus(activeId);
+				if (contextRef.current.generation === requestContext.generation) {
+					setTurnPaused(status.paused);
+					setConfirmationRequired(status.confirmationRequired);
+				}
+			}
 		}
 	}
 
 	async function confirmDrop(toolCallId: string) {
+		const requestContext = contextRef.current;
 		if (!activeId || pending) return;
 		setPending(true);
 		setError("");
 		try {
 			const saved = await api.confirmAssistantDdlDrop(activeId, toolCallId);
-			if (saved) setMessages(saved.messages);
+			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
 		} catch (cause) {
-			setError(String(cause));
+			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
 		} finally {
-			setPending(false);
+			if (contextRef.current.generation === requestContext.generation) {
+				setPending(false);
+				const status = await api.getAssistantTurnStatus(activeId);
+				if (contextRef.current.generation === requestContext.generation) {
+					setTurnPaused(status.paused);
+					setConfirmationRequired(status.confirmationRequired);
+				}
+			}
 		}
 	}
 	async function sendMessage() {
 		const message = text.trim();
-		if (!message || !activeId || !model || pending) return;
+		if (!message || !activeId || !model || pending || confirmationRequired) return;
+		const requestContext = contextRef.current;
 		setText("");
 		setMessages((current) => [...current, { role: "user", payload: message }]);
 		setPending(true);
 		setError("");
 		try {
 			const saved = await api.sendAssistantMessage(activeId, message, model, thinking) as AssistantConversationRecord | null;
+			if (contextRef.current.generation !== requestContext.generation) return;
 			if (saved) {
 				setMessages(saved.messages);
 				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
 			}
 		} catch (cause) {
-			setError(String(cause));
+			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
 		} finally {
-			setPending(false);
+			if (contextRef.current.generation === requestContext.generation) setPending(false);
 		}
 	}
 
@@ -314,6 +360,7 @@ export function AssistantSidebar({
 				<div className="flex items-end gap-2">
 					<textarea
 						aria-label="Message"
+						disabled={confirmationRequired}
 						value={text}
 						onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setText(event.target.value)}
 						onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -328,10 +375,12 @@ export function AssistantSidebar({
 					/>
 					{pending ? (
 						<button aria-label="Stop assistant response" onClick={() => void api.stopAssistantTurn(activeId).catch((cause: unknown) => setError(String(cause)))} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Stop</button>
+					) : confirmationRequired ? (
+						<button aria-label="Waiting for destructive confirmation" disabled className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Confirm plan above</button>
 					) : turnPaused ? (
 						<button aria-label="Continue assistant response" onClick={() => void continueTurn()} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Continue</button>
 					) : (
-						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
+						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
 							<Send className="size-4" />
 						</button>
 					)}

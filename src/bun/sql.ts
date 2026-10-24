@@ -240,9 +240,12 @@ export function generateDesignSql(design: Design): SqlGeneration {
 				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
 		),
 		...pairConstraintSql,
+		...design.tables.flatMap((table) => renderPolicies(table)),
 		...(design.functions ?? []).map((fn) => renderFunction(fn, design)),
 		...(design.triggers ?? []).map((trigger) => renderTrigger(trigger, design)),
-		...design.tables.flatMap((table) => renderPolicies(table)),
+		...design.tables.flatMap((table) => table.columns.flatMap((column) =>
+			column.notes.trim() ? [`COMMENT ON COLUMN ${quoteIdentifier(table.name)}.${quoteIdentifier(column.name)} IS ${quoteString(column.notes)};`] : [],
+		)),
 	];
 	return { ok: true, sql: `${statements.join("\n\n")}\n` };
 }

@@ -83,6 +83,7 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 				(await assistantPromise).continueTurn(conversationId),
 			getAssistantTurnStatus: async ({ conversationId }) => ({
 				paused: (await assistantPromise).isTurnPaused(conversationId),
+				confirmationRequired: (await assistantPromise).isConfirmationPending(conversationId),
 			}),
 			updateAssistantConversationSelection: async ({ conversationId, modelId, thinkingLevel }) =>
 				(await assistantPromise).updateConversationSelection(conversationId, modelId, thinkingLevel),
