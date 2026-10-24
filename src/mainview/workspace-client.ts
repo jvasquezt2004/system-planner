@@ -277,6 +277,12 @@ export const workspaceClient = {
 	setClaudeOptIn(enabled: boolean) {
 		return rpc.request.setClaudeOptIn({ enabled });
 	},
+	getAssistantRequestCap() {
+		return rpc.request.getAssistantRequestCap({});
+	},
+	setAssistantRequestCap(limit: number) {
+		return rpc.request.setAssistantRequestCap({ limit });
+	},
 	subscribeAssistantOAuthEvents(listener: (event: { providerId: string; event: unknown }) => void) {
 		assistantOAuthListeners.add(listener);
 		return () => { assistantOAuthListeners.delete(listener); };
@@ -286,6 +292,9 @@ export const workspaceClient = {
 	},
 	getAssistantTurnStatus(conversationId: string) {
 		return rpc.request.getAssistantTurnStatus({ conversationId });
+	},
+	revertAssistantTurn(conversationId: string) {
+		return rpc.request.revertAssistantTurn({ conversationId });
 	},
 	updateAssistantConversationSelection(conversationId: string, connectionId: string | null, modelId: string, thinkingLevel: AssistantThinkingLevel) {
 		return rpc.request.updateAssistantConversationSelection({ conversationId, connectionId, modelId, thinkingLevel });

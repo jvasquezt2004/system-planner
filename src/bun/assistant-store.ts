@@ -28,6 +28,8 @@ export interface AssistantStore {
 	saveTurnUsage(conversationId: string, turnId: string, usage: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cost?: number | null }): void;
 	getTurnUsages(conversationId: string): AssistantTurnUsage[];
 	getConversationTotalUsage(conversationId: string): AssistantTotalUsage;
+	getMaxRequestsPerTurn(): number;
+	setMaxRequestsPerTurn(limit: number): void;
 	saveCompaction(conversationId: string, summary: string, firstKeptMessageId: string): void;
 	getCompaction(conversationId: string): { summary: string; firstKeptMessageId: string | null; createdAt: number } | null;
 	close(): void;
@@ -71,7 +73,8 @@ const SCHEMA = `
 		connection_id TEXT,
 		model TEXT,
 		thinking TEXT,
-		claude_opt_in INTEGER DEFAULT 0
+		claude_opt_in INTEGER DEFAULT 0,
+		max_requests_per_turn INTEGER NOT NULL DEFAULT 40
 	);
 	CREATE TABLE IF NOT EXISTS assistant_project_observations (
 		conversation_id TEXT PRIMARY KEY REFERENCES assistant_conversations(id) ON DELETE CASCADE,
@@ -148,6 +151,9 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	if (!settingsColumns.some(({ name }) => name === "connection_id")) {
 		database.exec("ALTER TABLE assistant_settings ADD COLUMN connection_id TEXT");
 	}
+	if (!settingsColumns.some(({ name }) => name === "max_requests_per_turn")) {
+		database.exec("ALTER TABLE assistant_settings ADD COLUMN max_requests_per_turn INTEGER NOT NULL DEFAULT 40");
+	}
 	const messageColumns = database.query<{ name: string }, []>("PRAGMA table_info(assistant_messages)").all();
 	if (!messageColumns.some(({ name }) => name === "id")) {
 		database.exec("ALTER TABLE assistant_messages ADD COLUMN id TEXT");
@@ -175,6 +181,8 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 	const saveSelection = database.query(`INSERT INTO assistant_settings (id, connection_id, model, thinking) VALUES (1, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET connection_id = excluded.connection_id, model = excluded.model, thinking = excluded.thinking`);
 	const getClaudeOptInQuery = database.query<{ claude_opt_in: number | null }, []>(`SELECT claude_opt_in FROM assistant_settings WHERE id = 1`);
 	const saveClaudeOptInQuery = database.query(`INSERT INTO assistant_settings (id, claude_opt_in) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET claude_opt_in = excluded.claude_opt_in`);
+	const getMaxRequestsQuery = database.query<{ max_requests_per_turn: number }, []>(`SELECT max_requests_per_turn FROM assistant_settings WHERE id = 1`);
+	const setMaxRequestsQuery = database.query(`INSERT INTO assistant_settings (id, max_requests_per_turn) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET max_requests_per_turn = excluded.max_requests_per_turn`);
 	const getObservedRevision = database.query<{ revision: number }, [string]>(`SELECT revision FROM assistant_project_observations WHERE conversation_id = ?`);
 	const saveObservedRevision = database.query(`INSERT INTO assistant_project_observations (conversation_id, revision) VALUES (?, ?) ON CONFLICT(conversation_id) DO UPDATE SET revision = excluded.revision`);
 	const readAndSaveRevision = database.transaction((conversationId: string, revision: number) => {
@@ -233,6 +241,11 @@ export function openAssistantStore(databasePath: string): AssistantStore {
 		},
 		getClaudeOptIn: () => (getClaudeOptInQuery.get()?.claude_opt_in ?? 0) === 1,
 		setClaudeOptIn: (optIn) => { saveClaudeOptInQuery.run(optIn ? 1 : 0); },
+		getMaxRequestsPerTurn: () => getMaxRequestsQuery.get()?.max_requests_per_turn ?? 40,
+		setMaxRequestsPerTurn(limit) {
+			if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error("Request cap must be an integer between 1 and 500.");
+			setMaxRequestsQuery.run(limit);
+		},
 		observeProjectRevision: (conversationId, revision) => readAndSaveRevision.immediate(conversationId, revision),
 		observeProjectSnapshot: (conversationId, snapshot, revision) => readAndSaveSnapshot.immediate(conversationId, snapshot, revision),
 		appendMessage: (conversationId, message) => append.immediate(conversationId, message, Date.now()),

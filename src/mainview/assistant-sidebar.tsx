@@ -35,8 +35,11 @@ type AssistantApi = Pick<
 	| "updateAssistantConversationSelection"
 	| "confirmAssistantDdlDrop"
 	| "rejectAssistantDdlDrop"
+	| "revertAssistantTurn"
 	| "subscribeAssistantEvents"
 	| "subscribeAssistantOAuthEvents"
+	| "getAssistantRequestCap"
+	| "setAssistantRequestCap"
 >;
 type StreamEnvelope = { conversationId: string; event: unknown };
 
@@ -71,7 +74,7 @@ export function AssistantSidebar({
 	const [deviceCode, setDeviceCode] = useState<{ providerId: string; userCode: string; verificationUri: string } | null>(null);
 	const [oAuthProgress, setOAuthProgress] = useState<{ providerId: string; message: string } | null>(null);
 	const [cacheWarning, setCacheWarning] = useState<string | null>(null);
-	const [expandedSettings, setExpandedSettings] = useState(false);
+	const [requestCap, setRequestCap] = useState(40);
 	const [apiKeys, setApiKeys] = useState<Record<string, string>>({ anthropic: "", openai: "", google: "" });
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState<AssistantThinkingLevel>("medium");
@@ -80,6 +83,8 @@ export function AssistantSidebar({
 	const [pending, setPending] = useState(false);
 	const [turnPaused, setTurnPaused] = useState(false);
 	const [confirmationRequired, setConfirmationRequired] = useState(false);
+	const [expandedSettings, setExpandedSettings] = useState(false);
+	const [revertAvailable, setRevertAvailable] = useState(false);
 	const initialConversationModelRef = useRef<string | null>(null);
 	const [turnUsages, setTurnUsages] = useState<AssistantTurnUsage[]>([]);
 	const [totalUsage, setTotalUsage] = useState<AssistantTotalUsage | null>(null);
@@ -106,13 +111,15 @@ export function AssistantSidebar({
 			api.listAssistantModels(),
 			api.listAssistantConnections(),
 			api.getClaudeOptIn(),
+			api.getAssistantRequestCap(),
 		])
-			.then(([items, available, connectionList, optIn]) => {
+			.then(([items, available, connectionList, optIn, cap]) => {
 				if (!live) return;
 				const recent = [...items].sort((a, b) => b.updated_at - a.updated_at);
 				setConversations(recent);
 				setConnections(connectionList);
 				setClaudeOptIn(optIn);
+				setRequestCap(cap);
 				if (available[0]) {
 					setModel(available[0].id);
 					setSelectedConnectionId(available[0].connectionId);
@@ -402,8 +409,9 @@ export function AssistantSidebar({
 	}
 	async function sendMessage() {
 		const message = text.trim();
-		if (!message || !activeId || !model || pending || confirmationRequired) return;
+		if (!message || !activeId || !model || confirmationRequired) return;
 		const requestContext = contextRef.current;
+		const steering = pending;
 		setText("");
 		setMessages((current) => [...current, { role: "user", payload: message }]);
 		setPending(true);
@@ -417,10 +425,14 @@ export function AssistantSidebar({
 				setTotalUsage(saved.totalUsage ?? null);
 				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
 			}
+			if (contextRef.current.generation === requestContext.generation) {
+				const status = await api.getAssistantTurnStatus(activeId);
+				setRevertAvailable(status.revertAvailable);
+			}
 		} catch (cause) {
 			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
 		} finally {
-			if (contextRef.current.generation === requestContext.generation) setPending(false);
+			if (contextRef.current.generation === requestContext.generation && !steering) setPending(false);
 		}
 	}
 
@@ -608,16 +620,23 @@ export function AssistantSidebar({
 						rows={3}
 						className="min-w-0 flex-1 resize-y rounded-sm border border-ink/20 bg-transparent p-2 text-sm outline-none focus:border-ink/50"
 					/>
-					{pending ? (
+					{pending && (
 						<button aria-label="Stop assistant response" onClick={() => void api.stopAssistantTurn(activeId).catch((cause: unknown) => setError(String(cause)))} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Stop</button>
-					) : confirmationRequired ? (
+					)}
+					{confirmationRequired ? (
 						<button aria-label="Waiting for destructive confirmation" disabled className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Confirm plan above</button>
 					) : turnPaused ? (
 						<button aria-label="Continue assistant response" onClick={() => void continueTurn()} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Continue</button>
 					) : (
-						<button aria-label="Send message" disabled={!activeId || !text.trim() || !model || confirmationRequired || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
+						<button aria-label={pending ? "Steer assistant" : "Send message"} disabled={!activeId || !text.trim() || !model || isConnectionRemoved} onClick={() => void sendMessage()} className="rounded-sm bg-ink px-2.5 py-2 text-paper disabled:opacity-40">
 							<Send className="size-4" />
 						</button>
+					)}
+					{revertAvailable && !pending && (
+						<button aria-label="Revert this Assistant turn" onClick={() => void api.revertAssistantTurn(activeId).then((saved) => {
+							if (saved) setMessages(saved.messages);
+							setRevertAvailable(false);
+						}).catch((cause: unknown) => setError(String(cause)))} className="rounded-sm border border-ink/25 px-2.5 py-2 text-xs">Revert this turn</button>
 					)}
 				</div>
 				<details className="mt-2" open={expandedSettings} onToggle={(event) => setExpandedSettings((event.target as HTMLDetailsElement).open)}>
@@ -625,6 +644,24 @@ export function AssistantSidebar({
 						Provider connections · {connections.filter((c) => c.connected).length} connected
 					</summary>
 					<div className="mt-2 space-y-3">
+						<label className="flex items-center justify-between gap-2 text-xs">
+							<span>Model requests per Assistant turn</span>
+							<input
+								aria-label="Model requests per Assistant turn"
+								type="number"
+								min={1}
+								max={500}
+								value={requestCap}
+								onChange={(event) => {
+									const cap = Number(event.target.value);
+									setRequestCap(cap);
+									if (Number.isInteger(cap) && cap >= 1 && cap <= 500) {
+										void api.setAssistantRequestCap(cap).catch((cause: unknown) => setError(String(cause)));
+									}
+								}}
+								className="w-16 rounded border border-ink/20 bg-transparent px-1 py-0.5"
+							/>
+						</label>
 						{/* Anthropic / Claude connection */}
 						<div className="rounded border border-ink/10 p-2 text-xs">
 							<div className="flex items-center justify-between font-medium">

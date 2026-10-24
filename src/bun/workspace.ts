@@ -125,6 +125,13 @@ export interface DesignWorkspace {
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
 	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
+	restoreAssistantProjectSnapshot(input: {
+		projectId: string;
+		design: Design;
+		scenarios: Scenario[];
+		edgeFunctions: EdgeFunction[];
+		expectedSnapshot: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
+	}): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
 	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
@@ -1140,6 +1147,24 @@ export async function createDesignWorkspace(
 				};
 				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
 				return applyStructuralChange(projectId, validated, true, assistantTurnId);
+			});
+		},
+		restoreAssistantProjectSnapshot(input) {
+			return runTask(async () => {
+				const current = state;
+				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
+				const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
+				const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
+				if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
+				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
+				if (JSON.stringify({ ...restored, viewport: null }) !== JSON.stringify({ ...current.design, viewport: null })) {
+					await applyStructuralChange(input.projectId, restored, true);
+				}
+				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
+				await updateScenarios(input.projectId, () => structuredClone(input.scenarios));
+				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
+				await updateEdgeFunctions(input.projectId, () => structuredClone(input.edgeFunctions));
+				return state;
 			});
 		},
 		addTable(action) {

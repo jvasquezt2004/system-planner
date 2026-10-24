@@ -111,4 +111,17 @@ describe("Assistant conversations", () => {
 			store.close();
 		}
 	});
+	test("persists the adjustable request cap across a store restart", async () => {
+		const { databasePath } = await setup();
+		const first = openAssistantStore(databasePath);
+		expect(first.getMaxRequestsPerTurn()).toBe(40);
+		first.setMaxRequestsPerTurn(12);
+		first.close();
+		const restarted = openAssistantStore(databasePath);
+		try {
+			expect(restarted.getMaxRequestsPerTurn()).toBe(12);
+		} finally {
+			restarted.close();
+		}
+	});
 });

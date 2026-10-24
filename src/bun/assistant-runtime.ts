@@ -113,6 +113,8 @@ export interface AssistantRuntime {
 	startOAuthLogin: (providerId: string) => Promise<{ success: boolean; connection?: AssistantProviderConnection; error?: string }>;
 	getClaudeOptIn: () => boolean;
 	setClaudeOptIn: (enabled: boolean) => void;
+	getMaxRequestsPerTurn: () => number;
+	setMaxRequestsPerTurn: (limit: number) => void;
 	subscribeOAuth: (subscriber: (providerId: string, event: unknown) => void) => () => void;
 	listModels: () => Promise<AssistantModel[]>;
 	updateConversationSelection: (conversationId: string, connectionIdOrModel: string | null, modelOrThinking: string, maybeThinking?: ThinkingLevel) => void;
@@ -121,6 +123,8 @@ export interface AssistantRuntime {
 	isConfirmationPending: (conversationId: string) => boolean;
 	continueTurn: (conversationId: string) => Promise<AssistantConversationRecord | null>;
 	stop: (conversationId: string) => void;
+	canRevertTurn: (conversationId: string) => boolean;
+	revertTurn: (conversationId: string) => Promise<AssistantConversationRecord | null>;
 	confirmDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
 	rejectDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
 	sendMessage: (conversationId: string, text: string, modelId: string, thinkingLevel?: ThinkingLevel, connectionId?: string) => Promise<AssistantConversationRecord | null>;
@@ -168,7 +172,7 @@ function scenarioToolResult(details: unknown) {
 }
 
 /** Main-process Assistant entry point; credentials remain outside application SQLite. */
-export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn = 40, openExternal, scenarioRunTimeoutMs = SCENARIO_RUN_TIMEOUT_MS + 15_000, runScenario }: AssistantRuntimeOptions): AssistantRuntime {
+export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn, openExternal, scenarioRunTimeoutMs = SCENARIO_RUN_TIMEOUT_MS + 15_000, runScenario }: AssistantRuntimeOptions): AssistantRuntime {
 	const store: AssistantStore = openAssistantStore(databasePath);
 	const credentials = new BunSecretCredentialStore(databasePath, credentialsOptions);
 	const connectionModelsMap = new Map<string, MutableModels>();
@@ -290,6 +294,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const pausedTurns = new Set<string>();
 	const requestsThisTurn = new Map<string, number>();
 	const turnIds = new Map<string, string>();
+	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
+	const latestTurnByProject = new Map<string, string>();
 	const pendingConfirmations = new Set<string>();
 	const confirmingDrops = new Set<string>();
 	const turnUsages = new Map<string, {
@@ -446,7 +452,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return;
 		}
 	}
-	const requestLimit = maxRequestsPerTurn;
+	const requestLimit = () => maxRequestsPerTurn ?? store.getMaxRequestsPerTurn();
 	type BoundWorkspaceState = ReturnType<DesignWorkspace["getState"]> & {
 		project: NonNullable<ReturnType<DesignWorkspace["getState"]>["project"]>;
 		design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>;
@@ -869,7 +875,36 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			return () => subscribers.delete(subscriber);
 		},
 		isTurnPaused: (conversationId: string) => pausedTurns.has(conversationId) || pendingConfirmations.has(conversationId),
+		getMaxRequestsPerTurn: () => maxRequestsPerTurn ?? store.getMaxRequestsPerTurn(),
+		setMaxRequestsPerTurn(limit) {
+			store.setMaxRequestsPerTurn(limit);
+		},
 		isConfirmationPending: (conversationId: string) => pendingConfirmations.has(conversationId),
+		canRevertTurn(conversationId) {
+			const checkpoint = turnCheckpoints.get(conversationId);
+			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
+			const state = workspace.getState();
+			if (state.project?.id !== checkpoint.projectId || !state.design) return false;
+			return JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === JSON.stringify({
+				design: { ...checkpoint.after.design, viewport: null },
+				scenarios: checkpoint.after.scenarios,
+				edgeFunctions: checkpoint.after.edgeFunctions,
+			});
+		},
+		async revertTurn(conversationId) {
+			const checkpoint = turnCheckpoints.get(conversationId);
+			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) throw new Error("This Assistant turn is no longer available to revert.");
+			await workspace.restoreAssistantProjectSnapshot({
+				projectId: checkpoint.projectId,
+				design: checkpoint.before.design,
+				scenarios: checkpoint.before.scenarios,
+				edgeFunctions: checkpoint.before.edgeFunctions,
+				expectedSnapshot: checkpoint.after,
+			});
+			turnCheckpoints.delete(conversationId);
+			latestTurnByProject.delete(checkpoint.projectId);
+			return store.loadConversation(conversationId);
+		},
 		async continueTurn(conversationId: string) {
 			const agent = active.get(conversationId);
 			if (!agent || pendingConfirmations.has(conversationId) || !pausedTurns.delete(conversationId)) throw new Error("This Assistant turn is not waiting to continue.");
@@ -1100,6 +1135,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			}
 			const userRowId = store.appendMessage(conversationId, { role: "user", payload: userMessage });
 			(userMessage as { id?: string }).id = userRowId;
+			const checkpointBefore = {
+				design: structuredClone(currentState.design),
+				scenarios: structuredClone(currentState.scenarios),
+				edgeFunctions: structuredClone(currentState.edgeFunctions),
+			};
 			let agent = active.get(conversationId);
 			if (agent?.state.isStreaming) {
 				if (changeNote) agent.steer(changeNote);
@@ -1144,7 +1184,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					if (pendingConfirmations.has(conversationId)) return { action: "end" };
 					const requests = (requestsThisTurn.get(conversationId) ?? 0) + 1;
 					requestsThisTurn.set(conversationId, requests);
-					if (requests < requestLimit) return;
+					if (requests < requestLimit()) return;
 					pausedTurns.add(conversationId);
 					publish(conversationId, { type: "assistant_turn_paused", requestCount: requests });
 					return { action: "end" };
@@ -1196,6 +1236,16 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 								turnUsages.delete(conversationId);
 							}
 							turnIds.delete(conversationId);
+							const completedState = workspace.getState();
+							const checkpoint = turnCheckpoints.get(conversationId);
+							if (checkpoint && completedState.project?.id === checkpoint.projectId && completedState.design) {
+								checkpoint.after = {
+									design: structuredClone(completedState.design),
+									scenarios: structuredClone(completedState.scenarios),
+									edgeFunctions: structuredClone(completedState.edgeFunctions),
+								};
+								latestTurnByProject.set(checkpoint.projectId, conversationId);
+							}
 						}
 					}
 				});
@@ -1208,6 +1258,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			pausedTurns.delete(conversationId);
 			turnUsages.set(conversationId, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null });
 			turnIds.set(conversationId, crypto.randomUUID());
+			turnCheckpoints.set(conversationId, {
+				turnId: turnIds.get(conversationId)!,
+				projectId: conversation.project_id,
+				before: checkpointBefore,
+			});
 			await agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
 			return store.loadConversation(conversationId);
 		},
