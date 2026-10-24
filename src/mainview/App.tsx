@@ -59,6 +59,7 @@ import { workspaceClient } from "./workspace-client";
 import { ScenarioView } from "./scenario-view";
 import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
+import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
 
 type RunAllOperation = { projectId: string; generation: number };
@@ -82,6 +83,31 @@ function App() {
 	} | null>(null);
 	const [runAllActive, setRunAllActive] = useState(false);
 	const [runAllResults, setRunAllResults] = useState<RunAllResult[]>([]);
+	const [assistantCollapsed, setAssistantCollapsed] = useState(() => localStorage.getItem("assistant-sidebar-collapsed") === "true");
+	const [assistantWidth, setAssistantWidth] = useState(() => {
+		const stored = Number(localStorage.getItem("assistant-sidebar-width"));
+		return Number.isFinite(stored) && stored >= 280 && stored <= 560 ? stored : 360;
+	});
+	const assistantDragging = useRef(false);
+	useEffect(() => {
+		const move = (event: PointerEvent) => {
+			if (!assistantDragging.current) return;
+			setAssistantWidth(Math.min(560, Math.max(280, window.innerWidth - event.clientX)));
+		};
+		const up = () => { assistantDragging.current = false; };
+		window.addEventListener("pointermove", move);
+		window.addEventListener("pointerup", up);
+		return () => {
+			window.removeEventListener("pointermove", move);
+			window.removeEventListener("pointerup", up);
+		};
+	}, []);
+	useEffect(() => {
+		localStorage.setItem("assistant-sidebar-width", String(assistantWidth));
+	}, [assistantWidth]);
+	useEffect(() => {
+		localStorage.setItem("assistant-sidebar-collapsed", String(assistantCollapsed));
+	}, [assistantCollapsed]);
 	const [scenarioStarting, setScenarioStarting] = useState(false);
 	const projectIdRef = useRef<string | null>(null);
 	const projectGeneration = useRef(0);
@@ -567,6 +593,10 @@ function App() {
 			<section className="relative min-h-0 flex-1">
 				{state.project && state.design ? (
 					<>
+						<div
+							className="h-full"
+							style={{ marginRight: assistantCollapsed ? 40 : assistantWidth }}
+						>
 						{/*
 						 * The canvas stays mounted behind the SQL preview, so its pan, zoom,
 						 * and pending layout save survive switching views.
@@ -678,6 +708,22 @@ function App() {
 								}
 							/>
 						)}
+						</div>
+					{state.project && (
+						<AssistantSidebar
+							api={workspaceClient}
+							projectId={state.project.id}
+							collapsed={assistantCollapsed}
+							width={assistantWidth}
+							onCollapse={() => setAssistantCollapsed(true)}
+							onExpand={() => setAssistantCollapsed(false)}
+							onResizeStart={(event) => {
+								assistantDragging.current = true;
+								event.currentTarget.setPointerCapture(event.pointerId);
+							}}
+							onSelectTable={(tableId) => { setView("canvas"); handleSelectTable(tableId); }}
+						/>
+					)}
 					</>
 				) : (
 					<ProjectIndex
@@ -706,6 +752,7 @@ function App() {
 					side="right"
 					data-testid="inspector-sheet"
 					className="top-[var(--masthead-height)] bottom-0 h-auto w-[440px] gap-0 sm:max-w-[440px]"
+					style={{ right: state.project ? (assistantCollapsed ? 40 : assistantWidth) : 0 }}
 					onOpenAutoFocus={(event) => event.preventDefault()}
 					onInteractOutside={(event) => event.preventDefault()}
 				>

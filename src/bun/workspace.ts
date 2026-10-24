@@ -108,6 +108,7 @@ export interface DesignWorkspace {
 	getState(): WorkspaceState;
 	subscribe(listener: WorkspaceListener): () => void;
 	listProjects(): ProjectSummary[];
+	addTable(action: AddTableAction): Promise<WorkspaceState>;
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
 	createScenario(action: CreateScenarioAction): Promise<WorkspaceState>;
@@ -123,7 +124,7 @@ export interface DesignWorkspace {
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
-	addTable(action: AddTableAction): Promise<WorkspaceState>;
+	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
 	moveTable(action: MoveTableAction): Promise<WorkspaceState>;
@@ -154,6 +155,7 @@ type DesignHistoryEntry = {
 	before: Design;
 	after: Design;
 	structural: boolean;
+	assistantTurnId?: string;
 };
 
 type ProjectDesignHistory = {
@@ -181,11 +183,76 @@ export async function createDesignWorkspace(
 		};
 	}
 
+	function applyManualDelta(target: unknown, manualBefore: unknown, manualAfter: unknown): unknown {
+		if (JSON.stringify(manualBefore) === JSON.stringify(manualAfter)) return structuredClone(target);
+		if (Array.isArray(manualBefore) && Array.isArray(manualAfter)) {
+			const keyed = [...manualBefore, ...manualAfter].every((item) =>
+				item !== null && typeof item === "object" && "id" in item && typeof item.id === "string",
+			);
+			if (keyed && Array.isArray(target)) {
+				const beforeById = new Map(manualBefore.map((item) => [(item as { id: string }).id, item]));
+				const afterById = new Map(manualAfter.map((item) => [(item as { id: string }).id, item]));
+				const targetById = new Map(target.map((item) => [(item as { id: string }).id, item]));
+				const result = target.map((item) => structuredClone(item));
+				const resultById = new Map(result.map((item) => [(item as { id: string }).id, item]));
+				for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
+					const before = beforeById.get(id);
+					const after = afterById.get(id);
+					if (before === undefined && after !== undefined) {
+						if (!resultById.has(id)) {
+							const added = structuredClone(after);
+							result.push(added);
+							resultById.set(id, added);
+						}
+					} else if (before !== undefined && after === undefined) {
+						const index = result.findIndex((item) => (item as { id: string }).id === id);
+						if (index >= 0) result.splice(index, 1);
+						resultById.delete(id);
+					} else if (before !== undefined && after !== undefined && resultById.has(id)) {
+						const next = applyManualDelta(targetById.get(id), before, after);
+						const index = result.findIndex((item) => (item as { id: string }).id === id);
+						if (index >= 0) result[index] = next;
+						resultById.set(id, next);
+					}
+				}
+				return result;
+			}
+			if (Array.isArray(target) && manualBefore.length === manualAfter.length && target.length === manualBefore.length) {
+				return manualBefore.map((item, index) =>
+					applyManualDelta(target[index], item, manualAfter[index]),
+				);
+			}
+			return structuredClone(manualAfter);
+		}
+		if (manualBefore && manualAfter && target
+			&& typeof manualBefore === "object" && typeof manualAfter === "object" && typeof target === "object"
+			&& !Array.isArray(manualBefore) && !Array.isArray(manualAfter) && !Array.isArray(target)) {
+			const before = manualBefore as Record<string, unknown>;
+			const after = manualAfter as Record<string, unknown>;
+			const result = structuredClone(target) as Record<string, unknown>;
+			for (const key of new Set([...Object.keys(before), ...Object.keys(after)])) {
+				if (!(key in after)) delete result[key];
+				else if (!(key in before)) result[key] = structuredClone(after[key]);
+				else if (JSON.stringify(before[key]) !== JSON.stringify(after[key])) {
+					if (before[key] && after[key] && typeof before[key] === "object" && typeof after[key] === "object"
+						&& key in result) {
+						result[key] = applyManualDelta(result[key], before[key], after[key]);
+					} else result[key] = structuredClone(after[key]);
+				}
+			}
+			return result;
+		}
+		return structuredClone(manualAfter);
+	}
+	function rebaseManualEdits(manualBefore: unknown, manualAfter: unknown, base: unknown): unknown {
+		return applyManualDelta(base, manualBefore, manualAfter);
+	}
 	function recordDesignChange(
 		projectId: string,
 		before: Design,
 		after: Design,
 		structural: boolean,
+		assistantTurnId?: string,
 	): WorkspaceState["undoRedo"] {
 		let history = histories.get(projectId);
 		if (!history) {
@@ -193,7 +260,40 @@ export async function createDesignWorkspace(
 			histories.set(projectId, history);
 		}
 		history.entries.length = history.cursor;
-		history.entries.push({ before, after, structural });
+		if (assistantTurnId) {
+			let firstTurnEntry = history.cursor - 1;
+			while (firstTurnEntry >= 0 && history.entries[firstTurnEntry].assistantTurnId === undefined) firstTurnEntry -= 1;
+			const previous = history.entries[firstTurnEntry];
+			if (previous?.assistantTurnId === assistantTurnId) {
+				let rebased = previous.before;
+				const manualEntries: DesignHistoryEntry[] = [];
+				for (let index = firstTurnEntry + 1; index < history.cursor; index += 1) {
+					const entry = history.entries[index];
+					if (entry.assistantTurnId) continue;
+					const next = rebaseManualEdits(entry.before, entry.after, rebased) as Design;
+					if (JSON.stringify(rebased) !== JSON.stringify(next)) {
+						manualEntries.push({ before: rebased, after: next, structural: entry.structural });
+						rebased = next;
+					}
+				}
+				let rebasedAfter: Design = structuredClone(after);
+				for (let index = firstTurnEntry + 1; index < history.cursor; index += 1) {
+					const entry = history.entries[index];
+					if (entry.assistantTurnId) continue;
+					rebasedAfter = rebaseManualEdits(entry.before, entry.after, rebasedAfter) as Design;
+				}
+				const assistantEntry: DesignHistoryEntry = {
+					before: rebased,
+					after: rebasedAfter,
+					structural: previous.structural || structural,
+					assistantTurnId,
+				};
+				history.entries.splice(firstTurnEntry, history.cursor - firstTurnEntry, ...manualEntries, assistantEntry);
+				history.cursor = firstTurnEntry + manualEntries.length + 1;
+				return getUndoRedoState(projectId);
+			}
+		}
+		history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
 		history.cursor = history.entries.length;
 		return getUndoRedoState(projectId);
 	}
@@ -552,11 +652,12 @@ export async function createDesignWorkspace(
 		projectId: string,
 		design: Design,
 		recordHistory = true,
+		assistantTurnId?: string,
 	) {
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, true)
+			? recordDesignChange(projectId, before, design, true, assistantTurnId)
 			: getUndoRedoState(projectId);
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
@@ -579,10 +680,11 @@ export async function createDesignWorkspace(
 					? { status: "idle" }
 					: { status: "applied", ...lastApplied },
 		});
+		const committedState = state;
 		const preview = schedulePreview(projectId, revision, design);
 		await saveDocument(projectId, revision, nextDocumentRevision, design);
 		await preview;
-		return state;
+		return state.project?.id === projectId ? state : committedState;
 	}
 
 	/**
@@ -997,6 +1099,48 @@ export async function createDesignWorkspace(
 		},
 		redo() {
 			return runTask(() => applyHistoryChange("redo"));
+		},
+		applyAssistantDesign(design, assistantTurnId) {
+			return runTask(async () => {
+				const { projectId, design: currentDesign } = requireOpenDesign();
+				const normalized = normalizeDesign(design);
+				const currentTables = new Map(currentDesign.tables.map((table) => [table.id, table]));
+				for (const table of normalized.tables) {
+					const currentTable = currentTables.get(table.id);
+					const position = requirePoint(table.position, "Table position");
+					if (currentTable && !samePoint(position, currentTable.position)) {
+						throw new Error("Assistant design changes cannot move existing tables.");
+					}
+				}
+				if (!sameViewport(normalized.viewport, currentDesign.viewport)) {
+					throw new Error("Assistant design changes cannot change the canvas viewport.");
+				}
+				const validated: Design = {
+					...normalized,
+					tables: normalized.tables.map((table) => ({
+						...table,
+						position: requirePoint(table.position, "Table position"),
+						policies: normalizePolicies(table.policies ?? []),
+						...(table.indexes !== undefined
+							? { indexes: normalizeIndexes(table.indexes, table) }
+							: {}),
+						...(table.uniqueConstraints !== undefined
+							? { uniqueConstraints: normalizeUniqueConstraints(table.uniqueConstraints, table) }
+							: {}),
+					})),
+					...(normalized.enumTypes !== undefined
+						? { enumTypes: normalizeEnumTypes(normalized.enumTypes) }
+						: {}),
+					...(normalized.functions !== undefined
+						? { functions: normalizeFunctions(normalized.functions, normalized) }
+						: {}),
+					...(normalized.triggers !== undefined
+						? { triggers: normalizeTriggers(normalized.triggers, normalized) }
+						: {}),
+				};
+				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
+				return applyStructuralChange(projectId, validated, true, assistantTurnId);
+			});
 		},
 		addTable(action) {
 			return runTask(async () => {

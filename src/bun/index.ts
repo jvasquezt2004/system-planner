@@ -5,6 +5,7 @@ import type { SqlPreviewExportResult } from "../shared/design";
 import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createDesignWorkspace } from "./workspace";
+import { createAssistantRuntime } from "./assistant-runtime";
 
 const DEV_SERVER_PORT = 5173;
 const DEV_SERVER_URL = `http://localhost:${DEV_SERVER_PORT}`;
@@ -33,6 +34,9 @@ const databasePath =
 // Keep the authoritative design and the disposable sandbox behind one public
 // workspace interface. The view only sees this interface through typed RPC.
 const workspacePromise = createDesignWorkspace({ databasePath });
+const assistantPromise = workspacePromise.then((workspace) =>
+	createAssistantRuntime({ databasePath, workspace }),
+);
 
 /** Exports waiting for the view to start the folder picker, by request id. */
 const pendingSqlExports = new Map<string, () => Promise<SqlPreviewExportResult>>();
@@ -56,6 +60,37 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 	handlers: {
 		requests: {
 			getWorkspaceState: async () => (await workspacePromise).getState(),
+			listAssistantConversations: async ({ projectId }) =>
+				(await assistantPromise).listConversations(projectId),
+			getAssistantConversation: async ({ conversationId }) =>
+				(await assistantPromise).loadConversation(conversationId),
+			createAssistantConversation: async ({ projectId }) =>
+				(await assistantPromise).createConversation(projectId),
+			renameAssistantConversation: async ({ conversationId, title }) =>
+				(await assistantPromise).renameConversation(conversationId, title),
+			deleteAssistantConversation: async ({ conversationId }) =>
+				(await assistantPromise).deleteConversation(conversationId),
+			listAssistantModels: async () => (await assistantPromise).listModels(),
+			getAnthropicConnectionStatus: async () => (await assistantPromise).getAnthropicConnectionStatus(),
+			removeAnthropicApiKey: async () => (await assistantPromise).removeAnthropicApiKey(),
+			setAnthropicApiKey: async ({ apiKey }) =>
+				(await assistantPromise).setAnthropicApiKey(apiKey),
+			sendAssistantMessage: async ({ conversationId, text, modelId, thinkingLevel }) =>
+				(await assistantPromise).sendMessage(conversationId, text, modelId, thinkingLevel),
+			stopAssistantTurn: async ({ conversationId }) =>
+				(await assistantPromise).stop(conversationId),
+			continueAssistantTurn: async ({ conversationId }) =>
+				(await assistantPromise).continueTurn(conversationId),
+			getAssistantTurnStatus: async ({ conversationId }) => ({
+				paused: (await assistantPromise).isTurnPaused(conversationId),
+				confirmationRequired: (await assistantPromise).isConfirmationPending(conversationId),
+			}),
+			updateAssistantConversationSelection: async ({ conversationId, modelId, thinkingLevel }) =>
+				(await assistantPromise).updateConversationSelection(conversationId, modelId, thinkingLevel),
+			confirmAssistantDdlDrop: async ({ conversationId, toolCallId }) =>
+				(await assistantPromise).confirmDdlDrop(conversationId, toolCallId),
+			rejectAssistantDdlDrop: async ({ conversationId, toolCallId }) =>
+				(await assistantPromise).rejectDdlDrop(conversationId, toolCallId),
 			createProject: async ({ name }) => (await workspacePromise).createProject({ name }),
 			openProject: async ({ projectId }) =>
 				(await workspacePromise).openProject({ projectId }),
@@ -152,6 +187,11 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			},
 		},
 	},
+});
+void assistantPromise.then((assistant) => {
+	assistant.subscribe((conversationId, event) => {
+		rpc.send.assistantEvent({ conversationId, event });
+	});
 });
 
 const url = await getMainViewUrl();

@@ -1,5 +1,6 @@
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { Electroview } from "electrobun/view";
+import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
 	CanvasPoint,
 	CanvasViewport,
@@ -37,6 +38,7 @@ import type { SchemaCodeSnapshot } from "../shared/schema-code";
 import { errorMessage } from "../shared/error-message";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
+const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
 let latestState: WorkspaceState | null = null;
 
 const pendingSqlExports = new Map<
@@ -58,6 +60,9 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 				if (!resolve) return;
 				pendingSqlExports.delete(requestId);
 				resolve(result);
+			},
+			assistantEvent({ conversationId, event }) {
+				for (const listener of assistantListeners) listener({ conversationId, event });
 			},
 		},
 	},
@@ -216,6 +221,58 @@ export const workspaceClient = {
 	async exportSchemaCode(request: SchemaCodeExportRequest): Promise<SqlPreviewExportResult> {
 		const { requestId } = await rpc.request.beginSchemaCodeExport(request);
 		return chooseExportDirectory(requestId, request.snapshot.revision);
+	},
+	listAssistantConversations(projectId: string) {
+		return rpc.request.listAssistantConversations({ projectId });
+	},
+	getAssistantConversation(conversationId: string) {
+		return rpc.request.getAssistantConversation({ conversationId });
+	},
+	createAssistantConversation(projectId: string) {
+		return rpc.request.createAssistantConversation({ projectId });
+	},
+	renameAssistantConversation(conversationId: string, title: string) {
+		return rpc.request.renameAssistantConversation({ conversationId, title });
+	},
+	deleteAssistantConversation(conversationId: string) {
+		return rpc.request.deleteAssistantConversation({ conversationId });
+	},
+	listAssistantModels() {
+		return rpc.request.listAssistantModels({});
+	},
+	setAnthropicApiKey(apiKey: string) {
+		return rpc.request.setAnthropicApiKey({ apiKey });
+	},
+	sendAssistantMessage(conversationId: string, text: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
+		return rpc.request.sendAssistantMessage({ conversationId, text, modelId, thinkingLevel });
+	},
+	stopAssistantTurn(conversationId: string) {
+		return rpc.request.stopAssistantTurn({ conversationId });
+	},
+	getAnthropicConnectionStatus() {
+		return rpc.request.getAnthropicConnectionStatus({});
+	},
+	removeAnthropicApiKey() {
+		return rpc.request.removeAnthropicApiKey({});
+	},
+	continueAssistantTurn(conversationId: string) {
+		return rpc.request.continueAssistantTurn({ conversationId });
+	},
+	getAssistantTurnStatus(conversationId: string) {
+		return rpc.request.getAssistantTurnStatus({ conversationId });
+	},
+	updateAssistantConversationSelection(conversationId: string, modelId: string, thinkingLevel: AssistantThinkingLevel) {
+		return rpc.request.updateAssistantConversationSelection({ conversationId, modelId, thinkingLevel });
+	},
+	confirmAssistantDdlDrop(conversationId: string, toolCallId: string) {
+		return rpc.request.confirmAssistantDdlDrop({ conversationId, toolCallId });
+	},
+	rejectAssistantDdlDrop(conversationId: string, toolCallId: string) {
+		return rpc.request.rejectAssistantDdlDrop({ conversationId, toolCallId });
+	},
+	subscribeAssistantEvents(listener: (event: { conversationId: string; event: unknown }) => void) {
+		assistantListeners.add(listener);
+		return () => { assistantListeners.delete(listener); };
 	},
 	subscribe(listener: (state: WorkspaceState) => void): () => void {
 		listeners.add(listener);

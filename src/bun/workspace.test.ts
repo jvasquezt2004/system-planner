@@ -8,6 +8,7 @@ import {
 	type ColumnLiteralType,
 	type ColumnType,
 } from "../shared/column-types";
+import { noColumnDefault } from "../shared/column-defaults";
 import type { ColumnChanges, Design, DesignColumn, DesignTable } from "../shared/design";
 import { createPGliteSandbox, type SchemaSandbox } from "./sandbox";
 import { openDesignStore, type DesignStore } from "./store";
@@ -2179,6 +2180,97 @@ describe("design workspace", () => {
 			y: 240,
 		});
 	}, 30_000);
+	test("undoes an Assistant turn while restoring deleted entities and preserving hand-added ones", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "Undo entities" });
+		const initial = await workspace.addTable({ name: "original" });
+		const original = requireTable(initial.design?.tables[0]);
+		const turnId = "undo-entity-turn";
+		await workspace.applyAssistantDesign({ ...initial.design!, tables: [] }, turnId);
+		const withManual = await workspace.addTable({ name: "manual" });
+		const generated = { ...original, id: "generated", name: "generated" };
+		await workspace.applyAssistantDesign(
+			{ ...withManual.design!, tables: [...withManual.design!.tables, generated] },
+			turnId,
+		);
+
+		const undone = await workspace.undo();
+		expect(undone.design?.tables.map(({ name }) => name).sort()).toEqual(["manual", "original"]);
+		const redone = await workspace.redo();
+		expect(redone.design?.tables.map(({ name }) => name).sort()).toEqual(["generated", "manual"]);
+	});
+
+	test("rebases Function argument hand-renames across Assistant undo and redo", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "Undo arguments" });
+		await workspace.updateFunctions({
+			functions: [{
+				id: "function-f",
+				name: "f",
+				arguments: [{ name: "a", type: "integer" }, { name: "b", type: "integer" }],
+				returnType: "integer",
+				returnsSet: false,
+				language: "sql",
+				volatility: "volatile",
+				security: "invoker",
+				body: "SELECT 1",
+			}],
+		});
+		const turnId = "undo-argument-turn";
+		const initialFunction = workspace.getState().design?.functions?.[0];
+		if (!initialFunction) throw new Error("Expected the project function to exist.");
+		const bigintDesign = {
+			...workspace.getState().design!,
+			functions: [{
+				...initialFunction,
+				arguments: [{ name: "a", type: "bigint" }, { name: "b", type: "integer" }],
+			}],
+		};
+		await workspace.applyAssistantDesign(bigintDesign, turnId);
+		const assistantFunction = workspace.getState().design?.functions?.[0];
+		if (!assistantFunction) throw new Error("Expected the Assistant function to exist.");
+		const handEdited = {
+			...workspace.getState().design!,
+			functions: [{
+				...assistantFunction,
+				arguments: [{ name: "a", type: "bigint" }, { name: "c", type: "integer" }],
+			}],
+		};
+		await workspace.updateFunctions({ functions: handEdited.functions });
+		const table: DesignTable = {
+			id: "assistant-table",
+			name: "generated",
+			position: { x: 40, y: 40 },
+			columns: [{
+				id: "assistant-table-id",
+				name: "id",
+				type: "integer",
+				primaryKey: true,
+				nullable: false,
+				unique: false,
+				identity: false,
+				default: noColumnDefault(),
+				notes: "",
+			}],
+		};
+		await workspace.applyAssistantDesign(
+			{ ...workspace.getState().design!, tables: [...workspace.getState().design!.tables, table] },
+			turnId,
+		);
+
+		const undone = await workspace.undo();
+		expect(undone.design?.functions?.[0]?.arguments).toEqual([
+			{ name: "a", type: "integer" },
+			{ name: "c", type: "integer" },
+		]);
+		expect(undone.design?.tables).toHaveLength(0);
+		const redone = await workspace.redo();
+		expect(redone.design?.functions?.[0]?.arguments).toEqual([
+			{ name: "a", type: "bigint" },
+			{ name: "c", type: "integer" },
+		]);
+		expect(redone.design?.tables.map(({ name }) => name)).toEqual(["generated"]);
+	});
 });
 
 function requireTable(table: DesignTable | undefined): DesignTable {
