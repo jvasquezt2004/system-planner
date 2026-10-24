@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
 type Props = {
+	initialSelectedId?: string | null;
 	functions: DesignFunction[];
 	busy: boolean;
 	onSave: (functions: DesignFunction[]) => void;
@@ -24,16 +25,19 @@ const newFunction = (): DesignFunction => ({
 });
 
 /** Project-level editor for the Functions emitted in PostgreSQL SQL. */
-export function FunctionsView({ functions, busy, onSave, onRemove }: Props) {
-	const [selectedId, setSelectedId] = useState<string | null>(functions[0]?.id ?? null);
+export function FunctionsView({ functions, busy, onSave, onRemove, initialSelectedId }: Props) {
+	const [selectedId, setSelectedId] = useState<string | null>(initialSelectedId ?? functions[0]?.id ?? null);
 	const [draft, setDraft] = useState<DesignFunction | null>(null);
 	const [argumentText, setArgumentText] = useState("");
 	const [validationError, setValidationError] = useState<string | null>(null);
 	const selected = functions.find((fn) => fn.id === selectedId) ?? null;
 
 	useEffect(() => {
-		setSelectedId(functions[0]?.id ?? null);
-	}, [functions.length === 0]);
+		if (initialSelectedId) setSelectedId(initialSelectedId);
+	}, [initialSelectedId]);
+	useEffect(() => {
+		if (!functions.some((fn) => fn.id === selectedId)) setSelectedId(functions[0]?.id ?? null);
+	}, [functions, selectedId]);
 	useEffect(() => {
 		if (!selected) {
 			setDraft(null);

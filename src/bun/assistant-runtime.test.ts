@@ -486,4 +486,93 @@ describe("Assistant pi agent runtime", () => {
 		expect(saved.messages.some(({ role, payload }) => role === "toolResult" && JSON.stringify(payload).includes("the designer rejected this destructive change"))).toBe(true);
 		await expect(runtime.sendMessage(conversation.id, "Continue.", "scripted-model")).resolves.toBeDefined();
 	});
+	test("writes Scenario and Edge function source with unique exact edits, diagnostics, and fixed prompt tools", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-tools-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Code tools" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scenario = await workspace.createScenario({ name: "Original scenario" });
+		const scenarioId = scenario.scenarios[0]?.id;
+		if (!scenarioId) throw new Error("Expected a saved Scenario.");
+		const edge = await workspace.createEdgeFunction({ name: "original_handler" });
+		const edgeId = edge.edgeFunctions[0]?.id;
+		if (!edgeId) throw new Error("Expected a saved Edge function.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const requests: string[] = [];
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+			streamFn: (model, context, options) => {
+				requests.push(JSON.stringify({ context, options }));
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "write", kind: "scenario", id: scenarioId, source: "const value: string = 42;\\nconst duplicate = 1; const duplicate = 2;" }),
+				fauxToolCall("manage_code", { action: "edit", kind: "edge-function", id: edgeId, oldText: '"OK"', newText: '"updated"' }),
+				fauxToolCall("manage_code", { action: "edit", kind: "scenario", id: scenarioId, oldText: "const", newText: "let" }),
+				fauxToolCall("manage_code", { action: "edit", kind: "edge-function", id: edgeId, oldText: "not present", newText: "replacement" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The sources are saved; the ambiguous edit was rejected.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Update both source files.", "scripted-model");
+
+		expect(workspace.getState().scenarios[0]?.source).toContain("const value: string = 42;");
+		expect(workspace.getState().edgeFunctions[0]?.source).toContain('new Response("updated")');
+		const saved = runtime.loadConversation(conversation.id);
+		const toolResults = saved?.messages.filter(({ role }) => role === "toolResult") ?? [];
+		expect(toolResults).toHaveLength(4);
+		const first = toolResults[0]?.payload as { details?: { diagnostics?: string[] } };
+		expect(first.details?.diagnostics?.some((diagnostic) => diagnostic.includes("Type 'number' is not assignable to type 'string'"))).toBe(true);
+		const edgeWrite = toolResults[1]?.payload as { details?: { diagnostics?: string[] } };
+		expect(edgeWrite.details?.diagnostics).toBeArray();
+		const multipleMatches = toolResults[2]?.payload as { content?: Array<{ text?: string }> };
+		expect(multipleMatches.content?.[0]?.text).toContain("Exact-string edit expected exactly one match; found 3.");
+		const noMatches = toolResults[3]?.payload as { content?: Array<{ text?: string }> };
+		expect(noMatches.content?.[0]?.text).toContain("Exact-string edit expected exactly one match; found 0.");
+		expect(requests[0]).toContain("Sandbox API subset");
+		expect(requests[0]).toContain("manage_code");
+	});
+	test("creates, renames, and removes Scenarios and Edge functions through workspace actions", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-lifecycle-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		let nextId = 0;
+		const workspace = await createDesignWorkspace({ databasePath, createId: () => `workspace-${++nextId}` });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Lifecycle" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Generated scenario" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "scenario", id: "workspace-2", name: "Renamed scenario" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "scenario", id: "workspace-2" }),
+				fauxToolCall("manage_code", { action: "create", kind: "edge-function", name: "generated_handler" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "edge-function", id: "workspace-3", name: "renamed_handler" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "edge-function", id: "workspace-3" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The requested code items were updated.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create, rename, and remove both kinds of code item.", "scripted-model");
+		expect(workspace.getState().scenarios).toEqual([]);
+		expect(workspace.getState().edgeFunctions).toEqual([]);
+		expect(runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult")).toHaveLength(6);
+	});
 });

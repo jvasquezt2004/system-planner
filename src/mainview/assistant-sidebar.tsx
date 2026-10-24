@@ -39,6 +39,7 @@ export function AssistantSidebar({
 	onExpand,
 	onResizeStart,
 	onSelectTable,
+	onSelectCodeSource,
 }: {
 	projectId: string;
 	collapsed: boolean;
@@ -48,6 +49,7 @@ export function AssistantSidebar({
 	onExpand: () => void;
 	onResizeStart: (event: React.PointerEvent) => void;
 	onSelectTable: (tableId: string) => void;
+	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
 }) {
 	const [conversations, setConversations] = useState<AssistantConversation[]>([]);
 	const [activeId, setActiveId] = useState("");
@@ -366,7 +368,7 @@ export function AssistantSidebar({
 						<p className="mt-2 text-xs text-ink-3">Ask about the open project.</p>
 					</div>
 				) : displayAssistantMessages(messages).map((message, index) => (
-					<MessageCard key={`${index}-${message.role}`} message={message} pending={pending} onConfirmDrop={confirmDrop} onRejectDrop={rejectDrop} onSelectTable={onSelectTable} />
+					<MessageCard key={`${index}-${message.role}`} message={message} pending={pending} onConfirmDrop={confirmDrop} onRejectDrop={rejectDrop} onSelectTable={onSelectTable} onSelectCodeSource={onSelectCodeSource} />
 				))}
 			</div>
 			{error && <div role="alert" className="px-3 py-2 text-xs text-proof-red">{error}</div>}
@@ -448,12 +450,14 @@ function MessageCard({
 	onRejectDrop,
 	pending,
 	onSelectTable,
+	onSelectCodeSource,
 }: {
 	message: AssistantMessage;
 	onConfirmDrop: (toolCallId: string) => void;
 	onRejectDrop: (toolCallId: string) => void;
 	pending: boolean;
 	onSelectTable: (tableId: string) => void;
+	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
 }) {
 	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
 	const payload = message.payload;
@@ -471,6 +475,14 @@ function MessageCard({
 	const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : "";
 	const removal = confirmation?.removal && typeof confirmation.removal === "object" ? confirmation.removal as Record<string, unknown> : null;
 	const affectedRelationships = Array.isArray(removal?.relationships) ? removal.relationships as Array<Record<string, unknown>> : [];
+	const codeDiff = details
+		&& typeof details.before === "string"
+		&& typeof details.after === "string"
+		&& typeof details.kind === "string"
+		&& typeof details.id === "string"
+		&& typeof details.name === "string"
+		? { before: details.before, after: details.after, kind: details.kind as "scenario" | "edge-function" | "function-body", id: details.id, name: details.name }
+		: null;
 	const isTool = message.role === "toolResult" || message.kind === "tool-result" || Boolean(toolCall);
 	const summary = message.kind === "event" ? "Assistant activity" : isTool ? "Tool call and result" : message.role === "user" ? "You" : "Assistant";
 	const content = record && "content" in record ? record.content : payload;
@@ -481,6 +493,20 @@ function MessageCard({
 				<summary className="cursor-pointer font-medium">{summary}</summary>
 				<pre className="mt-2 whitespace-pre-wrap break-words text-ink-3">{printable}</pre>
 			</details>
+			{codeDiff && (
+				<div className="mt-2 rounded-sm border border-ink/15 p-2">
+					<button type="button" onClick={() => onSelectCodeSource(codeDiff.kind, codeDiff.id)} className="font-medium underline underline-offset-2">
+						Open {codeDiff.name}
+					</button>
+					<details className="mt-1">
+						<summary className="cursor-pointer">Code diff</summary>
+						<pre className="mt-2 whitespace-pre-wrap break-words text-proof-red">− {codeDiff.before}</pre>
+						<pre className="mt-1 whitespace-pre-wrap break-words text-ink">+ {codeDiff.after}</pre>
+						{Array.isArray(details?.diagnostics) && <div className="mt-2 border-t border-ink/10 pt-2"><p className="font-medium">TypeScript diagnostics</p>{details.diagnostics.length ? <ul className="list-inside list-disc">{details.diagnostics.map((diagnostic, index) => <li key={index}>{String(diagnostic)}</li>)}</ul> : <p>None</p>}</div>}
+						{typeof details?.diagnosticsNote === "string" && <p className="mt-2 border-t border-ink/10 pt-2 text-ink-3">{details.diagnosticsNote}</p>}
+					</details>
+				</div>
+			)}
 			{affectedTables.length > 0 && (
 				<div className="mt-2 flex flex-wrap items-center gap-1 text-[11px]">
 					<span>Affected tables:</span>
