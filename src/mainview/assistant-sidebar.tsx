@@ -1061,7 +1061,11 @@ function ToolTraceRow({
 	})();
 
 	const ddlSql = typeof item.args?.sql === "string" ? item.args.sql : null;
-	const rejectionReason = typeof item.details?.message === "string" ? item.details.message : null;
+	const sandbox = item.details?.sandbox;
+	const sandboxRejection = sandbox && typeof sandbox === "object" && "rejected" in sandbox && typeof sandbox.rejected === "string"
+		? sandbox.rejected
+		: null;
+	const rejectionReason = typeof item.details?.message === "string" ? item.details.message : sandboxRejection;
 	const codeDiff = item.codeDiff;
 	const scenarioRuns = item.scenarioRuns;
 	const affectedTables = item.affectedTables;
@@ -1090,7 +1094,7 @@ function ToolTraceRow({
 					<div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px]">
 						<span>Affected tables:</span>
 						{affectedTables.map((table) =>
-							table.removed ? (
+							table.change === "removed" || table.removed ? (
 								<span key={table.id} className="text-ink-3">removed {table.name}</span>
 							) : (
 								<button key={table.id} type="button" onClick={() => onSelectTable(table.id)} className="underline underline-offset-2">

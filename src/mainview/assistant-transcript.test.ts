@@ -581,5 +581,62 @@ describe("assistant transcript model", () => {
 				{ scenarioId: "sc-1", scenario: "Checkout", status: "passed", runId: "r-1" },
 			]);
 		});
+
+		test("apply_ddl compact details retains affected-table links and trace rows", () => {
+			const messages: AssistantMessage[] = [
+				{ role: "user", payload: "Add posts and remove old table" },
+				{
+					role: "assistant",
+					payload: {
+						role: "assistant",
+						content: [
+							{
+								type: "toolCall",
+								id: "ddl-call",
+								name: "apply_ddl",
+								args: { sql: "CREATE TABLE posts (id uuid PRIMARY KEY); DROP TABLE old_posts;" },
+							},
+						],
+						stopReason: "toolUse",
+					},
+				},
+				{
+					role: "toolResult",
+					payload: {
+						toolCallId: "ddl-call",
+						toolName: "apply_ddl",
+						content: [{ type: "text", text: JSON.stringify({ status: "applied", affectedTables: [{ name: "posts", change: "added" }, { name: "old_posts", change: "removed" }] }) }],
+						details: {
+							status: "applied",
+							statements: ["CREATE TABLE posts (id uuid PRIMARY KEY);", "DROP TABLE old_posts;"],
+							affectedTables: [
+								{ id: "tbl-posts", name: "posts", change: "added" },
+								{ id: "tbl-old", name: "old_posts", change: "removed" },
+							],
+							revision: 2,
+							sql: "current",
+							sandbox: "accepted",
+						},
+					},
+				},
+				{
+					role: "assistant",
+					payload: {
+						role: "assistant",
+						content: [{ type: "text", text: "Updated schema." }],
+						stopReason: "stop",
+					},
+				},
+			];
+
+			const items = buildTranscript(messages, false);
+			const toolItem = items[1] as TranscriptToolItem;
+			expect(toolItem.toolName).toBe("apply_ddl");
+			expect(toolItem.trace.title).toBe("Applied SQL to posts, old_posts");
+			expect(toolItem.affectedTables).toEqual([
+				{ id: "tbl-posts", name: "posts", change: "added" },
+				{ id: "tbl-old", name: "old_posts", change: "removed", removed: true },
+			]);
+		});
 	});
 });

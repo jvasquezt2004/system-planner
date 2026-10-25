@@ -15,7 +15,7 @@ type Node = Record<string, any>;
 export type AssistantDdlRemovalTarget = { kind: "table" | "column"; targetId: string; removal: RemovalPlan };
 export type AssistantDdlConfirmation = { projectId: string; revision: number; targetIds: string[] };
 export type AssistantDdlResult =
-	| { status: "applied"; state: WorkspaceState }
+	| { status: "applied"; state: WorkspaceState; statements: string[] }
 	| { status: "confirmation-required"; statement: string; removal: RemovalPlan; targets: AssistantDdlRemovalTarget[]; projectId: string; revision: number };
 
 function placeTable(design: Design, references: unknown[]): { x: number; y: number } {
@@ -221,13 +221,15 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	const pendingRemovals: AssistantDdlRemovalTarget[] = [];
 	const statements: Node[] = parsed.stmts ?? [];
 	const sqlBytes = new TextEncoder().encode(sql);
+	const appliedStatements: string[] = [];
 	for (const item of statements) {
 		const statement = item.stmt as Node;
-		const location = item.stmt_location;
+		const location = item.stmt_location ?? 0;
 		const length = item.stmt_len;
-		const statementSql = Number.isInteger(location)
-			? new TextDecoder().decode(sqlBytes.subarray(location, Number.isInteger(length) && length > 0 ? location + length : undefined))
-			: sql;
+		const statementSql = new TextDecoder()
+			.decode(sqlBytes.subarray(location, Number.isInteger(length) && length > 0 ? location + length : undefined))
+			.trim();
+		appliedStatements.push(statementSql);
 		if (statement.CreateStmt) {
 			const create = statement.CreateStmt, tableName = nameOf(create.relation);
 			if (create.relation?.schemaname) unsupported("schema-qualified table names are not supported");
@@ -504,5 +506,5 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	if (!options.confirmedDrops && pendingRemovals.some(({ removal }) => !removalPlanEmpty(removal))) {
 		return { status: "confirmation-required", statement: sql, removal: aggregateRemoval(pendingRemovals), targets: pendingRemovals, projectId: state.project.id, revision: state.revision };
 	}
-	return { status: "applied", state: await workspace.applyAssistantDesign(design, options.assistantTurnId) };
+	return { status: "applied", state: await workspace.applyAssistantDesign(design, options.assistantTurnId), statements: appliedStatements };
 }

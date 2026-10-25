@@ -322,7 +322,7 @@ export type TranscriptToolItem = {
 	details: Record<string, unknown> | null;
 	status?: ToolTraceStatus;
 	trace: ToolTraceInfo;
-	affectedTables: Array<{ id: string; name: string; removed?: boolean }>;
+	affectedTables: Array<{ id: string; name: string; change?: "added" | "changed" | "removed"; removed?: boolean }>;
 	codeDiff: {
 		before: string;
 		after: string;
@@ -372,11 +372,22 @@ function extractDetails(rawDetails: unknown, rawResult: unknown): Record<string,
 	return null;
 }
 
-function extractAffectedTables(details: Record<string, unknown> | null): Array<{ id: string; name: string; removed?: boolean }> {
+function extractAffectedTables(details: Record<string, unknown> | null): Array<{ id: string; name: string; change?: "added" | "changed" | "removed"; removed?: boolean }> {
 	if (!details || !Array.isArray(details.affectedTables)) return [];
-	return details.affectedTables.filter((table): table is { id: string; name: string; removed?: boolean } =>
-		Boolean(table && typeof table === "object" && "id" in table && typeof table.id === "string" && "name" in table && typeof table.name === "string")
-	);
+	return details.affectedTables
+		.filter((table): table is Record<string, unknown> =>
+			Boolean(table && typeof table === "object" && "id" in table && typeof table.id === "string" && "name" in table && typeof table.name === "string")
+		)
+		.map((table) => {
+			const change = table.change === "removed" ? "removed" : table.change === "added" ? "added" : table.change === "changed" ? "changed" : undefined;
+			const removed = change === "removed" || table.removed === true;
+			return {
+				id: table.id as string,
+				name: table.name as string,
+				...(change ? { change } : {}),
+				...(removed ? { removed: true } : {}),
+			};
+		});
 }
 
 function extractCodeDiff(details: Record<string, unknown> | null) {
