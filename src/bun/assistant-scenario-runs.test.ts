@@ -4,17 +4,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import type { Scenario, ScenarioRun } from "../shared/design";
-import type { AssistantRuntimeOptions } from "./assistant-runtime";
+import type { AssistantRuntime, AssistantRuntimeOptions } from "./assistant-runtime";
 import { createAssistantScenarioRunBridge } from "../mainview/assistant-scenario-run-bridge";
-import { createScenarioRunDriver } from "../mainview/scenario-run-driver";
+import { createScenarioRunDriver, type ScenarioRunDriver } from "../mainview/scenario-run-driver";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createDesignWorkspace } from "./workspace";
 import type { DesignWorkspace } from "./workspace";
 
 const directories: string[] = [];
-const workspaces: Awaited<ReturnType<typeof createDesignWorkspace>>[] = [];
-const runtimes: ReturnType<typeof createAssistantRuntime>[] = [];
-const drivers: ReturnType<typeof createScenarioRunDriver>[] = [];
+const workspaces: DesignWorkspace[] = [];
+const runtimes: AssistantRuntime[] = [];
+const drivers: ScenarioRunDriver[] = [];
 
 afterEach(async () => {
 	for (const driver of drivers.splice(0)) driver.dispose();
@@ -24,7 +24,8 @@ afterEach(async () => {
 });
 
 type SetupOptions = Pick<AssistantRuntimeOptions, "scenarioRunTimeoutMs" | "runScenario"> & {
-	runScenarioFactory?: (workspace: DesignWorkspace, driver: ReturnType<typeof createScenarioRunDriver>) => AssistantRuntimeOptions["runScenario"];
+	runScenarioFactory?: (workspace: DesignWorkspace, driver: ScenarioRunDriver) => AssistantRuntimeOptions["runScenario"];
+	onDriverQueued?: (scenario: Scenario | (() => Scenario | null)) => void;
 };
 async function setup(sources: string[], options: SetupOptions = {}) {
 	const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-scenario-runs-"));
@@ -51,6 +52,7 @@ async function setup(sources: string[], options: SetupOptions = {}) {
 		createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
 		createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
 		timeoutMs: 30_000,
+		onQueued: options.onDriverQueued,
 	});
 	drivers.push(driver);
 	const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -67,13 +69,13 @@ async function setup(sources: string[], options: SetupOptions = {}) {
 			return models.streamSimple(model, context, streamOptions);
 		},
 		scenarioRunTimeoutMs: options.scenarioRunTimeoutMs,
-		runScenario: options.runScenario ?? options.runScenarioFactory?.(workspace, driver) ?? (async (projectId, scenario) => {
+		runScenario: options.runScenario ?? options.runScenarioFactory?.(workspace, driver) ?? (async (projectId, scenario, signal) => {
 			if (workspace.getState().project?.id !== projectId) throw new Error("Bound project changed.");
-			return driver.runQueued(scenario);
+			return driver.runQueued(scenario, { signal });
 		}),
 	});
 	runtimes.push(runtime);
-	return { databasePath, workspace, scenarios, scripted, runtime, projectId: opened.project.id, requests };
+	return { databasePath, workspace, scenarios, scripted, runtime, projectId: opened.project.id, requests, driver };
 }
 
 type CompactRun = { scenario: string; status: string; stale: boolean; failedExpectations: unknown[]; console: string[]; requestLog: unknown[]; grids: unknown[] };
@@ -238,16 +240,19 @@ describe("Assistant Scenario runs", () => {
 	});
 
 	test("queues an Assistant request behind an active manual run and preserves run staleness", async () => {
-		const { workspace, scenarios, scripted, runtime, projectId } = await setup([
+		const assistantQueued = Promise.withResolvers<void>();
+		const { workspace, scenarios, scripted, runtime, projectId, driver } = await setup([
 			"while (true) {}",
 			'console.log("queued run completed");',
-		]);
+		], {
+			onDriverQueued: () => assistantQueued.resolve(),
+		});
 		const activeStarted = Promise.withResolvers<string>();
 		const unsubscribe = workspace.subscribe((state) => {
 			const run = state.scenarioRuns[scenarios[0]!.id];
 			if (run?.status === "running") activeStarted.resolve(run.id);
 		});
-		const manualRun = drivers[0]!.run(scenarios[0]!);
+		const manualRun = driver.run(scenarios[0]!);
 		const conversation = runtime.createConversation(projectId);
 		scripted.setResponses([
 			fauxAssistantMessage([fauxToolCall("run_scenarios", { mode: "one", scenarioId: scenarios[1]!.id })], { stopReason: "toolUse" }),
@@ -256,7 +261,9 @@ describe("Assistant Scenario runs", () => {
 		try {
 			const runId = await activeStarted.promise;
 			const assistantTurn = runtime.sendMessage(conversation.id, "Run Scenario 2.", "scripted-model");
-			await drivers[0]!.stop(runId);
+			await assistantQueued.promise;
+			expect(driver.getQueueLength()).toBe(1);
+			await driver.stop(runId);
 			await manualRun;
 			await assistantTurn;
 		} finally {

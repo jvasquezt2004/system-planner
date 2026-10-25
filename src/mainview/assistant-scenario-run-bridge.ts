@@ -16,11 +16,22 @@ type PendingRequest = {
 };
 
 /** Owns Assistant run queue cancellation while the view executes Scenario Workers. */
-export function createAssistantScenarioRunBridge(options: {
+export type AssistantScenarioRunBridgeOptions = {
 	driver: ScenarioRunDriver;
 	getWorkspaceState: () => WorkspaceState | null;
 	complete: (requestId: string, run: ScenarioRun | null, error?: string) => void;
-}) {
+	onQueued?: (request: AssistantScenarioRunRequest) => void;
+};
+
+export type AssistantScenarioRunBridge = {
+	request: (input: AssistantScenarioRunRequest) => void;
+	cancel: (requestId: string) => void;
+	dispose: () => void;
+	getPendingCount: () => number;
+};
+
+/** Owns Assistant run queue cancellation while the view executes Scenario Workers. */
+export function createAssistantScenarioRunBridge(options: AssistantScenarioRunBridgeOptions): AssistantScenarioRunBridge {
 	const pending = new Map<string, PendingRequest>();
 
 	function request(input: AssistantScenarioRunRequest) {
@@ -41,6 +52,7 @@ export function createAssistantScenarioRunBridge(options: {
 			runId: null,
 		};
 		pending.set(input.requestId, entry);
+		options.onQueued?.(input);
 		void options.driver.runQueued(() => {
 			if (entry.cancelled) return null;
 			const latest = options.getWorkspaceState();
@@ -82,5 +94,5 @@ export function createAssistantScenarioRunBridge(options: {
 		for (const requestId of pending.keys()) cancel(requestId);
 	}
 
-	return { request, cancel, dispose };
+	return { request, cancel, dispose, getPendingCount: () => pending.size };
 }
