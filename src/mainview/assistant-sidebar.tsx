@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
-import { ChevronLeft, ChevronRight, MessageSquare, MoreHorizontal, Plus, Send, X } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Database, FileCode2, MessageSquare, MoreHorizontal, Play, Plus, Send, Wrench, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import {
+	Trace,
+	TraceCollapsible,
+	TraceCollapsibleContent,
+	TraceCollapsibleTrigger,
+	TraceDescription,
+	TraceIcon,
+	TraceLine,
+	TraceTitle,
+} from "@/components/ui/trace";
 import type {
 	AssistantConnectionStatus,
 	AssistantConversation,
@@ -12,7 +22,7 @@ import type {
 	AssistantTurnUsage,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
-import { assistantError, assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
+import { buildTranscript, foldAssistantEvent, type TranscriptDisplayItem, type TranscriptToolItem } from "./assistant-transcript";
 import { pickUsableModel } from "./assistant-model-selection";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
@@ -608,9 +618,17 @@ export function AssistantSidebar({
 						<p className="font-display text-lg">Start a conversation</p>
 						<p className="mt-2 text-xs text-ink-3">Ask about the open project.</p>
 					</div>
-				) : displayAssistantMessages(messages, confirmationRequired).map((message, index) => (
-					<MessageCard key={`${index}-${message.role}`} message={message} pending={pending} onConfirmDrop={confirmDrop} onRejectDrop={rejectDrop} onSelectTable={onSelectTable} onSelectCodeSource={onSelectCodeSource} />
-				))}
+				) : (
+					<TranscriptView
+						messages={messages}
+						confirmationRequired={confirmationRequired}
+						pending={pending}
+						onConfirmDrop={confirmDrop}
+						onRejectDrop={rejectDrop}
+						onSelectTable={onSelectTable}
+						onSelectCodeSource={onSelectCodeSource}
+					/>
+				)}
 			</div>
 			{error && <div role="alert" className="px-3 py-2 text-xs text-proof-red">{error}</div>}
 			<div className="shrink-0 border-t border-ink/15 p-3">
@@ -929,176 +947,296 @@ export function AssistantSidebar({
 	);
 }
 
-function displayAssistantMessages(messages: AssistantMessage[], confirmationPending: boolean): AssistantMessage[] {
-	const states = deriveDropConfirmationStates(messages, confirmationPending);
-	const updates = new Map<string, Record<string, unknown>>();
-	for (const message of messages) {
-		if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") continue;
-		const payload = message.payload as Record<string, unknown>;
-		if (typeof payload.toolCallId === "string" && payload.status === "updated" && payload.details && typeof payload.details === "object") {
-			updates.set(payload.toolCallId, payload.details as Record<string, unknown>);
+type TranscriptGroup =
+	| { kind: "trace"; items: TranscriptToolItem[] }
+	| { kind: "single"; item: TranscriptDisplayItem };
+
+function groupTranscriptItems(items: TranscriptDisplayItem[]): TranscriptGroup[] {
+	const groups: TranscriptGroup[] = [];
+	let currentTrace: TranscriptToolItem[] = [];
+
+	const flush = () => {
+		if (currentTrace.length > 0) {
+			groups.push({ kind: "trace", items: currentTrace });
+			currentTrace = [];
+		}
+	};
+
+	for (const item of items) {
+		if (item.kind === "tool") {
+			currentTrace.push(item);
+		} else {
+			flush();
+			groups.push({ kind: "single", item });
 		}
 	}
-	return messages.map((message) => {
-		if (message.role !== "toolResult" || !message.payload || typeof message.payload !== "object") return message;
-		const payload = message.payload as Record<string, unknown>;
-		if (typeof payload.toolCallId !== "string" || !payload.details || typeof payload.details !== "object") return message;
-		const state = states.get(payload.toolCallId);
-		if (!state) return message;
-		const updated = updates.get(payload.toolCallId);
-		const details = updated ? { ...updated, planUpdated: true, note: "The plan changed. Review the updated plan before confirming." } : payload.details as Record<string, unknown>;
-		return { ...message, payload: { ...payload, details: { ...details, confirmationState: state } } };
-	});
+	flush();
+	return groups;
 }
-function MessageCard({
-	message,
-	onConfirmDrop,
-	onRejectDrop,
-	pending,
+
+function ToolTraceRow({
+	item,
 	onSelectTable,
 	onSelectCodeSource,
 }: {
-	message: AssistantMessage;
-	onConfirmDrop: (toolCallId: string) => void;
-	onRejectDrop: (toolCallId: string) => void;
-	pending: boolean;
+	item: TranscriptToolItem;
 	onSelectTable: (tableId: string) => void;
 	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
 }) {
-	if (message.kind === "assistant-compaction") {
-		const payload = message.payload as { text?: string } | null;
-		return (
-			<div role="status" aria-label="Compaction announcement" className="my-2 rounded border border-ink/15 bg-ink/5 px-2.5 py-1.5 text-xs text-ink-2">
-				<span className="font-medium">Context compaction:</span> {payload?.text ?? "Older turns summarised to preserve context space."}
-			</div>
-		);
-	}
-	if (message.kind === "assistant-context" || message.kind === "assistant-change-note" || message.kind === "assistant-continue" || message.kind === "assistant-drop-confirmation") return null;
-	const payload = message.payload;
-	if (message.kind === "live-assistant" && !assistantText(payload).trim() && !assistantError(payload)) return null;
-	const record = payload && typeof payload === "object" ? payload as Record<string, unknown> : null;
-	const usage = record && "usage" in record && record.usage && typeof record.usage === "object"
-		? record.usage as { input?: number; output?: number; cacheRead?: number; cost?: { total?: number } }
-		: null;
-	const toolCall = record && Array.isArray(record.content)
-		? record.content.find((part) => part && typeof part === "object" && "type" in part && part.type === "toolCall")
-		: undefined;
-	const details = record?.details && typeof record.details === "object" ? record.details as Record<string, unknown> : null;
-	const affectedTables = Array.isArray(details?.affectedTables)
-		? details.affectedTables.filter((table): table is { id: string; name: string; removed?: boolean } =>
-			Boolean(table && typeof table === "object" && "id" in table && typeof table.id === "string" && "name" in table && typeof table.name === "string"),
-		)
-		: [];
-	const confirmation = details?.status === "confirmation-required" ? details : null;
-	const toolCallId = typeof record?.toolCallId === "string" ? record.toolCallId : "";
-	const removal = confirmation?.removal && typeof confirmation.removal === "object" ? confirmation.removal as Record<string, unknown> : null;
+	const isRunning = item.status === "running";
+	const [open, setOpen] = useState<boolean>();
+
+	const toolIcon = (() => {
+		switch (item.trace.icon) {
+			case "read":
+				return <BookOpen className="size-3.5" />;
+			case "ddl":
+				return <Database className="size-3.5" />;
+			case "code":
+				return <FileCode2 className="size-3.5" />;
+			case "run":
+				return <Play className="size-3.5" />;
+			default:
+				return <Wrench className="size-3.5" />;
+		}
+	})();
+
+	const ddlSql = typeof item.args?.sql === "string" ? item.args.sql : null;
+	const rejectionReason = typeof item.details?.message === "string" ? item.details.message : null;
+	const codeDiff = item.codeDiff;
+	const scenarioRuns = item.scenarioRuns;
+	const affectedTables = item.affectedTables;
+
+	const hasSpecificDetail = Boolean(ddlSql || rejectionReason || codeDiff || scenarioRuns.length > 0 || affectedTables.length > 0);
+
+	return (
+		<TraceCollapsible open={open ?? isRunning} onOpenChange={setOpen}>
+			<TraceCollapsibleTrigger>
+				<TraceLine status={item.trace.status}>
+					<TraceIcon>{toolIcon}</TraceIcon>
+					<TraceTitle>{item.trace.title}</TraceTitle>
+					{item.trace.description && (
+						<TraceDescription>{item.trace.description}</TraceDescription>
+					)}
+				</TraceLine>
+			</TraceCollapsibleTrigger>
+			<TraceCollapsibleContent>
+				{ddlSql && (
+					<pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-ink-3">{ddlSql}</pre>
+				)}
+				{rejectionReason && (
+					<pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-proof-red">{rejectionReason}</pre>
+				)}
+				{affectedTables.length > 0 && (
+					<div className="mt-1.5 flex flex-wrap items-center gap-1 text-[11px]">
+						<span>Affected tables:</span>
+						{affectedTables.map((table) =>
+							table.removed ? (
+								<span key={table.id} className="text-ink-3">removed {table.name}</span>
+							) : (
+								<button key={table.id} type="button" onClick={() => onSelectTable(table.id)} className="underline underline-offset-2">
+									{table.name}
+								</button>
+							)
+						)}
+					</div>
+				)}
+				{codeDiff && (
+					<div className="mt-2 rounded-sm border border-ink/15 p-2">
+						<button type="button" onClick={() => onSelectCodeSource(codeDiff.kind, codeDiff.id)} className="font-medium underline underline-offset-2">
+							Open {codeDiff.name}
+						</button>
+						<details className="mt-1" open>
+							<summary className="cursor-pointer text-[11px]">Code diff</summary>
+							<pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-proof-red">− {codeDiff.before}</pre>
+							<pre className="mt-1 whitespace-pre-wrap break-words font-mono text-[11px] text-ink">+ {codeDiff.after}</pre>
+							{Array.isArray(codeDiff.diagnostics) && (
+								<div className="mt-2 border-t border-ink/10 pt-2 text-[11px]">
+									<p className="font-medium">TypeScript diagnostics</p>
+									{codeDiff.diagnostics.length ? (
+										<ul className="list-inside list-disc">
+											{codeDiff.diagnostics.map((diagnostic, index) => <li key={index}>{String(diagnostic)}</li>)}
+										</ul>
+									) : (
+										<p>None</p>
+									)}
+								</div>
+							)}
+							{codeDiff.diagnosticsNote && (
+								<p className="mt-2 border-t border-ink/10 pt-2 text-ink-3 text-[11px]">{codeDiff.diagnosticsNote}</p>
+							)}
+						</details>
+					</div>
+				)}
+				{scenarioRuns.map((run) => (
+					<div key={run.runId ?? run.scenarioId} className="mt-1.5 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1 text-[11px]">
+						<span>{run.scenario}: {run.status}</span>
+						<button type="button" onClick={() => onSelectCodeSource("scenario", run.scenarioId)} className="underline underline-offset-2">
+							Open Scenario
+						</button>
+					</div>
+				))}
+				{!hasSpecificDetail && (
+					<pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-ink-3">{item.rawContent}</pre>
+				)}
+			</TraceCollapsibleContent>
+		</TraceCollapsible>
+	);
+}
+
+function DropConfirmationCard({
+	confirmation,
+	toolCallId,
+	pending,
+	onConfirmDrop,
+	onRejectDrop,
+}: {
+	confirmation: Record<string, unknown>;
+	toolCallId: string;
+	pending: boolean;
+	onConfirmDrop: (toolCallId: string) => void;
+	onRejectDrop: (toolCallId: string) => void;
+}) {
+	const removal = confirmation.removal && typeof confirmation.removal === "object" ? confirmation.removal as Record<string, unknown> : null;
 	const affectedRelationships = Array.isArray(removal?.relationships) ? removal.relationships as Array<Record<string, unknown>> : [];
-	const codeDiff = details
-		&& typeof details.before === "string"
-		&& typeof details.after === "string"
-		&& typeof details.kind === "string"
-		&& typeof details.id === "string"
-		&& typeof details.name === "string"
-		? { before: details.before, after: details.after, kind: details.kind as "scenario" | "edge-function" | "function-body", id: details.id, name: details.name }
-		: null;
-	const scenarioRuns = Array.isArray(details?.runs)
-		? details.runs.filter((run): run is { scenarioId: string; scenario: string; status: string; runId?: string } =>
-			Boolean(run && typeof run === "object" && "scenarioId" in run && typeof run.scenarioId === "string"
-				&& "scenario" in run && typeof run.scenario === "string" && "status" in run && typeof run.status === "string"
-				&& (!("runId" in run) || typeof run.runId === "string")),
-		)
-		: [];
-	const isTool = message.role === "toolResult" || message.kind === "tool-result" || message.kind === "live-tool" || Boolean(toolCall);
-	const summary = isTool ? "Tool call and result" : message.role === "user" ? "You" : "Assistant";
-	const content = record && "content" in record ? record.content : payload;
-	const printable = message.kind === "live-tool"
-		? `${String(record?.toolName ?? "Tool")}${record?.args === undefined ? "" : `\n${JSON.stringify(record.args, null, 2)}`}`
-		: typeof content === "string" ? content : JSON.stringify(content, null, 2);
-	const body = isTool ? (
-		<div className="border-y border-ink/10 py-2 text-xs">
-			<details>
-				<summary className="cursor-pointer font-medium">{summary}</summary>
-				<pre className="mt-2 whitespace-pre-wrap break-words text-ink-3">{printable}</pre>
-			{message.kind === "live-tool" && record?.status === "running" && <span className="mt-1 block text-ink-3">Running…</span>}
-			</details>
-			{scenarioRuns.map((run) => (
-				<div key={run.runId ?? run.scenarioId} className="mt-2 flex items-center justify-between gap-2 rounded-sm border border-ink/15 px-2 py-1.5">
-					<span>{run.scenario}: {run.status}</span>
-					<button type="button" onClick={() => onSelectCodeSource("scenario", run.scenarioId)} className="underline underline-offset-2">
-						Open Scenario
-					</button>
-				</div>
-			))}
-			{codeDiff && (
-				<div className="mt-2 rounded-sm border border-ink/15 p-2">
-					<button type="button" onClick={() => onSelectCodeSource(codeDiff.kind, codeDiff.id)} className="font-medium underline underline-offset-2">
-						Open {codeDiff.name}
-					</button>
-					<details className="mt-1">
-						<summary className="cursor-pointer">Code diff</summary>
-						<pre className="mt-2 whitespace-pre-wrap break-words text-proof-red">− {codeDiff.before}</pre>
-						<pre className="mt-1 whitespace-pre-wrap break-words text-ink">+ {codeDiff.after}</pre>
-						{Array.isArray(details?.diagnostics) && <div className="mt-2 border-t border-ink/10 pt-2"><p className="font-medium">TypeScript diagnostics</p>{details.diagnostics.length ? <ul className="list-inside list-disc">{details.diagnostics.map((diagnostic, index) => <li key={index}>{String(diagnostic)}</li>)}</ul> : <p>None</p>}</div>}
-						{typeof details?.diagnosticsNote === "string" && <p className="mt-2 border-t border-ink/10 pt-2 text-ink-3">{details.diagnosticsNote}</p>}
-					</details>
+	const state = confirmation.confirmationState;
+
+	return (
+		<div className="mt-2 rounded-sm border border-proof-red/30 p-2 text-xs">
+			<p className="font-medium">
+				Destructive change {state === "pending" ? "needs confirmation" : state === "confirmed" ? "Confirmed" : state === "rejected" ? "Rejected" : "No longer pending"}
+			</p>
+			{confirmation.planUpdated === true && (
+				<p className="mt-1 text-ink-3">{typeof confirmation.note === "string" ? confirmation.note : "The plan changed. Review the updated plan before confirming."}</p>
+			)}
+			{affectedRelationships.length > 0 && (
+				<div className="mt-1 text-ink-3">
+					<p>This removes {affectedRelationships.length} {affectedRelationships.length === 1 ? "relationship" : "relationships"}:</p>
+					<ul className="list-inside list-disc">
+						{affectedRelationships.map((relationship, index) => (
+							<li key={typeof relationship.relationshipId === "string" ? relationship.relationshipId : index}>
+								{String(relationship.referencingTable ?? "?")}.{String(relationship.referencingColumn ?? "?")} → {String(relationship.referencedTable ?? "?")}.{String(relationship.referencedColumn ?? "?")} ({String(relationship.cardinality ?? "relationship")}; {Array.isArray(relationship.constraints) ? relationship.constraints.join(", ") : "constraints unspecified"})
+								{typeof relationship.junctionTable === "string" ? `; junction table ${relationship.junctionTable}` : ""}
+							</li>
+						))}
+					</ul>
 				</div>
 			)}
-			{affectedTables.length > 0 && (
-				<div className="mt-2 flex flex-wrap items-center gap-1 text-[11px]">
-					<span>Affected tables:</span>
-					{affectedTables.map((table) => table.removed
-						? <span key={table.id} className="text-ink-3">removed {table.name}</span>
-						: <button key={table.id} onClick={() => onSelectTable(table.id)} className="underline underline-offset-2">{table.name}</button>)}
-				</div>
-			)}
-			{confirmation && (
-				<div className="mt-2 rounded-sm border border-proof-red/30 p-2">
-					<p className="font-medium">Destructive change {confirmation.confirmationState === "pending" ? "needs confirmation" : confirmation.confirmationState === "confirmed" ? "Confirmed" : confirmation.confirmationState === "rejected" ? "Rejected" : "No longer pending"}</p>
-					{details?.planUpdated === true && <p className="mt-1 text-ink-3">{typeof details.note === "string" ? details.note : "The plan changed. Review the updated plan before confirming."}</p>}
-					{affectedRelationships.length > 0 && (
-						<div className="mt-1 text-ink-3">
-							<p>This removes {affectedRelationships.length} {affectedRelationships.length === 1 ? "relationship" : "relationships"}:</p>
-							<ul className="list-inside list-disc">
-								{affectedRelationships.map((relationship, index) => (
-									<li key={typeof relationship.relationshipId === "string" ? relationship.relationshipId : index}>
-										{String(relationship.referencingTable ?? "?")}.{String(relationship.referencingColumn ?? "?")} → {String(relationship.referencedTable ?? "?")}.{String(relationship.referencedColumn ?? "?")} ({String(relationship.cardinality ?? "relationship")}; {Array.isArray(relationship.constraints) ? relationship.constraints.join(", ") : "constraints unspecified"})
-										{typeof relationship.junctionTable === "string" ? `; junction table ${relationship.junctionTable}` : ""}
-									</li>
-								))}
-							</ul>
-						</div>
-					)}
-					{confirmation.confirmationState === "pending" && <div className="mt-2 flex gap-2">
-						<button disabled={!toolCallId || pending} onClick={() => onConfirmDrop(toolCallId)} className="rounded-sm border border-proof-red/40 px-2 py-1 text-xs disabled:opacity-40">Confirm drop</button>
-						<button disabled={!toolCallId || pending} onClick={() => onRejectDrop(toolCallId)} className="rounded-sm border border-ink/25 px-2 py-1 text-xs disabled:opacity-40">Reject</button>
-					</div>}
-				</div>
-			)}
-		</div>
-	) : (
-		<div className="text-sm leading-relaxed">
-			<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">{summary}</p>
-			<p className="whitespace-pre-wrap">{message.role === "assistant" ? assistantText(payload) : printable}</p>
-			{message.role === "assistant" && assistantError(payload) && (
-				<p role="alert" className="mt-1 whitespace-pre-wrap rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
-					{assistantError(payload)}
-				</p>
-			)}
-			{usage && (
-				<div aria-label="Turn usage" className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
-					<span>{(usage.input ?? 0).toLocaleString()} in</span>
-					<span>·</span>
-					<span>{(usage.output ?? 0).toLocaleString()} out</span>
-					<span>·</span>
-					<span>{(usage.cacheRead ?? 0).toLocaleString()} cached</span>
-					{typeof usage.cost?.total === "number" && usage.cost.total > 0 && (
-						<span>· ${usage.cost.total < 0.01 ? usage.cost.total.toFixed(4) : usage.cost.total.toFixed(2)}</span>
-					)}
+			{state === "pending" && (
+				<div className="mt-2 flex gap-2">
+					<button disabled={!toolCallId || pending} onClick={() => onConfirmDrop(toolCallId)} className="rounded-sm border border-proof-red/40 px-2 py-1 text-xs disabled:opacity-40">Confirm drop</button>
+					<button disabled={!toolCallId || pending} onClick={() => onRejectDrop(toolCallId)} className="rounded-sm border border-ink/25 px-2 py-1 text-xs disabled:opacity-40">Reject</button>
 				</div>
 			)}
 		</div>
 	);
-	return <article>{body}</article>;
+}
+
+function TranscriptView({
+	messages,
+	confirmationRequired,
+	pending,
+	onConfirmDrop,
+	onRejectDrop,
+	onSelectTable,
+	onSelectCodeSource,
+}: {
+	messages: AssistantMessage[];
+	confirmationRequired: boolean;
+	pending: boolean;
+	onConfirmDrop: (toolCallId: string) => void;
+	onRejectDrop: (toolCallId: string) => void;
+	onSelectTable: (tableId: string) => void;
+	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
+}) {
+	const items = buildTranscript(messages, confirmationRequired);
+	const groups = groupTranscriptItems(items);
+
+	return (
+		<>
+			{groups.map((group, groupIndex) => {
+				if (group.kind === "trace") {
+					return (
+						<div key={`trace-${groupIndex}`} className="space-y-2">
+							<Trace>
+								{group.items.map((toolItem) => (
+									<ToolTraceRow
+										key={toolItem.toolCallId || `${groupIndex}-${toolItem.toolName}`}
+										item={toolItem}
+										onSelectTable={onSelectTable}
+										onSelectCodeSource={onSelectCodeSource}
+									/>
+								))}
+							</Trace>
+							{group.items.map((toolItem) =>
+								toolItem.confirmation ? (
+									<DropConfirmationCard
+										key={`confirm-${toolItem.toolCallId}`}
+										confirmation={toolItem.confirmation}
+										toolCallId={toolItem.toolCallId}
+										pending={pending}
+										onConfirmDrop={onConfirmDrop}
+										onRejectDrop={onRejectDrop}
+									/>
+								) : null
+							)}
+						</div>
+					);
+				}
+
+				const item = group.item;
+				if (item.kind === "compaction") {
+					return (
+						<div key={`compaction-${groupIndex}`} role="status" aria-label="Compaction announcement" className="my-2 rounded border border-ink/15 bg-ink/5 px-2.5 py-1.5 text-xs text-ink-2">
+							<span className="font-medium">Context compaction:</span> {item.text}
+						</div>
+					);
+				}
+
+				if (item.kind === "user") {
+					return (
+						<article key={`user-${groupIndex}`} className="text-sm leading-relaxed">
+							<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">You</p>
+							<p className="whitespace-pre-wrap">{item.text}</p>
+						</article>
+					);
+				}
+
+				if (item.kind === "assistant") {
+					return (
+						<article key={`assistant-${groupIndex}`} className="text-sm leading-relaxed">
+							<p className="mb-1 text-[10px] uppercase tracking-wide text-ink-3">Assistant</p>
+							<p className="whitespace-pre-wrap">{item.text}</p>
+							{item.error && (
+								<p role="alert" className="mt-1 whitespace-pre-wrap rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
+									{item.error}
+								</p>
+							)}
+							{item.usage && (
+								<div aria-label="Turn usage" className="mt-1.5 flex items-center gap-1.5 text-[11px] text-ink-3">
+									<span>{item.usage.input.toLocaleString()} in</span>
+									<span>·</span>
+									<span>{item.usage.output.toLocaleString()} out</span>
+									<span>·</span>
+									<span>{item.usage.cacheRead.toLocaleString()} cached</span>
+									{typeof item.usage.cost?.total === "number" && item.usage.cost.total > 0 && (
+										<span>· ${item.usage.cost.total < 0.01 ? item.usage.cost.total.toFixed(4) : item.usage.cost.total.toFixed(2)}</span>
+									)}
+								</div>
+							)}
+							{item.isStreaming && !item.usage && (
+								<div aria-label="Turn usage" className="mt-1.5 text-[11px] text-ink-4">
+									…
+								</div>
+							)}
+						</article>
+					);
+				}
+
+				return null;
+			})}
+		</>
+	);
 }
 function isThinkingLevel(value: string): value is AssistantThinkingLevel {
 	return ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
