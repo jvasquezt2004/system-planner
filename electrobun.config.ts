@@ -63,6 +63,7 @@ export default {
 		},
 		linux: {
 			bundleCEF: false,
+			icon: "assets/brand/schema-designer.png",
 		},
 		win: {
 			bundleCEF: false,

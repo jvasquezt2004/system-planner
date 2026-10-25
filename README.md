@@ -56,10 +56,74 @@ Undo and Redo buttons sit in the masthead next to the project name and revision
 hutch run install      # install dependencies
 hutch run dev          # run the desktop app (bundled view, no HMR)
 hutch run dev:hmr      # run with Vite HMR
-hutch run build        # package the Windows app and setup executable
+hutch run build        # package the desktop app and setup executable
+hutch run install:linux # build and install per-user Linux desktop app
+hutch run uninstall:linux # remove installed Linux desktop app
 bun test               # behavioral tests (real SQLite + real PGlite)
 bunx tsc --noEmit      # typecheck
 ```
+
+## Install on Linux
+
+Schema Designer can be installed as a per-user desktop application on Linux with its own application launcher entry and window icon.
+
+### Prerequisites
+
+- **Hutch**: provides the Electrobun runtime and toolchains (`~/.hutch/bin/hutch` or in `PATH`).
+- **librsvg** (`rsvg-convert`): renders application icons from the brand SVG.
+  - Arch: `sudo pacman -S librsvg`
+  - Ubuntu/Debian: `sudo apt install librsvg2-bin`
+  - Fedora: `sudo dnf install librsvg2-tools`
+
+### Install
+
+From the repository checkout:
+
+```bash
+scripts/install-linux.sh
+# or
+hutch run install:linux
+```
+
+This builds the stable app, extracts and installs the application files into `~/.local/share/schema-designer/`, creates the launcher at `~/.local/bin/schema-designer`, renders and installs the icons across sizes (16, 24, 32, 48, 64, 128, 256, 512, and scalable SVG) into the hicolor theme, writes `~/.local/share/applications/schema-designer.desktop` with `StartupWMClass=SchemaDesigner`, and refreshes desktop and icon caches.
+
+### Run
+
+Launch "Schema Designer" from your desktop application launcher or app menu, or start it from the terminal:
+
+```bash
+schema-designer
+```
+
+Ensure `~/.local/bin` is in your `PATH`.
+
+### Upgrade
+
+Re-run the installer at any time:
+
+```bash
+scripts/install-linux.sh
+```
+
+The installer is idempotent and replaces the previous installation atomically in `~/.local/share/schema-designer/` without touching user data.
+
+### Uninstall
+
+To remove the installed application, launcher script, desktop entry, and icons:
+
+```bash
+scripts/uninstall-linux.sh
+# or
+hutch run uninstall:linux
+```
+
+### Data locations
+
+User databases and credentials are kept separate from the installed application files and are never deleted by upgrades or uninstalls:
+
+- **Stable channel database**: `~/.local/share/com.dbplanner.schema-designer/stable/schema-designer.sqlite`
+- **Development channel database**: `~/.local/share/com.dbplanner.schema-designer/dev/schema-designer.sqlite`
+- **Credentials**: Stored in your system keyring / Secret Service.
 
 ## Architecture
 
@@ -108,10 +172,10 @@ failure never discards a saved design.
 
 The packaged app stores its SQLite database at:
 
-```
-%LOCALAPPDATA%\com.dbplanner.schema-designer\stable\<install-root>\schema-designer.sqlite
-```
+- **Windows**: `%LOCALAPPDATA%\com.dbplanner.schema-designer\stable\<install-root>\schema-designer.sqlite`
+- **Linux**: `~/.local/share/com.dbplanner.schema-designer/stable/schema-designer.sqlite`
 
+Development runs store the database under `.../dev/schema-designer.sqlite`.
 Set `DB_PLANNER_DATABASE_PATH` to override it (used by the packaged smoke check).
 
 ## PGlite packaging
