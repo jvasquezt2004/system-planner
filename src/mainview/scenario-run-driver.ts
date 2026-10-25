@@ -25,14 +25,19 @@ export type ScenarioRunDriverOptions = {
 	isCurrent?: () => boolean;
 	getToken?: () => unknown;
 	onState?: (state: WorkspaceState) => void;
+	onQueued?: (scenario: Scenario | (() => Scenario | null)) => void;
 };
 
 export type ScenarioRunDriver = {
 	run(scenario: Scenario, onStarted?: (runId: string) => void): Promise<ScenarioRun | null>;
-	runQueued(scenario: Scenario | (() => Scenario | null), options?: { signal?: AbortSignal; onStarted?: (runId: string) => void }): Promise<ScenarioRun | null>;
+	runQueued(
+		scenario: Scenario | (() => Scenario | null),
+		options?: { signal?: AbortSignal; onStarted?: (runId: string) => void; onQueued?: () => void },
+	): Promise<ScenarioRun | null>;
 	stop(runId: string): Promise<ScenarioRun | null>;
 	cancel(): void;
 	dispose(): void;
+	getQueueLength(): number;
 };
 
 type RunOutcome = {
@@ -76,6 +81,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 	let disposed = false;
 	const pendingStops = new Set<string>();
 	let queueTail: Promise<void> = Promise.resolve();
+	let queueLength = 0;
 
 	const isCurrent = (run?: ActiveRun) =>
 		!disposed &&
@@ -270,19 +276,29 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 			return promise;
 		},
 		runQueued(scenario, runOptions) {
+			queueLength += 1;
+			options.onQueued?.(scenario);
+			runOptions?.onQueued?.();
 			const queued = queueTail.then(async () => {
-				while (!disposed && isCurrent()) {
-					if (runOptions?.signal?.aborted) return null;
-					if (active) {
-						const completed = await waitForRunOrAbort(active.promise, runOptions?.signal);
-						if (completed === null && runOptions?.signal?.aborted) return null;
-						continue;
+				let decremented = false;
+				try {
+					while (!disposed && isCurrent()) {
+						if (runOptions?.signal?.aborted) return null;
+						if (active) {
+							const completed = await waitForRunOrAbort(active.promise, runOptions?.signal);
+							if (completed === null && runOptions?.signal?.aborted) return null;
+							continue;
+						}
+						const currentScenario = typeof scenario === "function" ? scenario() : scenario;
+						if (!currentScenario) return null;
+						queueLength -= 1;
+						decremented = true;
+						return await this.run(currentScenario, runOptions?.onStarted);
 					}
-					const currentScenario = typeof scenario === "function" ? scenario() : scenario;
-					if (!currentScenario) return null;
-					return this.run(currentScenario, runOptions?.onStarted);
+					return null;
+				} finally {
+					if (!decremented) queueLength -= 1;
 				}
-				return null;
 			});
 			queueTail = queued.then(() => undefined, () => undefined);
 			return queued;
@@ -305,6 +321,9 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 		dispose() {
 			disposed = true;
 			cancel();
+		},
+		getQueueLength() {
+			return queueLength;
 		},
 	};
 }

@@ -436,6 +436,44 @@ Deno.serve(async () => {
 			driver.dispose();
 		}
 	}, 60_000);
+	test("runQueued tracks queue length and fires onQueued while waiting behind an active run", async () => {
+		const { workspace, scenarios } = await fixture([
+			"while (true) {}",
+			'console.log("queued run completed");',
+		]);
+		let queuedEventFired = false;
+		const driver = createScenarioRunDriver({
+			workspace,
+			createWorker: () => new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" }),
+			createEdgeWorker: () => new Worker(new URL("../mainview/edge-function-worker.ts", import.meta.url), { type: "module" }),
+			timeoutMs: 30_000,
+			onQueued: () => {
+				queuedEventFired = true;
+			},
+		});
+		const activeStarted = Promise.withResolvers<string>();
+		const unsubscribe = workspace.subscribe((state) => {
+			const run = state.scenarioRuns[scenarios[0]!.id];
+			if (run?.status === "running") activeStarted.resolve(run.id);
+		});
+		try {
+			const activeRun = driver.run(scenarios[0]!);
+			const runId = await activeStarted.promise;
+			expect(driver.getQueueLength()).toBe(0);
+			const queuedRun = driver.runQueued(scenarios[1]!);
+			expect(queuedEventFired).toBe(true);
+			expect(driver.getQueueLength()).toBe(1);
+			await driver.stop(runId);
+			await activeRun;
+			const queuedResult = await queuedRun;
+			expect(driver.getQueueLength()).toBe(0);
+			expect(queuedResult).toMatchObject({ status: "passed", console: ["queued run completed"] });
+		} finally {
+			unsubscribe();
+			driver.dispose();
+		}
+	}, 60_000);
+
 
 	test("timeout finishes the run as errored and releases its Sandbox", async () => {
 		const { workspace, scenarios } = await fixture(["while (true) {}"]);
