@@ -8,6 +8,8 @@ export default {
 		hmr: "hutch electrobun prepare && hutch pm exec -- vite --port 5173",
 		build: "hutch electrobun prepare && hutch pm exec -- vite build && hutch electrobun build --env=stable",
 		"build:canary": "hutch electrobun prepare && hutch pm exec -- vite build && hutch electrobun build --env=canary",
+		"install:linux": "bash scripts/install-linux.sh",
+		"uninstall:linux": "bash scripts/uninstall-linux.sh",
 	},
 	electrobun: {
 		version: "2.0.4",
