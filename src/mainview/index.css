@@ -172,3 +172,34 @@
 @utility double-rule {
 	border-bottom: 3px double var(--rule-heavy);
 }
+
+@keyframes tw-shimmer {
+	0% {
+		background-position: 100% 0;
+	}
+	100% {
+		background-position: -100% 0;
+	}
+}
+
+@utility shimmer {
+	background: linear-gradient(
+		90deg,
+		currentColor 0%,
+		var(--pencil) 50%,
+		currentColor 100%
+	);
+	background-size: 200% 100%;
+	background-clip: text;
+	-webkit-background-clip: text;
+	color: transparent;
+	animation: tw-shimmer 2s linear infinite;
+}
+
+@utility shimmer-none {
+	background: none;
+	background-clip: border-box;
+	-webkit-background-clip: border-box;
+	color: currentColor;
+	animation: none;
+}
