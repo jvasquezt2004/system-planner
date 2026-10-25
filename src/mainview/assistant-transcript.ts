@@ -110,11 +110,19 @@ function lastLiveAssistantIndex(messages: AssistantMessage[]): number {
 export function assistantText(payload: unknown): string {
 	if (typeof payload === "string") return payload;
 	if (!payload || typeof payload !== "object") return "";
-	const content = (payload as TranscriptRecord).content;
-	if (!Array.isArray(content)) return "";
-	return content.flatMap((part) => part && typeof part === "object" && (part as TranscriptRecord).type === "text" && typeof (part as TranscriptRecord).text === "string"
-		? [(part as TranscriptRecord).text as string]
-		: []).join("");
+	if ("content" in payload) {
+		const content = payload.content;
+		if (typeof content === "string") return content;
+		if (Array.isArray(content)) {
+			return content.flatMap((part) => {
+				if (part && typeof part === "object" && "type" in part && part.type === "text" && "text" in part && typeof part.text === "string") {
+					return [part.text];
+				}
+				return [];
+			}).join("");
+		}
+	}
+	return "";
 }
 
 /** The provider error a failed assistant message carries, e.g. a usage limit, or null. */
@@ -563,9 +571,19 @@ export function buildTranscript(messages: AssistantMessage[], isConfirmationPend
 		}
 
 		if (message.role === "user") {
-			const text = typeof message.payload === "string"
-				? message.payload
-				: assistantText(message.payload) || (typeof message.payload === "object" ? JSON.stringify(message.payload, null, 2) : String(message.payload));
+			let text = "";
+			if (typeof message.payload === "string") {
+				text = message.payload;
+			} else if (message.payload && typeof message.payload === "object") {
+				if ("content" in message.payload && typeof message.payload.content === "string") {
+					text = message.payload.content;
+				} else {
+					text = assistantText(message.payload);
+				}
+			}
+			if (!text) {
+				text = typeof message.payload === "object" ? JSON.stringify(message.payload, null, 2) : String(message.payload ?? "");
+			}
 			items.push({ kind: "user", text, message });
 			continue;
 		}

@@ -638,5 +638,27 @@ describe("assistant transcript model", () => {
 				{ id: "tbl-old", name: "old_posts", change: "removed", removed: true },
 			]);
 		});
+
+		test("renders user messages by text for saved payload shape { role: 'user', content: '...' } (#112)", () => {
+			const messages: AssistantMessage[] = [
+				{
+					role: "user",
+					payload: {
+						role: "user",
+						content: "Design a people and mentions schema",
+						timestamp: 1729832400000,
+						id: "msg-user-1",
+					},
+				},
+			];
+
+			const items = buildTranscript(messages, false);
+			expect(items).toHaveLength(1);
+			expect(items[0]).toEqual({
+				kind: "user",
+				text: "Design a people and mentions schema",
+				message: messages[0]!,
+			});
+		});
 	});
 });

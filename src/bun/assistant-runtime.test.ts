@@ -1428,4 +1428,140 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(compactSqlStatus({ status: "stale", revision: 1, draftRevision: 2, sql: "SELECT 1;", errors: ["Missing column"] })).toEqual({ errors: ["Missing column"] });
 		expect(compactSqlStatus({ status: "checking", draftRevision: 1, availableRevision: null, sql: null })).toEqual({ errors: [] });
 	});
+
+	test("system prompt guides Function and Trigger for foreign-key limits and forbids re-running confirmed drops (#112)", () => {
+		expect(SYSTEM_PROMPT).toContain("When a requirement needs behaviour foreign keys cannot express (e.g. deleting a child also deletes its parent), implement it with a Function and a Trigger rather than proposing a simpler design.");
+		expect(SYSTEM_PROMPT).toContain("a confirmed destructive change is already applied and must not be re-run");
+	});
+
+	test("confirmed destructive change provides applied toolResult to model with neutral continuation (#112)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-confirm-toolresult-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Confirm toolResult project" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		await applyAssistantDdl(workspace, "CREATE TABLE users (id integer PRIMARY KEY); CREATE TABLE posts (id integer PRIMARY KEY, author_id integer REFERENCES users(id));", { assistantTurnId: "setup" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const receivedContexts: Array<{ messages: Array<{ role: string; toolCallId?: string; content?: unknown }> }> = [];
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+			streamFn: async (model, context, options) => {
+				receivedContexts.push(JSON.parse(JSON.stringify(context)));
+				return models.streamSimple(model, context, options);
+			},
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "DROP TABLE users; DROP TABLE posts;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The users and posts tables have been removed.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Drop users and posts.", "scripted-model");
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(true);
+
+		const saved = runtime.loadConversation(conversation.id)!;
+		const pendingToolResult = saved.messages.find(({ role }) => role === "toolResult")!;
+		const toolCallId = (pendingToolResult.payload as { toolCallId: string }).toolCallId;
+
+		await runtime.confirmDdlDrop(conversation.id, toolCallId);
+		expect(runtime.isConfirmationPending(conversation.id)).toBe(false);
+
+		expect(receivedContexts.length).toBe(2);
+		const secondContext = receivedContexts[1]!;
+
+		const toolResultMsg = [...secondContext.messages].reverse().find((m) => m.role === "toolResult" && m.toolCallId === toolCallId);
+		expect(toolResultMsg).toBeDefined();
+
+		const contentBlocks = Array.isArray(toolResultMsg?.content) ? toolResultMsg.content : [];
+		const textBlock = contentBlocks[0] as { type: string; text: string };
+		expect(textBlock.type).toBe("text");
+		const appliedData = JSON.parse(textBlock.text);
+		expect(appliedData.status).toBe("applied");
+		expect(appliedData.statements).toEqual(["DROP TABLE users", "DROP TABLE posts"]);
+		expect(appliedData.affectedTables).toEqual([
+			{ name: "users", change: "removed" },
+			{ name: "posts", change: "removed" },
+		]);
+		expect(typeof appliedData.revision).toBe("number");
+		expect(appliedData.sql).toBeDefined();
+		expect(appliedData.sandbox).toBeDefined();
+
+		const continuationMsg = secondContext.messages[secondContext.messages.length - 1];
+		expect(continuationMsg?.role).toBe("user");
+		const continuationText = typeof continuationMsg?.content === "string"
+			? continuationMsg.content
+			: Array.isArray(continuationMsg?.content) && continuationMsg.content[0] && typeof continuationMsg.content[0] === "object" && "text" in continuationMsg.content[0]
+				? (continuationMsg.content[0] as { text: string }).text
+				: "";
+		expect(continuationText).toBe("Continue after the confirmed destructive change.");
+		expect(continuationText).not.toContain("Report its result");
+
+		const loaded = runtime.loadConversation(conversation.id)!;
+		const appliedToolResults = loaded.messages.filter(
+			(m) => m.role === "toolResult" && JSON.stringify(m.payload).includes('"status":"applied"')
+		);
+		expect(appliedToolResults.length).toBeGreaterThan(0);
+	});
+
+	test("identical DDL re-run right after a confirmed apply returns already applied rather than error (#112)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-rerun-guard-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Guard project" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		await applyAssistantDdl(workspace, "CREATE TABLE users (id integer PRIMARY KEY); CREATE TABLE posts (id integer PRIMARY KEY, author_id integer REFERENCES users(id));", { assistantTurnId: "setup" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key",
+		});
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "DROP TABLE users; DROP TABLE posts;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "DROP TABLE users; DROP TABLE posts;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Tables were already removed.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Drop users and posts.", "scripted-model");
+		const saved = runtime.loadConversation(conversation.id)!;
+		const pendingToolResult = saved.messages.find(({ role }) => role === "toolResult")!;
+		const toolCallId = (pendingToolResult.payload as { toolCallId: string }).toolCallId;
+		await runtime.confirmDdlDrop(conversation.id, toolCallId);
+		expect(scripted.state.callCount).toBe(3);
+		const loaded = runtime.loadConversation(conversation.id)!;
+		const rerunToolResult = loaded.messages.find(
+			(m) => m.role === "toolResult" && JSON.stringify(m.payload).includes("already applied")
+		);
+		expect(rerunToolResult).toBeDefined();
+		const payloadStr = JSON.stringify(rerunToolResult?.payload);
+		expect(payloadStr).toContain('"status":"already applied"');
+		expect(payloadStr).not.toContain("does not exist");
+	});
 });

@@ -15,6 +15,9 @@ loader.config({ monaco });
 
 /** TypeScript's `ModuleResolutionKind.Bundler`; Monaco's exported enum only lists Classic and NodeJs. */
 const BUNDLER_MODULE_RESOLUTION = 100 as monaco.typescript.ModuleResolutionKind;
+/** TypeScript's `ModuleDetectionKind.Force` (3); forces top-level await to be treated as a module. */
+const FORCE_MODULE_DETECTION = 3;
+
 
 /**
  * Configures the TypeScript language service shared by the Scenario and Edge
@@ -27,6 +30,7 @@ export function configureTypeScript(paths: Record<string, string[]>, libraries: 
 		target: ScriptTarget.ESNext,
 		module: ModuleKind.ESNext,
 		moduleResolution: BUNDLER_MODULE_RESOLUTION,
+		moduleDetection: FORCE_MODULE_DETECTION,
 		baseUrl: "/",
 		paths,
 		strict: true,
