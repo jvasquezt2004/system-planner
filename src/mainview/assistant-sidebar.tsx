@@ -11,6 +11,15 @@ import {
 	TraceLine,
 	TraceTitle,
 } from "@/components/ui/trace";
+import {
+	Select,
+	SelectContent,
+	SelectGroup,
+	SelectItem,
+	SelectLabel,
+	SelectTrigger,
+	SelectValue,
+} from "@/components/ui/select";
 import type {
 	AssistantConnectionStatus,
 	AssistantConversation,
@@ -373,6 +382,17 @@ export function AssistantSidebar({
 		models: models.filter((m) => m.provider === providerId),
 	}));
 
+	const usableModel = pickUsableModel(models, selectedConnectionId, model);
+	const effectiveConnId = usableModel?.connectionId ?? selectedConnectionId;
+	const effectiveModelId = usableModel?.id ?? model;
+	const allPickerModelValues = pickerGroups.flatMap((group) =>
+		group.models.map((item) => `${group.id}::${item.id}`),
+	);
+	const candidateModelValue = `${effectiveConnId}::${effectiveModelId}`;
+	const selectedModelValue = allPickerModelValues.includes(candidateModelValue)
+		? candidateModelValue
+		: allPickerModelValues.find((val) => val.endsWith(`::${effectiveModelId}`)) ?? (allPickerModelValues[0] ?? undefined);
+
 	async function renameConversation() {
 		const conversation = conversations.find(({ id }) => id === activeId);
 		if (!conversation) return;
@@ -580,11 +600,25 @@ export function AssistantSidebar({
 					<ChevronRight className="size-4" />
 				</button>
 			</header>
-			<div className="flex shrink-0 gap-1 border-b border-ink/10 p-2">
-				<select aria-label="Conversation" value={activeId} onChange={(event: ChangeEvent<HTMLSelectElement>) => setActiveId(event.target.value)} className="min-w-0 flex-1 bg-transparent px-2 py-1 text-sm">
-					{conversations.length === 0 && <option value="">No conversations</option>}
-					{conversations.map((conversation) => <option key={conversation.id} value={conversation.id}>{conversation.title || "New conversation"} · {new Date(conversation.updated_at).toLocaleString()}</option>)}
-				</select>
+			<div className="flex shrink-0 items-center gap-1 border-b border-ink/10 p-2">
+				<Select
+					value={activeId || undefined}
+					onValueChange={(value) => {
+						if (value) setActiveId(value);
+					}}
+					disabled={conversations.length === 0}
+				>
+					<SelectTrigger aria-label="Conversation" className="h-8 min-w-0 flex-1 text-xs">
+						<SelectValue placeholder={conversations.length === 0 ? "No conversations" : "Select conversation"} />
+					</SelectTrigger>
+					<SelectContent position="popper" align="start" className="max-h-80">
+						{conversations.map((conversation) => (
+							<SelectItem key={conversation.id} value={conversation.id}>
+								{conversation.title || "New conversation"} · {new Date(conversation.updated_at).toLocaleString()}
+							</SelectItem>
+						))}
+					</SelectContent>
+				</Select>
 				<button aria-label="Rename conversation" disabled={!activeId} onClick={() => void renameConversation()} className="rounded p-1.5 hover:bg-ink/5 disabled:opacity-40">
 					<MoreHorizontal className="size-4" />
 				</button>
@@ -710,32 +744,57 @@ export function AssistantSidebar({
 						)}
 					</div>
 				)}
-				<div className="mb-2 flex gap-2">
-					<select
-						aria-label="Model"
-						value={`${selectedConnectionId}::${model}`}
-						onChange={(event: ChangeEvent<HTMLSelectElement>) => {
-							const [connId, modelId] = event.target.value.split("::");
-							persistSelection(connId ?? null, modelId ?? "", thinking);
+				<div className="mb-2 flex items-center gap-2">
+					<Select
+						value={selectedModelValue}
+						onValueChange={(val) => {
+							const [connId, ...rest] = val.split("::");
+							persistSelection(connId || null, rest.join("::"), thinking);
 						}}
-						className="min-w-0 flex-1 bg-transparent text-xs"
+						disabled={models.length === 0}
 					>
-						{pickerGroups.map((group) => (
-							<optgroup
-								key={group.id}
-								label={group.error ? `${group.name} (${group.error})` : group.name}
-							>
-								{group.models.map((item) => (
-									<option key={`${group.id}::${item.id}`} value={`${group.id}::${item.id}`}>
-										{item.name}
-									</option>
-								))}
-							</optgroup>
-						))}
-					</select>
-					<select aria-label="Thinking level" value={thinking} onChange={(event: ChangeEvent<HTMLSelectElement>) => persistSelection(selectedConnectionId, model, event.target.value as AssistantThinkingLevel)} className="bg-transparent text-xs">
-						<option value="off">Off</option><option value="minimal">Minimal</option><option value="low">Low</option><option value="medium">Medium</option><option value="high">High</option><option value="xhigh">Extra high</option><option value="max">Max</option>
-					</select>
+						<SelectTrigger aria-label="Model" className="h-8 min-w-0 flex-1 text-xs">
+							<SelectValue placeholder="Select model" />
+						</SelectTrigger>
+						<SelectContent position="popper" align="start" className="max-h-80">
+							{pickerGroups.map((group) => (
+								<SelectGroup key={group.id}>
+									<SelectLabel>
+										{group.error ? `${group.name} (${group.error})` : group.name}
+									</SelectLabel>
+									{group.models.map((item) => (
+										<SelectItem
+											key={`${group.id}::${item.id}`}
+											value={`${group.id}::${item.id}`}
+										>
+											{item.name}
+										</SelectItem>
+									))}
+								</SelectGroup>
+							))}
+						</SelectContent>
+					</Select>
+					<Select
+						value={thinking}
+						onValueChange={(val) => {
+							if (isThinkingLevel(val)) {
+								persistSelection(selectedConnectionId, model, val);
+							}
+						}}
+					>
+						<SelectTrigger aria-label="Thinking level" className="h-8 w-fit shrink-0 text-xs">
+							<SelectValue />
+						</SelectTrigger>
+						<SelectContent position="popper" align="end" className="max-h-80">
+							<SelectItem value="off">Off</SelectItem>
+							<SelectItem value="minimal">Minimal</SelectItem>
+							<SelectItem value="low">Low</SelectItem>
+							<SelectItem value="medium">Medium</SelectItem>
+							<SelectItem value="high">High</SelectItem>
+							<SelectItem value="xhigh">Extra high</SelectItem>
+							<SelectItem value="max">Max</SelectItem>
+						</SelectContent>
+					</Select>
 				</div>
 				<div className="flex items-end gap-2">
 					<textarea
