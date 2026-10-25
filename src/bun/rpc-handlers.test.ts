@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxText } from "@earendil-works/pi-ai";
 import { createRpcRequestHandlers } from "./rpc-handlers";
+import { createAssistantRuntime } from "./assistant-runtime";
+import { createDesignWorkspace } from "./workspace";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 import type { SqlPreviewActions } from "./sql-preview";
@@ -123,5 +129,224 @@ describe("RPC request handlers", () => {
 			required: true,
 			cardinality: "one-to-one",
 		});
+	});
+
+	test("sendAssistantMessage resolves with started: true before the turn finishes, signalling completion through events", async () => {
+		let turnResolved = false;
+		let passedWaitForCompletion: boolean | undefined;
+		const emittedEvents: unknown[] = [];
+		const slowTurn = Promise.withResolvers<{ started: boolean }>();
+
+		const fakeAssistant = {
+			sendMessage: async (
+				_conversationId: string,
+				_text: string,
+				_modelId: string,
+				_thinkingLevel?: string,
+				_connectionId?: string,
+				options?: { waitForCompletion?: boolean },
+			) => {
+				passedWaitForCompletion = options?.waitForCompletion;
+				if (options?.waitForCompletion === false) {
+					void slowTurn.promise;
+					return { started: true };
+				}
+				return slowTurn.promise;
+			},
+		} as unknown as AssistantRuntime;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: {} as DesignWorkspace,
+			assistant: fakeAssistant,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		const result = await handlers.sendAssistantMessage({
+			conversationId: "conv-1",
+			text: "Explain the design.",
+			modelId: "model-1",
+			thinkingLevel: "medium",
+		});
+
+		expect(passedWaitForCompletion).toBe(false);
+		expect(result).toEqual({ started: true });
+		expect(turnResolved).toBe(false);
+
+		turnResolved = true;
+		emittedEvents.push({ type: "agent_end" });
+		emittedEvents.push({ type: "assistant_turn_ended" });
+		slowTurn.resolve({ started: true });
+		await slowTurn.promise;
+		expect(emittedEvents).toEqual([{ type: "agent_end" }, { type: "assistant_turn_ended" }]);
+	});
+
+	test("sendAssistantMessage rejects promptly when an error is raised before the turn starts", async () => {
+		const fakeAssistant = {
+			sendMessage: async () => {
+				throw new Error("Configure credentials for Anthropic before sending a message.");
+			},
+		} as unknown as AssistantRuntime;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: {} as DesignWorkspace,
+			assistant: fakeAssistant,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await expect(
+			handlers.sendAssistantMessage({
+				conversationId: "conv-1",
+				text: "Hello",
+				modelId: "claude-3-5-sonnet",
+				thinkingLevel: "medium",
+			}),
+		).rejects.toThrow("Configure credentials for Anthropic before sending a message.");
+	});
+
+	test("continueAssistantTurn, confirmAssistantDdlDrop, and rejectAssistantDdlDrop resolve with started: true before completion and reject on start errors", async () => {
+		let turnContinuing = false;
+		let dropConfirming = false;
+		let dropRejecting = false;
+
+		const fakeAssistant = {
+			continueTurn: async (_conversationId: string, options?: { waitForCompletion?: boolean }) => {
+				if (options?.waitForCompletion === false) return { started: true };
+				turnContinuing = true;
+				return null;
+			},
+			confirmDdlDrop: async (_conversationId: string, _toolCallId: string, options?: { waitForCompletion?: boolean }) => {
+				if (options?.waitForCompletion === false) return { started: true };
+				dropConfirming = true;
+				return null;
+			},
+			rejectDdlDrop: async (_conversationId: string, _toolCallId: string, options?: { waitForCompletion?: boolean }) => {
+				if (options?.waitForCompletion === false) return { started: true };
+				dropRejecting = true;
+				return null;
+			},
+		} as unknown as AssistantRuntime;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: {} as DesignWorkspace,
+			assistant: fakeAssistant,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		expect(await handlers.continueAssistantTurn({ conversationId: "conv-1" })).toEqual({ started: true });
+		expect(turnContinuing).toBe(false);
+
+		expect(await handlers.confirmAssistantDdlDrop({ conversationId: "conv-1", toolCallId: "tool-1" })).toEqual({ started: true });
+		expect(dropConfirming).toBe(false);
+
+		expect(await handlers.rejectAssistantDdlDrop({ conversationId: "conv-1", toolCallId: "tool-1" })).toEqual({ started: true });
+		expect(dropRejecting).toBe(false);
+
+		// Start errors reject promptly
+		const failingAssistant = {
+			continueTurn: async () => { throw new Error("This Assistant turn is not waiting to continue."); },
+			confirmDdlDrop: async () => { throw new Error("This DDL confirmation is no longer available."); },
+			rejectDdlDrop: async () => { throw new Error("This DDL confirmation has already been used."); },
+		} as unknown as AssistantRuntime;
+
+		const failingHandlers = createRpcRequestHandlers({
+			workspace: {} as DesignWorkspace,
+			assistant: failingAssistant,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await expect(failingHandlers.continueAssistantTurn({ conversationId: "conv-1" })).rejects.toThrow("This Assistant turn is not waiting to continue.");
+		await expect(failingHandlers.confirmAssistantDdlDrop({ conversationId: "conv-1", toolCallId: "tool-1" })).rejects.toThrow("This DDL confirmation is no longer available.");
+		await expect(failingHandlers.rejectAssistantDdlDrop({ conversationId: "conv-1", toolCallId: "tool-1" })).rejects.toThrow("This DDL confirmation has already been used.");
+	});
+
+	test("real AssistantRuntime with faux model resolves RPC immediately and completes turn via events without blocking the request", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-rpc-test-"));
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		const state = await workspace.createProject({ name: "Assistant RPC test project" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+
+		const modelGate = Promise.withResolvers<void>();
+		const turnCompleted = Promise.withResolvers<void>();
+
+		const runtime = createAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			getApiKey: async () => "test-key-not-sent-to-a-provider",
+			streamFn: async (model, context, options) => {
+				await modelGate.promise;
+				return models.streamSimple(model, context, options);
+			},
+		});
+
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([fauxAssistantMessage([fauxText("The slow turn has completed successfully.")])]);
+
+		const emittedEvents: string[] = [];
+		runtime.subscribe((_conversationId, event) => {
+			const record = event as { type?: string };
+			if (record.type) {
+				emittedEvents.push(record.type);
+				if (record.type === "assistant_turn_ended") {
+					turnCompleted.resolve();
+				}
+			}
+		});
+		const handlers = createRpcRequestHandlers({
+			workspace,
+			assistant: runtime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		// 1. sendAssistantMessage must resolve promptly before the model stream gate opens
+		const startResult = await handlers.sendAssistantMessage({
+			conversationId: conversation.id,
+			text: "Run a slow operation.",
+			modelId: "scripted-model",
+			thinkingLevel: "medium",
+		});
+
+		expect(startResult).toEqual({ started: true });
+		// While the model gate is closed, the turn is still running in the background
+		const runningStatus = await handlers.getAssistantTurnStatus({ conversationId: conversation.id });
+		expect(runningStatus.running).toBe(true);
+		expect(emittedEvents.includes("agent_end")).toBe(false);
+
+		// 2. Open the gate and let the faux model finish
+		modelGate.resolve();
+
+		// Wait for turn completion event directly
+		await turnCompleted.promise;
+
+		// 3. Status is now finished, and saved transcript has the response
+		const finalStatus = await handlers.getAssistantTurnStatus({ conversationId: conversation.id });
+		expect(finalStatus.running).toBe(false);
+
+		const loaded = await handlers.getAssistantConversation({ conversationId: conversation.id });
+		expect(loaded?.messages.some((m) => JSON.stringify(m.payload).includes("The slow turn has completed successfully."))).toBe(true);
+
+		// 4. Pre-start error rejects promptly
+		await expect(
+			handlers.sendAssistantMessage({
+				conversationId: conversation.id,
+				text: "Will fail",
+				modelId: "nonexistent-model",
+				thinkingLevel: "medium",
+			}),
+		).rejects.toThrow(/Unknown model/);
+
+		runtime.close();
+		await workspace.close();
+		rmSync(directory, { recursive: true, force: true });
 	});
 });
