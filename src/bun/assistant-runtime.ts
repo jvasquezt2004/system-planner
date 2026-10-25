@@ -18,7 +18,7 @@ import type { AssistantStore } from "./assistant-store";
 import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
 import { openAssistantStore } from "./assistant-store";
 import { generateDesignSql, quoteIdentifier } from "./sql";
-import { getLastAppliedSandbox, type WorkspaceState } from "../shared/design";
+import { getLastAppliedSandbox, type SandboxState, type SqlState, type WorkspaceState } from "../shared/design";
 import type { DesignWorkspace } from "./workspace";
 
 import type { ScenarioRun } from "../shared/design";
@@ -186,6 +186,18 @@ function compactScenarioRun(scenarioId: string, name: string, run: ScenarioRun) 
 function scenarioToolResult(details: unknown) {
 	return { content: [{ type: "text" as const, text: JSON.stringify(details) }], details };
 }
+export function compactSandboxStatus(sandbox: SandboxState): "accepted" | "checking" | { rejected: string } {
+	if (sandbox.status === "applied") return "accepted";
+	if (sandbox.status === "failed") return { rejected: sandbox.error };
+	return "checking";
+}
+
+export function compactSqlStatus(sql: SqlState): "current" | { errors: string[] } {
+	if (sql.status === "current") return "current";
+	const errors = "errors" in sql && Array.isArray(sql.errors) ? sql.errors : [];
+	return { errors };
+}
+
 
 /** Main-process Assistant entry point; credentials remain outside application SQLite. */
 export function createAssistantRuntime({ databasePath, workspace, models: suppliedModels, credentialsOptions, streamFn, getApiKey, maxRequestsPerTurn, openExternal, scenarioRunTimeoutMs = SCENARIO_RUN_TIMEOUT_MS + 15_000, runScenario }: AssistantRuntimeOptions): AssistantRuntime {
@@ -650,24 +662,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				id: string;
 				name: string;
 				change: "added" | "changed" | "removed";
-				status: "added" | "changed" | "removed";
-				action: "added" | "changed" | "removed";
-				added?: boolean;
-				changed?: boolean;
-				removed?: boolean;
 			}> = (after.design?.tables ?? [])
 				.filter((table) => JSON.stringify(beforeById.get(table.id)) !== JSON.stringify(table))
-				.map(({ id, name }) => {
-					const isNew = !beforeById.has(id);
-					return {
-						id,
-						name,
-						change: isNew ? "added" : "changed",
-						status: isNew ? "added" : "changed",
-						action: isNew ? "added" : "changed",
-						...(isNew ? { added: true } : { changed: true }),
-					};
-				});
+				.map(({ id, name }) => ({
+					id,
+					name,
+					change: !beforeById.has(id) ? "added" : "changed",
+				}));
 			const afterIds = new Set((after.design?.tables ?? []).map(({ id }) => id));
 			for (const table of before?.tables ?? []) {
 				if (!afterIds.has(table.id)) {
@@ -675,32 +676,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						id: table.id,
 						name: table.name,
 						change: "removed",
-						status: "removed",
-						action: "removed",
-						removed: true,
 					});
 				}
 			}
 
-			const modelAffectedTables = affectedTables.map(({ name, change, status, action, added, changed, removed }) => ({
+			const modelAffectedTables = affectedTables.map(({ name, change }) => ({
 				name,
 				change,
-				status,
-				action,
-				...(added ? { added: true } : {}),
-				...(changed ? { changed: true } : {}),
-				...(removed ? { removed: true } : {}),
 			}));
-
-			const generatedSqlStatus = after.sql.status === "current"
-				? "current"
-				: { errors: "errors" in after.sql && Array.isArray(after.sql.errors) ? after.sql.errors : [] };
-
-			const sandboxOutcome = after.sandbox.status === "applied"
-				? "accepted"
-				: after.sandbox.status === "failed"
-					? after.sandbox.error
-					: after.sandbox.status;
 
 			const appliedStatements = result.statements && result.statements.length > 0
 				? result.statements
@@ -709,33 +692,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const modelResult = {
 				status: "applied" as const,
 				statements: appliedStatements,
-				statementsApplied: appliedStatements,
 				affectedTables: modelAffectedTables,
 				revision: after.revision,
-				newRevision: after.revision,
-				generatedSqlStatus,
-				generatedSql: generatedSqlStatus,
-				sqlStatus: generatedSqlStatus,
-				sandboxOutcome,
-				sandboxStatus: sandboxOutcome,
-				sandbox: {
-					status: after.sandbox.status === "applied" ? "accepted" : "rejected",
-					...(after.sandbox.status === "failed" ? { error: after.sandbox.error } : {}),
-				},
+				sql: compactSqlStatus(after.sql),
+				sandbox: compactSandboxStatus(after.sandbox),
 			};
 
 			const details = {
 				status: "applied" as const,
 				statements: appliedStatements,
-				statementsApplied: appliedStatements,
 				affectedTables,
 				revision: after.revision,
-				newRevision: after.revision,
-				generatedSqlStatus,
-				generatedSql: generatedSqlStatus,
-				sqlStatus: generatedSqlStatus,
-				sandboxOutcome,
-				sandboxStatus: sandboxOutcome,
+				sql: compactSqlStatus(after.sql),
+				sandbox: compactSandboxStatus(after.sandbox),
 			};
 
 			return {

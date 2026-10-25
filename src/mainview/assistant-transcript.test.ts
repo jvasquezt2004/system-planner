@@ -610,12 +610,12 @@ describe("assistant transcript model", () => {
 							status: "applied",
 							statements: ["CREATE TABLE posts (id uuid PRIMARY KEY);", "DROP TABLE old_posts;"],
 							affectedTables: [
-								{ id: "tbl-posts", name: "posts", change: "added", added: true },
-								{ id: "tbl-old", name: "old_posts", change: "removed", removed: true },
+								{ id: "tbl-posts", name: "posts", change: "added" },
+								{ id: "tbl-old", name: "old_posts", change: "removed" },
 							],
 							revision: 2,
-							generatedSqlStatus: "current",
-							sandboxOutcome: "accepted",
+							sql: "current",
+							sandbox: "accepted",
 						},
 					},
 				},
@@ -634,8 +634,8 @@ describe("assistant transcript model", () => {
 			expect(toolItem.toolName).toBe("apply_ddl");
 			expect(toolItem.trace.title).toBe("Applied SQL to posts, old_posts");
 			expect(toolItem.affectedTables).toEqual([
-				expect.objectContaining({ id: "tbl-posts", name: "posts" }),
-				expect.objectContaining({ id: "tbl-old", name: "old_posts", removed: true }),
+				{ id: "tbl-posts", name: "posts", change: "added" },
+				{ id: "tbl-old", name: "old_posts", change: "removed", removed: true },
 			]);
 		});
 	});

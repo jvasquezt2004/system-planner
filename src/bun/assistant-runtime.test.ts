@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { applyAssistantDdl } from "./assistant-ddl";
-import { createAssistantRuntime, SYSTEM_PROMPT } from "./assistant-runtime";
+import { createAssistantRuntime, SYSTEM_PROMPT, compactSandboxStatus, compactSqlStatus } from "./assistant-runtime";
 import { openDesignStore } from "./store";
 import { generateDesignSql } from "./sql";
 import { createDesignWorkspace } from "./workspace";
@@ -1331,18 +1331,33 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(rawText).not.toContain('"design"');
 		expect(rawText).not.toContain('"position"');
 
-		// 4. Compact content has the required fields
+		// 4. Compact content has the required single fields
 		const parsed = JSON.parse(rawText) as Record<string, unknown>;
-		expect(parsed.status).toBe("applied");
-		expect(parsed.statements).toEqual(["CREATE TABLE users (id uuid PRIMARY KEY, name text)"]);
-		expect(parsed.affectedTables).toEqual([
-			expect.objectContaining({ name: "users", change: "added" }),
-		]);
-		expect(parsed.revision).toBe(2);
-		expect(parsed.generatedSqlStatus).toBe("current");
-		expect(parsed.sandboxOutcome).toBe("accepted");
+		expect(parsed).toEqual({
+			status: "applied",
+			statements: ["CREATE TABLE users (id uuid PRIMARY KEY, name text)"],
+			affectedTables: [{ name: "users", change: "added" }],
+			revision: 2,
+			sql: "current",
+			sandbox: "accepted",
+		});
 
-		// 5. Persisted message details in store also does not carry full WorkspaceState
+		// 5. Assert duplicate synonym fields are gone
+		expect(parsed).not.toHaveProperty("statementsApplied");
+		expect(parsed).not.toHaveProperty("newRevision");
+		expect(parsed).not.toHaveProperty("generatedSqlStatus");
+		expect(parsed).not.toHaveProperty("generatedSql");
+		expect(parsed).not.toHaveProperty("sqlStatus");
+		expect(parsed).not.toHaveProperty("sandboxOutcome");
+		expect(parsed).not.toHaveProperty("sandboxStatus");
+		const firstTable = (parsed.affectedTables as Array<Record<string, unknown>>)[0]!;
+		expect(firstTable).not.toHaveProperty("status");
+		expect(firstTable).not.toHaveProperty("action");
+		expect(firstTable).not.toHaveProperty("added");
+		expect(firstTable).not.toHaveProperty("changed");
+		expect(firstTable).not.toHaveProperty("removed");
+
+		// 6. Persisted message details in store also does not carry full WorkspaceState or duplicate fields
 		const saved = runtime.loadConversation(conversation.id)!;
 		const savedToolResult = saved.messages.find((m) => m.role === "toolResult");
 		expect(savedToolResult).toBeDefined();
@@ -1351,15 +1366,66 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(savedPayload.details).not.toHaveProperty("state");
 		expect(savedPayload.details).not.toHaveProperty("projects");
 		expect(savedPayload.details).not.toHaveProperty("design");
+		expect(savedPayload.details).not.toHaveProperty("statementsApplied");
+		expect(savedPayload.details).not.toHaveProperty("newRevision");
+		expect(savedPayload.details).not.toHaveProperty("generatedSqlStatus");
+		expect(savedPayload.details).not.toHaveProperty("sandboxOutcome");
+		expect(savedPayload.details?.sql).toBe("current");
+		expect(savedPayload.details?.sandbox).toBe("accepted");
 
-		// 6. Trace rows and affected table links still work from compact details
+		// 7. Trace rows and affected table links still work from compact details
 		const items = buildTranscript(saved.messages, false);
 		const toolItem = items.find((i) => i.kind === "tool" && (i as TranscriptToolItem).toolName === "apply_ddl") as TranscriptToolItem;
 		expect(toolItem).toBeDefined();
 		expect(toolItem.trace.title).toBe("Applied SQL to users");
 		expect(toolItem.affectedTables).toEqual([
-			expect.objectContaining({ name: "users" }),
+			expect.objectContaining({ name: "users", change: "added" }),
 		]);
 		expect(toolItem.affectedTables[0]!.id).toBeDefined();
+	});
+
+	test("maps sandbox outcomes exactly to accepted, checking, and { rejected: error } (#107, #108)", () => {
+		// 1. applied -> "accepted"
+		expect(compactSandboxStatus({
+			status: "applied",
+			revision: 1,
+			tables: [],
+			relationships: [],
+			sql: "SELECT 1;",
+		})).toBe("accepted");
+
+		// 2. failed -> { rejected: error }
+		expect(compactSandboxStatus({
+			status: "failed",
+			failure: "sql-rejected",
+			revision: 1,
+			attemptedSql: "CREATE TABLE bad (id bad_type);",
+			error: 'type "bad_type" does not exist',
+			lastApplied: null,
+		})).toEqual({ rejected: 'type "bad_type" does not exist' });
+
+		expect(compactSandboxStatus({
+			status: "failed",
+			failure: "sandbox-error",
+			revision: 1,
+			error: "database engine failure",
+			lastApplied: null,
+		})).toEqual({ rejected: "database engine failure" });
+
+		// 3. anything else (idle, applying) -> "checking"
+		expect(compactSandboxStatus({ status: "idle" })).toBe("checking");
+		expect(compactSandboxStatus({
+			status: "applying",
+			revision: 2,
+			attemptedSql: "CREATE TABLE users (id int);",
+			lastApplied: null,
+		})).toBe("checking");
+	});
+
+	test("maps sql status to current or { errors } (#107, #108)", () => {
+		expect(compactSqlStatus({ status: "current", revision: 1, sql: "SELECT 1;" })).toBe("current");
+		expect(compactSqlStatus({ status: "empty", draftRevision: 1, errors: ["No tables"] })).toEqual({ errors: ["No tables"] });
+		expect(compactSqlStatus({ status: "stale", revision: 1, draftRevision: 2, sql: "SELECT 1;", errors: ["Missing column"] })).toEqual({ errors: ["Missing column"] });
+		expect(compactSqlStatus({ status: "checking", draftRevision: 1, availableRevision: null, sql: null })).toEqual({ errors: [] });
 	});
 });
