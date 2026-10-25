@@ -13,6 +13,7 @@ import type {
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
 import { assistantError, assistantText, deriveDropConfirmationStates, foldAssistantEvent } from "./assistant-transcript";
+import { pickUsableModel } from "./assistant-model-selection";
 
 /** Main-view controls for saved Assistant conversations and their provider. */
 type AssistantApi = Pick<
@@ -126,7 +127,7 @@ export function AssistantSidebar({
 				setConnections(connectionList);
 				setClaudeOptIn(optIn);
 				setRequestCap(cap);
-				const initial = available.find((candidate) => candidate.isDefault) ?? available[0];
+				const initial = pickUsableModel(available);
 				if (initial) {
 					setModel(initial.id);
 					setSelectedConnectionId(initial.connectionId);
@@ -159,13 +160,19 @@ export function AssistantSidebar({
 					setMessages(conversation.messages);
 					setTurnUsages(conversation.usages ?? []);
 					setTotalUsage(conversation.totalUsage ?? null);
-					if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
-					if (conversation.model) {
-						setModel(conversation.model);
-						initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
-					}
+					const usable = pickUsableModel(models, conversation.connection_id, conversation.model);
+					const nextConnId = usable?.connectionId ?? conversation.connection_id ?? "";
+					const nextModel = usable?.id ?? conversation.model ?? "";
+					setSelectedConnectionId(nextConnId);
+					setModel(nextModel);
+					initialConversationModelRef.current = `${nextConnId}:${nextModel}`;
+					const effectiveThinking = conversation.thinking && isThinkingLevel(conversation.thinking) ? conversation.thinking : "medium";
 					if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 					setCacheWarning(null);
+					if (usable && (conversation.model !== usable.id || (conversation.connection_id ?? "") !== usable.connectionId)) {
+						void api.updateAssistantConversationSelection(activeId, usable.connectionId, usable.id, effectiveThinking)
+							.catch((cause: unknown) => setError(String(cause)));
+					}
 				}
 			})
 			.catch((cause: unknown) => {
@@ -246,16 +253,32 @@ export function AssistantSidebar({
 	useEffect(() => {
 		scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
 	}, [messages]);
+	useEffect(() => {
+		if (!models.length) return;
+		const usable = pickUsableModel(models, selectedConnectionId, model);
+		if (!usable) return;
+		if (usable.id !== model || usable.connectionId !== selectedConnectionId) {
+			setSelectedConnectionId(usable.connectionId);
+			setModel(usable.id);
+			if (activeId) {
+				initialConversationModelRef.current = `${usable.connectionId}:${usable.id}`;
+				void api.updateAssistantConversationSelection(activeId, usable.connectionId, usable.id, thinking)
+					.catch((cause: unknown) => setError(String(cause)));
+			}
+		}
+	}, [models, activeId, selectedConnectionId, model, thinking, api]);
+
 
 	async function createConversation() {
 		setError("");
 		try {
 			const conversation = await api.createAssistantConversation(projectId);
-			if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
-			if (conversation.model) {
-				setModel(conversation.model);
-				initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
-			}
+			const usable = pickUsableModel(models, conversation.connection_id, conversation.model);
+			const nextConnId = usable?.connectionId ?? conversation.connection_id ?? "";
+			const nextModel = usable?.id ?? conversation.model ?? "";
+			setSelectedConnectionId(nextConnId);
+			setModel(nextModel);
+			initialConversationModelRef.current = `${nextConnId}:${nextModel}`;
 			if (conversation.thinking && isThinkingLevel(conversation.thinking)) setThinking(conversation.thinking);
 			setCacheWarning(null);
 			setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
@@ -268,6 +291,18 @@ export function AssistantSidebar({
 	async function sendMessage() {
 		const message = text.trim();
 		if (!message || !model || confirmationRequired) return;
+		const usable = pickUsableModel(models, selectedConnectionId, model);
+		const effectiveModel = usable?.id ?? model;
+		const effectiveConnectionId = usable?.connectionId ?? selectedConnectionId;
+		if (usable && (usable.id !== model || usable.connectionId !== selectedConnectionId)) {
+			setSelectedConnectionId(usable.connectionId);
+			setModel(usable.id);
+			if (activeId) {
+				initialConversationModelRef.current = `${usable.connectionId}:${usable.id}`;
+				void api.updateAssistantConversationSelection(activeId, usable.connectionId, usable.id, thinking)
+					.catch((cause: unknown) => setError(String(cause)));
+			}
+		}
 		const requestContext = contextRef.current;
 		const steering = pending;
 		setText("");
@@ -280,14 +315,15 @@ export function AssistantSidebar({
 				const conversation = await api.createAssistantConversation(projectId);
 				conversationId = conversation.id;
 				setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-				if (conversation.connection_id) setSelectedConnectionId(conversation.connection_id);
-				if (conversation.model) {
-					setModel(conversation.model);
-					initialConversationModelRef.current = `${conversation.connection_id ?? ""}:${conversation.model}`;
-				}
+				const createdUsable = pickUsableModel(models, conversation.connection_id, conversation.model);
+				const createdConnId = createdUsable?.connectionId ?? conversation.connection_id ?? "";
+				const createdModel = createdUsable?.id ?? conversation.model ?? "";
+				setSelectedConnectionId(createdConnId);
+				setModel(createdModel);
+				initialConversationModelRef.current = `${createdConnId}:${createdModel}`;
 				setActiveId(conversationId);
 			}
-			const saved = await api.sendAssistantMessage(conversationId, message, model, thinking, selectedConnectionId || undefined) as AssistantConversationRecord | null;
+			const saved = await api.sendAssistantMessage(conversationId, message, effectiveModel, thinking, effectiveConnectionId || undefined) as AssistantConversationRecord | null;
 			if (contextRef.current.projectId !== requestContext.projectId) return;
 			if (saved) {
 				setMessages(saved.messages);

@@ -20,6 +20,7 @@ import {
 	createInMemorySecretBackend,
 	type BunSecretCredentialStoreOptions,
 } from "./assistant-credentials";
+import { pickUsableModel } from "../mainview/assistant-model-selection";
 
 const directories: string[] = [];
 const workspaces: DesignWorkspace[] = [];
@@ -1252,5 +1253,176 @@ describe("Assistant provider connections", () => {
 		const reloadedMsgs = reloaded.messages.filter((m) => m.role === "assistant");
 		expect((reloadedMsgs[0]!.payload as { usage?: { cost?: unknown } }).usage?.cost).toBeDefined();
 		expect((reloadedMsgs[1]!.payload as { usage?: { cost?: unknown } }).usage?.cost).toBeUndefined();
+	});
+
+	test("createConversation heals stale saved default model and updates saved default", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-stale-default-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		await workspace.createProject({ name: "Stale Default Test" });
+		const state = workspace.getState();
+
+		const chatgptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async () => ({
+				type: "oauth",
+				access: "chatgpt-test-token",
+				refresh: "refresh-tok-chatgpt",
+				expires: Date.now() + 3600_000,
+			}),
+			refresh: async (cred) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+
+		const openaiFauxBase = fauxProvider({
+			provider: "openai",
+			models: [
+				{
+					id: "gpt-4",
+					name: "GPT-4",
+					contextWindow: 128000,
+					cost: { input: 30, output: 60, cacheRead: 15, cacheWrite: 0 },
+				},
+				{
+					id: "gpt-6-luna",
+					name: "GPT-6 Luna",
+					contextWindow: 128000,
+					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+				},
+			],
+		});
+
+		const customOpenAIProvider = {
+			...openaiFauxBase.provider,
+			auth: { oauth: chatgptOAuth },
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const { credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels();
+		models.setProvider(customOpenAIProvider as never);
+
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+
+		const oauthResult = await runtime.startOAuthLogin("openai");
+		const oauthConn = oauthResult.connection!;
+
+		// Set stale default selection in database: gpt-4 on ChatGPT sign-in connection
+		const db = new Database(databasePath);
+		db.exec(`INSERT OR REPLACE INTO assistant_settings (id, connection_id, model, thinking) VALUES (1, '${oauthConn.id}', 'gpt-4', 'medium')`);
+		db.close();
+
+		// createConversation returns a conversation with a usable Codex model (gpt-6-luna)
+		const conversation = runtime.createConversation(state.project!.id);
+		expect(conversation.connection_id).toBe(oauthConn.id);
+		expect(conversation.model).toBe("gpt-6-luna");
+
+		// The saved default in assistant_settings is updated
+		const verifyDb = new Database(databasePath, { readonly: true });
+		const updatedSetting = verifyDb.query<{ connection_id: string; model: string }, []>(
+			"SELECT connection_id, model FROM assistant_settings WHERE id = 1",
+		).get();
+		verifyDb.close();
+		expect(updatedSetting?.connection_id).toBe(oauthConn.id);
+		expect(updatedSetting?.model).toBe("gpt-6-luna");
+	});
+
+	test("conversation stored with unusable model heals selection, succeeds on sendMessage, and records healed model", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-stale-conv-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		await workspace.createProject({ name: "Stale Conversation Test" });
+		const state = workspace.getState();
+
+		const chatgptOAuth: OAuthAuth = {
+			name: "OpenAI (ChatGPT subscription)",
+			isSubscription: true,
+			loginLabel: "Sign in with ChatGPT",
+			login: async () => ({
+				type: "oauth",
+				access: "chatgpt-test-token",
+				refresh: "refresh-tok-chatgpt",
+				expires: Date.now() + 3600_000,
+			}),
+			refresh: async (cred) => cred,
+			toAuth: async (cred) => ({ apiKey: cred.access }),
+		};
+
+		const openaiFauxBase = fauxProvider({
+			provider: "openai",
+			models: [
+				{
+					id: "gpt-4",
+					name: "GPT-4",
+					contextWindow: 128000,
+					cost: { input: 30, output: 60, cacheRead: 15, cacheWrite: 0 },
+				},
+				{
+					id: "gpt-6-luna",
+					name: "GPT-6 Luna",
+					contextWindow: 128000,
+					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
+				},
+			],
+		});
+
+		const customOpenAIProvider = {
+			...openaiFauxBase.provider,
+			auth: { oauth: chatgptOAuth },
+			streamSimple: (model: unknown, context: unknown, options?: { apiKey?: string }) => {
+				return (openaiFauxBase.provider.streamSimple as Function)(model, context, options);
+			},
+		};
+
+		const { credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels();
+		models.setProvider(customOpenAIProvider as never);
+
+		const runtime = createGuardedAssistantRuntime({ databasePath, workspace, models, credentialsOptions });
+		runtimes.push(runtime);
+
+		const oauthResult = await runtime.startOAuthLogin("openai");
+		const oauthConn = oauthResult.connection!;
+
+		// Create a conversation initially, then store gpt-4 directly in database
+		const conversation = runtime.createConversation(state.project!.id);
+		const db = new Database(databasePath);
+		db.exec(`UPDATE assistant_conversations SET connection_id = '${oauthConn.id}', model = 'gpt-4' WHERE id = '${conversation.id}'`);
+		db.close();
+
+		// Verify it was stored with gpt-4 and sending gpt-4 directly is rejected by runtime
+		const loadedInitial = runtime.loadConversation(conversation.id)!;
+		expect(loadedInitial.model).toBe("gpt-4");
+		await expect(
+			runtime.sendMessage(conversation.id, "Try unusable", "gpt-4", "medium", oauthConn.id),
+		).rejects.toThrow(/not usable with ChatGPT/i);
+
+		// Perform healing selection (as the sidebar does with pickUsableModel + updateConversationSelection)
+		const availableModels = await runtime.listModels();
+		const healed = pickUsableModel(availableModels, oauthConn.id, loadedInitial.model);
+		expect(healed).not.toBeNull();
+		expect(healed!.id).toBe("gpt-6-luna");
+		runtime.updateConversationSelection(conversation.id, healed!.connectionId, healed!.id, "medium");
+
+		// sendMessage succeeds with the fake model
+		openaiFauxBase.setResponses([
+			fauxAssistantMessage([fauxText("Message handled successfully.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Hello after healing", healed!.id, "medium", healed!.connectionId);
+
+		// Loaded conversation records the healed model
+		const loadedAfter = runtime.loadConversation(conversation.id)!;
+		expect(loadedAfter.model).toBe("gpt-6-luna");
+		expect(loadedAfter.connection_id).toBe(oauthConn.id);
+		expect(loadedAfter.messages.some((m) => m.role === "assistant")).toBe(true);
 	});
 });
