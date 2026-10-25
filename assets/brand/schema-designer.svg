@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title">
+	<title id="title">Schema Designer</title>
+	<!-- Paper tile with a soft ink rule, matching the app's editorial palette. -->
+	<rect x="16" y="16" width="480" height="480" rx="108" fill="#f2eee5"/>
+	<rect x="19" y="19" width="474" height="474" rx="105" fill="none" stroke="#1b1a17" stroke-opacity="0.16" stroke-width="6"/>
+
+	<!-- The "one" table: an ink-headed, spreadsheet-styled card. -->
+	<rect x="100" y="80" width="236" height="164" rx="18" fill="#faf8f3" stroke="#1b1a17" stroke-width="14"/>
+	<path d="M100 98a18 18 0 0 1 18-18h200a18 18 0 0 1 18 18v38H100z" fill="#1b1a17"/>
+	<path d="M130 180h132M130 212h84" stroke="#1b1a17" stroke-opacity="0.4" stroke-width="13" stroke-linecap="round"/>
+
+	<!-- The enclosure: the blue-pencil frame the app draws around the "many" side,
+	     with its header tab joined to the card that has many. -->
+	<path d="M156 240h60v40h-60z" fill="#2c4a96"/>
+	<rect x="128" y="276" width="300" height="160" rx="28" fill="#dfe2e9" stroke="#2c4a96" stroke-width="16"/>
+
+	<!-- The "many" table inside the enclosure. -->
+	<rect x="166" y="314" width="224" height="90" rx="14" fill="#faf8f3" stroke="#1b1a17" stroke-width="14"/>
+	<path d="M166 328a14 14 0 0 1 14-14h196a14 14 0 0 1 14 14v18H166z" fill="#1b1a17"/>
+	<path d="M194 378h108" stroke="#1b1a17" stroke-opacity="0.4" stroke-width="13" stroke-linecap="round"/>
+</svg>
