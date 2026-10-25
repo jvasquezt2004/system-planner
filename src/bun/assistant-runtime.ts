@@ -4,6 +4,7 @@ import { Type, createModels, normalizeContext, type MutableModels, calculateCost
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { googleProvider } from "@earendil-works/pi-ai/providers/google";
+import { openaiCodexProvider } from "@earendil-works/pi-ai/providers/openai-codex";
 import type {
 	AssistantConnectionStatus,
 	AssistantConversation,
@@ -364,21 +365,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		return Boolean(getApiKey);
 	}
 
-	// Note: @earendil-works/pi-ai does not expose subscription/OAuth model availability
-	// or refreshModels for the openai provider. Per ticket #90, we fall back to filtering
-	// out at least realtime and audio models for ChatGPT OAuth connections, while API-key
+	// A "Sign in with ChatGPT" token reaches only the models of pi's Codex catalog; OpenAI
+	// rejects the rest of the API catalog (e.g. gpt-4) with model_not_found. API-key
 	// connections keep the full catalog.
-	function isModelUsableWithConnection(conn: AssistantProviderConnection, model: { id: string; name?: string; input?: readonly string[] }): boolean {
-		if (conn.auth_method !== "oauth") return true;
-		if (conn.provider_id === "openai") {
-			const id = model.id.toLowerCase();
-			const name = (model.name ?? "").toLowerCase();
-			const isRealtime = id.includes("realtime") || name.includes("realtime");
-			const isAudio = id.includes("audio") || name.includes("audio") || Boolean(model.input?.includes("audio"));
-			if (isRealtime || isAudio) {
-				return false;
-			}
-		}
+	const chatGptSignInModelIds = new Set(openaiCodexProvider().getModels().map((model) => model.id));
+	function isModelUsableWithConnection(conn: AssistantProviderConnection, model: { id: string }): boolean {
+		if (conn.auth_method === "oauth" && conn.provider_id === "openai") return chatGptSignInModelIds.has(model.id);
 		return true;
 	}
 
@@ -933,9 +925,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (conn.auth_method === "oauth" && providerObj?.filterModels) {
 					providerModels = providerObj.filterModels(providerModels, { type: "oauth" } as never);
 				}
+				const selection = store.getDefaultSelection();
 				for (const m of providerModels) {
 					if (!isModelUsableWithConnection(conn, m)) continue;
 					result.push({
+						isDefault: selection.connectionId === conn.id && selection.model === m.id,
 						id: m.id,
 						name: m.name,
 						provider: conn.provider_id,

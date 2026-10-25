@@ -28,6 +28,8 @@ export type AssistantModel = {
 	connectionName: string;
 	reasoning: boolean;
 	contextWindow: number;
+	/** The saved default model for new conversations. */
+	isDefault?: boolean;
 };
 
 export type AssistantMessage = {
