@@ -1,6 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import ts from "typescript";
-import { findRuntimeImport } from "./scenario-runtime";
+import { findRuntimeImport, createScenarioExpect, stringify, type ScenarioExpectationResult } from "./scenario-runtime";
 
 const scope = self as unknown as {
 	onmessage: ((event: MessageEvent) => void) | null;
@@ -10,7 +10,7 @@ const realtimeWebSocket = globalThis.WebSocket;
 let requestSequence = 0;
 const pending = new Map<string, (response: { status: number; headers: Record<string, string>; body: unknown }) => void>();
 const output: string[] = [];
-type ExpectationResult = { description: string; passed: boolean; message: string };
+type ExpectationResult = ScenarioExpectationResult;
 const expectations: ExpectationResult[] = [];
 
 scope.onmessage = async (event: MessageEvent) => {
@@ -82,40 +82,7 @@ scope.onmessage = async (event: MessageEvent) => {
 		const recordExpectation = (description: string, passed: boolean, message: string) => {
 			expectations.push({ description, passed, message });
 		};
-		const expectResult = (value: unknown) => {
-			const pending = value !== null && typeof value === "object" && "then" in value && typeof value.then === "function";
-			const valid = isScenarioRequestResult(value);
-			const invalidReason = pending
-				? "expect() received a pending request; await it first"
-				: valid ? null : "expect() requires an awaited request result";
-			const result: ScenarioRequestResult = valid ? value : {};
-			const recordInvalidInput = (description: string): boolean => {
-				if (!invalidReason) return false;
-				recordExpectation(description, false, invalidReason);
-				return true;
-			};
-			return {
-				succeeds() {
-					if (recordInvalidInput("request succeeds")) return;
-					const passed = !result.error;
-					recordExpectation("request succeeds", passed, passed ? "Request succeeded." : `Request failed: ${result.error?.message ?? result.error?.code ?? "unknown error"}`);
-				},
-				fails(code?: string) {
-					if (recordInvalidInput(code ? `request fails with ${code}` : "request fails")) return;
-					const matchesFailure = Boolean(result.error) && (!code || result.error?.code === code);
-					recordExpectation(
-						code ? `request fails with ${code}` : "request fails",
-						matchesFailure,
-						matchesFailure ? `Request failed${code ? ` with ${code}` : ""}.` : result.error ? `Expected error ${code}, received ${result.error.code ?? "unknown error"}.` : "Expected request to fail, but it succeeded.",
-					);
-				},
-				returnsDataEqual(expected: unknown) {
-					if (recordInvalidInput("request returns expected data")) return;
-					const passed = deepEqual(result.data, expected);
-					recordExpectation("request returns expected data", passed, passed ? "Returned data matched." : `Expected ${stringify(expected)}, received ${stringify(result.data)}.`);
-				},
-			};
-		};
+		const expectResult = createScenarioExpect(recordExpectation);
 		const capturedConsole = {
 			log: (...values: unknown[]) => output.push(values.map(stringify).join(" ")),
 			info: (...values: unknown[]) => output.push(values.map(stringify).join(" ")),
@@ -136,26 +103,3 @@ scope.onmessage = async (event: MessageEvent) => {
 		report("errored", "exception");
 	}
 };
-function deepEqual(actual: unknown, expected: unknown): boolean {
-	if (Object.is(actual, expected)) return true;
-	if (typeof actual !== "object" || actual === null || typeof expected !== "object" || expected === null) return false;
-	if (Array.isArray(actual) !== Array.isArray(expected)) return false;
-	const actualKeys = Object.keys(actual);
-	const expectedKeys = Object.keys(expected);
-	return actualKeys.length === expectedKeys.length
-		&& expectedKeys.every((key) => Object.prototype.hasOwnProperty.call(actual, key) && deepEqual((actual as Record<string, unknown>)[key], (expected as Record<string, unknown>)[key]));
-}
-
-type ScenarioRequestResult = { data?: unknown; error?: { code?: string; message?: string } | null };
-
-function isScenarioRequestResult(value: unknown): value is ScenarioRequestResult {
-	return typeof value === "object"
-		&& value !== null
-		&& !("then" in value && typeof value.then === "function")
-		&& ("data" in value || "error" in value);
-}
-
-function stringify(value: unknown): string {
-	if (typeof value === "string") return value;
-	try { return JSON.stringify(value); } catch { return String(value); }
-}

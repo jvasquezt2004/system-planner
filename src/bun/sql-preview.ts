@@ -13,7 +13,14 @@ export type SqlPreviewActionDependencies = {
 	chooseExportDirectory(): Promise<string | null>;
 };
 
-export function createSqlPreviewActions(dependencies: SqlPreviewActionDependencies) {
+export type SqlPreviewActions = {
+	copy(preview: DisplayedSqlPreview | null): SqlPreviewCopyResult;
+	export(preview: DisplayedSqlPreview | null, fileName: string): Promise<SqlPreviewExportResult>;
+	copyCode(snapshot: SchemaCodeSnapshot | null): SqlPreviewCopyResult;
+	exportCode(snapshot: SchemaCodeSnapshot | null, fileName: string): Promise<SqlPreviewExportResult>;
+};
+
+export function createSqlPreviewActions(dependencies: SqlPreviewActionDependencies): SqlPreviewActions {
 	return {
 		copy(preview: DisplayedSqlPreview | null): SqlPreviewCopyResult {
 			const revision = preview?.revision ?? 0;

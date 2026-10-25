@@ -34,6 +34,7 @@ export function getAssistantCodeDiagnostics(
 		target: ts.ScriptTarget.ESNext,
 		module: ts.ModuleKind.ESNext,
 		moduleResolution: ts.ModuleResolutionKind.Bundler,
+		moduleDetection: ts.ModuleDetectionKind.Force,
 		baseUrl: assistantTypesDirectory,
 		paths: Object.fromEntries(Object.entries(sourcePaths).map(([specifier, targets]) => [
 			specifier,

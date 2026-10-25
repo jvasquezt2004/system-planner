@@ -133,11 +133,12 @@ declare global {
   const supabase: SupabaseClient<Database>;
   function asUser(userId: string, claims?: Record<string, unknown>): SupabaseClient<Database>;
   function asServiceRole(): SupabaseClient<Database>;
-  const expect: (result: { data: unknown; error: { code: string; message: string } | null }) => {
-    succeeds(): void;
-    fails(code?: string): void;
-    returnsDataEqual(expected: unknown): void;
-  };
+  interface ScenarioExpectation {
+    succeeds(): ScenarioExpectation;
+    fails(code?: string): ScenarioExpectation;
+    returnsDataEqual(expected: unknown): ScenarioExpectation;
+  }
+  const expect: (result: { data: unknown; error: { code: string; message: string } | null }) => ScenarioExpectation;
 }
 export {};`;
 }
