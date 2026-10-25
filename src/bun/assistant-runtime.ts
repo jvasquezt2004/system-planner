@@ -141,13 +141,32 @@ export interface AssistantRuntime {
 	subscribe: (subscriber: (conversationId: string, event: unknown) => void) => () => void;
 	isTurnPaused: (conversationId: string) => boolean;
 	isConfirmationPending: (conversationId: string) => boolean;
-	continueTurn: (conversationId: string) => Promise<AssistantConversationRecord | null>;
+	isTurnRunning?: (conversationId: string) => boolean;
+	continueTurn: <T extends { waitForCompletion?: boolean } = { waitForCompletion: true }>(
+		conversationId: string,
+		options?: T,
+	) => Promise<T extends { waitForCompletion: false } ? { started: boolean } : AssistantConversationRecord | null>;
 	stop: (conversationId: string) => void;
 	canRevertTurn: (conversationId: string) => boolean;
 	revertTurn: (conversationId: string) => Promise<AssistantConversationRecord | null>;
-	confirmDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
-	rejectDdlDrop: (conversationId: string, toolCallId: string) => Promise<AssistantConversationRecord | null>;
-	sendMessage: (conversationId: string, text: string, modelId: string, thinkingLevel?: ThinkingLevel, connectionId?: string) => Promise<AssistantConversationRecord | null>;
+	confirmDdlDrop: <T extends { waitForCompletion?: boolean } = { waitForCompletion: true }>(
+		conversationId: string,
+		toolCallId: string,
+		options?: T,
+	) => Promise<T extends { waitForCompletion: false } ? { started: boolean } : AssistantConversationRecord | null>;
+	rejectDdlDrop: <T extends { waitForCompletion?: boolean } = { waitForCompletion: true }>(
+		conversationId: string,
+		toolCallId: string,
+		options?: T,
+	) => Promise<T extends { waitForCompletion: false } ? { started: boolean } : AssistantConversationRecord | null>;
+	sendMessage: <T extends { waitForCompletion?: boolean } = { waitForCompletion: true }>(
+		conversationId: string,
+		text: string,
+		modelId: string,
+		thinkingLevel?: ThinkingLevel,
+		connectionId?: string,
+		options?: T,
+	) => Promise<T extends { waitForCompletion: false } ? { started: boolean } : AssistantConversationRecord | null>;
 	close: () => void;
 }
 
@@ -343,6 +362,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const active = new Map<string, Agent>();
 	const subscribers = new Set<(conversationId: string, event: unknown) => void>();
 	const pausedTurns = new Set<string>();
+	const runningTurns = new Set<string>();
 	const requestsThisTurn = new Map<string, number>();
 	const turnIds = new Map<string, string>();
 	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
@@ -1116,6 +1136,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			store.setMaxRequestsPerTurn(limit);
 		},
 		isConfirmationPending: (conversationId: string) => pendingConfirmations.has(conversationId),
+		isTurnRunning: (conversationId: string) => runningTurns.has(conversationId),
 		canRevertTurn(conversationId) {
 			const checkpoint = turnCheckpoints.get(conversationId);
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
@@ -1147,20 +1168,34 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			latestTurnByProject.delete(checkpoint.projectId);
 			return store.loadConversation(conversationId);
 		},
-		async continueTurn(conversationId: string) {
+		async continueTurn(conversationId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
+			const waitForCompletion = options?.waitForCompletion ?? true;
 			const agent = active.get(conversationId);
 			if (!agent || pendingConfirmations.has(conversationId) || !pausedTurns.delete(conversationId)) throw new Error("This Assistant turn is not waiting to continue.");
 			requestsThisTurn.set(conversationId, 0);
 			const message = { role: "user" as const, content: "Continue the interrupted Assistant task.", timestamp: Date.now() };
 			store.appendMessage(conversationId, { role: "user", kind: "assistant-continue", payload: message });
 			agent.steer(message);
-			await agent.continue();
+			runningTurns.add(conversationId);
+			const run = agent.continue();
+			if (!waitForCompletion) {
+				run.catch((err) => {
+					runningTurns.delete(conversationId);
+					publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
+					publish(conversationId, { type: "agent_end" });
+					publish(conversationId, { type: "assistant_turn_ended" });
+				});
+				return { started: true };
+			}
+			await run;
 			return store.loadConversation(conversationId);
 		},
 		stop(conversationId: string) {
+			runningTurns.delete(conversationId);
 			active.get(conversationId)?.abort();
 		},
-		async confirmDdlDrop(conversationId: string, toolCallId: string) {
+		async confirmDdlDrop(conversationId: string, toolCallId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
+			const waitForCompletion = options?.waitForCompletion ?? true;
 			const { conversation } = requireBoundState(conversationId);
 			if (confirmingDrops.has(toolCallId)) throw new Error("This DDL confirmation is already being processed.");
 			if (conversation.messages.some((message) => {
@@ -1316,14 +1351,33 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					agent.clearAllQueues();
 					pausedTurns.delete(conversationId);
 					agent.state.messages.push(toolResult as never);
-					await agent.prompt("Continue after the confirmed destructive change.");
+					runningTurns.add(conversationId);
+					const run = agent.prompt("Continue after the confirmed destructive change.");
+					if (!waitForCompletion) {
+						run.catch((err) => {
+							runningTurns.delete(conversationId);
+							publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
+							publish(conversationId, { type: "agent_end" });
+							publish(conversationId, { type: "assistant_turn_ended" });
+						}).finally(() => {
+							confirmingDrops.delete(toolCallId);
+						});
+						return { started: true };
+					}
+					await run;
+				} else if (!waitForCompletion) {
+					publish(conversationId, { type: "assistant_turn_ended" });
+					return { started: true };
 				}
 				return store.loadConversation(conversationId);
 			} finally {
-				confirmingDrops.delete(toolCallId);
+				if (waitForCompletion) {
+					confirmingDrops.delete(toolCallId);
+				}
 			}
 		},
-		async rejectDdlDrop(conversationId: string, toolCallId: string) {
+		async rejectDdlDrop(conversationId: string, toolCallId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
+			const waitForCompletion = options?.waitForCompletion ?? true;
 			const { conversation } = requireBoundState(conversationId);
 			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
 			if (conversation.messages.some((message) => {
@@ -1358,14 +1412,29 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			(toolResult as { id?: string }).id = rowId;
 			pendingConfirmations.delete(conversationId);
 			publish(conversationId, { type: "assistant_confirmation_resolved" });
-			const agent = active.get(conversationId);
-			if (agent) {
-				agent.state.messages.push(toolResult as never);
-				await agent.prompt("Continue after the rejected destructive change.");
-			}
-			return store.loadConversation(conversationId);
+				const agent = active.get(conversationId);
+				if (agent) {
+					agent.state.messages.push(toolResult as never);
+					runningTurns.add(conversationId);
+					const run = agent.prompt("Continue after the rejected destructive change.");
+					if (!waitForCompletion) {
+						run.catch((err) => {
+							runningTurns.delete(conversationId);
+							publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
+							publish(conversationId, { type: "agent_end" });
+							publish(conversationId, { type: "assistant_turn_ended" });
+						});
+						return { started: true };
+					}
+					await run;
+				} else if (!waitForCompletion) {
+					publish(conversationId, { type: "assistant_turn_ended" });
+					return { started: true };
+				}
+				return store.loadConversation(conversationId);
 		},
-		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium", connectionId?: string) {
+		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium", connectionId?: string, options?: { waitForCompletion?: boolean }): Promise<any> {
+			const waitForCompletion = options?.waitForCompletion ?? true;
 			await ensureLegacyCredentialsMigrated();
 			const conversation = requireBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
@@ -1458,7 +1527,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (agent?.state.isStreaming) {
 				if (changeNote) agent.steer(changeNote);
 				agent.steer(userMessage);
-				return store.loadConversation(conversationId);
+				return waitForCompletion ? store.loadConversation(conversationId) : { started: true };
 			}
 			const hadAgent = Boolean(agent);
 			if (!agent) {
@@ -1516,7 +1585,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						const rowId = store.appendMessage(conversationId, { role: event.message.role, payload: event.message });
 						(event.message as { id?: string }).id = rowId;
 					}
-					publish(conversationId, event);
+
 					if (event.type === "message_end" && event.message.role === "assistant") {
 						const assistantMsg = event.message as { usage?: Usage };
 						if (assistantMsg.usage) {
@@ -1539,6 +1608,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						}
 					}
 					if (event.type === "agent_end") {
+						runningTurns.delete(conversationId);
 						const turnId = turnIds.get(conversationId);
 						if (!pausedTurns.has(conversationId) && !pendingConfirmations.has(conversationId)) {
 							const promptTokens = lastPromptTokens.get(conversationId) ?? 0;
@@ -1574,7 +1644,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 								latestTurnByProject.set(checkpoint.projectId, conversationId);
 							}
 						}
+						publish(conversationId, event);
+						publish(conversationId, { type: "assistant_turn_ended" });
+						return;
 					}
+					publish(conversationId, event);
 				});
 				active.set(conversationId, agent);
 			}
@@ -1600,10 +1674,22 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				projectId: conversation.project_id,
 				before: checkpointBefore,
 			});
-			await agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
+			runningTurns.add(conversationId);
+			const run = agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
+			if (!waitForCompletion) {
+				run.catch((err) => {
+					runningTurns.delete(conversationId);
+					publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
+					publish(conversationId, { type: "agent_end" });
+					publish(conversationId, { type: "assistant_turn_ended" });
+				});
+				return { started: true };
+			}
+			await run;
 			return store.loadConversation(conversationId);
 		},
 		close() {
+			runningTurns.clear();
 			for (const agent of active.values()) agent.abort();
 			active.clear();
 			store.close();

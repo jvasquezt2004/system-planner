@@ -197,10 +197,11 @@ export function AssistantSidebar({
 			.catch((cause: unknown) => {
 				if (live) setError(String(cause));
 			});
-		api.getAssistantTurnStatus(activeId).then(({ paused, confirmationRequired: requiresConfirmation }) => {
+		api.getAssistantTurnStatus(activeId).then(({ paused, confirmationRequired: requiresConfirmation, running }) => {
 			if (live) {
 				setTurnPaused(paused);
 				setConfirmationRequired(requiresConfirmation);
+				if (running !== undefined) setPending(running);
 			}
 		}).catch((cause: unknown) => { if (live) setError(String(cause)); });
 		return () => {
@@ -208,15 +209,43 @@ export function AssistantSidebar({
 		};
 	}, [activeId, api]);
 
+	async function reloadConversation(targetId: string) {
+		try {
+			const saved = await api.getAssistantConversation(targetId);
+			if (contextRef.current.activeId === targetId && saved) {
+				setMessages(saved.messages);
+				setTurnUsages(saved.usages ?? []);
+				setTotalUsage(saved.totalUsage ?? null);
+				setConversations((current) =>
+					current.map((item) => (item.id === saved.id ? saved : item)).sort((a, b) => b.updated_at - a.updated_at)
+				);
+			}
+			const status = await api.getAssistantTurnStatus(targetId);
+			if (contextRef.current.activeId === targetId) {
+				setRevertAvailable(status.revertAvailable);
+				setTurnPaused(status.paused);
+				setConfirmationRequired(status.confirmationRequired);
+			}
+		} catch (cause) {
+			if (contextRef.current.activeId === targetId) setError(String(cause));
+		} finally {
+			if (contextRef.current.activeId === targetId) setPending(false);
+		}
+	}
+
 	useEffect(() => {
 		if (!activeId) return;
 		return api.subscribeAssistantEvents((envelope: StreamEnvelope) => {
 			if (envelope.conversationId !== activeId) return;
 			if (envelope.event && typeof envelope.event === "object" && "type" in envelope.event) {
-				if (envelope.event.type === "assistant_turn_paused") setTurnPaused(true);
+				if (envelope.event.type === "assistant_turn_paused") {
+					setTurnPaused(true);
+					setPending(false);
+				}
 				if (envelope.event.type === "assistant_confirmation_required") {
 					setTurnPaused(true);
 					setConfirmationRequired(true);
+					setPending(false);
 				}
 				if (envelope.event.type === "assistant_confirmation_resolved") {
 					setTurnPaused(false);
@@ -225,6 +254,14 @@ export function AssistantSidebar({
 				if (envelope.event.type === "assistant_turn_usage") {
 					const usageEvent = envelope.event as unknown as { usage: AssistantTurnUsage };
 					if (usageEvent.usage) setTurnUsages((current) => [...current, usageEvent.usage]);
+				}
+				if (envelope.event.type === "assistant_error") {
+					const errorEvent = envelope.event as unknown as { error?: string };
+					if (errorEvent.error) setError(errorEvent.error);
+					setPending(false);
+				}
+				if (envelope.event.type === "agent_end" || envelope.event.type === "assistant_turn_ended") {
+					void reloadConversation(activeId);
 				}
 			}
 			setMessages((current) => foldAssistantEvent(current, envelope.event));
@@ -323,16 +360,15 @@ export function AssistantSidebar({
 			}
 		}
 		const requestContext = contextRef.current;
-		const steering = pending;
 		setText("");
 		setMessages((current) => [...current, { role: "user", payload: message }]);
 		setPending(true);
 		setError("");
+		let targetConversationId = activeId;
 		try {
-			let conversationId = activeId;
-			if (!conversationId) {
+			if (!targetConversationId) {
 				const conversation = await api.createAssistantConversation(projectId);
-				conversationId = conversation.id;
+				targetConversationId = conversation.id;
 				setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
 				const createdUsable = pickUsableModel(models, conversation.connection_id, conversation.model);
 				const createdConnId = createdUsable?.connectionId ?? conversation.connection_id ?? "";
@@ -340,22 +376,22 @@ export function AssistantSidebar({
 				setSelectedConnectionId(createdConnId);
 				setModel(createdModel);
 				initialConversationModelRef.current = `${createdConnId}:${createdModel}`;
-				setActiveId(conversationId);
+				setActiveId(targetConversationId);
 			}
-			const saved = await api.sendAssistantMessage(conversationId, message, effectiveModel, thinking, effectiveConnectionId || undefined) as AssistantConversationRecord | null;
-			if (contextRef.current.projectId !== requestContext.projectId) return;
-			if (saved) {
-				setMessages(saved.messages);
-				setTurnUsages(saved.usages ?? []);
-				setTotalUsage(saved.totalUsage ?? null);
-				setConversations((current) => current.map((item) => item.id === saved.id ? saved : item).sort((a, b) => b.updated_at - a.updated_at));
-			}
-			const status = await api.getAssistantTurnStatus(conversationId);
-			if (contextRef.current.projectId === requestContext.projectId) setRevertAvailable(status.revertAvailable);
+			await api.sendAssistantMessage(targetConversationId, message, effectiveModel, thinking, effectiveConnectionId || undefined);
 		} catch (cause) {
-			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
-		} finally {
-			if (contextRef.current.projectId === requestContext.projectId && !steering) setPending(false);
+			if (contextRef.current.generation === requestContext.generation) {
+				setError(String(cause));
+				setPending(false);
+				setText(message);
+				if (targetConversationId) {
+					void api.getAssistantConversation(targetConversationId).then((saved) => {
+						if (contextRef.current.activeId === targetConversationId && saved) {
+							setMessages(saved.messages);
+						}
+					});
+				}
+			}
 		}
 	}
 
@@ -508,16 +544,10 @@ export function AssistantSidebar({
 		setPending(true);
 		setError("");
 		try {
-			const saved = await api.continueAssistantTurn(activeId) as AssistantConversationRecord | null;
-			if (contextRef.current.generation === requestContext.generation && saved) {
-				setMessages(saved.messages);
-				setTurnUsages(saved.usages ?? []);
-				setTotalUsage(saved.totalUsage ?? null);
-			}
+			await api.continueAssistantTurn(activeId);
 		} catch (cause) {
-			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
-		} finally {
 			if (contextRef.current.generation === requestContext.generation) {
+				setError(String(cause));
 				setPending(false);
 				const status = await api.getAssistantTurnStatus(activeId);
 				if (contextRef.current.generation === requestContext.generation) {
@@ -534,12 +564,10 @@ export function AssistantSidebar({
 		setPending(true);
 		setError("");
 		try {
-			const saved = await api.confirmAssistantDdlDrop(activeId, toolCallId);
-			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
+			await api.confirmAssistantDdlDrop(activeId, toolCallId);
 		} catch (cause) {
-			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
-		} finally {
 			if (contextRef.current.generation === requestContext.generation) {
+				setError(String(cause));
 				setPending(false);
 				const status = await api.getAssistantTurnStatus(activeId);
 				if (contextRef.current.generation === requestContext.generation) {
@@ -555,12 +583,10 @@ export function AssistantSidebar({
 		setPending(true);
 		setError("");
 		try {
-			const saved = await api.rejectAssistantDdlDrop(activeId, toolCallId);
-			if (contextRef.current.generation === requestContext.generation && saved) setMessages(saved.messages);
+			await api.rejectAssistantDdlDrop(activeId, toolCallId);
 		} catch (cause) {
-			if (contextRef.current.generation === requestContext.generation) setError(String(cause));
-		} finally {
 			if (contextRef.current.generation === requestContext.generation) {
+				setError(String(cause));
 				setPending(false);
 				const status = await api.getAssistantTurnStatus(activeId);
 				if (contextRef.current.generation === requestContext.generation) {

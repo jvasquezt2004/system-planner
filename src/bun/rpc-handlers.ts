@@ -143,16 +143,27 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 			modelId: string;
 			thinkingLevel: AssistantThinkingLevel;
 			connectionId?: string;
-		}): Promise<unknown> => (await deps.assistant).sendMessage(conversationId, text, modelId, thinkingLevel, connectionId),
+		}): Promise<{ started: boolean }> => {
+			const assistant = await deps.assistant;
+			const result = await assistant.sendMessage(conversationId, text, modelId, thinkingLevel, connectionId, { waitForCompletion: false });
+			return (result && typeof result === "object" && "started" in result) ? (result as { started: boolean }) : { started: true };
+		},
 		stopAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<void> =>
 			(await deps.assistant).stop(conversationId),
-		continueAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<unknown> =>
-			(await deps.assistant).continueTurn(conversationId),
-		getAssistantTurnStatus: async ({ conversationId }: { conversationId: string }): Promise<{ paused: boolean; confirmationRequired: boolean; revertAvailable: boolean }> => ({
-			paused: (await deps.assistant).isTurnPaused(conversationId),
-			confirmationRequired: (await deps.assistant).isConfirmationPending(conversationId),
-			revertAvailable: (await deps.assistant).canRevertTurn(conversationId),
-		}),
+		continueAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<{ started: boolean }> => {
+			const assistant = await deps.assistant;
+			const result = await assistant.continueTurn(conversationId, { waitForCompletion: false });
+			return (result && typeof result === "object" && "started" in result) ? (result as { started: boolean }) : { started: true };
+		},
+		getAssistantTurnStatus: async ({ conversationId }: { conversationId: string }): Promise<{ paused: boolean; confirmationRequired: boolean; revertAvailable: boolean; running: boolean }> => {
+			const assistant = await deps.assistant;
+			return {
+				paused: assistant.isTurnPaused(conversationId),
+				confirmationRequired: assistant.isConfirmationPending(conversationId),
+				revertAvailable: assistant.canRevertTurn(conversationId),
+				running: assistant.isTurnRunning ? assistant.isTurnRunning(conversationId) : false,
+			};
+		},
 		revertAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<AssistantConversationRecord | null> =>
 			(await deps.assistant).revertTurn(conversationId),
 		updateAssistantConversationSelection: async ({ conversationId, connectionId, modelId, thinkingLevel }: {
@@ -161,9 +172,15 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 			modelId: string;
 			thinkingLevel: AssistantThinkingLevel;
 		}): Promise<void> => (await deps.assistant).updateConversationSelection(conversationId, connectionId, modelId, thinkingLevel),
-		confirmAssistantDdlDrop: async ({ conversationId, toolCallId }: { conversationId: string; toolCallId: string }): Promise<AssistantConversationRecord | null> =>
-			(await deps.assistant).confirmDdlDrop(conversationId, toolCallId),
-		rejectAssistantDdlDrop: async ({ conversationId, toolCallId }: { conversationId: string; toolCallId: string }): Promise<AssistantConversationRecord | null> =>
-			(await deps.assistant).rejectDdlDrop(conversationId, toolCallId),
+		confirmAssistantDdlDrop: async ({ conversationId, toolCallId }: { conversationId: string; toolCallId: string }): Promise<{ started: boolean }> => {
+			const assistant = await deps.assistant;
+			const result = await assistant.confirmDdlDrop(conversationId, toolCallId, { waitForCompletion: false });
+			return (result && typeof result === "object" && "started" in result) ? (result as { started: boolean }) : { started: true };
+		},
+		rejectAssistantDdlDrop: async ({ conversationId, toolCallId }: { conversationId: string; toolCallId: string }): Promise<{ started: boolean }> => {
+			const assistant = await deps.assistant;
+			const result = await assistant.rejectDdlDrop(conversationId, toolCallId, { waitForCompletion: false });
+			return (result && typeof result === "object" && "started" in result) ? (result as { started: boolean }) : { started: true };
+		},
 	};
 }
