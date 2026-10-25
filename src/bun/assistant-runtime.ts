@@ -373,6 +373,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		if (conn.auth_method === "oauth" && conn.provider_id === "openai") return chatGptSignInModelIds.has(model.id);
 		return true;
 	}
+	function getUsableModelsForConnection(conn: AssistantProviderConnection) {
+		const connModels = getOrInitConnectionModels(conn);
+		const providerObj = connModels.getProvider(conn.provider_id);
+		let providerModels = connModels.getModels(conn.provider_id);
+		if (conn.auth_method === "oauth" && providerObj?.filterModels) {
+			providerModels = providerObj.filterModels(providerModels, { type: "oauth" } as never);
+		}
+		return providerModels.filter((m) => isModelUsableWithConnection(conn, m));
+	}
 
 	function getModelContext(conversationId: string, messages: AgentMessage[]): AgentMessage[] {
 		const compaction = store.getCompaction(conversationId);
@@ -795,11 +804,44 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		loadConversation: (conversationId: string) => store.loadConversation(conversationId),
 		createConversation(projectId: string) {
 			const selection = store.getDefaultSelection();
+			const connections = store.listProviderConnections();
+			let effectiveConnectionId = selection.connectionId;
+			let effectiveModel = selection.model;
+			const effectiveThinking = (selection.thinking || "medium") as ThinkingLevel;
+
+			if (connections.length > 0) {
+				const currentConn = effectiveConnectionId ? connections.find((c) => c.id === effectiveConnectionId) : undefined;
+				const currentUsable = currentConn ? getUsableModelsForConnection(currentConn) : [];
+				const isCurrentUsable = Boolean(effectiveModel && currentUsable.some((m) => m.id === effectiveModel));
+
+				if (!isCurrentUsable) {
+					let fallbackConn: AssistantProviderConnection | undefined = currentConn;
+					let fallbackModel = currentUsable[0];
+
+					if (!fallbackModel) {
+						for (const conn of connections) {
+							const usable = getUsableModelsForConnection(conn);
+							if (usable[0]) {
+								fallbackConn = conn;
+								fallbackModel = usable[0];
+								break;
+							}
+						}
+					}
+
+					if (fallbackConn && fallbackModel) {
+						effectiveConnectionId = fallbackConn.id;
+						effectiveModel = fallbackModel.id;
+						store.updateDefaultSelection(effectiveConnectionId, effectiveModel, effectiveThinking);
+					}
+				}
+			}
+
 			return store.createConversation(projectId, {
 				role: "system",
 				kind: "assistant-context",
 				payload: { text: "Conversation initialized." },
-			}, { connectionId: selection.connectionId, model: selection.model, thinking: selection.thinking });
+			}, { connectionId: effectiveConnectionId, model: effectiveModel, thinking: effectiveThinking });
 		},
 		renameConversation: (conversationId: string, title: string) => store.renameConversation(conversationId, title),
 		deleteConversation(conversationId: string) {
@@ -918,16 +960,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const connections = store.listProviderConnections();
 			const result: AssistantModel[] = [];
 			for (const conn of connections) {
-				const connModels = getOrInitConnectionModels(conn);
 				const connName = getProviderDisplayName(conn.provider_id, conn.auth_method);
-				const providerObj = connModels.getProvider(conn.provider_id);
-				let providerModels = connModels.getModels(conn.provider_id);
-				if (conn.auth_method === "oauth" && providerObj?.filterModels) {
-					providerModels = providerObj.filterModels(providerModels, { type: "oauth" } as never);
-				}
+				const usable = getUsableModelsForConnection(conn);
 				const selection = store.getDefaultSelection();
-				for (const m of providerModels) {
-					if (!isModelUsableWithConnection(conn, m)) continue;
+				for (const m of usable) {
 					result.push({
 						isDefault: selection.connectionId === conn.id && selection.model === m.id,
 						id: m.id,
