@@ -126,9 +126,10 @@ export function AssistantSidebar({
 				setConnections(connectionList);
 				setClaudeOptIn(optIn);
 				setRequestCap(cap);
-				if (available[0]) {
-					setModel(available[0].id);
-					setSelectedConnectionId(available[0].connectionId);
+				const initial = available.find((candidate) => candidate.isDefault) ?? available[0];
+				if (initial) {
+					setModel(initial.id);
+					setSelectedConnectionId(initial.connectionId);
 				}
 				if (recent[0]) setActiveId(recent[0].id);
 			})

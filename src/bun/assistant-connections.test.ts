@@ -67,7 +67,7 @@ describe("Assistant provider connections", () => {
 
 		const openaiFaux = fauxProvider({
 			provider: "openai",
-			models: [{ id: "gpt-4o", name: "GPT-4o" }],
+			models: [{ id: "gpt-6-luna", name: "GPT-4o" }],
 		});
 		const googleFaux = fauxProvider({
 			provider: "google",
@@ -124,7 +124,7 @@ describe("Assistant provider connections", () => {
 		]);
 
 		const conversation = runtime.createConversation(state.project.id);
-		await runtime.sendMessage(conversation.id, "Create items table", "gpt-4o");
+		await runtime.sendMessage(conversation.id, "Create items table", "gpt-6-luna");
 
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toEqual(["items"]);
 	});
@@ -326,8 +326,8 @@ describe("Assistant provider connections", () => {
 		const fauxOpenAIBase = fauxProvider({
 			provider: "openai",
 			models: [
-				{ id: "gpt-4o", name: "GPT-4o" },
-				{ id: "o1", name: "o1" },
+				{ id: "gpt-6-luna", name: "GPT-4o" },
+				{ id: "gpt-6-sol", name: "gpt-6-sol" },
 			],
 		});
 		const fauxOpenAI = {
@@ -371,7 +371,7 @@ describe("Assistant provider connections", () => {
 		modelList = await runtime.listModels();
 		const failingModels = modelList.filter((m) => m.connectionId === oauthConnId);
 		expect(failingModels.length).toBe(2);
-		expect(failingModels.map((m) => m.id)).toEqual(["gpt-4o", "o1"]);
+		expect(failingModels.map((m) => m.id)).toEqual(["gpt-6-luna", "gpt-6-sol"]);
 
 		// Re-sign in restores connected status
 		refreshShouldFail = false;
@@ -415,7 +415,7 @@ describe("Assistant provider connections", () => {
 
 		const fauxOpenAIBase = fauxProvider({
 			provider: "openai",
-			models: [{ id: "gpt-4o", name: "GPT-4o" }],
+			models: [{ id: "gpt-6-luna", name: "GPT-4o" }],
 		});
 		const fauxOpenAI = {
 			...fauxOpenAIBase.provider,
@@ -511,6 +511,81 @@ describe("Assistant provider connections", () => {
 		expect(switched?.thinking).toBe("low");
 	});
 
+	test("listModels marks saved default model as isDefault when provider connection is saved", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-list-models-default-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "ListModels Default Project" });
+		if (!state.project) throw new Error("Expected project to be open.");
+
+		const anthropicFaux = fauxProvider({
+			provider: "anthropic",
+			models: [
+				{ id: "claude-haiku-4-5", name: "Claude Haiku 4.5" },
+				{ id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5" },
+			],
+		});
+		const openaiFaux = fauxProvider({
+			provider: "openai",
+			models: [
+				{ id: "gpt-6-luna", name: "GPT-6 Luna" },
+				{ id: "gpt-6-sol", name: "GPT-6 Sol" },
+			],
+		});
+
+		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
+		const models = createModels({ credentials: credStore });
+		models.setProvider(anthropicFaux.provider);
+		models.setProvider(openaiFaux.provider);
+
+		const runtime = createGuardedAssistantRuntime({
+			databasePath,
+			workspace,
+			models,
+			credentialsOptions,
+		});
+		runtimes.push(runtime);
+
+		const anthropicConn = await runtime.setAssistantApiKey("anthropic", "sk-ant-test-key");
+		const openaiConn = await runtime.setAssistantApiKey("openai", "sk-openai-test-key");
+
+		const conv = runtime.createConversation(state.project.id);
+		runtime.updateConversationSelection(conv.id, openaiConn.id, "gpt-6-sol", "medium");
+
+		const modelList = await runtime.listModels();
+		expect(modelList.length).toBe(4);
+
+		const defaultModels = modelList.filter((m) => m.isDefault);
+		expect(defaultModels).toHaveLength(1);
+		expect(defaultModels[0]).toMatchObject({
+			id: "gpt-6-sol",
+			connectionId: openaiConn.id,
+			isDefault: true,
+		});
+
+		const nonDefaultModels = modelList.filter((m) => !m.isDefault);
+		expect(nonDefaultModels).toHaveLength(3);
+		for (const m of nonDefaultModels) {
+			expect(m.isDefault).toBe(false);
+		}
+
+		// Updating the default selection shifts isDefault to the new selection
+		runtime.updateConversationSelection(conv.id, anthropicConn.id, "claude-sonnet-4-5", "high");
+		const updatedList = await runtime.listModels();
+		const updatedDefaults = updatedList.filter((m) => m.isDefault);
+		expect(updatedDefaults).toHaveLength(1);
+		expect(updatedDefaults[0]).toMatchObject({
+			id: "claude-sonnet-4-5",
+			connectionId: anthropicConn.id,
+			isDefault: true,
+		});
+		for (const m of updatedList.filter((m) => m.id !== "claude-sonnet-4-5" || m.connectionId !== anthropicConn.id)) {
+			expect(m.isDefault).toBe(false);
+		}
+	});
+
 	test("OpenAI API-key and ChatGPT sign-in coexist, stream with distinct credentials, survive restarts, and removal of one leaves the other intact", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-conn-coexist-"));
 		directories.push(directory);
@@ -540,7 +615,7 @@ describe("Assistant provider connections", () => {
 
 		const openaiFauxBase = fauxProvider({
 			provider: "openai",
-			models: [{ id: "gpt-4o", name: "GPT-4o" }],
+			models: [{ id: "gpt-6-luna", name: "GPT-4o" }],
 		});
 		const customOpenAIProvider = {
 			...openaiFauxBase.provider,
@@ -589,7 +664,7 @@ describe("Assistant provider connections", () => {
 			fauxAssistantMessage([fauxText("Created via API key.")]),
 		]);
 		const conv1 = runtime.createConversation(state.project.id);
-		await runtime.sendMessage(conv1.id, "Create t_api_key", "gpt-4o", "medium", apiKeyConn.id);
+		await runtime.sendMessage(conv1.id, "Create t_api_key", "gpt-6-luna", "medium", apiKeyConn.id);
 		expect(receivedKeys[receivedKeys.length - 1]).toBe(openaiApiKey);
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_api_key");
 
@@ -601,7 +676,7 @@ describe("Assistant provider connections", () => {
 			fauxAssistantMessage([fauxText("Created via ChatGPT.")]),
 		]);
 		const conv2 = runtime.createConversation(state.project.id);
-		await runtime.sendMessage(conv2.id, "Create t_oauth", "gpt-4o", "medium", oauthConn.id);
+		await runtime.sendMessage(conv2.id, "Create t_oauth", "gpt-6-luna", "medium", oauthConn.id);
 		expect(receivedKeys[receivedKeys.length - 1]).toBe(chatgptToken);
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_oauth");
 
@@ -616,7 +691,7 @@ describe("Assistant provider connections", () => {
 			], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("Created after restart.")]),
 		]);
-		await runtime2.sendMessage(conv2.id, "Create t_oauth_restarted", "gpt-4o");
+		await runtime2.sendMessage(conv2.id, "Create t_oauth_restarted", "gpt-6-luna");
 		expect(receivedKeys[receivedKeys.length - 1]).toBe(chatgptToken);
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_oauth_restarted");
 
@@ -631,12 +706,12 @@ describe("Assistant provider connections", () => {
 			], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("Still works.")]),
 		]);
-		await runtime2.sendMessage(conv1.id, "Create t_api_still_works", "gpt-4o");
+		await runtime2.sendMessage(conv1.id, "Create t_api_still_works", "gpt-6-luna");
 		expect(receivedKeys[receivedKeys.length - 1]).toBe(openaiApiKey);
 		expect(workspace.getState().design?.tables.map((t) => t.name)).toContain("t_api_still_works");
 
 		// Conversation 2 (whose connection was removed) throws error asking for a model
-		await expect(runtime2.sendMessage(conv2.id, "Should fail", "gpt-4o")).rejects.toThrow(/connection for this conversation was removed/i);
+		await expect(runtime2.sendMessage(conv2.id, "Should fail", "gpt-6-luna")).rejects.toThrow(/connection for this conversation was removed/i);
 
 		// (d) Nothing secret in SQLite:
 		const db = new Database(databasePath, { readonly: true });
@@ -817,7 +892,7 @@ describe("Assistant provider connections", () => {
 			refresh: async (cred: OAuthCredential) => cred,
 			toAuth: async (cred) => ({ apiKey: cred.access }),
 		};
-		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-4o", name: "GPT-4o" }] });
+		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-6-luna", name: "GPT-4o" }] });
 		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
 		const models = createModels({ credentials: credStore });
 		models.setProvider({ ...fauxOpenAI.provider, auth: { oauth: deviceOAuth } });
@@ -883,7 +958,7 @@ describe("Assistant provider connections", () => {
 			refresh: async (cred: OAuthCredential) => cred,
 			toAuth: async (cred) => ({ apiKey: cred.access }),
 		};
-		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-4o", name: "GPT-4o" }] });
+		const fauxOpenAI = fauxProvider({ provider: "openai", models: [{ id: "gpt-6-luna", name: "GPT-4o" }] });
 		const { store: credStore, credentialsOptions } = createTestCredentials(databasePath);
 		const models = createModels({ credentials: credStore });
 		models.setProvider({ ...fauxOpenAI.provider, auth: { oauth: promptOAuth } });
@@ -948,7 +1023,7 @@ describe("Assistant provider connections", () => {
 			provider: "openai",
 			models: [
 				{
-					id: "gpt-4o",
+					id: "gpt-6-luna",
 					name: "GPT-4o",
 					contextWindow: 128000,
 					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
@@ -995,13 +1070,15 @@ describe("Assistant provider connections", () => {
 
 		// 1. Model picker criteria:
 		// API-key connection gets the full catalog (including realtime and audio models)
-		// ChatGPT OAuth connection filters out realtime and audio models
+		// ChatGPT OAuth connection allows only models in pi's Codex catalog
 		const modelList = await runtime.listModels();
 		const apiKeyModels = modelList.filter((m) => m.connectionId === apiKeyConn.id);
 		const oauthModels = modelList.filter((m) => m.connectionId === oauthConn.id);
 
-		expect(apiKeyModels.map((m) => m.id)).toEqual(["gpt-4o", "gpt-realtime-2.1", "gpt-4o-audio-preview"]);
-		expect(oauthModels.map((m) => m.id)).toEqual(["gpt-4o"]);
+		expect(apiKeyModels.map((m) => m.id)).toEqual(["gpt-6-luna", "gpt-realtime-2.1", "gpt-4o-audio-preview"]);
+		expect(oauthModels.map((m) => m.id)).toEqual(["gpt-6-luna"]);
+		// Only models in pi's Codex catalog reach a ChatGPT sign-in; everything else stays API-key only.
+		expect(oauthModels.every((m) => ["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra", "gpt-6-luna", "gpt-6-sol", "gpt-6.1-sol"].includes(m.id))).toBe(true);
 		expect(oauthModels.some((m) => m.id.includes("realtime") || m.id.includes("audio"))).toBe(false);
 
 		// Sending message with realtime model on OAuth connection should be rejected
@@ -1016,7 +1093,7 @@ describe("Assistant provider connections", () => {
 		openaiFauxBase.setResponses([
 			fauxAssistantMessage([fauxText("Response via API key.")]),
 		]);
-		await runtime.sendMessage(convApiKey.id, "Create tables via API key", "gpt-4o", "medium", apiKeyConn.id);
+		await runtime.sendMessage(convApiKey.id, "Create tables via API key", "gpt-6-luna", "medium", apiKeyConn.id);
 
 		const loadedApiKey = runtime.loadConversation(convApiKey.id)!;
 		expect(loadedApiKey.usages).toHaveLength(1);
@@ -1032,7 +1109,7 @@ describe("Assistant provider connections", () => {
 		openaiFauxBase.setResponses([
 			fauxAssistantMessage([fauxText("Response via ChatGPT OAuth.")]),
 		]);
-		await runtime.sendMessage(convOAuth.id, "Create tables via ChatGPT", "gpt-4o", "medium", oauthConn.id);
+		await runtime.sendMessage(convOAuth.id, "Create tables via ChatGPT", "gpt-6-luna", "medium", oauthConn.id);
 
 		const loadedOAuth = runtime.loadConversation(convOAuth.id)!;
 		expect(loadedOAuth.usages).toHaveLength(1);
@@ -1081,7 +1158,7 @@ describe("Assistant provider connections", () => {
 			provider: "openai",
 			models: [
 				{
-					id: "gpt-4o",
+					id: "gpt-6-luna",
 					name: "GPT-4o",
 					contextWindow: 128000,
 					cost: { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 0 },
@@ -1119,7 +1196,7 @@ describe("Assistant provider connections", () => {
 		openaiFauxBase.setResponses([
 			fauxAssistantMessage([fauxText("Turn 1 via API key.")]),
 		]);
-		await runtime.sendMessage(conversation.id, "Turn 1", "gpt-4o", "medium", apiKeyConn.id);
+		await runtime.sendMessage(conversation.id, "Turn 1", "gpt-6-luna", "medium", apiKeyConn.id);
 
 		let loaded = runtime.loadConversation(conversation.id)!;
 		expect(loaded.usages).toHaveLength(1);
@@ -1129,13 +1206,13 @@ describe("Assistant provider connections", () => {
 		expect(loaded.totalUsage?.cost).toBe(turn1Cost);
 
 		// Switch connection to ChatGPT sign-in via updateConversationSelection
-		runtime.updateConversationSelection(conversation.id, oauthConn.id, "gpt-4o");
+		runtime.updateConversationSelection(conversation.id, oauthConn.id, "gpt-6-luna");
 
 		// Send Turn 2 via ChatGPT sign-in
 		openaiFauxBase.setResponses([
 			fauxAssistantMessage([fauxText("Turn 2 via ChatGPT sign-in.")]),
 		]);
-		await runtime.sendMessage(conversation.id, "Turn 2", "gpt-4o");
+		await runtime.sendMessage(conversation.id, "Turn 2", "gpt-6-luna");
 
 		loaded = runtime.loadConversation(conversation.id)!;
 		expect(loaded.usages).toHaveLength(2);
