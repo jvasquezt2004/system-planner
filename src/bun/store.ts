@@ -297,6 +297,7 @@ export function openDesignStore(
 		FROM projects
 		JOIN designs ON designs.project_id = projects.id
 		WHERE projects.id = ?
+		ORDER BY designs.rowid ASC
 		LIMIT 1
 	`);
 	const insertProject = database.query(

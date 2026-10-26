@@ -595,4 +595,67 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 			store.close();
 		}
 	});
+
+	test("compatibility reads and writes deterministically select the primary Design by rowid order when multiple designs exist", async () => {
+		const dir = createTempDir();
+		const dbPath = join(dir, "deterministic-primary.sqlite");
+		const store = openDesignStore(dbPath);
+		try {
+			const primaryDesign: Design = {
+				tables: [{ id: "t1", name: "primary_table", position: { x: 0, y: 0 }, columns: [] }],
+				relationships: [],
+				manyToManyRelationships: [],
+				viewport: { x: 0, y: 0, zoom: 1 },
+			};
+			const secondaryDesign: Design = {
+				tables: [{ id: "t2", name: "secondary_table", position: { x: 100, y: 100 }, columns: [] }],
+				relationships: [],
+				manyToManyRelationships: [],
+				viewport: { x: 50, y: 50, zoom: 2 },
+			};
+
+			store.createProject(
+				{ id: "proj-multi", name: "Multi Design" },
+				primaryDesign,
+				{ revision: 1, documentRevision: 1, savedAt: 100 },
+				"design-primary",
+			);
+
+			// Seed a second design directly in SQLite for the same project
+			const rawDb = new Database(dbPath);
+			rawDb.query(
+				"INSERT INTO designs (id, project_id, name, revision, document_revision, document, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			).run("design-secondary", "proj-multi", "Secondary", 1, 1, JSON.stringify(secondaryDesign), 200);
+			rawDb.close();
+
+			// loadProject must deterministically return the primary design (earliest rowid)
+			const record = store.loadProject("proj-multi");
+			expect(record).not.toBeNull();
+			expect(record!.designId).toBe("design-primary");
+			expect(record!.design.tables[0].name).toBe("primary_table");
+
+			// Compatibility save without designId must update only the primary design
+			const updatedPrimary: Design = {
+				...primaryDesign,
+				viewport: { x: 999, y: 999, zoom: 1 },
+			};
+			store.saveDesign("proj-multi", updatedPrimary, { revision: 2, documentRevision: 2, savedAt: 300 });
+
+			// Verify primary design was updated
+			const reloadedPrimary = store.loadDesign("design-primary");
+			expect(reloadedPrimary?.revision).toBe(2);
+			expect(reloadedPrimary?.design.viewport.x).toBe(999);
+
+			// Verify secondary design was NOT touched
+			const reloadedSecondary = store.loadDesign("design-secondary");
+			expect(reloadedSecondary?.revision).toBe(1);
+			expect(reloadedSecondary?.design.viewport.x).toBe(50);
+
+			// loadProject continues to deterministically return the primary design
+			const reloadedProject = store.loadProject("proj-multi");
+			expect(reloadedProject!.designId).toBe("design-primary");
+		} finally {
+			store.close();
+		}
+	});
 });
