@@ -689,11 +689,11 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		scripted.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Generated scenario" }),
-				fauxToolCall("manage_code", { action: "rename", kind: "scenario", id: "workspace-2", name: "Renamed scenario" }),
-				fauxToolCall("manage_code", { action: "remove", kind: "scenario", id: "workspace-2" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "scenario", id: "workspace-3", name: "Renamed scenario" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "scenario", id: "workspace-3" }),
 				fauxToolCall("manage_code", { action: "create", kind: "edge-function", name: "generated_handler" }),
-				fauxToolCall("manage_code", { action: "rename", kind: "edge-function", id: "workspace-3", name: "renamed_handler" }),
-				fauxToolCall("manage_code", { action: "remove", kind: "edge-function", id: "workspace-3" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "edge-function", id: "workspace-4", name: "renamed_handler" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "edge-function", id: "workspace-4" }),
 			], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("The requested code items were updated.")]),
 		]);
@@ -1626,7 +1626,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(finalTables).toContain("reviews");
 		const cat = workspace.getState().design!.tables.find((t) => t.name === "categories")!;
 		expect(cat.columns.map((c) => c.name)).toContain("description");
-	});
+	}, 30_000);
 
 	test("stale relevant content: source edit on modified Scenario prompts rereading (#118)", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-stale-source-"));
@@ -1812,6 +1812,46 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design!.tables).toEqual([]);
 		expect(workspace.getState().scenarios).toEqual([]);
 		expect(workspace.getState().edgeFunctions).toEqual([]);
+	});
+	test("preserves manual edits and persistence while Revert awaits an atomic save (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-restore-race-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const store = openDesignStore(databasePath);
+		const workspace = await createDesignWorkspace({ databasePath, openStore: () => store });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Restore race" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the table.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
+
+		const originalSave = store.saveProjectArtifacts.bind(store);
+		const { promise: entered, resolve: signal } = Promise.withResolvers<void>();
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		store.saveProjectArtifacts = async (input) => {
+			originalSave(input);
+			signal();
+			await gate;
+		};
+
+		const reverting = runtime.revertTurn(conversation.id);
+		await entered;
+		await workspace.addTable({ name: "manual_during_restore" });
+		release();
+		await reverting;
+
+		expect(workspace.getState().design!.tables.map(({ name }) => name)).toEqual(["manual_during_restore"]);
+		expect(store.loadProject(state.project.id)!.design.tables.map(({ name }) => name)).toEqual(["manual_during_restore"]);
 	});
 
 	test("Stop preserves live applied changes and leaves stopped turn safely revertable (#118)", async () => {

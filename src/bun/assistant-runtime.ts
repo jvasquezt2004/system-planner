@@ -697,9 +697,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			}
 			lastConfirmedDrops.delete(conversationId);
 			const readState = conversationReadStates.get(conversationId);
-			const tracker = currentTurnId ? turnTrackers.get(currentTurnId) : undefined;
 			const before = workspace.getState().design;
-			const beforeClone = before ? structuredClone(before) : undefined;
 			const result = await applyAssistantDdl(workspace, sql, {
 				assistantTurnId: turnIds.get(conversationId),
 				expectedProjectId: conversation.project_id,
@@ -909,7 +907,6 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			}
 			const beforeScenario = kind === "scenario" ? bound.state.scenarios.find((s) => s.id === input.id) : undefined;
 			const beforeEdge = kind === "edge-function" ? bound.state.edgeFunctions.find((e) => e.id === input.id) : undefined;
-			const beforeDesign = structuredClone(workspace.getState().design);
 			let after: string;
 			if (input.action === "write") {
 				if (input.source === undefined) throw new Error("A complete source string is required for a whole-file write.");
@@ -1329,14 +1326,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					return store.loadConversation(conversationId);
 				}
 				const before = workspace.getState().design;
-				const beforeClone = before ? structuredClone(before) : undefined;
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
 				turnIds.set(conversationId, turnId);
 				if (!turnTrackers.has(turnId)) {
 					turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
 				}
-				const tracker = turnTrackers.get(turnId);
 				const result = await applyAssistantDdl(workspace, statement, {
 					assistantTurnId: turnId,
 					confirmedDrops: true,

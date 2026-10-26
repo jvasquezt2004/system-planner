@@ -1,26 +1,30 @@
 import type { AssistantConversationRecord, AssistantModel, AssistantThinkingLevel, AssistantConnectionStatus, AssistantConversation } from "../shared/assistant";
 import type {
+	AddColumnAction,
 	AddRelationshipAction,
-	CanvasPoint,
-	CanvasViewport,
-	ColumnChanges,
-	ColumnType,
+	AddTableAction,
 	CreateEdgeFunctionAction,
 	CreateScenarioAction,
 	DisplayedSqlPreview,
+	MoveTableAction,
 	RemovalPlan,
 	RemovalTarget,
+	RemoveColumnAction,
 	RemoveEdgeFunctionAction,
 	RemoveFunctionAction,
 	RemoveRelationshipAction,
+	RemoveScenarioAction,
+	RemoveTableAction,
 	RenameEdgeFunctionAction,
 	RenameScenarioAction,
+	RenameTableAction,
 	SandboxApiRequest,
 	SandboxApiResponse,
 	ScenarioRun,
-
+	SetViewportAction,
 	SqlPreviewCopyResult,
 	SqlPreviewExportResult,
+	UpdateColumnAction,
 	UpdateEdgeFunctionSourceAction,
 	UpdateEnumTypesAction,
 	UpdateFunctionsAction,
@@ -51,13 +55,13 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		openProject: async (action: { projectId: string }): Promise<WorkspaceState> => (await deps.workspace).openProject(action),
 		createScenario: async (action: CreateScenarioAction): Promise<WorkspaceState> => (await deps.workspace).createScenario(action),
 		renameScenario: async (action: RenameScenarioAction): Promise<WorkspaceState> => (await deps.workspace).renameScenario(action),
-		removeScenario: async (action: { scenarioId: string }): Promise<WorkspaceState> => (await deps.workspace).removeScenario(action),
+		removeScenario: async (action: RemoveScenarioAction): Promise<WorkspaceState> => (await deps.workspace).removeScenario(action),
 		updateScenarioSource: async (action: UpdateScenarioSourceAction): Promise<WorkspaceState> => (await deps.workspace).updateScenarioSource(action),
 		createEdgeFunction: async (action: CreateEdgeFunctionAction): Promise<WorkspaceState> => (await deps.workspace).createEdgeFunction(action),
 		renameEdgeFunction: async (action: RenameEdgeFunctionAction): Promise<WorkspaceState> => (await deps.workspace).renameEdgeFunction(action),
 		removeEdgeFunction: async (action: RemoveEdgeFunctionAction): Promise<WorkspaceState> => (await deps.workspace).removeEdgeFunction(action),
 		updateEdgeFunctionSource: async (action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState> => (await deps.workspace).updateEdgeFunctionSource(action),
-		beginScenarioRun: async (action: { scenarioId: string }): Promise<{ runId: string; state: WorkspaceState }> =>
+		beginScenarioRun: async (action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }> =>
 			(await deps.workspace).beginScenarioRun(action),
 		handleSandboxApiRequest: async (action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse> =>
 			(await deps.workspace).handleSandboxApiRequest(action),
@@ -70,17 +74,17 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		}): Promise<WorkspaceState> => (await deps.workspace).finishScenarioRun(action),
 		undo: async (): Promise<WorkspaceState> => (await deps.workspace).undo(),
 		redo: async (): Promise<WorkspaceState> => (await deps.workspace).redo(),
-		addTable: async (action: { name: string; position?: CanvasPoint }): Promise<WorkspaceState> =>
+		addTable: async (action: AddTableAction): Promise<WorkspaceState> =>
 			(await deps.workspace).addTable(action),
-		renameTable: async (action: { tableId: string; name: string }): Promise<WorkspaceState> =>
+		renameTable: async (action: RenameTableAction): Promise<WorkspaceState> =>
 			(await deps.workspace).renameTable(action),
-		removeTable: async (action: { tableId: string; confirmed?: boolean }): Promise<WorkspaceState> =>
+		removeTable: async (action: RemoveTableAction): Promise<WorkspaceState> =>
 			(await deps.workspace).removeTable(action),
-		moveTable: async (action: { tableId: string; position: CanvasPoint }): Promise<WorkspaceState> =>
+		moveTable: async (action: MoveTableAction): Promise<WorkspaceState> =>
 			(await deps.workspace).moveTable(action),
-		addColumn: async (action: { tableId: string; name?: string; type?: ColumnType }): Promise<WorkspaceState> =>
+		addColumn: async (action: AddColumnAction): Promise<WorkspaceState> =>
 			(await deps.workspace).addColumn(action),
-		updateColumn: async (action: { tableId: string; columnId: string; changes: ColumnChanges }): Promise<WorkspaceState> =>
+		updateColumn: async (action: UpdateColumnAction): Promise<WorkspaceState> =>
 			(await deps.workspace).updateColumn(action),
 		updateIndexes: async (action: UpdateIndexesAction): Promise<WorkspaceState> => (await deps.workspace).updateIndexes(action),
 		updateEnumTypes: async (action: UpdateEnumTypesAction): Promise<WorkspaceState> => (await deps.workspace).updateEnumTypes(action),
@@ -89,13 +93,13 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		updateTriggers: async (action: UpdateTriggersAction): Promise<WorkspaceState> => (await deps.workspace).updateTriggers(action),
 		removeFunction: async (action: RemoveFunctionAction): Promise<WorkspaceState> => (await deps.workspace).removeFunction(action),
 		updatePolicies: async (action: UpdatePoliciesAction): Promise<WorkspaceState> => (await deps.workspace).updatePolicies(action),
-		removeColumn: async (action: { tableId: string; columnId: string; confirmed?: boolean }): Promise<WorkspaceState> =>
+		removeColumn: async (action: RemoveColumnAction): Promise<WorkspaceState> =>
 			(await deps.workspace).removeColumn(action),
 		addRelationship: async (action: AddRelationshipAction): Promise<WorkspaceState> => (await deps.workspace).addRelationship(action),
 		updateRelationship: async (action: UpdateRelationshipAction): Promise<WorkspaceState> => (await deps.workspace).updateRelationship(action),
 		removeRelationship: async (action: RemoveRelationshipAction): Promise<WorkspaceState> => (await deps.workspace).removeRelationship(action),
 		describeRemoval: async (target: RemovalTarget): Promise<RemovalPlan> => (await deps.workspace).describeRemoval(target),
-		setViewport: async (viewport: CanvasViewport): Promise<WorkspaceState> => (await deps.workspace).setViewport(viewport),
+		setViewport: async (action: SetViewportAction): Promise<WorkspaceState> => (await deps.workspace).setViewport(action),
 		copySqlPreview: ({ preview }: { preview: DisplayedSqlPreview }): SqlPreviewCopyResult => deps.sqlPreviewActions.copy(preview),
 		beginSqlPreviewExport: ({ preview, fileName }: { preview: DisplayedSqlPreview; fileName: string }): { requestId: string } => {
 			const requestId = crypto.randomUUID();

@@ -510,7 +510,7 @@ export class TurnTracker {
 				}
 			}
 		}
-		for (const [relId, { before, after }] of this.modifiedRelationships) {
+		for (const [relId, { after }] of this.modifiedRelationships) {
 			const currentRel = currentDesign.relationships.find((r) => r.id === relId);
 			if (!currentRel) {
 				conflicts.push("relationship was removed after this turn");

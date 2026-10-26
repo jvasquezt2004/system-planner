@@ -13,18 +13,35 @@ export type ProjectSummary = {
 	id: string;
 	name: string;
 };
+
+/** Summary of an authoritative database design belonging to a project. */
+export type DatabaseDesignSummary = {
+	id: string;
+	projectId: string;
+	name: string;
+};
+
+/** Stored record of an authoritative database design. */
+export type DatabaseDesignRecord = {
+	id: string;
+	projectId: string;
+	name: string;
+	design: Design;
+	revision: number;
+	documentRevision: number;
+	savedAt: number;
+};
 /** Saved TypeScript source managed independently from the design history. */
-export type Scenario = { id: string; name: string; source: string };
+export type Scenario = { id: string; name: string; source: string; designId?: string };
 
 /** Saved TypeScript server handler managed independently from design history. */
-export type EdgeFunction = { id: string; name: string; source: string };
+export type EdgeFunction = { id: string; name: string; source: string; designId?: string };
 
 export type EdgeFunctionSaveState = ScenarioSaveState;
-export type CreateEdgeFunctionAction = { name: string };
-export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string };
-export type RemoveEdgeFunctionAction = { edgeFunctionId: string };
-export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string };
-
+export type CreateEdgeFunctionAction = { name: string; designId?: string };
+export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string; designId?: string };
+export type RemoveEdgeFunctionAction = { edgeFunctionId: string; designId?: string };
+export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string; designId?: string };
 
 export type ScenarioExpectationResult = {
 	description: string;
@@ -40,6 +57,8 @@ export type ScenarioResultGrid = {
 };
 export type ScenarioRun = {
 	id: string;
+	designId?: string;
+	scenarioId?: string;
 	status: ScenarioRunStatus;
 	revision: number;
 	edgeFunctionRevision: number;
@@ -75,14 +94,14 @@ export type SandboxApiRequest = {
 export type SandboxApiResponse = { status: number; headers: Record<string, string>; body: unknown };
 export type ScenarioSaveState =
 	| { status: "idle" }
-	| { status: "saving"; revision: number }
-	| { status: "saved"; revision: number; savedAt: number }
-	| { status: "failed"; revision: number; error: string };
+	| { status: "saving"; revision: number; designId?: string }
+	| { status: "saved"; revision: number; savedAt: number; designId?: string }
+	| { status: "failed"; revision: number; error: string; designId?: string };
 
-export type CreateScenarioAction = { name: string };
-export type RenameScenarioAction = { scenarioId: string; name: string };
-export type RemoveScenarioAction = { scenarioId: string };
-export type UpdateScenarioSourceAction = { scenarioId: string; source: string };
+export type CreateScenarioAction = { name: string; designId?: string };
+export type RenameScenarioAction = { scenarioId: string; name: string; designId?: string };
+export type RemoveScenarioAction = { scenarioId: string; designId?: string };
+export type UpdateScenarioSourceAction = { scenarioId: string; source: string; designId?: string };
 
 
 export type CanvasPoint = {
@@ -243,34 +262,33 @@ export type Design = {
 	functions?: DesignFunction[];
 	triggers?: DesignTrigger[];
 };
-export type UpdateFunctionsAction = { functions: DesignFunction[] };
-export type UpdateTriggersAction = { triggers: DesignTrigger[] };
-export type RemoveFunctionAction = { functionId: string; confirmed?: boolean };
-
-
-
+export type UpdateFunctionsAction = { functions: DesignFunction[]; designId?: string };
+export type UpdateTriggersAction = { triggers: DesignTrigger[]; designId?: string };
+export type RemoveFunctionAction = { functionId: string; confirmed?: boolean; designId?: string };
 
 export type SaveState =
 	| { status: "idle" }
-	| { status: "saving"; revision: number }
-	| { status: "saved"; revision: number; savedAt: number }
-	| { status: "failed"; revision: number; error: string };
+	| { status: "saving"; revision: number; designId?: string }
+	| { status: "saved"; revision: number; savedAt: number; designId?: string }
+	| { status: "failed"; revision: number; error: string; designId?: string };
 
 export type SqlState =
-	| { status: "empty"; draftRevision: number; errors: string[] }
+	| { status: "empty"; draftRevision: number; errors: string[]; designId?: string }
 	| {
 			status: "checking";
 			draftRevision: number;
 			availableRevision: number | null;
 			sql: string | null;
+			designId?: string;
 	  }
-	| { status: "current"; revision: number; sql: string }
+	| { status: "current"; revision: number; sql: string; designId?: string }
 	| {
 			status: "stale";
 			revision: number;
 			draftRevision: number;
 			sql: string;
 			errors: string[];
+			designId?: string;
 	  };
 
 /** Immutable SQL and status represented by the preview when an action starts. */
@@ -357,6 +375,7 @@ export type SandboxAppliedRelationship = {
 
 /** One successful, disposable sandbox build for a specific design revision. */
 export type SandboxSnapshot = {
+	designId?: string;
 	revision: number;
 	tables: SandboxAppliedTable[];
 	relationships: SandboxAppliedRelationship[];
@@ -374,6 +393,7 @@ export type SandboxState =
 			revision: number;
 			attemptedSql: string;
 			lastApplied: SandboxSnapshot | null;
+			designId?: string;
 	  }
 	| ({ status: "applied" } & SandboxSnapshot)
 	| {
@@ -383,6 +403,7 @@ export type SandboxState =
 			attemptedSql: string;
 			error: string;
 			lastApplied: SandboxSnapshot | null;
+			designId?: string;
 	  }
 	| {
 			status: "failed";
@@ -390,6 +411,7 @@ export type SandboxState =
 			revision: number;
 			error: string;
 			lastApplied: SandboxSnapshot | null;
+			designId?: string;
 	  };
 
 export function getSqlValidationErrors(sql: SqlState): string[] {
@@ -413,6 +435,8 @@ export type WorkspaceState = {
 	projects: ProjectSummary[];
 	project: ProjectSummary | null;
 	design: Design | null;
+	/** Stable identity of the active database design when a project is open. */
+	activeDesignId?: string | null;
 	revision: number;
 	save: SaveState;
 	sql: SqlState;
@@ -531,25 +555,27 @@ export function getSqlPreviewValidationStatus(
 
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
-export type AddTableAction = { name: string; position?: CanvasPoint };
-export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[] };
-export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[] };
+export type AddTableAction = { name: string; position?: CanvasPoint; designId?: string };
+export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[]; designId?: string };
+export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[]; designId?: string };
 export type UpdatePoliciesAction = {
 	tableId: string;
 	rowLevelSecurity: boolean;
 	policies: DesignPolicy[];
+	designId?: string;
 };
-export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[] };
-export type RenameTableAction = { tableId: string; name: string };
+export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[]; designId?: string };
+export type RenameTableAction = { tableId: string; name: string; designId?: string };
 /** Removing a table that relationships depend on requires explicit confirmation. */
-export type RemoveTableAction = { tableId: string; confirmed?: boolean };
-export type MoveTableAction = { tableId: string; position: CanvasPoint };
-export type SetViewportAction = CanvasViewport;
+export type RemoveTableAction = { tableId: string; confirmed?: boolean; designId?: string };
+export type MoveTableAction = { tableId: string; position: CanvasPoint; designId?: string };
+export type SetViewportAction = CanvasViewport & { designId?: string };
 
 export type AddColumnAction = {
 	tableId: string;
 	name?: string;
 	type?: ColumnType;
+	designId?: string;
 };
 
 /** Editable column properties. Omitted properties stay as they are. */
@@ -564,12 +590,14 @@ export type UpdateColumnAction = {
 	tableId: string;
 	columnId: string;
 	changes: ColumnChanges;
+	designId?: string;
 };
 
 export type RemoveColumnAction = {
 	tableId: string;
 	columnId: string;
 	confirmed?: boolean;
+	designId?: string;
 };
 
 /**
@@ -583,6 +611,7 @@ export type AddRelationshipAction = {
 	cardinality?: RelationshipCreationCardinality;
 	/** Canvas placement for the visible junction created by many-to-many. */
 	junctionPosition?: CanvasPoint;
+	designId?: string;
 };
 /** An omitted property keeps its current value. */
 export type UpdateRelationshipAction = {
@@ -591,17 +620,19 @@ export type UpdateRelationshipAction = {
 	cardinality?: RelationshipCardinality;
 	onDelete?: ReferentialAction;
 	onUpdate?: ReferentialAction;
+	designId?: string;
 };
 
 /** Constraints a relationship owns and a destructive edit would remove. */
 export type RelationshipConstraint = "foreign-key" | "unique" | "pair-unique";
 
-export type RemoveRelationshipAction = { relationshipId: string };
+export type RemoveRelationshipAction = { relationshipId: string; designId?: string };
 
-export type RemovalTarget =
+export type RemovalTarget = (
 	| { kind: "table"; tableId: string }
 	| { kind: "column"; tableId: string; columnId: string }
-	| { kind: "function"; functionId: string };
+	| { kind: "function"; functionId: string }
+) & { designId?: string };
 
 /** A relationship or association a pending removal would also delete. */
 export type AffectedRelationship = {

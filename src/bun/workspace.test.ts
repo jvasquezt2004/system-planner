@@ -190,7 +190,7 @@ describe("design workspace", () => {
 		});
 		await workspace.renameScenario({ scenarioId: firstId, name: "Renamed" });
 		expect(workspace.getState().scenarios).toEqual([
-			{ id: firstId, name: "Renamed", source: "export const expected = true;" },
+			{ id: firstId, name: "Renamed", source: "export const expected = true;", designId: project.activeDesignId! },
 		]);
 		await workspace.createScenario({ name: "Second" });
 		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual([
@@ -287,7 +287,7 @@ describe("design workspace", () => {
 		await workspace.removeEdgeFunction({ edgeFunctionId: secondId });
 
 		expect(workspace.getState().edgeFunctions).toEqual([
-			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));" },
+			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));", designId: project.activeDesignId! },
 		]);
 		expect(workspace.getState().edgeFunctionSave.status).toBe("saved");
 		expect(workspace.getState().revision).toBe(designState.revision);
@@ -301,7 +301,7 @@ describe("design workspace", () => {
 		const reopened = await reopenTestWorkspace(databasePath);
 		await reopened.openProject({ projectId });
 		expect(reopened.getState().edgeFunctions).toEqual([
-			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));" },
+			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));", designId: project.activeDesignId! },
 		]);
 		expect(reopened.getState().edgeFunctionSave.status).toBe("saved");
 	});
@@ -480,6 +480,7 @@ describe("design workspace", () => {
 			status: "failed",
 			revision: 1,
 			error: "SQLite is read-only",
+			designId: project.activeDesignId!,
 		});
 		expect(failed.revision).toBe(project.revision);
 		expect(failed.sandbox).toEqual(project.sandbox);
@@ -622,13 +623,13 @@ describe("design workspace", () => {
 				createDelayedStore(path, (revision) => (revision === 2 ? 80 : 0)),
 		});
 
-		await workspace.createProject({ name: "Rapid" });
+		const project = await workspace.createProject({ name: "Rapid" });
 
 		const first = workspace.addTable({ name: "One" });
 		const second = workspace.addTable({ name: "Two" });
 		const third = workspace.addTable({ name: "Three" });
 
-		expect(workspace.getState().save).toEqual({ status: "saving", revision: 4 });
+		expect(workspace.getState().save).toEqual({ status: "saving", revision: 4, designId: project.activeDesignId! });
 		await Promise.all([first, second, third]);
 
 		const state = workspace.getState();
