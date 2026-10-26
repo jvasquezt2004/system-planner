@@ -27,13 +27,8 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
-      - name: Install Hutch CLI
-        run: |
-          curl -fsSL https://hutch.build/install.sh | bash
-          echo "$HOME/.hutch/bin" >> $GITHUB_PATH
-
-      - name: Prepare devkit
-        run: hutch electrobun prepare
+      - name: Prepare Electrobun devkit
+        run: bun x electrobun prepare
 
       - name: Run unit & invariant tests
         run: bun test src/shared/architecture-proof.test.ts src/mainview/architecture-proof/svg-export.test.ts
@@ -45,7 +40,7 @@ jobs:
         run: bun x vite build
 
       - name: Build packaged Linux app
-        run: hutch electrobun build --env=stable
+        run: bun x electrobun build --env=stable
 
       - name: Verify packaged proof
         run: bun scripts/verify-packaged-proof.ts
@@ -64,13 +59,8 @@ jobs:
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
-      - name: Install Hutch CLI
-        run: |
-          powershell -c "irm https://hutch.build/install.ps1 | iex"
-          echo "$HOME/.hutch/bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-
-      - name: Prepare devkit
-        run: hutch electrobun prepare
+      - name: Prepare Electrobun devkit
+        run: bun x electrobun prepare
 
       - name: Run unit & invariant tests
         run: bun test src/shared/architecture-proof.test.ts src/mainview/architecture-proof/svg-export.test.ts
@@ -82,7 +72,7 @@ jobs:
         run: bun x vite build
 
       - name: Build packaged Windows app
-        run: hutch run build
+        run: bun x electrobun build --env=stable
 
       - name: Verify packaged proof
         run: bun scripts/verify-packaged-proof.ts
