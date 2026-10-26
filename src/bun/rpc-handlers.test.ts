@@ -85,6 +85,10 @@ describe("RPC request handlers", () => {
 				capturedCalls.handleSandboxApiRequest = action;
 				return {} as unknown;
 			},
+			beginScenarioRun: async (action: unknown) => {
+				capturedCalls.beginScenarioRun = action;
+				return { runId: "r1", state: {} as WorkspaceState };
+			},
 		} as unknown as DesignWorkspace;
 
 		const handlers = createRpcRequestHandlers({
@@ -94,9 +98,11 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 		});
 
-		await handlers.addTable({ name: "Users", position: { x: 100, y: 200 } });
-		expect(capturedCalls.addTable).toEqual({ name: "Users", position: { x: 100, y: 200 } });
+		await handlers.addTable({ designId: "d-1", name: "Users", position: { x: 100, y: 200 } });
+		expect(capturedCalls.addTable).toEqual({ designId: "d-1", name: "Users", position: { x: 100, y: 200 } });
 
+		await handlers.beginScenarioRun({ scenarioId: "s1", designId: "d-1" });
+		expect(capturedCalls.beginScenarioRun).toEqual({ scenarioId: "s1", designId: "d-1" });
 		await handlers.addColumn({ tableId: "t1", name: "email", type: "text" });
 		expect(capturedCalls.addColumn).toEqual({ tableId: "t1", name: "email", type: "text" });
 
