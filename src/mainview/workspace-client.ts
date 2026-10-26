@@ -84,6 +84,15 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 export const electroview = new Electroview({ rpc });
 
 /**
+ * Manual schema, layout, routine, undo, and preview requests name the Design the
+ * view is showing when the user acts. A result for another Design is then
+ * rejected by the workspace instead of being applied to the active one.
+ */
+function targetActiveDesign<T extends object>(request: T): T & { designId?: string } {
+	return { designId: latestState?.activeDesignId ?? undefined, ...request };
+}
+
+/**
  * The view's only path to the application: typed Electrobun requests and state
  * messages backed by the design workspace interface.
  */
@@ -133,64 +142,64 @@ export const workspaceClient = {
 		return rpc.request.openProject({ projectId });
 	},
 	undo(): Promise<WorkspaceState> {
-		return rpc.request.undo({});
+		return rpc.request.undo(targetActiveDesign({}));
 	},
 	redo(): Promise<WorkspaceState> {
-		return rpc.request.redo({});
+		return rpc.request.redo(targetActiveDesign({}));
 	},
 	addTable(name: string, position?: CanvasPoint): Promise<WorkspaceState> {
-		return rpc.request.addTable({ name, position });
+		return rpc.request.addTable(targetActiveDesign({ name, position }));
 	},
 	renameTable(tableId: string, name: string): Promise<WorkspaceState> {
-		return rpc.request.renameTable({ tableId, name });
+		return rpc.request.renameTable(targetActiveDesign({ tableId, name }));
 	},
 	removeTable(tableId: string, confirmed?: boolean): Promise<WorkspaceState> {
-		return rpc.request.removeTable({ tableId, confirmed });
+		return rpc.request.removeTable(targetActiveDesign({ tableId, confirmed }));
 	},
 	moveTable(tableId: string, position: CanvasPoint): Promise<WorkspaceState> {
-		return rpc.request.moveTable({ tableId, position });
+		return rpc.request.moveTable(targetActiveDesign({ tableId, position }));
 	},
 	addColumn(
 		tableId: string,
 		name?: string,
 		type?: ColumnType,
 	): Promise<WorkspaceState> {
-		return rpc.request.addColumn({ tableId, name, type });
+		return rpc.request.addColumn(targetActiveDesign({ tableId, name, type }));
 	},
 	updateColumn(
 		tableId: string,
 		columnId: string,
 		changes: ColumnChanges,
 	): Promise<WorkspaceState> {
-		return rpc.request.updateColumn({ tableId, columnId, changes });
+		return rpc.request.updateColumn(targetActiveDesign({ tableId, columnId, changes }));
 	},
 	updateIndexes(tableId: string, indexes: DesignIndex[]): Promise<WorkspaceState> {
-		return rpc.request.updateIndexes({ tableId, indexes });
+		return rpc.request.updateIndexes(targetActiveDesign({ tableId, indexes }));
 	},
 	updateEnumTypes(enumTypes: DesignEnumType[]): Promise<WorkspaceState> {
-		return rpc.request.updateEnumTypes({ enumTypes });
+		return rpc.request.updateEnumTypes(targetActiveDesign({ enumTypes }));
 	},
 	updateFunctions(functions: DesignFunction[]): Promise<WorkspaceState> {
-		return rpc.request.updateFunctions({ functions });
+		return rpc.request.updateFunctions(targetActiveDesign({ functions }));
 	},
 	updateTriggers(triggers: DesignTrigger[]): Promise<WorkspaceState> {
-		return rpc.request.updateTriggers({ triggers });
+		return rpc.request.updateTriggers(targetActiveDesign({ triggers }));
 	},
 	removeFunction(action: RemoveFunctionAction): Promise<WorkspaceState> {
-		return rpc.request.removeFunction(action);
+		return rpc.request.removeFunction(targetActiveDesign(action));
 	},
 	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
-		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });
+		return rpc.request.updateUniqueConstraints(targetActiveDesign({ tableId, uniqueConstraints }));
 	},
 	updatePolicies(tableId: string, rowLevelSecurity: boolean, policies: DesignPolicy[]): Promise<WorkspaceState> {
-		return rpc.request.updatePolicies({ tableId, rowLevelSecurity, policies });
+		return rpc.request.updatePolicies(targetActiveDesign({ tableId, rowLevelSecurity, policies }));
 	},
 	removeColumn(
 		tableId: string,
 		columnId: string,
 		confirmed?: boolean,
 	): Promise<WorkspaceState> {
-		return rpc.request.removeColumn({ tableId, columnId, confirmed });
+		return rpc.request.removeColumn(targetActiveDesign({ tableId, columnId, confirmed }));
 	},
 	addRelationship(
 		referencingTableId: string,
@@ -198,27 +207,24 @@ export const workspaceClient = {
 		cardinality?: RelationshipCreationCardinality,
 		junctionPosition?: CanvasPoint,
 	): Promise<WorkspaceState> {
-		return rpc.request.addRelationship({
-			referencingTableId,
-			referencedTableId,
-			cardinality,
-			junctionPosition,
-		});
+		return rpc.request.addRelationship(
+			targetActiveDesign({ referencingTableId, referencedTableId, cardinality, junctionPosition }),
+		);
 	},
 	updateRelationship(
 		relationshipId: string,
 		changes: { required?: boolean; cardinality?: RelationshipCardinality; onDelete?: ReferentialAction; onUpdate?: ReferentialAction },
 	): Promise<WorkspaceState> {
-		return rpc.request.updateRelationship({ relationshipId, ...changes });
+		return rpc.request.updateRelationship(targetActiveDesign({ relationshipId, ...changes }));
 	},
 	removeRelationship(relationshipId: string): Promise<WorkspaceState> {
-		return rpc.request.removeRelationship({ relationshipId });
+		return rpc.request.removeRelationship(targetActiveDesign({ relationshipId }));
 	},
 	describeRemoval(target: RemovalTarget): Promise<RemovalPlan> {
-		return rpc.request.describeRemoval(target);
+		return rpc.request.describeRemoval(targetActiveDesign(target));
 	},
 	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
-		return rpc.request.setViewport(viewport);
+		return rpc.request.setViewport(targetActiveDesign(viewport));
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });

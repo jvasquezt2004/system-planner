@@ -137,6 +137,92 @@ describe("RPC request handlers", () => {
 		});
 	});
 
+	test("undo, redo, layout, and routine requests forward the explicit designId to the workspace", async () => {
+		const captured: Array<{ method: string; args: unknown[] }> = [];
+		const record = (method: string) => async (...args: unknown[]) => {
+			captured.push({ method, args });
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			undo: record("undo"),
+			redo: record("redo"),
+			setViewport: record("setViewport"),
+			moveTable: record("moveTable"),
+			updateFunctions: record("updateFunctions"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.undo({ designId: "d-1" });
+		await handlers.redo({ designId: "d-1" });
+		await handlers.setViewport({ designId: "d-1", x: 1, y: 2, zoom: 1 });
+		await handlers.moveTable({ designId: "d-1", tableId: "t1", position: { x: 3, y: 4 } });
+		await handlers.updateFunctions({ designId: "d-1", functions: [] });
+
+		expect(captured).toEqual([
+			{ method: "undo", args: [{ designId: "d-1" }] },
+			{ method: "redo", args: [{ designId: "d-1" }] },
+			{ method: "setViewport", args: [{ designId: "d-1", x: 1, y: 2, zoom: 1 }] },
+			{ method: "moveTable", args: [{ designId: "d-1", tableId: "t1", position: { x: 3, y: 4 } }] },
+			{ method: "updateFunctions", args: [{ designId: "d-1", functions: [] }] },
+		]);
+	});
+
+	test("copy and export requests are rejected before SQL actions run when the snapshot belongs to another Design", async () => {
+		const sqlCalls: string[] = [];
+		const fakeWorkspace = {
+			requireActiveDesign: (designId?: string) => {
+				if (designId !== undefined && designId !== "active-design") {
+					throw new Error(`Target database design '${designId}' is not the active design.`);
+				}
+			},
+		} as unknown as DesignWorkspace;
+		const sqlPreviewActions = {
+			copy: () => {
+				sqlCalls.push("copy");
+				return { status: "copied", revision: 1 };
+			},
+			export: () => {
+				sqlCalls.push("export");
+				return { status: "saved", revision: 1, path: "x.sql" };
+			},
+			copyCode: () => {
+				sqlCalls.push("copyCode");
+				return { status: "copied", revision: 1 };
+			},
+			exportCode: () => {
+				sqlCalls.push("exportCode");
+				return { status: "saved", revision: 1, path: "x.ts" };
+			},
+		} as unknown as SqlPreviewActions;
+		const pendingSqlExports = new Map<string, () => Promise<unknown>>();
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions,
+			pendingSqlExports: pendingSqlExports as never,
+		});
+
+		const stalePreview = { status: "current", revision: 1, draftRevision: 1, sql: "CREATE TABLE a ();", designId: "old-design" } as const;
+		const staleSnapshot = { target: "prisma", revision: 1, code: "model A {}", designId: "old-design" } as const;
+
+		await expect(handlers.copySqlPreview({ preview: stalePreview })).rejects.toThrow(/not the active/i);
+		await expect(handlers.beginSqlPreviewExport({ preview: stalePreview, fileName: "a.sql" })).rejects.toThrow(/not the active/i);
+		await expect(handlers.copySchemaCode({ snapshot: staleSnapshot as never })).rejects.toThrow(/not the active/i);
+		await expect(handlers.beginSchemaCodeExport({ snapshot: staleSnapshot as never, fileName: "a.ts" })).rejects.toThrow(/not the active/i);
+		expect(sqlCalls).toEqual([]);
+		expect(pendingSqlExports.size).toBe(0);
+
+		const activePreview = { ...stalePreview, designId: "active-design" };
+		expect(await handlers.copySqlPreview({ preview: activePreview })).toEqual({ status: "copied", revision: 1 });
+		expect(sqlCalls).toEqual(["copy"]);
+	});
+
 	test("sendAssistantMessage resolves with started: true before the turn finishes, signalling completion through events", async () => {
 		let turnResolved = false;
 		let passedWaitForCompletion: boolean | undefined;

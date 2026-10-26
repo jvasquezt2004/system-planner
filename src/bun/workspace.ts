@@ -122,8 +122,8 @@ export interface DesignWorkspace {
 	beginScenarioRun(action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
-	undo(): Promise<WorkspaceState>;
-	redo(): Promise<WorkspaceState>;
+	undo(action?: { designId?: string }): Promise<WorkspaceState>;
+	redo(action?: { designId?: string }): Promise<WorkspaceState>;
 	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
@@ -152,6 +152,8 @@ export interface DesignWorkspace {
 	removeRelationship(action: RemoveRelationshipAction): Promise<WorkspaceState>;
 	/** Lists what a removal would also delete, before anything is removed. */
 	describeRemoval(target: RemovalTarget): RemovalPlan;
+	/** Throws unless `designId` is omitted or names the open project's active Design. */
+	requireActiveDesign(designId?: string): void;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
@@ -180,10 +182,11 @@ export async function createDesignWorkspace(
 	const createId = options.createId ?? (() => crypto.randomUUID());
 
 	const listeners = new Set<WorkspaceListener>();
+	/** Undo history belongs to one Design, so an edit cannot be replayed onto another. */
 	const histories = new Map<string, ProjectDesignHistory>();
 
-	function getUndoRedoState(projectId: string | null): WorkspaceState["undoRedo"] {
-		const history = projectId ? histories.get(projectId) : undefined;
+	function getUndoRedoState(designId: string | null): WorkspaceState["undoRedo"] {
+		const history = designId ? histories.get(designId) : undefined;
 		return {
 			canUndo: history !== undefined && history.cursor > 0,
 			canRedo: history !== undefined && history.cursor < history.entries.length,
@@ -255,16 +258,16 @@ export async function createDesignWorkspace(
 		return applyManualDelta(base, manualBefore, manualAfter);
 	}
 	function recordDesignChange(
-		projectId: string,
+		designId: string,
 		before: Design,
 		after: Design,
 		structural: boolean,
 		assistantTurnId?: string,
 	): WorkspaceState["undoRedo"] {
-		let history = histories.get(projectId);
+		let history = histories.get(designId);
 		if (!history) {
 			history = { entries: [], cursor: 0 };
-			histories.set(projectId, history);
+			histories.set(designId, history);
 		}
 		history.entries.length = history.cursor;
 		if (assistantTurnId) {
@@ -297,12 +300,12 @@ export async function createDesignWorkspace(
 				};
 				history.entries.splice(firstTurnEntry, history.cursor - firstTurnEntry, ...manualEntries, assistantEntry);
 				history.cursor = firstTurnEntry + manualEntries.length + 1;
-				return getUndoRedoState(projectId);
+				return getUndoRedoState(designId);
 			}
 		}
 		history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
 		history.cursor = history.entries.length;
-		return getUndoRedoState(projectId);
+		return getUndoRedoState(designId);
 	}
 	let state: WorkspaceState = {
 		projects: store.listProjects(),
@@ -395,20 +398,20 @@ export async function createDesignWorkspace(
 		projectId: string,
 		revision: number,
 		documentRevisionToSave: number,
-		designId?: string,
+		designId: string,
 	) {
 		return (
 			activeProjectId === projectId &&
-			(designId === undefined || activeDesignId === designId) &&
+			activeDesignId === designId &&
 			state.revision === revision &&
 			documentRevision === documentRevisionToSave
 		);
 	}
-	function isCurrentPreview(projectId: string, revision: number, requestId: number, designId?: string) {
+	function isCurrentPreview(projectId: string, revision: number, requestId: number, designId: string) {
 		return (
 			previewRequestId === requestId &&
 			activeProjectId === projectId &&
-			(designId === undefined || activeDesignId === designId) &&
+			activeDesignId === designId &&
 			state.revision === revision
 		);
 	}
@@ -427,7 +430,7 @@ export async function createDesignWorkspace(
 		cancelScheduledPreview();
 	}
 
-	function schedulePreview(projectId: string, revision: number, design: Design, designId?: string) {
+	function schedulePreview(projectId: string, revision: number, design: Design, designId: string) {
 		cancelScheduledPreview();
 		const requestId = ++previewRequestId;
 
@@ -453,7 +456,7 @@ export async function createDesignWorkspace(
 		revision: number,
 		design: Design,
 		requestId: number,
-		designId?: string,
+		designId: string,
 	) {
 		if (!isCurrentPreview(projectId, revision, requestId, designId)) return;
 
@@ -571,7 +574,7 @@ export async function createDesignWorkspace(
 		revision: number,
 		documentRevisionToSave: number,
 		design: Design,
-		designId?: string,
+		designId: string,
 	) {
 		const savedAt = now();
 		try {
@@ -683,12 +686,12 @@ export async function createDesignWorkspace(
 		assistantTurnId?: string,
 		designId?: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, true, assistantTurnId)
-			: getUndoRedoState(projectId);
+			? recordDesignChange(targetDesignId, before, design, true, assistantTurnId)
+			: getUndoRedoState(targetDesignId);
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -729,12 +732,12 @@ export async function createDesignWorkspace(
 		recordHistory = true,
 		designId?: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, false)
-			: getUndoRedoState(projectId);
+			? recordDesignChange(targetDesignId, before, design, false)
+			: getUndoRedoState(targetDesignId);
 		const revision = state.revision;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -748,9 +751,9 @@ export async function createDesignWorkspace(
 		return state;
 	}
 
-	async function applyHistoryChange(direction: "undo" | "redo") {
-		const { projectId, design: currentDesign, designId } = requireOpenDesign();
-		const history = histories.get(projectId);
+	async function applyHistoryChange(direction: "undo" | "redo", targetDesignId?: string) {
+		const { projectId, design: currentDesign, designId } = requireOpenDesign(targetDesignId);
+		const history = histories.get(designId);
 		if (!history) return state;
 
 		const undoing = direction === "undo";
@@ -766,8 +769,8 @@ export async function createDesignWorkspace(
 				: await applyNonSchemaChange(projectId, design, false, designId);
 		} catch (error) {
 			history.cursor += undoing ? 1 : -1;
-			if (activeProjectId === projectId) {
-				setState({ ...state, undoRedo: getUndoRedoState(projectId) });
+			if (activeDesignId === designId) {
+				setState({ ...state, undoRedo: getUndoRedoState(designId) });
 			}
 			throw error;
 		}
@@ -837,7 +840,7 @@ export async function createDesignWorkspace(
 					edgeFunctions: [],
 					edgeFunctionSave: { status: "idle" },
 					scenarioRuns: {},
-					undoRedo: getUndoRedoState(project.id),
+					undoRedo: getUndoRedoState(designId),
 				});
 				return state;
 			});
@@ -895,7 +898,7 @@ export async function createDesignWorkspace(
 									savedAt: edgeFunctionDocument.savedAt,
 									designId,
 								},
-					undoRedo: getUndoRedoState(record.project.id),
+					undoRedo: getUndoRedoState(designId),
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
@@ -1147,11 +1150,11 @@ export async function createDesignWorkspace(
 				return state;
 			});
 		},
-		undo() {
-			return runTask(() => applyHistoryChange("undo"));
+		undo(action) {
+			return runTask(() => applyHistoryChange("undo", action?.designId));
 		},
-		redo() {
-			return runTask(() => applyHistoryChange("redo"));
+		redo(action) {
+			return runTask(() => applyHistoryChange("redo", action?.designId));
 		},
 		applyAssistantDesign(design, assistantTurnId) {
 			return runTask(async () => {
@@ -1687,6 +1690,9 @@ export async function createDesignWorkspace(
 			const { design } = requireOpenDesign(target.designId);
 			requireRemovalTarget(design, target);
 			return removalPlan(design, target);
+		},
+		requireActiveDesign(designId) {
+			requireOpenDesign(designId);
 		},
 		setViewport(action) {
 			return runTask(async () => {
