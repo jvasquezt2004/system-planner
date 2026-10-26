@@ -277,31 +277,36 @@ export function openDesignStore(databasePath: string): DesignStore {
 					input.projectId,
 					save.documentRevision,
 				);
-				if (result.changes > 0) touchProject.run(save.savedAt, input.projectId);
+				if (result.changes === 0) {
+					throw new Error("Stale design document revision during atomic save.");
+				}
+				touchProject.run(save.savedAt, input.projectId);
 			}
 			if (input.scenarios) {
 				const { scenarios, save } = input.scenarios;
 				const current = selectScenarioRevision.get(input.projectId);
-				if (!current || current.revision < save.revision) {
-					deleteScenarios.run(input.projectId);
-					scenarios.forEach((scenario, position) =>
-						insertScenario.run(input.projectId, scenario.id, position, scenario.name, scenario.source),
-					);
-					upsertScenarioRevision.run(input.projectId, save.revision, save.savedAt);
-					touchProject.run(save.savedAt, input.projectId);
+				if (current && current.revision >= save.revision) {
+					throw new Error("Stale scenario revision during atomic save.");
 				}
+				deleteScenarios.run(input.projectId);
+				scenarios.forEach((scenario, position) =>
+					insertScenario.run(input.projectId, scenario.id, position, scenario.name, scenario.source),
+				);
+				upsertScenarioRevision.run(input.projectId, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
 			}
 			if (input.edgeFunctions) {
 				const { edgeFunctions, save } = input.edgeFunctions;
 				const current = selectEdgeFunctionRevision.get(input.projectId);
-				if (!current || current.revision < save.revision) {
-					deleteEdgeFunctions.run(input.projectId);
-					edgeFunctions.forEach((edgeFunction, position) =>
-						insertEdgeFunction.run(input.projectId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
-					);
-					upsertEdgeFunctionRevision.run(input.projectId, save.revision, save.savedAt);
-					touchProject.run(save.savedAt, input.projectId);
+				if (current && current.revision >= save.revision) {
+					throw new Error("Stale edge function revision during atomic save.");
 				}
+				deleteEdgeFunctions.run(input.projectId);
+				edgeFunctions.forEach((edgeFunction, position) =>
+					insertEdgeFunction.run(input.projectId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+				);
+				upsertEdgeFunctionRevision.run(input.projectId, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
 			}
 		},
 	);

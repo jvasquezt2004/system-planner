@@ -125,12 +125,22 @@ export interface DesignWorkspace {
 	undo(): Promise<WorkspaceState>;
 	redo(): Promise<WorkspaceState>;
 	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
+	onAssistantDesignMutation?(listener: (turnId: string, before: Design, after: Design) => void): () => void;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
-		design: Design;
-		scenarios: Scenario[];
-		edgeFunctions: EdgeFunction[];
+		design?: Design;
+		scenarios?: Scenario[];
+		edgeFunctions?: EdgeFunction[];
 		expectedSnapshot?: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
+		validateAndRestore?: (currentState: WorkspaceState) => {
+			ok: true;
+			design: Design;
+			scenarios: Scenario[];
+			edgeFunctions: EdgeFunction[];
+		} | {
+			ok: false;
+			conflicts: string[];
+		};
 	}): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
@@ -182,6 +192,7 @@ export async function createDesignWorkspace(
 	const listeners = new Set<WorkspaceListener>();
 	const histories = new Map<string, ProjectDesignHistory>();
 
+	const assistantMutationListeners = new Set<(turnId: string, before: Design, after: Design) => void>();
 	function getUndoRedoState(projectId: string | null): WorkspaceState["undoRedo"] {
 		const history = projectId ? histories.get(projectId) : undefined;
 		return {
@@ -1146,6 +1157,11 @@ export async function createDesignWorkspace(
 						: {}),
 				};
 				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
+				if (assistantTurnId) {
+					for (const listener of assistantMutationListeners) {
+						listener(assistantTurnId, currentDesign, validated);
+					}
+				}
 				return applyStructuralChange(projectId, validated, true, assistantTurnId);
 			});
 		},
@@ -1153,12 +1169,30 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const current = state;
 				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
+				let targetDesign = input.design;
+				let targetScenarios = input.scenarios;
+				let targetEdgeFunctions = input.edgeFunctions;
+
+				if (input.validateAndRestore) {
+					const result = input.validateAndRestore(current);
+					if (result.ok === false) {
+						throw new Error(`Cannot revert Assistant turn due to conflicting items: ${result.conflicts.join("; ")}`);
+					}
+					targetDesign = result.design;
+					targetScenarios = result.scenarios;
+					targetEdgeFunctions = result.edgeFunctions;
+				}
+
+				if (!targetDesign || !targetScenarios || !targetEdgeFunctions) {
+					throw new Error("Missing restoration payload.");
+				}
+
 				if (input.expectedSnapshot) {
 					const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
 					const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
 					if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
 				}
-				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
+				const restored = normalizeDesign({ ...targetDesign, viewport: current.design.viewport });
 				const nextRevision = state.revision + 1;
 				const nextDocumentRevision = documentRevision + 1;
 				const nextScenarioRevision = scenarioRevision + 1;
@@ -1176,11 +1210,11 @@ export async function createDesignWorkspace(
 						},
 					},
 					scenarios: {
-						scenarios: input.scenarios,
+						scenarios: targetScenarios,
 						save: { revision: nextScenarioRevision, savedAt },
 					},
 					edgeFunctions: {
-						edgeFunctions: input.edgeFunctions,
+						edgeFunctions: targetEdgeFunctions,
 						save: { revision: nextEdgeFunctionRevision, savedAt },
 					},
 				});
@@ -1194,8 +1228,8 @@ export async function createDesignWorkspace(
 					...state,
 					design: restored,
 					revision: nextRevision,
-					scenarios: input.scenarios,
-					edgeFunctions: input.edgeFunctions,
+					scenarios: targetScenarios,
+					edgeFunctions: targetEdgeFunctions,
 					undoRedo,
 					save: { status: "saved", revision: nextRevision, savedAt },
 					scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt },
@@ -1208,10 +1242,13 @@ export async function createDesignWorkspace(
 					},
 					sandbox: lastApplied === null ? { status: "idle" } : { status: "applied", ...lastApplied },
 				});
-				const preview = schedulePreview(input.projectId, nextRevision, restored);
-				await preview;
+				schedulePreview(input.projectId, nextRevision, restored);
 				return state;
 			});
+		},
+		onAssistantDesignMutation(listener) {
+			assistantMutationListeners.add(listener);
+			return () => assistantMutationListeners.delete(listener);
 		},
 		addTable(action) {
 			return runTask(async () => {

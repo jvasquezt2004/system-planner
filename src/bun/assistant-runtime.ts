@@ -369,6 +369,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const conversationReadStates = new Map<string, { revision: number; design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] }>();
 	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
 	const latestTurnByProject = new Map<string, string>();
+	workspace.onAssistantDesignMutation?.((turnId, before, after) => {
+		const tracker = turnTrackers.get(turnId);
+		if (tracker) {
+			tracker.recordDesignMutation(before, after);
+		}
+	});
 	const pendingConfirmations = new Set<string>();
 	// Removal plans the designer rejected, per conversation, for the current turn only.
 	const rejectedDrops = new Map<string, { turnId: string | undefined; plans: Set<string> }>();
@@ -719,9 +725,6 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				return { content: [{ type: "text", text: JSON.stringify(changedProject) }], details: changedProject };
 			}
 			const after = result.state;
-			if (tracker && beforeClone && result.state.design) {
-				tracker.recordDesignMutation(beforeClone, result.state.design);
-			}
 			if (readState && result.state.design) {
 				readState.design = structuredClone(result.state.design);
 				readState.revision = result.state.revision;
@@ -938,8 +941,6 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				} else if (kind === "edge-function" && beforeEdge) {
 					const afterEdge = state.edgeFunctions.find((e) => e.id === input.id);
 					if (afterEdge) tracker.recordEdgeFunctionModified(beforeEdge, afterEdge);
-				} else if (kind === "function-body" && beforeDesign && state.design) {
-					tracker.recordDesignMutation(beforeDesign, state.design);
 				}
 			}
 			if (readState) {
@@ -1228,19 +1229,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) throw new Error("This Assistant turn is no longer available to revert.");
 			const tracker = turnTrackers.get(checkpoint.turnId);
 			if (!tracker || !tracker.hasChanges()) throw new Error("This Assistant turn has no changes to revert.");
-			const currentState = workspace.getState();
-			if (currentState.project?.id !== checkpoint.projectId || !currentState.design) {
-				throw new Error("The Assistant turn belongs to a different open project.");
-			}
-			const restoration = tracker.computeRestoration(currentState);
-			if (!restoration.ok) {
-				throw new Error(`Cannot revert Assistant turn due to conflicting items: ${restoration.conflicts.join("; ")}`);
-			}
 			await workspace.restoreAssistantProjectSnapshot({
 				projectId: checkpoint.projectId,
-				design: restoration.design,
-				scenarios: restoration.scenarios,
-				edgeFunctions: restoration.edgeFunctions,
+				validateAndRestore: (current) => tracker.computeRestoration(current),
 			});
 			turnCheckpoints.delete(conversationId);
 			turnTrackers.delete(checkpoint.turnId);
@@ -1359,9 +1350,6 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				});
 				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
 				const after = result.state;
-				if (tracker && beforeClone && after.design) {
-					tracker.recordDesignMutation(beforeClone, after.design);
-				}
 				const readState = conversationReadStates.get(conversationId);
 				if (readState && after.design) {
 					readState.design = structuredClone(after.design);
