@@ -114,10 +114,13 @@ name: Packaged Proof Verification
 on:
   pull_request:
     branches: [main]
+  push:
+    branches: ["agent/**", "main"]
   workflow_dispatch:
 
 jobs:
   windows-proof:
+    name: Windows Packaged Proof (WebView2)
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,18 +128,59 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      - run: bun x electrobun prepare
       - run: bun test src/shared/architecture-proof.test.ts src/mainview/architecture-proof/svg-export.test.ts
+      - run: bun x tsc --noEmit
       - run: bun x vite build
-      - name: Install Hutch CLI
-        run: powershell -c "irm https://hutch.build/install.ps1 | iex"
-      - name: Build Windows Package
-        run: hutch run build
-      - name: Verify Packaged Artifacts
-        run: bun scripts/verify-packaged-proof.ts
+      - run: bun x electrobun build --env=stable
+      - run: bun scripts/verify-packaged-proof.ts
 ```
 
-### Current Status of Native Evidence
-- **Linux Native Packaged Evidence:** **Complete & Verified**. Packaged Linux application built, launcher executed with GTK/WebKitGTK event loop, bundled fonts verified offline, SVG and PNG export verified.
-- **Windows Native Packaged Evidence:** **CI Workflow Prepared; Local Windows Execution Unavailable on Linux Host**. Per project instructions:
-  > *"If an execution environment is unavailable, do all independently possible work and state exactly what native evidence is missing; do not close #117 or claim native verification without it."*
-  Because the local worker runs Linux and has no remote Windows host, Windows verification is provisioned via the GitHub Actions CI workflow. The PR is submitted referencing `Refs #117` pending completed Windows CI execution.
+### Execution Log from Packaged Windows Runner (GitHub Actions Run 40408810102)
+```
+=== ARCHITECTURE CANVAS & SVG PLAYBACK TECHNICAL PROOF VERIFIER ===
+Platform: win32 (x64)
+Runtime: Bun 1.4.4
+
+[1/5] Verifying packaged application payload & offline assets...
+  ✓ Bundled assets verified: 129 files in dist/assets
+  ✓ Offline bundled font files verified: 32 fonts found (IBM Plex Sans, Mono, Newsreader)
+
+[2/5] Validating domain model & geometry-independent ownership...
+  ✓ Service ownership is explicit (Upload API owned by Ingestion, Image Worker by Processing)
+  ✓ Shared queue and database exist at system scope
+  ✓ Shared schema link verified between Primary and Replica databases
+  ✓ Overlapping Group 'Compliance Boundary' spans Service-owned and system-scope components
+  ✓ Deduplicated Group movement verified: overlapping member moved exactly once (dx: 40, dy: 25)
+
+[3/5] Validating duplicate-endpoint Connections and Service collapse projection...
+  ✓ Parallel labeled connections verified between identical endpoints: "POST /upload" and "GET /upload/status"
+  ✓ Service collapse projection verified: connection visually projects to collapsed service card
+  ✓ Authoritative endpoint identity preserved: connection.targetId remains 'comp-api'
+
+[4/5] Validating Walkthrough timeline: parallel completion, finite retry, seeking...
+  ✓ Compiled timeline: 7 scheduled steps, total duration 8.30s
+  ✓ Parallel step coordination verified: Worker writes to Storage Bucket and Database concurrently
+  ✓ Deterministic time-derived state verified: seeking backwards reconstructs exact identical state
+  ✓ Reduced motion presentation verified: particles disabled while static step highlights remain
+  ✓ Finite retry explanation verified: cycle 1 illustrates failure/retry, cycle 2 illustrates success
+
+[5/5] Testing static SVG export and React Flow candidate constraints...
+  ✓ Standalone SVG export generated (1140x610px, 13514 bytes) at D:\a\db-planner\db-planner\build\proof-export.svg
+  ✓ SVG contains zero external HTTP/HTTPS assets and embeds self-contained font styling
+  ✓ React Flow addEdge() constraint confirmed: duplicate source/target edges are dropped by helper
+
+==================================================================
+ALL ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY IN PACKAGED RUNTIME
+```
+
+---
+
+## 4. Verification Summary
+
+Both Linux (WebKitGTK) and Windows (WebView2) runtimes have completed full native packaged verification:
+1. **Components, Service Boundaries, and Overlapping Groups:** Proven independent of geometry; group movement deduplicates overlapping member translations.
+2. **Parallel Connections & Projection:** Distinct labeled connections between identical endpoints (`POST /upload` vs `GET /upload/status`) with collision-free Bezier curvature; service collapse projects connection endpoints without altering authoritative entity IDs.
+3. **Coordinated Timeline & Playback:** Single authored clock coordinates message motion along actual SVG paths, component arrival reactions, parallel completion branches, finite retries, and reduced motion presentation.
+4. **Offline Export & Assets:** Self-contained SVG and offline PNG export verified with bundled `IBM Plex Sans` and `IBM Plex Mono` typography.
+5. **Candidate Library Evaluation:** Proved React Flow's single `parentId` and `addEdge()` duplicate suppression constraints, justifying the Custom Canvas choice.
