@@ -3,7 +3,7 @@
 **Ticket:** [#117 — Prove the architecture canvas and SVG playback in packaged apps](https://github.com/jvasquezt2004/db-planner/issues/117)  
 **Parent:** [#116 — System-design workspaces with linked schemas and animated Walkthroughs](https://github.com/jvasquezt2004/db-planner/issues/116)  
 **Date:** 2026-10-26  
-**Status:** Evaluation Completed — Decision: **Custom Canvas Architecture**
+**Status:** Provisional Recommendation — **Custom Canvas Architecture** (Pending live in-WebView playback/export validation)
 
 ---
 
@@ -11,11 +11,13 @@
 
 This evaluation proves the architecture canvas interaction model, multigraph connections, overlapping non-owning groups, and synchronized SVG playback within packaged desktop applications across Linux (WebKitGTK) and Windows (WebView2).
 
-Following empirical evaluation of the candidate graph library (**React Flow / `@xyflow/react`**) against the project's **Custom Canvas** approach, we select the **Custom Canvas** for the authoritative System-design editor. While React Flow is an established node-and-wire library for single-parent DAG workflows, its core structural invariants conflict directly with the agreed domain model:
+Following empirical evaluation of the candidate graph library (**React Flow / `@xyflow/react`**) against the project's **Custom Canvas** approach, we provisionally recommend the **Custom Canvas** for the authoritative System-design editor. While React Flow is an established node-and-wire library for single-parent DAG workflows, its core structural invariants conflict directly with the agreed domain model:
 1. **Single `parentId` Constraint:** React Flow restricts every node to at most one parent node (`parentId?: string`). The domain model requires explicit Service ownership *plus* multi-group, independently overlapping, and nested non-owning Groups (e.g. VPC, Region, Compliance Boundary). Representing overlapping groups in React Flow requires discarding its native subflow tree and writing custom background coordinate managers.
 2. **Duplicate-Endpoint Edge Suppression:** React Flow's `addEdge()` utility deduplicates connections by `(source, target, sourceHandle, targetHandle)`, silently dropping parallel connections even when their stable connection IDs and labels differ. Supporting parallel labeled interactions requires bypassing `addEdge()` and computing custom route offsets.
 3. **Deterministic Authored Clock:** React Flow edge animation examples rely on autonomous browser CSS `stroke-dashoffset` or SMIL `<animateMotion>`. The agreed Walkthrough specification requires deterministic seek, pause, backward scrubbing, speed adjustment, and reduced-motion presentation derived from a single authored clock $S(t) = f(t, \text{scene})$. Both libraries require custom path sampling; the custom canvas achieves this with zero framework overhead and direct SVG DOM integration.
 4. **Native WebView Footprint & Offline Export:** The custom canvas adds 0 KB of third-party runtime dependencies, avoids WebView canvas tainting during static SVG/PNG diagram export, and cleanly renders bundled local fonts (`IBM Plex Sans`, `IBM Plex Mono`).
+
+*Note:* This recommendation remains provisional until live in-WebView DOM interaction, SVG particle motion, and in-WebView canvas PNG export are exercised in running WebKitGTK and WebView2 instances.
 
 ---
 
@@ -139,10 +141,16 @@ In `reactflow-svg-motion.md` (Context7 documentation), animated edges are demons
 ## 5. Architectural Decision: Custom Canvas Selection
 
 ### Decision
-**Adopt the Custom Canvas approach for the authoritative System-design editor.**
+**Provisional Recommendation: Adopt the Custom Canvas approach for the authoritative System-design editor, subject to live in-WebView validation.**
 
 ### Rationale
 1. **Domain Alignment:** The Custom Canvas was built specifically for the system-design domain model (ADR-0005, ADR-0007, ADR-0010). It natively treats Services as owning boundaries, Groups as non-owning overlapping overlays, and Connections as multigraph entities.
 2. **Freedom from Competing Hierarchies:** React Flow's `parentId` tree would require constant friction and workarounds (e.g. managing detached overlay layers, maintaining shadow state, fighting `addEdge` duplicate suppression).
-3. **Deterministic Authored Playback:** The Custom Canvas playback engine provides exact time-derived state $S(t)$, perfectly coordinating message travel, parallel branch completion, finite retry loops, arrival reactions, and reduced-motion presentation.
+3. **Deterministic Authored Playback:** The Custom Canvas playback engine provides exact time-derived state $S(t)$, coordinating message travel, parallel branch completion, finite retry loops, arrival reactions, and reduced-motion presentation.
 4. **Zero Weight & Full Offline Reliability:** The Custom Canvas adds 0 KB of external dependencies, generates self-contained vector exports offline, and operates identically in WebKitGTK and WebView2.
+
+### Outstanding Acceptance Work
+Before locking this library commitment in production editor milestones:
+- Automated or manual in-WebView UI interaction: driving pointer drag/drop and service collapse/focus inside live WebKitGTK (Linux) and live WebView2 (Windows) windows.
+- Live in-WebView SVG path sampling (`SVGGeometryElement.getPointAtLength`) and particle animation within running native WebViews.
+- Live in-WebView canvas PNG export verifying bundled font rendering without security or tainted-canvas failures.

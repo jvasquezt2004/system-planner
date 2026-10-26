@@ -30,29 +30,39 @@ async function main() {
 	let allPassed = true;
 
 	// 1. Packaged Payload & Offline Assets Check
-	console.log("\n[1/5] Verifying packaged application payload & offline assets...");
-	const buildDir = join(import.meta.dir, "..", "build", "stable-linux-x64", "SchemaDesigner");
+	const isWindows = process.platform === "win32";
+	const platformLabel = isWindows ? "Windows" : "Linux";
+	console.log(`\n[1/5] Verifying packaged application payload & offline assets (${platformLabel})...`);
+
+	const expectedBuildDir = isWindows
+		? join(import.meta.dir, "..", "build", "stable-win-x64")
+		: join(import.meta.dir, "..", "build", "stable-linux-x64");
 	const distDir = join(import.meta.dir, "..", "dist");
 
-	if (existsSync(buildDir)) {
-		console.log(`  ✓ Packaged application directory exists: ${buildDir}`);
-		const resourcesDir = join(buildDir, "Resources");
-		if (existsSync(resourcesDir)) {
-			const resourceFiles = readdirSync(resourcesDir);
-			console.log(`  ✓ Packaged Resources contains: ${resourceFiles.join(", ")}`);
-		}
+	if (existsSync(expectedBuildDir)) {
+		console.log(`  ✓ Packaged build directory exists for ${platformLabel}: ${expectedBuildDir}`);
+		const buildEntries = readdirSync(expectedBuildDir);
+		console.log(`  ✓ Package contents: ${buildEntries.join(", ")}`);
 	} else {
-		console.log(`  ℹ Note: Packaged linux build directory not at default path, checking dist...`);
+		console.error(`  ✗ Missing packaged build directory for ${platformLabel}: ${expectedBuildDir}`);
+		allPassed = false;
 	}
 
 	if (existsSync(distDir)) {
 		const assetsDir = join(distDir, "assets");
 		const assetFiles = existsSync(assetsDir) ? readdirSync(assetsDir) : [];
 		const fontFiles = assetFiles.filter((f) => f.includes("ibm-plex") || f.includes("newsreader"));
-		console.log(`  ✓ Bundled assets verified: ${assetFiles.length} files in dist/assets`);
-		console.log(`  ✓ Offline bundled font files verified: ${fontFiles.length} fonts found (IBM Plex Sans, Mono, Newsreader)`);
+		if (fontFiles.length === 0) {
+			console.error(`  ✗ No offline font files found in dist/assets!`);
+			allPassed = false;
+		} else {
+			console.log(`  ✓ Bundled assets verified: ${assetFiles.length} files in dist/assets`);
+			console.log(`  ✓ Offline bundled font files verified: ${fontFiles.length} fonts found (IBM Plex Sans, Mono, Newsreader)`);
+		}
+	} else {
+		console.error(`  ✗ Missing dist directory: ${distDir}`);
+		allPassed = false;
 	}
-
 	// 2. Domain Model & Invariants
 	console.log("\n[2/5] Validating domain model & geometry-independent ownership...");
 	const arch = createDefaultProofArchitecture();
@@ -177,14 +187,21 @@ async function main() {
 	console.log(`  ✓ Standalone SVG export generated (${width}x${height}px, ${svg.length} bytes) at ${exportSvgPath}`);
 	console.log("  ✓ SVG contains zero external HTTP/HTTPS assets and embeds self-contained font styling");
 
+	let pngVerified = false;
 	try {
 		const proc = Bun.spawnSync(["rsvg-convert", "-w", String(width), "-h", String(height), exportSvgPath, "-o", exportPngPath]);
 		if (proc.exitCode === 0 && existsSync(exportPngPath)) {
 			const pngBytes = readFileSync(exportPngPath);
-			console.log(`  ✓ Offline PNG rasterization verified (${pngBytes.length} bytes written to ${exportPngPath})`);
+			if (pngBytes.length > 0) {
+				console.log(`  ✓ Standalone PNG rasterization verified (${pngBytes.length} bytes written to ${exportPngPath})`);
+				pngVerified = true;
+			}
 		}
 	} catch {
-		console.log("  ℹ rsvg-convert not available for shell rasterization; in-browser canvas rasterizer verified in test suite.");
+		// rsvg-convert not present
+	}
+	if (!pngVerified) {
+		console.log(`  ℹ Standalone CLI PNG rasterizer not available on this runner (in-browser canvas rasterization tested in suite).`);
 	}
 
 	// Empirical React Flow addEdge() constraint check
@@ -197,16 +214,32 @@ async function main() {
 	if (afterE1.length === 1 && afterE2.length === 1) {
 		console.log("  ✓ React Flow addEdge() constraint confirmed: duplicate source/target edges are dropped by helper");
 	} else {
-		console.warn("  ℹ Unexpected: React Flow addEdge did not suppress duplicate edge");
+		console.error("  ✗ Expected React Flow addEdge to suppress duplicate edge!");
+		allPassed = false;
 	}
 
 	console.log("\n==================================================================");
-	if (allPassed) {
-		console.log("ALL ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY IN PACKAGED RUNTIME");
-	} else {
-		console.error("ONE OR MORE CHECKS FAILED");
+	if (!allPassed) {
+		console.error("FAILED: One or more packaged model or asset checks failed.");
 		process.exit(1);
 	}
+
+	console.log(`PACKAGED MODEL & ASSET LOGIC CHECKS PASSED FOR ${platformLabel.toUpperCase()}`);
+	console.log("------------------------------------------------------------------");
+	console.log("Scope verified by this script:");
+	console.log(`  • Packaged application build artifact & font presence on ${platformLabel}`);
+	console.log("  • Explicit Service ownership & system-scope components");
+	console.log("  • Overlapping groups & deduplicated member movement");
+	console.log("  • Duplicate-endpoint parallel connections & service collapse projection");
+	console.log("  • Deterministic timeline compilation, parallel branches, and retry states");
+	console.log("  • Standalone SVG export XML generation");
+	console.log("  • React Flow candidate constraint checks (single parentId, addEdge duplicate drop)");
+	console.log("");
+	console.log("OUTSTANDING ACCEPTANCE CHECKS (Requires live in-WebView session):");
+	console.log("  • Live in-WebView pointer dragging & service focus/collapse in WebKitGTK / WebView2");
+	console.log("  • Live SVG particle motion & path sampling (SVGGeometryElement.getPointAtLength)");
+	console.log("  • Live in-WebView canvas PNG export and offline font rendering");
+	console.log("==================================================================");
 }
 
 main().catch((err) => {

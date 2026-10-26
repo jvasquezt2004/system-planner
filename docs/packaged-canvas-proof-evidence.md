@@ -62,9 +62,9 @@ Schema Designer started! 1
 Platform: linux (x64)
 Runtime: Bun 1.4.4
 
-[1/5] Verifying packaged application payload & offline assets...
-  ✓ Packaged application directory exists: .../build/stable-linux-x64/SchemaDesigner
-  ✓ Packaged Resources contains: app, appIcon.png, metadata.json, 2jox25q87p1q6.tar.zst
+[1/5] Verifying packaged application payload & offline assets (Linux)...
+  ✓ Packaged build directory exists for Linux: .../build/stable-linux-x64
+  ✓ Package contents: SchemaDesigner
   ✓ Bundled assets verified: 129 files in dist/assets
   ✓ Offline bundled font files verified: 32 fonts found (IBM Plex Sans, Mono, Newsreader)
 
@@ -90,11 +90,26 @@ Runtime: Bun 1.4.4
 [5/5] Testing static SVG export and React Flow candidate constraints...
   ✓ Standalone SVG export generated (1140x610px, 13514 bytes) at .../build/proof-export.svg
   ✓ SVG contains zero external HTTP/HTTPS assets and embeds self-contained font styling
-  ✓ Offline PNG rasterization verified (87217 bytes written to .../build/proof-export.png)
+  ✓ Standalone PNG rasterization verified (87217 bytes written to .../build/proof-export.png)
   ✓ React Flow addEdge() constraint confirmed: duplicate source/target edges are dropped by helper
 
 ==================================================================
-ALL ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY IN PACKAGED RUNTIME
+PACKAGED MODEL & ASSET LOGIC CHECKS PASSED FOR LINUX
+------------------------------------------------------------------
+Scope verified by this script:
+  • Packaged application build artifact & font presence on Linux
+  • Explicit Service ownership & system-scope components
+  • Overlapping groups & deduplicated member movement
+  • Duplicate-endpoint parallel connections & service collapse projection
+  • Deterministic timeline compilation, parallel branches, and retry states
+  • Standalone SVG export XML generation
+  • React Flow candidate constraint checks (single parentId, addEdge duplicate drop)
+
+OUTSTANDING ACCEPTANCE CHECKS (Requires live in-WebView session):
+  • Live in-WebView pointer dragging & service focus/collapse in WebKitGTK
+  • Live SVG particle motion & path sampling (SVGGeometryElement.getPointAtLength)
+  • Live in-WebView canvas PNG export and offline font rendering
+==================================================================
 ```
 
 ---
@@ -142,7 +157,9 @@ jobs:
 Platform: win32 (x64)
 Runtime: Bun 1.4.4
 
-[1/5] Verifying packaged application payload & offline assets...
+[1/5] Verifying packaged application payload & offline assets (Windows)...
+  ✓ Packaged build directory exists for Windows: D:\a\db-planner\db-planner\build\stable-win-x64
+  ✓ Package contents: Schema Designer
   ✓ Bundled assets verified: 129 files in dist/assets
   ✓ Offline bundled font files verified: 32 fonts found (IBM Plex Sans, Mono, Newsreader)
 
@@ -168,19 +185,43 @@ Runtime: Bun 1.4.4
 [5/5] Testing static SVG export and React Flow candidate constraints...
   ✓ Standalone SVG export generated (1140x610px, 13514 bytes) at D:\a\db-planner\db-planner\build\proof-export.svg
   ✓ SVG contains zero external HTTP/HTTPS assets and embeds self-contained font styling
+  ℹ Standalone CLI PNG rasterizer not available on this runner (in-browser canvas rasterization tested in suite).
   ✓ React Flow addEdge() constraint confirmed: duplicate source/target edges are dropped by helper
 
 ==================================================================
-ALL ACCEPTANCE CRITERIA VERIFIED SUCCESSFULLY IN PACKAGED RUNTIME
+PACKAGED MODEL & ASSET LOGIC CHECKS PASSED FOR WINDOWS
+------------------------------------------------------------------
+Scope verified by this script:
+  • Packaged application build artifact & font presence on Windows
+  • Explicit Service ownership & system-scope components
+  • Overlapping groups & deduplicated member movement
+  • Duplicate-endpoint parallel connections & service collapse projection
+  • Deterministic timeline compilation, parallel branches, and retry states
+  • Standalone SVG export XML generation
+  • React Flow candidate constraint checks (single parentId, addEdge duplicate drop)
+
+OUTSTANDING ACCEPTANCE CHECKS (Requires live in-WebView session):
+  • Live in-WebView pointer dragging & service focus/collapse in WebView2
+  • Live SVG particle motion & path sampling (SVGGeometryElement.getPointAtLength)
+  • Live in-WebView canvas PNG export and offline font rendering
+==================================================================
 ```
 
 ---
 
-## 4. Verification Summary
+## 4. Current Status of Native Evidence & Outstanding Acceptance Work
 
-Both Linux (WebKitGTK) and Windows (WebView2) runtimes have completed full native packaged verification:
-1. **Components, Service Boundaries, and Overlapping Groups:** Proven independent of geometry; group movement deduplicates overlapping member translations.
-2. **Parallel Connections & Projection:** Distinct labeled connections between identical endpoints (`POST /upload` vs `GET /upload/status`) with collision-free Bezier curvature; service collapse projects connection endpoints without altering authoritative entity IDs.
-3. **Coordinated Timeline & Playback:** Single authored clock coordinates message motion along actual SVG paths, component arrival reactions, parallel completion branches, finite retries, and reduced motion presentation.
-4. **Offline Export & Assets:** Self-contained SVG and offline PNG export verified with bundled `IBM Plex Sans` and `IBM Plex Mono` typography.
-5. **Candidate Library Evaluation:** Proved React Flow's single `parentId` and `addEdge()` duplicate suppression constraints, justifying the Custom Canvas choice.
+### What Has Been Conclusively Proven
+1. **Packaged Build & Bundled Assets:** Both Linux (`build/stable-linux-x64`) and Windows (`build/stable-win-x64`) packages build with Electrobun; `dist/assets` packages 32 offline font files and zero external network URLs.
+2. **Domain Model Invariants:** Explicit Service ownership, system-scope sharing, and overlapping/nested Groups operate independently of placement; group movement deduplicates overlapping member translations.
+3. **Multigraph Topology & View Projection:** Parallel labeled connections calculate distinct non-overlapping curved paths; collapsing a Service visually projects endpoints while preserving authoritative entity IDs.
+4. **Authored Timeline Scheduling:** Deterministic timeline compiles parallel execution branches, finite retries with transient error display, reverse seeking, and reduced-motion presentation.
+5. **Candidate Library Constraints:** React Flow's single `parentId` limitation and `addEdge()` duplicate suppression constraints have been empirically proven, provisionally justifying the Custom Canvas approach.
+
+### What Remains Outstanding for Full Acceptance (#117)
+The current verifier runs source modules within the Bun CLI process and inspects filesystem packages; it does not drive the live rendered native WebView. Full acceptance requires:
+1. **Live in-WebView DOM Interaction:** Establishing a remote debugging session (CDP on WebView2, WebKitGTK inspector on Linux) to trigger and observe pointer drag events, service collapse/expand toggles, and focus navigation inside the running WebView.
+2. **Live SVG Path Motion in WebKitGTK and WebView2:** Validating that `getPointAtLength()` samples smoothly along rendered `<path>` elements and animated message markers update component DOM states across frame rates without rendering artifacts.
+3. **In-WebView Offline Font Loading & PNG Canvas Rasterization:** Exercising `HTMLCanvasElement.toDataURL("image/png")` inside the running native WebView to verify that bundled fonts render into the canvas context without tainted canvas security errors or font substitution.
+
+Until these live in-WebView checks are automated or manually evidenced, PR #149 remains a **Draft PR** referencing `Refs #117`.
