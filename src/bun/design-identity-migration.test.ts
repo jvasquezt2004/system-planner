@@ -495,4 +495,104 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 		expect(workspace.getState().design?.tables.some((t) => t.name === "products")).toBe(true);
 		expect(workspace.getState().save).toMatchObject({ designId: designIdB });
 	});
+
+	test("migrates genuine minimal legacy database containing only projects and pre-document_revision designs", async () => {
+		const dir = createTempDir();
+		const dbPath = join(dir, "minimal-legacy.sqlite");
+
+		const db = new Database(dbPath, { create: true });
+		// Minimal schema from early versions: no document_revision, no scenarios, no edge functions
+		db.exec(`
+			CREATE TABLE projects (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+			CREATE TABLE designs (
+				project_id TEXT PRIMARY KEY REFERENCES projects(id),
+				revision INTEGER NOT NULL,
+				document TEXT NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+		`);
+		const testDesign: Design = {
+			tables: [{ id: "t1", name: "early_table", position: { x: 0, y: 0 }, columns: [] }],
+			relationships: [],
+			manyToManyRelationships: [],
+			viewport: { x: 0, y: 0, zoom: 1 },
+		};
+		db.query("INSERT INTO projects VALUES (?, ?, ?, ?)").run("early-proj", "Early App", 1000, 1000);
+		db.query("INSERT INTO designs VALUES (?, ?, ?, ?)").run("early-proj", 2, JSON.stringify(testDesign), 1000);
+		db.close();
+
+		// Open with store
+		const store = openDesignStore(dbPath);
+		try {
+			const record = store.loadProject("early-proj");
+			expect(record).not.toBeNull();
+			expect(record!.project.name).toBe("Early App");
+			expect(record!.revision).toBe(2);
+			expect(record!.documentRevision).toBe(2); // Initialized from revision
+			expect(record!.designId).toBeDefined();
+			expect(typeof record!.designId).toBe("string");
+			expect(record!.design.tables[0].name).toBe("early_table");
+
+			// Verify scenarios and edge functions queries still work cleanly on migrated DB
+			const scenarios = store.loadScenarios("early-proj");
+			expect(scenarios.scenarios).toHaveLength(0);
+			const edgeFunctions = store.loadEdgeFunctions("early-proj");
+			expect(edgeFunctions.edgeFunctions).toHaveLength(0);
+		} finally {
+			store.close();
+		}
+	});
+
+	test("enforces Project and Design ownership on store operations preventing cross-project corruption", async () => {
+		const dir = createTempDir();
+		const dbPath = join(dir, "ownership-validation.sqlite");
+		const store = openDesignStore(dbPath);
+		try {
+			const baseDesign: Design = {
+				tables: [],
+				relationships: [],
+				manyToManyRelationships: [],
+				viewport: { x: 0, y: 0, zoom: 1 },
+			};
+			store.createProject({ id: "proj-a", name: "A" }, baseDesign, { revision: 1, documentRevision: 1, savedAt: 1 }, "design-a");
+			store.createProject({ id: "proj-b", name: "B" }, baseDesign, { revision: 1, documentRevision: 1, savedAt: 1 }, "design-b");
+
+			// Attempt cross-project saveDesign: passing projectId 'proj-a' with designId 'design-b'
+			const modifiedA: Design = {
+				...baseDesign,
+				viewport: { x: 999, y: 999, zoom: 1 },
+			};
+			expect(() => {
+				store.saveDesign("proj-a", modifiedA, { revision: 2, documentRevision: 2, savedAt: 2 }, "design-b");
+			}).toThrow(/does not belong to project/i);
+
+			// Design B must be completely untouched
+			const loadedB = store.loadDesign("design-b");
+			expect(loadedB).not.toBeNull();
+			expect(loadedB!.design.viewport.x).toBe(0);
+
+			// Attempt cross-project saveScenarios
+			expect(() => {
+				store.saveScenarios("proj-a", [{ id: "s1", name: "scen", source: "" }], { revision: 1, savedAt: 1 }, "design-b");
+			}).toThrow(/does not belong to project/i);
+
+			// Attempt cross-project saveEdgeFunctions
+			expect(() => {
+				store.saveEdgeFunctions("proj-a", [{ id: "ef1", name: "ef", source: "" }], { revision: 1, savedAt: 1 }, "design-b");
+			}).toThrow(/does not belong to project/i);
+
+			// Attempt cross-project loadScenarios
+			expect(() => store.loadScenarios("proj-a", "design-b")).toThrow(/does not belong to project/i);
+
+			// Attempt cross-project loadEdgeFunctions
+			expect(() => store.loadEdgeFunctions("proj-a", "design-b")).toThrow(/does not belong to project/i);
+		} finally {
+			store.close();
+		}
+	});
 });

@@ -173,6 +173,9 @@ export function openDesignStore(
 	const selectPrimaryDesignId = database.query<{ id: string }, [string]>(
 		`SELECT id FROM designs WHERE project_id = ? ORDER BY rowid ASC LIMIT 1`,
 	);
+	const selectDesignByIdAndProject = database.query<{ id: string }, [string, string]>(
+		`SELECT id FROM designs WHERE id = ? AND project_id = ?`,
+	);
 
 	const listScenarios = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
 		SELECT id, name, source, design_id FROM scenarios WHERE project_id = ? ORDER BY position ASC
@@ -205,6 +208,12 @@ export function openDesignStore(
 
 	const saveScenariosTransaction = database.transaction(
 		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave, designId?: string) => {
+			if (designId !== undefined) {
+				const owner = selectDesignByIdAndProject.get(designId, projectId);
+				if (!owner) {
+					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+				}
+			}
 			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
 			const current = targetDesignId
 				? selectScenarioRevisionByDesign.get(targetDesignId) ?? selectScenarioRevision.get(projectId)
@@ -253,6 +262,12 @@ export function openDesignStore(
 	);
 	const saveEdgeFunctionsTransaction = database.transaction(
 		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave, designId?: string) => {
+			if (designId !== undefined) {
+				const owner = selectDesignByIdAndProject.get(designId, projectId);
+				if (!owner) {
+					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+				}
+			}
 			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
 			const current = targetDesignId
 				? selectEdgeFunctionRevisionByDesign.get(targetDesignId) ?? selectEdgeFunctionRevision.get(projectId)
@@ -291,13 +306,13 @@ export function openDesignStore(
 		`INSERT INTO designs (id, project_id, name, revision, document_revision, document, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	);
-	const updateDesignByProject = database.query(
+	const updateDesignByIdAndProject = database.query(
 		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
-		 WHERE project_id = ? AND document_revision < ?`,
+		 WHERE id = ? AND project_id = ? AND document_revision < ?`,
 	);
-	const updateDesignById = database.query(
+	const updatePrimaryDesignByProject = database.query(
 		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
-		 WHERE id = ? AND document_revision < ?`,
+		 WHERE id = (SELECT id FROM designs WHERE project_id = ? ORDER BY rowid ASC LIMIT 1) AND document_revision < ?`,
 	);
 	const listDesignsQuery = database.query<DatabaseDesignSummary, [string]>(
 		`SELECT id, project_id AS projectId, name FROM designs WHERE project_id = ? ORDER BY rowid ASC`,
@@ -333,25 +348,33 @@ export function openDesignStore(
 
 	const saveDesignTransaction = database.transaction(
 		(projectId: string, design: Design, save: DesignSave, designId?: string) => {
-			// A delayed save must never overwrite a newer design that already landed.
-			const result = designId
-				? updateDesignById.run(
-						save.revision,
-						save.documentRevision,
-						JSON.stringify(design),
-						save.savedAt,
-						designId,
-						save.documentRevision,
-				  )
-				: updateDesignByProject.run(
-						save.revision,
-						save.documentRevision,
-						JSON.stringify(design),
-						save.savedAt,
-						projectId,
-						save.documentRevision,
-				  );
-			if (result.changes > 0) touchProject.run(save.savedAt, projectId);
+			if (designId !== undefined) {
+				const owner = selectDesignByIdAndProject.get(designId, projectId);
+				if (!owner) {
+					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+				}
+				const result = updateDesignByIdAndProject.run(
+					save.revision,
+					save.documentRevision,
+					JSON.stringify(design),
+					save.savedAt,
+					designId,
+					projectId,
+					save.documentRevision,
+				);
+				if (result.changes > 0) touchProject.run(save.savedAt, projectId);
+			} else {
+				// Deterministically update the singular primary design for this project
+				const result = updatePrimaryDesignByProject.run(
+					save.revision,
+					save.documentRevision,
+					JSON.stringify(design),
+					save.savedAt,
+					projectId,
+					save.documentRevision,
+				);
+				if (result.changes > 0) touchProject.run(save.savedAt, projectId);
+			}
 		},
 	);
 
@@ -394,6 +417,12 @@ export function openDesignStore(
 			};
 		},
 		loadScenarios(projectId, designId) {
+			if (designId !== undefined) {
+				const owner = selectDesignByIdAndProject.get(designId, projectId);
+				if (!owner) {
+					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+				}
+			}
 			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
 			const scenarios = targetDesignId
 				? listScenariosByDesign.all(targetDesignId)
@@ -417,6 +446,12 @@ export function openDesignStore(
 			saveScenariosTransaction(projectId, scenarios, save, designId);
 		},
 		loadEdgeFunctions(projectId, designId) {
+			if (designId !== undefined) {
+				const owner = selectDesignByIdAndProject.get(designId, projectId);
+				if (!owner) {
+					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+				}
+			}
 			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
 			const edgeFunctions = targetDesignId
 				? listEdgeFunctionsByDesign.all(targetDesignId)
@@ -572,8 +607,12 @@ function migrateToExplicitDesignIdentity(database: Database, options?: OpenDesig
 		database.exec(`DROP TABLE designs`);
 		database.exec(`ALTER TABLE designs_migrating RENAME TO designs`);
 		database.exec(`CREATE INDEX IF NOT EXISTS idx_designs_project_id ON designs(project_id)`);
-		database.exec(`CREATE INDEX IF NOT EXISTS idx_scenarios_design_id ON scenarios(design_id)`);
-		database.exec(`CREATE INDEX IF NOT EXISTS idx_edge_functions_design_id ON edge_functions(design_id)`);
+		if (tableNames.has("scenarios")) {
+			database.exec(`CREATE INDEX IF NOT EXISTS idx_scenarios_design_id ON scenarios(design_id)`);
+		}
+		if (tableNames.has("edge_functions")) {
+			database.exec(`CREATE INDEX IF NOT EXISTS idx_edge_functions_design_id ON edge_functions(design_id)`);
+		}
 	});
 
 	runMigration();

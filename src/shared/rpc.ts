@@ -20,6 +20,7 @@ import type {
 	RemoveEdgeFunctionAction,
 	RemoveFunctionAction,
 	RemoveRelationshipAction,
+	RemoveScenarioAction,
 	RemoveTableAction,
 	RenameEdgeFunctionAction,
 	RenameScenarioAction,
