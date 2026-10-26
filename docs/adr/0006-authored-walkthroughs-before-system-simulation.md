@@ -1,0 +1,3 @@
+# Explain system behavior through authored Walkthroughs first
+
+The system-design expansion primarily supports designing and explaining systems. Its initial playback capability follows saved, authored Walkthroughs, with coordinated connection and component animations; playback does not determine outcomes by executing service behavior. A behavioral simulator would require component state and execution rules in addition to diagram structure, so it is deferred to a future phase rather than made a prerequisite for the editor. Existing executable database Scenarios retain their meaning and remain distinct from Walkthroughs; simulation is a desired future capability whose scope and fidelity are not yet decided.

@@ -188,6 +188,9 @@ development still works. The verification procedure and recorded result live in
 
 ## Documentation
 
+- [docs/system-design.md](docs/system-design.md) — agreed system-design expansion
+  (planned behavior), with the [component catalog](docs/system-components.md) and
+  [implementation plan](docs/system-design-build-plan.md).
 - [GLOSSARY.md](GLOSSARY.md) — canonical domain terms.
 - [docs/spec.md](docs/spec.md) — product spec for the full application.
 - [docs/projects-and-autosave.md](docs/projects-and-autosave.md) — project

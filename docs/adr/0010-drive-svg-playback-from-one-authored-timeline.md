@@ -1,0 +1,3 @@
+# Drive SVG playback from one authored timeline
+
+Walkthrough playback coordinates SVG connector motion and component reactions from one authored timeline. Independent icon and edge loops are simpler for ambient animation, but cannot reliably express the agreed pause, step selection, speed changes, parallel actions, and finite repetitions together. Layout changes alter the visible routes without changing authored durations; reduced-motion presentation retains the same steps through static highlights and explanations. The concrete rendering library and native WebView compatibility must be validated before implementation is locked.
