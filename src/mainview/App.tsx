@@ -120,6 +120,9 @@ export function App({
 	const [scenarioStarting, setScenarioStarting] = useState(false);
 	const projectIdRef = useRef<string | null>(null);
 	const projectGeneration = useRef(0);
+	/** Changes whenever the view switches Project or Design; late results from an earlier target are dropped. */
+	const targetKeyRef = useRef<string | null>(null);
+	const targetVersion = useRef(0);
 	const scenarioRunDriver = useRef<ScenarioRunDriver | null>(null);
 	const runAllOperation = useRef<RunAllOperation | null>(null);
 	const scenarioStartOperation = useRef<object | null>(null);
@@ -136,6 +139,11 @@ export function App({
 	}, []);
 	const receiveWorkspaceState = useCallback((next: WorkspaceState) => {
 		const nextProjectId = next.project?.id ?? null;
+		const nextTargetKey = `${nextProjectId ?? ""}\u0000${next.activeDesignId ?? ""}`;
+		if (targetKeyRef.current !== nextTargetKey) {
+			targetKeyRef.current = nextTargetKey;
+			targetVersion.current += 1;
+		}
 		if (projectIdRef.current !== nextProjectId) {
 			projectIdRef.current = nextProjectId;
 			projectGeneration.current += 1;
@@ -202,19 +210,16 @@ export function App({
 
 
 	const run = useCallback(async (action: () => Promise<WorkspaceState>) => {
-		const requestProjectId = projectIdRef.current;
-		const requestGeneration = projectGeneration.current;
+		const requestTarget = targetVersion.current;
 		setBusy(true);
 		setError(null);
 		try {
 			const next = await action();
-			if (
-				projectGeneration.current !== requestGeneration &&
-				next.project?.id === requestProjectId
-			) return;
-			receiveWorkspaceState(next);
+			// The workspace pushes its current state whenever the target changes, so a
+			// result that arrives after a switch is already superseded.
+			if (targetVersion.current === requestTarget) receiveWorkspaceState(next);
 		} catch (cause) {
-			if (projectGeneration.current === requestGeneration) setError(errorMessage(cause));
+			if (targetVersion.current === requestTarget) setError(errorMessage(cause));
 		} finally {
 			setBusy(false);
 		}
@@ -222,16 +227,13 @@ export function App({
 
 	/** Layout saves never change the schema, so they skip the busy state. */
 	const applyLayout = useCallback(async (action: () => Promise<WorkspaceState>) => {
-		const requestProjectId = projectIdRef.current;
+		const requestTarget = targetVersion.current;
 		setError(null);
 		try {
 			const next = await action();
-			if (
-				projectIdRef.current === requestProjectId &&
-				next.project?.id === requestProjectId
-			) setState(next);
+			if (targetVersion.current === requestTarget) setState(next);
 		} catch (cause) {
-			setError(errorMessage(cause));
+			if (targetVersion.current === requestTarget) setError(errorMessage(cause));
 		}
 	}, []);
 
@@ -654,7 +656,7 @@ export function App({
 						</div>
 						{view === "sql" && (
 							<SqlPreviewView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId ?? ""}`}
 								design={state.design}
 								sql={state.sql}
 								sandbox={state.sandbox}

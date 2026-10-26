@@ -297,6 +297,8 @@ export type DisplayedSqlPreview = Readonly<{
 	revision: number;
 	draftRevision: number;
 	sql: string;
+	/** The Design whose generated SQL this preview shows. */
+	designId?: string;
 }>;
 
 /** Result of copying the read-only SQL preview to the system clipboard. */
@@ -319,6 +321,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 				revision: sql.revision,
 				draftRevision: sql.revision,
 				sql: sql.sql,
+				designId: sql.designId,
 			};
 		case "checking":
 			return sql.sql === null || sql.availableRevision === null
@@ -328,6 +331,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 						revision: sql.availableRevision,
 						draftRevision: sql.draftRevision,
 						sql: sql.sql,
+						designId: sql.designId,
 					};
 		case "stale":
 			return {
@@ -335,6 +339,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 				revision: sql.revision,
 				draftRevision: sql.draftRevision,
 				sql: sql.sql,
+				designId: sql.designId,
 			};
 		case "empty":
 			return null;
@@ -446,7 +451,7 @@ export type WorkspaceState = {
 	edgeFunctionSave: EdgeFunctionSaveState;
 	scenarioSave: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
-	/** In-memory undo/redo availability for the currently open project only. */
+	/** In-memory undo/redo availability for the currently open Design only. */
 	undoRedo: { canUndo: boolean; canRedo: boolean };
 };
 

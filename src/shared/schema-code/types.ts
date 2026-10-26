@@ -41,4 +41,6 @@ export type SchemaCodeSnapshot = Readonly<{
 	target: OrmTarget;
 	revision: number;
 	code: string;
+	/** The Design the generated code was derived from. */
+	designId?: string;
 }>;
