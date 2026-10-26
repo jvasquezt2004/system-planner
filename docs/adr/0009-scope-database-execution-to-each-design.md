@@ -1,0 +1,3 @@
+# Scope existing database execution to each database Design
+
+Scenarios, Edge functions, SQL routines, Triggers, and sandbox results belong with their database Design. Each Scenario executes against its own fresh sandbox for that Design, independent of which schema view is currently open. Keeping Edge functions Project-wide would allow a handler's database context to vary with the calling Scenario; a fixed per-Design context gives handlers and editor diagnostics an unambiguous schema. Existing executable content stays with the original database Design during migration. System-wide Walkthroughs remain authored explanations, and cross-database execution is deferred rather than implied by architecture Connections.

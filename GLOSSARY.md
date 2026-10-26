@@ -1,31 +1,92 @@
 # Schema Designer
 
-Vocabulary for designing relational database structures and understanding their visual and SQL representations.
+Vocabulary for designing and explaining systems, including their architecture,
+relational database structures, and authored walkthroughs.
 
 ## Language
 
 **Project**:
-A named, locally saved workspace containing exactly one design.
-_Avoid_: Collection of designs
+A named, locally saved workspace representing one system, with its System design,
+linked database Designs, and supporting project content.
+_Avoid_: Database design, unrelated collection of systems
 
 **Design**:
 The authoritative description of a planned database structure and its visual layout. A design may be unfinished or temporarily invalid.
-_Avoid_: Sandbox, live database
+_Avoid_: System design, sandbox, live database
+
+**System design**:
+The authoritative description of a Project's planned system architecture,
+including its components, connections, and service boundaries.
+_Avoid_: Database design, running system
+
+**Component**:
+An element of a System design representing an actor, client, computing unit,
+resource, or supporting capability. It has one owning Service or sits at system
+scope as a shared or independent element.
+_Avoid_: Table card, deployed resource
+
+**Service**:
+A named part of a System design with explicit ownership of its components.
+It can be shown as an expanded boundary or a collapsed endpoint and can
+participate directly in Connections.
+_Avoid_: Visual group, deployment boundary
+
+**Service ownership**:
+The explicit assignment of a Component to one Service. Using a Component
+through a Connection or placing it visually near a Service does not confer
+ownership.
+_Avoid_: Proximity, shared ownership
+
+**Group**:
+A named, non-owning organization of parts of a System design, such as a business
+domain, region, or network boundary. Membership is explicit, and Groups may
+nest or overlap without changing Service ownership.
+_Avoid_: Service, Enclosure, owner
+
+**Connection**:
+A directed, labeled description of a possible interaction between Components
+or Services. Multiple Connections may join the same endpoints; their existence
+does not determine a Walkthrough's order of events.
+_Avoid_: Relationship, executed request
+
+**Database component**:
+A Component representing a database, optionally linked to a Design for supported
+schema detail. Multiple Database components may intentionally share a Design
+without representing the same database contents.
+_Avoid_: Design, sandbox
+
+**Shared schema**:
+A database Design intentionally linked from multiple Database components.
+Its schema changes apply to every linked Component, without implying shared
+database contents or a shared running database.
+_Avoid_: Shared database, copied schema
+
+**Service view**:
+A focused view of a Service and its contents from the same authoritative
+System design used by the system overview.
+_Avoid_: Independent diagram, copied service
+
+**Walkthrough**:
+A saved, authored explanation of how an interaction moves through a System
+design, presented through sequences, explicit parallel steps, finite
+repetitions, and coordinated animations. A Project may keep multiple named
+Walkthroughs.
+_Avoid_: Scenario, simulation, execution
 
 **Sandbox**:
 A disposable database preview built from a valid version of a design. It is not the authoritative design, and its data is not intended to be preserved.
 _Avoid_: Design, production database
 
 **Scenario**:
-A named, saved, ordered series of data operations that a project keeps next to
-its design and replays against a fresh sandbox to see how the design behaves
-with records. The scenario is authoritative; the records it produces are not,
-and a design change never migrates them. Each scenario starts empty and never
-sees another scenario's records.
+A named, saved, ordered series of data operations belonging to one database
+Design and replayed against its own fresh Sandbox. The Scenario is authoritative;
+its resulting records are disposable, never shared with another Scenario, and
+never migrated when the Design changes.
 _Avoid_: Seed data, test data, migration
 
 **Edge function**:
-A named TypeScript server handler kept with its Project and invoked by Scenarios.
+A named TypeScript server handler belonging to one database Design and invoked
+by that Design's Scenarios against their Sandbox.
 _Avoid_: Function (use **Function** for database routines), backend, serverless
 
 **Scenario run**:
@@ -180,9 +241,10 @@ _Avoid_: Cascade (unless the action is specifically CASCADE)
 ## Assistant
 
 **Assistant**:
-The AI agent inside a project that reads and changes the design, Scenarios,
-and Edge functions on the designer's behalf. Its changes are ordinary project
-changes the designer can keep refining by hand.
+The AI agent inside a Project that reads and changes its System design,
+database Designs, Walkthroughs, Scenarios, and Edge functions on the designer's
+behalf. Its changes are ordinary project changes the designer can keep refining
+by hand.
 _Avoid_: Copilot, bot, AI
 
 **Conversation**:
