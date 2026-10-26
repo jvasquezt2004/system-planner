@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, Network, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
@@ -62,11 +62,12 @@ import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
 import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
+import { ArchitectureProofView } from "./architecture-proof";
 
 type RunAllOperation = { projectId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
+type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers" | "architecture";
 type AssistantCodeTarget = { kind: "scenario" | "edge-function" | "function-body"; id: string };
 
 export function App({
@@ -746,6 +747,9 @@ export function App({
 								}
 							/>
 						)}
+						{view === "architecture" && (
+							<ArchitectureProofView key={state.project.id} />
+						)}
 						</div>
 					{state.project && (
 						<AssistantSidebar
@@ -1034,7 +1038,8 @@ export function Masthead({
 							next === "scenarios" ||
 							next === "edge-functions" ||
 							next === "functions" ||
-							next === "triggers"
+							next === "triggers" ||
+							next === "architecture"
 						)
 							onViewChange(next);
 					}}
@@ -1099,6 +1104,16 @@ export function Masthead({
 					>
 						<Zap className="size-3.5 shrink-0" />
 						<span className="hidden xl:inline">Triggers</span>
+					</ToggleGroupItem>
+					<ToggleGroupItem
+						value="architecture"
+						data-testid="view-canvas-proof"
+						title="Canvas Proof (Technical Fixture)"
+						aria-label="Canvas Proof (Technical Fixture)"
+						className="h-7 px-2.5 xl:px-3 text-pencil font-medium"
+					>
+						<Network className="size-3.5 shrink-0 text-pencil" />
+						<span className="hidden xl:inline">Canvas Proof</span>
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>
