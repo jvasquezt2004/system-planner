@@ -7,38 +7,41 @@ import type {
 	AssistantThinkingLevel,
 } from "./assistant";
 import type {
+	AddColumnAction,
 	AddRelationshipAction,
-	CanvasPoint,
-	CanvasViewport,
-	ColumnChanges,
-	ColumnType,
+	AddTableAction,
+	CreateEdgeFunctionAction,
+	CreateScenarioAction,
+	DisplayedSqlPreview,
+	MoveTableAction,
 	RemovalPlan,
 	RemovalTarget,
-	RemoveRelationshipAction,
-	UpdateRelationshipAction,
-	UpdateIndexesAction,
-	UpdateEnumTypesAction,
-	UpdatePoliciesAction,
-	UpdateFunctionsAction,
-	UpdateUniqueConstraintsAction,
-	RemoveFunctionAction,
-	UpdateTriggersAction,
-	CreateScenarioAction,
-	RenameScenarioAction,
-	RemoveScenarioAction,
-	UpdateScenarioSourceAction,
-	CreateEdgeFunctionAction,
-	RenameEdgeFunctionAction,
+	RemoveColumnAction,
 	RemoveEdgeFunctionAction,
-	UpdateEdgeFunctionSourceAction,
-	DisplayedSqlPreview,
-	SqlPreviewCopyResult,
-	SqlPreviewExportResult,
+	RemoveFunctionAction,
+	RemoveRelationshipAction,
+	RemoveTableAction,
+	RenameEdgeFunctionAction,
+	RenameScenarioAction,
+	RenameTableAction,
 	SandboxApiRequest,
 	SandboxApiResponse,
-	ScenarioRun,
-	WorkspaceState,
 	Scenario,
+	ScenarioRun,
+	SetViewportAction,
+	SqlPreviewCopyResult,
+	SqlPreviewExportResult,
+	UpdateColumnAction,
+	UpdateEdgeFunctionSourceAction,
+	UpdateEnumTypesAction,
+	UpdateFunctionsAction,
+	UpdateIndexesAction,
+	UpdatePoliciesAction,
+	UpdateRelationshipAction,
+	UpdateScenarioSourceAction,
+	UpdateTriggersAction,
+	UpdateUniqueConstraintsAction,
+	WorkspaceState,
 } from "./design";
 import type { SchemaCodeSnapshot } from "./schema-code";
 export type SqlPreviewExportRequest = Readonly<{
@@ -78,7 +81,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			renameEdgeFunction: { params: RenameEdgeFunctionAction; response: WorkspaceState };
 			removeEdgeFunction: { params: RemoveEdgeFunctionAction; response: WorkspaceState };
 			updateEdgeFunctionSource: { params: UpdateEdgeFunctionSourceAction; response: WorkspaceState };
-			beginScenarioRun: { params: { scenarioId: string }; response: { runId: string; state: WorkspaceState } };
+			beginScenarioRun: { params: { scenarioId: string; designId?: string }; response: { runId: string; state: WorkspaceState } };
 			handleSandboxApiRequest: { params: { runId: string; request: SandboxApiRequest }; response: SandboxApiResponse };
 			finishScenarioRun: { params: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };
 			undo: {
@@ -90,27 +93,27 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				response: WorkspaceState;
 			};
 			addTable: {
-				params: { name: string; position?: CanvasPoint };
+				params: AddTableAction;
 				response: WorkspaceState;
 			};
 			renameTable: {
-				params: { tableId: string; name: string };
+				params: RenameTableAction;
 				response: WorkspaceState;
 			};
 			removeTable: {
-				params: { tableId: string; confirmed?: boolean };
+				params: RemoveTableAction;
 				response: WorkspaceState;
 			};
 			moveTable: {
-				params: { tableId: string; position: CanvasPoint };
+				params: MoveTableAction;
 				response: WorkspaceState;
 			};
 			addColumn: {
-				params: { tableId: string; name?: string; type?: ColumnType };
+				params: AddColumnAction;
 				response: WorkspaceState;
 			};
 			updateColumn: {
-				params: { tableId: string; columnId: string; changes: ColumnChanges };
+				params: UpdateColumnAction;
 				response: WorkspaceState;
 			};
 			updateIndexes: { params: UpdateIndexesAction; response: WorkspaceState };
@@ -121,7 +124,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			removeFunction: { params: RemoveFunctionAction; response: WorkspaceState };
 			updatePolicies: { params: UpdatePoliciesAction; response: WorkspaceState };
 			removeColumn: {
-				params: { tableId: string; columnId: string; confirmed?: boolean };
+				params: RemoveColumnAction;
 				response: WorkspaceState;
 			};
 			addRelationship: {
@@ -141,7 +144,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				response: RemovalPlan;
 			};
 			setViewport: {
-				params: CanvasViewport;
+				params: SetViewportAction;
 				response: WorkspaceState;
 			};
 			copySqlPreview: {
@@ -189,7 +192,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };
-			assistantScenarioRunCompleted: { requestId: string; run: ScenarioRun | null; error?: string };
+			assistantScenarioRunCompleted: { requestId: string; designId?: string; run: ScenarioRun | null; error?: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
@@ -199,7 +202,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		messages: {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
-			assistantScenarioRunRequest: { requestId: string; projectId: string; scenario: Scenario };
+			assistantScenarioRunRequest: { requestId: string; projectId: string; designId?: string; scenario: Scenario };
 			assistantScenarioRunCancel: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };

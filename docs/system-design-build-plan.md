@@ -106,7 +106,8 @@ Late saves, diagnostics, run completions, and Assistant messages must retain
 their original Project/Design identity so navigation cannot redirect them.
 Retain the current session-only history lifetime unless separately expanded;
 durable content and conversations must not imply durable rollback checkpoints.
-
+See [ADR-0011](adr/0011-explicit-design-targeting-adoption-contract.md) for the
+detailed Expand / Migrate / Contract adoption contract across tickets #119–#124.
 ## Architecture scene and routing
 
 Keep domain ownership, Group membership, and visible geometry independent.

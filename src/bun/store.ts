@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import type { Design, EdgeFunction, ProjectSummary } from "../shared/design";
+import type { DatabaseDesignRecord, DatabaseDesignSummary, Design, EdgeFunction, ProjectSummary } from "../shared/design";
 
 /**
  * A write of one stored design document. `revision` counts structural schema
@@ -17,6 +17,7 @@ export type DesignSave = {
 export interface ProjectRecord {
 	project: ProjectSummary;
 	design: Design;
+	designId: string;
 	revision: number;
 	documentRevision: number;
 	savedAt: number;
@@ -29,9 +30,11 @@ export interface ProjectRecord {
  */
 export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
-	createProject(project: ProjectSummary, design: Design, save: DesignSave): void | Promise<void>;
-	saveDesign(projectId: string, design: Design, save: DesignSave): void | Promise<void>;
+	createProject(project: ProjectSummary, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
+	saveDesign(projectId: string, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
+	listDesigns(projectId: string): DatabaseDesignSummary[];
+	loadDesign(designId: string): DatabaseDesignRecord | null;
 	close(): void;
 }
 
@@ -41,29 +44,33 @@ export interface StoredScenario {
 	id: string;
 	name: string;
 	source: string;
+	designId?: string;
 }
 
 export type ScenarioDocumentRecord = {
 	scenarios: StoredScenario[];
 	revision: number;
 	savedAt: number | null;
+	designId?: string;
 };
 
 export interface ScenarioStore {
-	loadScenarios(projectId: string): ScenarioDocumentRecord;
+	loadScenarios(projectId: string, designId?: string): ScenarioDocumentRecord;
 	saveScenarios(
 		projectId: string,
 		scenarios: StoredScenario[],
 		save: ScenarioSave,
+		designId?: string,
 	): void | Promise<void>;
 }
 
 export interface EdgeFunctionStore {
-	loadEdgeFunctions(projectId: string): EdgeFunctionDocumentRecord;
+	loadEdgeFunctions(projectId: string, designId?: string): EdgeFunctionDocumentRecord;
 	saveEdgeFunctions(
 		projectId: string,
 		edgeFunctions: EdgeFunction[],
 		save: ScenarioSave,
+		designId?: string,
 	): void | Promise<void>;
 }
 
@@ -71,17 +78,21 @@ export type EdgeFunctionDocumentRecord = {
 	edgeFunctions: EdgeFunction[];
 	revision: number;
 	savedAt: number | null;
+	designId?: string;
 };
-
-
 
 type ProjectRow = {
 	id: string;
 	name: string;
+	design_id: string;
 	revision: number;
 	document_revision: number;
 	document: string;
 	saved_at: number;
+};
+
+export type OpenDesignStoreOptions = {
+	_testSimulateMigrationFailure?: boolean;
 };
 
 const SCHEMA = `
@@ -96,15 +107,20 @@ const SCHEMA = `
 	);
 
 	CREATE TABLE IF NOT EXISTS designs (
-		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		id TEXT PRIMARY KEY,
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		name TEXT NOT NULL DEFAULT '',
 		revision INTEGER NOT NULL,
 		document_revision INTEGER NOT NULL DEFAULT 0,
 		document TEXT NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
 
+	CREATE INDEX IF NOT EXISTS idx_designs_project_id ON designs(project_id);
+
 	CREATE TABLE IF NOT EXISTS scenarios (
 		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
 		id TEXT NOT NULL,
 		position INTEGER NOT NULL,
 		name TEXT NOT NULL,
@@ -112,14 +128,18 @@ const SCHEMA = `
 		PRIMARY KEY (project_id, id)
 	);
 
+	CREATE INDEX IF NOT EXISTS idx_scenarios_design_id ON scenarios(design_id);
+
 	CREATE TABLE IF NOT EXISTS scenario_documents (
 		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
 
 	CREATE TABLE IF NOT EXISTS edge_functions (
 		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
 		id TEXT NOT NULL,
 		position INTEGER NOT NULL,
 		name TEXT NOT NULL,
@@ -128,76 +148,125 @@ const SCHEMA = `
 		UNIQUE (project_id, name)
 	);
 
+	CREATE INDEX IF NOT EXISTS idx_edge_functions_design_id ON edge_functions(design_id);
+
 	CREATE TABLE IF NOT EXISTS edge_function_documents (
 		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
 `;
 
-export function openDesignStore(databasePath: string): DesignStore {
+export function openDesignStore(
+	databasePath: string,
+	options?: OpenDesignStoreOptions,
+): DesignStore {
 	mkdirSync(dirname(databasePath), { recursive: true });
 	const database = new Database(databasePath, { create: true });
+
+	// Check if existing database requires migration to explicit design identity
+	migrateToExplicitDesignIdentity(database, options);
+
 	database.exec(SCHEMA);
-	const listScenarios = database.query<StoredScenario, [string]>(`
-		SELECT id, name, source FROM scenarios WHERE project_id = ? ORDER BY position ASC
+
+	const selectPrimaryDesignId = database.query<{ id: string }, [string]>(
+		`SELECT id FROM designs WHERE project_id = ? ORDER BY rowid ASC LIMIT 1`,
+	);
+
+	const listScenarios = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
+		SELECT id, name, source, design_id FROM scenarios WHERE project_id = ? ORDER BY position ASC
 	`);
-	const selectScenarioDocument = database.query<{ revision: number; updated_at: number }, [string]>(
-		`SELECT revision, updated_at FROM scenario_documents WHERE project_id = ?`,
+	const listScenariosByDesign = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
+		SELECT id, name, source, design_id FROM scenarios WHERE design_id = ? ORDER BY position ASC
+	`);
+	const selectScenarioDocument = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
+		`SELECT revision, updated_at, design_id FROM scenario_documents WHERE project_id = ?`,
+	);
+	const selectScenarioDocumentByDesign = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
+		`SELECT revision, updated_at, design_id FROM scenario_documents WHERE design_id = ?`,
 	);
 	const deleteScenarios = database.query(`DELETE FROM scenarios WHERE project_id = ?`);
+	const deleteScenariosByDesign = database.query(`DELETE FROM scenarios WHERE design_id = ?`);
 	const insertScenario = database.query(
-		`INSERT INTO scenarios (project_id, id, position, name, source) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO scenarios (project_id, design_id, id, position, name, source) VALUES (?, ?, ?, ?, ?, ?)`,
 	);
 	const selectScenarioRevision = database.query<{ revision: number }, [string]>(
 		`SELECT revision FROM scenario_documents WHERE project_id = ?`,
 	);
+	const selectScenarioRevisionByDesign = database.query<{ revision: number }, [string]>(
+		`SELECT revision FROM scenario_documents WHERE design_id = ?`,
+	);
 	const upsertScenarioRevision = database.query(
-		`INSERT INTO scenario_documents (project_id, revision, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+		`INSERT INTO scenario_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, design_id = excluded.design_id
 		 WHERE scenario_documents.revision < excluded.revision`,
 	);
 
 	const saveScenariosTransaction = database.transaction(
-		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave) => {
-			const current = selectScenarioRevision.get(projectId);
+		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave, designId?: string) => {
+			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
+			const current = targetDesignId
+				? selectScenarioRevisionByDesign.get(targetDesignId) ?? selectScenarioRevision.get(projectId)
+				: selectScenarioRevision.get(projectId);
 			if (current && current.revision >= save.revision) return;
-			deleteScenarios.run(projectId);
+			if (targetDesignId) {
+				deleteScenariosByDesign.run(targetDesignId);
+			} else {
+				deleteScenarios.run(projectId);
+			}
 			scenarios.forEach((scenario, position) =>
-				insertScenario.run(projectId, scenario.id, position, scenario.name, scenario.source),
+				insertScenario.run(projectId, targetDesignId, scenario.id, position, scenario.name, scenario.source),
 			);
-			upsertScenarioRevision.run(projectId, save.revision, save.savedAt);
+			upsertScenarioRevision.run(projectId, targetDesignId, save.revision, save.savedAt);
 			touchProject.run(save.savedAt, projectId);
 		},
 	);
 
-	const listEdgeFunctions = database.query<EdgeFunction, [string]>(
-		`SELECT id, name, source FROM edge_functions WHERE project_id = ? ORDER BY position ASC`,
+	const listEdgeFunctions = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(
+		`SELECT id, name, source, design_id FROM edge_functions WHERE project_id = ? ORDER BY position ASC`,
 	);
-	const selectEdgeFunctionDocument = database.query<{ revision: number; updated_at: number }, [string]>(
-		`SELECT revision, updated_at FROM edge_function_documents WHERE project_id = ?`,
+	const listEdgeFunctionsByDesign = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(
+		`SELECT id, name, source, design_id FROM edge_functions WHERE design_id = ? ORDER BY position ASC`,
+	);
+	const selectEdgeFunctionDocument = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
+		`SELECT revision, updated_at, design_id FROM edge_function_documents WHERE project_id = ?`,
+	);
+	const selectEdgeFunctionDocumentByDesign = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
+		`SELECT revision, updated_at, design_id FROM edge_function_documents WHERE design_id = ?`,
 	);
 	const selectEdgeFunctionRevision = database.query<{ revision: number }, [string]>(
 		`SELECT revision FROM edge_function_documents WHERE project_id = ?`,
 	);
+	const selectEdgeFunctionRevisionByDesign = database.query<{ revision: number }, [string]>(
+		`SELECT revision FROM edge_function_documents WHERE design_id = ?`,
+	);
 	const deleteEdgeFunctions = database.query(`DELETE FROM edge_functions WHERE project_id = ?`);
+	const deleteEdgeFunctionsByDesign = database.query(`DELETE FROM edge_functions WHERE design_id = ?`);
 	const insertEdgeFunction = database.query(
-		`INSERT INTO edge_functions (project_id, id, position, name, source) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO edge_functions (project_id, design_id, id, position, name, source) VALUES (?, ?, ?, ?, ?, ?)`,
 	);
 	const upsertEdgeFunctionRevision = database.query(
-		`INSERT INTO edge_function_documents (project_id, revision, updated_at) VALUES (?, ?, ?)
-		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at
+		`INSERT INTO edge_function_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, design_id = excluded.design_id
 		 WHERE edge_function_documents.revision < excluded.revision`,
 	);
 	const saveEdgeFunctionsTransaction = database.transaction(
-		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave) => {
-			const current = selectEdgeFunctionRevision.get(projectId);
+		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave, designId?: string) => {
+			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
+			const current = targetDesignId
+				? selectEdgeFunctionRevisionByDesign.get(targetDesignId) ?? selectEdgeFunctionRevision.get(projectId)
+				: selectEdgeFunctionRevision.get(projectId);
 			if (current && current.revision >= save.revision) return;
-			deleteEdgeFunctions.run(projectId);
+			if (targetDesignId) {
+				deleteEdgeFunctionsByDesign.run(targetDesignId);
+			} else {
+				deleteEdgeFunctions.run(projectId);
+			}
 			edgeFunctions.forEach((edgeFunction, position) =>
-				insertEdgeFunction.run(projectId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+				insertEdgeFunction.run(projectId, targetDesignId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
 			);
-			upsertEdgeFunctionRevision.run(projectId, save.revision, save.savedAt);
+			upsertEdgeFunctionRevision.run(projectId, targetDesignId, save.revision, save.savedAt);
 			touchProject.run(save.savedAt, projectId);
 		},
 	);
@@ -208,30 +277,52 @@ export function openDesignStore(databasePath: string): DesignStore {
 		`SELECT id, name FROM projects ORDER BY updated_at DESC, name ASC`,
 	);
 	const selectProject = database.query<ProjectRow, [string]>(`
-		SELECT projects.id, projects.name, designs.revision, designs.document_revision,
+		SELECT projects.id, projects.name, designs.id AS design_id, designs.revision, designs.document_revision,
 			designs.document, designs.updated_at AS saved_at
 		FROM projects
 		JOIN designs ON designs.project_id = projects.id
 		WHERE projects.id = ?
+		LIMIT 1
 	`);
 	const insertProject = database.query(
 		`INSERT INTO projects (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`,
 	);
 	const insertDesign = database.query(
-		`INSERT INTO designs (project_id, revision, document_revision, document, updated_at)
-		 VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO designs (id, project_id, name, revision, document_revision, document, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 	);
-	const updateDesign = database.query(
+	const updateDesignByProject = database.query(
 		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
 		 WHERE project_id = ? AND document_revision < ?`,
+	);
+	const updateDesignById = database.query(
+		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
+		 WHERE id = ? AND document_revision < ?`,
+	);
+	const listDesignsQuery = database.query<DatabaseDesignSummary, [string]>(
+		`SELECT id, project_id AS projectId, name FROM designs WHERE project_id = ? ORDER BY rowid ASC`,
+	);
+	const selectDesignById = database.query<{
+		id: string;
+		project_id: string;
+		name: string;
+		revision: number;
+		document_revision: number;
+		document: string;
+		updated_at: number;
+	}, [string]>(
+		`SELECT id, project_id, name, revision, document_revision, document, updated_at FROM designs WHERE id = ?`,
 	);
 	const touchProject = database.query(`UPDATE projects SET updated_at = ? WHERE id = ?`);
 
 	const createProjectTransaction = database.transaction(
-		(project: ProjectSummary, design: Design, save: DesignSave) => {
+		(project: ProjectSummary, design: Design, save: DesignSave, designId?: string) => {
+			const idToUse = designId ?? crypto.randomUUID();
 			insertProject.run(project.id, project.name, save.savedAt, save.savedAt);
 			insertDesign.run(
+				idToUse,
 				project.id,
+				"",
 				save.revision,
 				save.documentRevision,
 				JSON.stringify(design),
@@ -241,16 +332,25 @@ export function openDesignStore(databasePath: string): DesignStore {
 	);
 
 	const saveDesignTransaction = database.transaction(
-		(projectId: string, design: Design, save: DesignSave) => {
+		(projectId: string, design: Design, save: DesignSave, designId?: string) => {
 			// A delayed save must never overwrite a newer design that already landed.
-			const result = updateDesign.run(
-				save.revision,
-				save.documentRevision,
-				JSON.stringify(design),
-				save.savedAt,
-				projectId,
-				save.documentRevision,
-			);
+			const result = designId
+				? updateDesignById.run(
+						save.revision,
+						save.documentRevision,
+						JSON.stringify(design),
+						save.savedAt,
+						designId,
+						save.documentRevision,
+				  )
+				: updateDesignByProject.run(
+						save.revision,
+						save.documentRevision,
+						JSON.stringify(design),
+						save.savedAt,
+						projectId,
+						save.documentRevision,
+				  );
 			if (result.changes > 0) touchProject.run(save.savedAt, projectId);
 		},
 	);
@@ -259,11 +359,11 @@ export function openDesignStore(databasePath: string): DesignStore {
 		listProjects() {
 			return listProjects.all();
 		},
-		createProject(project, design, save) {
-			createProjectTransaction(project, design, save);
+		createProject(project, design, save, designId) {
+			createProjectTransaction(project, design, save, designId);
 		},
-		saveDesign(projectId, design, save) {
-			saveDesignTransaction(projectId, design, save);
+		saveDesign(projectId, design, save, designId) {
+			saveDesignTransaction(projectId, design, save, designId);
 		},
 		loadProject(projectId) {
 			const row = selectProject.get(projectId);
@@ -271,38 +371,212 @@ export function openDesignStore(databasePath: string): DesignStore {
 			return {
 				project: { id: row.id, name: row.name },
 				design: JSON.parse(row.document) as Design,
+				designId: row.design_id,
 				revision: row.revision,
 				documentRevision: row.document_revision,
 				savedAt: row.saved_at,
 			};
 		},
-		loadScenarios(projectId) {
-			const document = selectScenarioDocument.get(projectId);
+		listDesigns(projectId) {
+			return listDesignsQuery.all(projectId);
+		},
+		loadDesign(designId) {
+			const row = selectDesignById.get(designId);
+			if (!row) return null;
 			return {
-				scenarios: listScenarios.all(projectId),
-				revision: document?.revision ?? 0,
-				savedAt: document?.updated_at ?? null,
+				id: row.id,
+				projectId: row.project_id,
+				name: row.name,
+				design: JSON.parse(row.document) as Design,
+				revision: row.revision,
+				documentRevision: row.document_revision,
+				savedAt: row.updated_at,
 			};
 		},
-		saveScenarios(projectId, scenarios, save) {
-			saveScenariosTransaction(projectId, scenarios, save);
-		},
-		loadEdgeFunctions(projectId) {
-			const document = selectEdgeFunctionDocument.get(projectId);
+		loadScenarios(projectId, designId) {
+			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
+			const scenarios = targetDesignId
+				? listScenariosByDesign.all(targetDesignId)
+				: listScenarios.all(projectId);
+			const document = targetDesignId
+				? selectScenarioDocumentByDesign.get(targetDesignId) ?? selectScenarioDocument.get(projectId)
+				: selectScenarioDocument.get(projectId);
 			return {
-				edgeFunctions: listEdgeFunctions.all(projectId),
+				scenarios: scenarios.map((s) => ({
+					id: s.id,
+					name: s.name,
+					source: s.source,
+					designId: s.design_id ?? targetDesignId ?? undefined,
+				})),
 				revision: document?.revision ?? 0,
 				savedAt: document?.updated_at ?? null,
+				designId: targetDesignId ?? undefined,
 			};
 		},
-		saveEdgeFunctions(projectId, edgeFunctions, save) {
-			saveEdgeFunctionsTransaction(projectId, edgeFunctions, save);
+		saveScenarios(projectId, scenarios, save, designId) {
+			saveScenariosTransaction(projectId, scenarios, save, designId);
+		},
+		loadEdgeFunctions(projectId, designId) {
+			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
+			const edgeFunctions = targetDesignId
+				? listEdgeFunctionsByDesign.all(targetDesignId)
+				: listEdgeFunctions.all(projectId);
+			const document = targetDesignId
+				? selectEdgeFunctionDocumentByDesign.get(targetDesignId) ?? selectEdgeFunctionDocument.get(projectId)
+				: selectEdgeFunctionDocument.get(projectId);
+			return {
+				edgeFunctions: edgeFunctions.map((ef) => ({
+					id: ef.id,
+					name: ef.name,
+					source: ef.source,
+					designId: ef.design_id ?? targetDesignId ?? undefined,
+				})),
+				revision: document?.revision ?? 0,
+				savedAt: document?.updated_at ?? null,
+				designId: targetDesignId ?? undefined,
+			};
+		},
+		saveEdgeFunctions(projectId, edgeFunctions, save, designId) {
+			saveEdgeFunctionsTransaction(projectId, edgeFunctions, save, designId);
 		},
 		close() {
 			database.close();
 		},
 	};
+}
 
+/**
+ * Transactionally migrates legacy databases where designs table had no `id` column.
+ * Assigns each existing design a stable UUID and associates existing scenarios
+ * and edge functions with that owning design.
+ * If any step fails, bun:sqlite transaction automatically rolls back leaving the
+ * database in its original legacy state.
+ */
+function migrateToExplicitDesignIdentity(database: Database, options?: OpenDesignStoreOptions) {
+	const tables = database.query<{ name: string }, []>(
+		`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'designs'`,
+	).all();
+	if (tables.length === 0) return;
+
+	const columns = database.query<{ name: string }, []>(`PRAGMA table_info(designs)`).all();
+	const hasIdColumn = columns.some((column) => column.name === "id");
+	if (hasIdColumn) return;
+
+	const hasDocRevision = columns.some((column) => column.name === "document_revision");
+
+	const runMigration = database.transaction(() => {
+		database.exec(`
+			CREATE TABLE designs_migrating (
+				id TEXT PRIMARY KEY,
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				name TEXT NOT NULL DEFAULT '',
+				revision INTEGER NOT NULL,
+				document_revision INTEGER NOT NULL DEFAULT 0,
+				document TEXT NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+		`);
+
+		const oldDesigns = hasDocRevision
+			? database.query<{
+					project_id: string;
+					revision: number;
+					document_revision: number;
+					document: string;
+					updated_at: number;
+			  }, []>(`SELECT project_id, revision, document_revision, document, updated_at FROM designs`).all()
+			: database.query<{
+					project_id: string;
+					revision: number;
+					document: string;
+					updated_at: number;
+			  }, []>(`SELECT project_id, revision, document, updated_at FROM designs`).all().map((r) => ({
+					...r,
+					document_revision: r.revision,
+			  }));
+
+		const projectDesignMap = new Map<string, string>();
+		const insertNewDesign = database.query(
+			`INSERT INTO designs_migrating (id, project_id, name, revision, document_revision, document, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		);
+
+		for (const row of oldDesigns) {
+			const designId = crypto.randomUUID();
+			projectDesignMap.set(row.project_id, designId);
+			insertNewDesign.run(
+				designId,
+				row.project_id,
+				"",
+				row.revision,
+				row.document_revision,
+				row.document,
+				row.updated_at,
+			);
+		}
+
+		if (options?._testSimulateMigrationFailure) {
+			throw new Error("Simulated migration failure");
+		}
+
+		// Update scenarios if table exists
+		const allTables = database.query<{ name: string }, []>(
+			`SELECT name FROM sqlite_master WHERE type = 'table'`,
+		).all();
+		const tableNames = new Set(allTables.map((t) => t.name));
+
+		if (tableNames.has("scenarios")) {
+			const scenarioCols = database.query<{ name: string }, []>(`PRAGMA table_info(scenarios)`).all();
+			if (!scenarioCols.some((c) => c.name === "design_id")) {
+				database.exec(`ALTER TABLE scenarios ADD COLUMN design_id TEXT`);
+			}
+			const updateScenario = database.query(`UPDATE scenarios SET design_id = ? WHERE project_id = ?`);
+			for (const [projectId, designId] of projectDesignMap) {
+				updateScenario.run(designId, projectId);
+			}
+		}
+
+		if (tableNames.has("scenario_documents")) {
+			const docCols = database.query<{ name: string }, []>(`PRAGMA table_info(scenario_documents)`).all();
+			if (!docCols.some((c) => c.name === "design_id")) {
+				database.exec(`ALTER TABLE scenario_documents ADD COLUMN design_id TEXT`);
+			}
+			const updateDoc = database.query(`UPDATE scenario_documents SET design_id = ? WHERE project_id = ?`);
+			for (const [projectId, designId] of projectDesignMap) {
+				updateDoc.run(designId, projectId);
+			}
+		}
+
+		if (tableNames.has("edge_functions")) {
+			const efCols = database.query<{ name: string }, []>(`PRAGMA table_info(edge_functions)`).all();
+			if (!efCols.some((c) => c.name === "design_id")) {
+				database.exec(`ALTER TABLE edge_functions ADD COLUMN design_id TEXT`);
+			}
+			const updateEf = database.query(`UPDATE edge_functions SET design_id = ? WHERE project_id = ?`);
+			for (const [projectId, designId] of projectDesignMap) {
+				updateEf.run(designId, projectId);
+			}
+		}
+
+		if (tableNames.has("edge_function_documents")) {
+			const efDocCols = database.query<{ name: string }, []>(`PRAGMA table_info(edge_function_documents)`).all();
+			if (!efDocCols.some((c) => c.name === "design_id")) {
+				database.exec(`ALTER TABLE edge_function_documents ADD COLUMN design_id TEXT`);
+			}
+			const updateEfDoc = database.query(`UPDATE edge_function_documents SET design_id = ? WHERE project_id = ?`);
+			for (const [projectId, designId] of projectDesignMap) {
+				updateEfDoc.run(designId, projectId);
+			}
+		}
+
+		database.exec(`DROP TABLE designs`);
+		database.exec(`ALTER TABLE designs_migrating RENAME TO designs`);
+		database.exec(`CREATE INDEX IF NOT EXISTS idx_designs_project_id ON designs(project_id)`);
+		database.exec(`CREATE INDEX IF NOT EXISTS idx_scenarios_design_id ON scenarios(design_id)`);
+		database.exec(`CREATE INDEX IF NOT EXISTS idx_edge_functions_design_id ON edge_functions(design_id)`);
+	});
+
+	runMigration();
 }
 
 /**
