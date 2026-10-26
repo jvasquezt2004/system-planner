@@ -18,12 +18,12 @@ import type { AssistantStore } from "./assistant-store";
 import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
 import { openAssistantStore } from "./assistant-store";
 import { generateDesignSql, quoteIdentifier } from "./sql";
-import { getLastAppliedSandbox, type SandboxState, type SqlState, type WorkspaceState } from "../shared/design";
+import { getLastAppliedSandbox, type Design, type EdgeFunction, type SandboxState, type SqlState, type WorkspaceState } from "../shared/design";
 import type { DesignWorkspace } from "./workspace";
-
 import type { ScenarioRun } from "../shared/design";
 import type { Scenario } from "../shared/design";
 import { runAllScenarios, SCENARIO_RUN_TIMEOUT_MS } from "../shared/run-all";
+import { TurnTracker, checkCodeRelevantContent } from "./assistant-turn-tracker";
 function deterministicDdlIdFactory(toolCallId: string) {
 	let counter = 0;
 	return () => {
@@ -365,6 +365,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const runningTurns = new Set<string>();
 	const requestsThisTurn = new Map<string, number>();
 	const turnIds = new Map<string, string>();
+	const turnTrackers = new Map<string, TurnTracker>();
+	const conversationReadStates = new Map<string, { revision: number; design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] }>();
 	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
 	const latestTurnByProject = new Map<string, string>();
 	const pendingConfirmations = new Set<string>();
@@ -585,6 +587,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const { state } = requireBoundState(conversationId);
 			const generated = generateDesignSql(state.design);
 			store.observeProjectSnapshot(conversationId, projectSnapshot(state), state.revision);
+			conversationReadStates.set(conversationId, {
+				revision: state.revision,
+				design: structuredClone(state.design),
+				scenarios: structuredClone(state.scenarios),
+				edgeFunctions: structuredClone(state.edgeFunctions),
+			});
 			return {
 				content: [{ type: "text", text: JSON.stringify({
 					project: state.project,
@@ -682,11 +690,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				};
 			}
 			lastConfirmedDrops.delete(conversationId);
+			const readState = conversationReadStates.get(conversationId);
+			const tracker = currentTurnId ? turnTrackers.get(currentTurnId) : undefined;
 			const before = workspace.getState().design;
+			const beforeClone = before ? structuredClone(before) : undefined;
 			const result = await applyAssistantDdl(workspace, sql, {
 				assistantTurnId: turnIds.get(conversationId),
 				expectedProjectId: conversation.project_id,
 				idFactory: deterministicDdlIdFactory(_toolCallId),
+				readDesign: readState?.design,
 			});
 			if (result.status === "confirmation-required") {
 				const rejected = rejectedDrops.get(conversationId);
@@ -707,6 +719,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				return { content: [{ type: "text", text: JSON.stringify(changedProject) }], details: changedProject };
 			}
 			const after = result.state;
+			if (tracker && beforeClone && result.state.design) {
+				tracker.recordDesignMutation(beforeClone, result.state.design);
+			}
+			if (readState && result.state.design) {
+				readState.design = structuredClone(result.state.design);
+				readState.revision = result.state.revision;
+			}
 			store.observeProjectSnapshot(conversationId, projectSnapshot(after), after.revision);
 			const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 			const affectedTables: Array<{
@@ -796,6 +815,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			};
 			const { conversation } = requireBoundState(conversationId);
 			const kind = input.kind;
+			const currentTurnId = turnIds.get(conversationId);
+			const tracker = currentTurnId ? turnTrackers.get(currentTurnId) : undefined;
+			const readState = conversationReadStates.get(conversationId);
+			checkCodeRelevantContent(readState, workspace.getState(), kind, input.id, input.action, input.name);
 			if (input.action === "create") {
 				if (kind === "function-body") throw new Error("Function bodies cannot be created; define a Function through apply_ddl.");
 				if (!input.name) throw new Error("A name is required to create a code item.");
@@ -807,6 +830,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					? state.scenarios.find((candidate) => candidate.name === input.name?.trim())
 					: state.edgeFunctions.find((candidate) => candidate.name === input.name?.trim());
 				if (!item) throw new Error("The created code item could not be found in the bound project.");
+				if (tracker) {
+					if (kind === "scenario") tracker.recordScenarioCreated(item as Scenario);
+					else tracker.recordEdgeFunctionCreated(item as EdgeFunction);
+				}
+				if (readState) {
+					if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+					else readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				}
 				if (input.source === undefined) {
 					return { content: [{ type: "text", text: JSON.stringify({ action: "created", kind, id: item.id, name: item.name }) }], details: { action: "created", kind, id: item.id, name: item.name } };
 				}
@@ -818,6 +849,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (kind === "function-body") throw new Error("Function bodies cannot be renamed or removed through code tools.");
 				if (!input.id) throw new Error("An item id is required to rename or remove a code item.");
 				if (input.action === "rename" && !input.name) throw new Error("A new name is required to rename a code item.");
+				const currentBound = requireBoundState(conversationId);
+				const beforeScenario = kind === "scenario" ? currentBound.state.scenarios.find((s) => s.id === input.id) : undefined;
+				const beforeEdge = kind === "edge-function" ? currentBound.state.edgeFunctions.find((e) => e.id === input.id) : undefined;
 				const state = kind === "scenario"
 					? input.action === "rename"
 						? await workspace.renameScenario({ scenarioId: input.id, name: input.name! })
@@ -826,6 +860,27 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name! })
 						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id });
 				if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code item was updated.");
+				if (tracker) {
+					if (kind === "scenario") {
+						if (input.action === "rename" && beforeScenario) {
+							const afterScenario = state.scenarios.find((s) => s.id === input.id);
+							if (afterScenario) tracker.recordScenarioModified(beforeScenario, afterScenario);
+						} else if (input.action === "remove" && beforeScenario) {
+							tracker.recordScenarioRemoved(beforeScenario);
+						}
+					} else {
+						if (input.action === "rename" && beforeEdge) {
+							const afterEdge = state.edgeFunctions.find((e) => e.id === input.id);
+							if (afterEdge) tracker.recordEdgeFunctionModified(beforeEdge, afterEdge);
+						} else if (input.action === "remove" && beforeEdge) {
+							tracker.recordEdgeFunctionRemoved(beforeEdge);
+						}
+					}
+				}
+				if (readState) {
+					if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+					else readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				}
 				return { content: [{ type: "text", text: JSON.stringify({ action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name }) }], details: { action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name } };
 			}
 
@@ -849,6 +904,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				itemName = item.name;
 				before = item.body;
 			}
+			const beforeScenario = kind === "scenario" ? bound.state.scenarios.find((s) => s.id === input.id) : undefined;
+			const beforeEdge = kind === "edge-function" ? bound.state.edgeFunctions.find((e) => e.id === input.id) : undefined;
+			const beforeDesign = structuredClone(workspace.getState().design);
 			let after: string;
 			if (input.action === "write") {
 				if (input.source === undefined) throw new Error("A complete source string is required for a whole-file write.");
@@ -873,6 +931,25 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				);
 			}
 			if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code write completed.");
+			if (tracker) {
+				if (kind === "scenario" && beforeScenario) {
+					const afterScenario = state.scenarios.find((s) => s.id === input.id);
+					if (afterScenario) tracker.recordScenarioModified(beforeScenario, afterScenario);
+				} else if (kind === "edge-function" && beforeEdge) {
+					const afterEdge = state.edgeFunctions.find((e) => e.id === input.id);
+					if (afterEdge) tracker.recordEdgeFunctionModified(beforeEdge, afterEdge);
+				} else if (kind === "function-body" && beforeDesign && state.design) {
+					tracker.recordDesignMutation(beforeDesign, state.design);
+				}
+			}
+			if (readState) {
+				if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+				else if (kind === "edge-function") readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				else if (state.design) {
+					readState.design = structuredClone(state.design);
+					readState.revision = state.revision;
+				}
+			}
 			const appliedSource = kind === "scenario"
 				? state.scenarios.find(({ id }) => id === input.id)?.source
 				: kind === "edge-function"
@@ -1142,29 +1219,31 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
 			const state = workspace.getState();
 			if (state.project?.id !== checkpoint.projectId || !state.design) return false;
-			const after = JSON.stringify({
-				design: { ...checkpoint.after.design, viewport: null },
-				scenarios: checkpoint.after.scenarios,
-				edgeFunctions: checkpoint.after.edgeFunctions,
-			});
-			const before = JSON.stringify({
-				design: { ...checkpoint.before.design, viewport: null },
-				scenarios: checkpoint.before.scenarios,
-				edgeFunctions: checkpoint.before.edgeFunctions,
-			});
-			return after !== before && JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === after;
+			const tracker = turnTrackers.get(checkpoint.turnId);
+			if (!tracker || !tracker.hasChanges()) return false;
+			return true;
 		},
 		async revertTurn(conversationId) {
 			const checkpoint = turnCheckpoints.get(conversationId);
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) throw new Error("This Assistant turn is no longer available to revert.");
+			const tracker = turnTrackers.get(checkpoint.turnId);
+			if (!tracker || !tracker.hasChanges()) throw new Error("This Assistant turn has no changes to revert.");
+			const currentState = workspace.getState();
+			if (currentState.project?.id !== checkpoint.projectId || !currentState.design) {
+				throw new Error("The Assistant turn belongs to a different open project.");
+			}
+			const restoration = tracker.computeRestoration(currentState);
+			if (!restoration.ok) {
+				throw new Error(`Cannot revert Assistant turn due to conflicting items: ${restoration.conflicts.join("; ")}`);
+			}
 			await workspace.restoreAssistantProjectSnapshot({
 				projectId: checkpoint.projectId,
-				design: checkpoint.before.design,
-				scenarios: checkpoint.before.scenarios,
-				edgeFunctions: checkpoint.before.edgeFunctions,
-				expectedSnapshot: checkpoint.after,
+				design: restoration.design,
+				scenarios: restoration.scenarios,
+				edgeFunctions: restoration.edgeFunctions,
 			});
 			turnCheckpoints.delete(conversationId);
+			turnTrackers.delete(checkpoint.turnId);
 			latestTurnByProject.delete(checkpoint.projectId);
 			return store.loadConversation(conversationId);
 		},
@@ -1259,9 +1338,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					return store.loadConversation(conversationId);
 				}
 				const before = workspace.getState().design;
+				const beforeClone = before ? structuredClone(before) : undefined;
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
 				turnIds.set(conversationId, turnId);
+				if (!turnTrackers.has(turnId)) {
+					turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
+				}
+				const tracker = turnTrackers.get(turnId);
 				const result = await applyAssistantDdl(workspace, statement, {
 					assistantTurnId: turnId,
 					confirmedDrops: true,
@@ -1275,6 +1359,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				});
 				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
 				const after = result.state;
+				if (tracker && beforeClone && after.design) {
+					tracker.recordDesignMutation(beforeClone, after.design);
+				}
+				const readState = conversationReadStates.get(conversationId);
+				if (readState && after.design) {
+					readState.design = structuredClone(after.design);
+					readState.revision = after.revision;
+				}
 				const affectedTables: Array<{
 					id: string;
 					name: string;
@@ -1668,12 +1760,22 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			requestsThisTurn.set(conversationId, 0);
 			pausedTurns.delete(conversationId);
 			turnUsages.set(conversationId, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null });
-			turnIds.set(conversationId, crypto.randomUUID());
+			const turnId = crypto.randomUUID();
+			turnIds.set(conversationId, turnId);
+			turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
 			turnCheckpoints.set(conversationId, {
-				turnId: turnIds.get(conversationId)!,
+				turnId,
 				projectId: conversation.project_id,
 				before: checkpointBefore,
 			});
+			if (!conversationReadStates.has(conversationId)) {
+				conversationReadStates.set(conversationId, {
+					revision: currentState.revision,
+					design: structuredClone(currentState.design),
+					scenarios: structuredClone(currentState.scenarios),
+					edgeFunctions: structuredClone(currentState.edgeFunctions),
+				});
+			}
 			runningTurns.add(conversationId);
 			const run = agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
 			if (!waitForCompletion) {

@@ -31,6 +31,12 @@ export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
 	createProject(project: ProjectSummary, design: Design, save: DesignSave): void | Promise<void>;
 	saveDesign(projectId: string, design: Design, save: DesignSave): void | Promise<void>;
+	saveProjectArtifacts(input: {
+		projectId: string;
+		design?: { design: Design; save: DesignSave };
+		scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+		edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+	}): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	close(): void;
 }
@@ -254,6 +260,52 @@ export function openDesignStore(databasePath: string): DesignStore {
 			if (result.changes > 0) touchProject.run(save.savedAt, projectId);
 		},
 	);
+	const saveProjectArtifactsTransaction = database.transaction(
+		(input: {
+			projectId: string;
+			design?: { design: Design; save: DesignSave };
+			scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+			edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+		}) => {
+			if (input.design) {
+				const { design, save } = input.design;
+				const result = updateDesign.run(
+					save.revision,
+					save.documentRevision,
+					JSON.stringify(design),
+					save.savedAt,
+					input.projectId,
+					save.documentRevision,
+				);
+				if (result.changes > 0) touchProject.run(save.savedAt, input.projectId);
+			}
+			if (input.scenarios) {
+				const { scenarios, save } = input.scenarios;
+				const current = selectScenarioRevision.get(input.projectId);
+				if (!current || current.revision < save.revision) {
+					deleteScenarios.run(input.projectId);
+					scenarios.forEach((scenario, position) =>
+						insertScenario.run(input.projectId, scenario.id, position, scenario.name, scenario.source),
+					);
+					upsertScenarioRevision.run(input.projectId, save.revision, save.savedAt);
+					touchProject.run(save.savedAt, input.projectId);
+				}
+			}
+			if (input.edgeFunctions) {
+				const { edgeFunctions, save } = input.edgeFunctions;
+				const current = selectEdgeFunctionRevision.get(input.projectId);
+				if (!current || current.revision < save.revision) {
+					deleteEdgeFunctions.run(input.projectId);
+					edgeFunctions.forEach((edgeFunction, position) =>
+						insertEdgeFunction.run(input.projectId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+					);
+					upsertEdgeFunctionRevision.run(input.projectId, save.revision, save.savedAt);
+					touchProject.run(save.savedAt, input.projectId);
+				}
+			}
+		},
+	);
+
 
 	return {
 		listProjects() {
@@ -264,6 +316,9 @@ export function openDesignStore(databasePath: string): DesignStore {
 		},
 		saveDesign(projectId, design, save) {
 			saveDesignTransaction(projectId, design, save);
+		},
+		saveProjectArtifacts(input) {
+			saveProjectArtifactsTransaction(input);
 		},
 		loadProject(projectId) {
 			const row = selectProject.get(projectId);

@@ -130,7 +130,7 @@ export interface DesignWorkspace {
 		design: Design;
 		scenarios: Scenario[];
 		edgeFunctions: EdgeFunction[];
-		expectedSnapshot: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
+		expectedSnapshot?: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
 	}): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
@@ -1153,17 +1153,63 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const current = state;
 				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
-				const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
-				const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
-				if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
-				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
-				if (JSON.stringify({ ...restored, viewport: null }) !== JSON.stringify({ ...current.design, viewport: null })) {
-					await applyStructuralChange(input.projectId, restored, true);
+				if (input.expectedSnapshot) {
+					const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
+					const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
+					if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
 				}
-				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
-				await updateScenarios(input.projectId, () => structuredClone(input.scenarios));
-				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
-				await updateEdgeFunctions(input.projectId, () => structuredClone(input.edgeFunctions));
+				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
+				const nextRevision = state.revision + 1;
+				const nextDocumentRevision = documentRevision + 1;
+				const nextScenarioRevision = scenarioRevision + 1;
+				const nextEdgeFunctionRevision = edgeFunctionRevision + 1;
+				const savedAt = now();
+
+				await store.saveProjectArtifacts({
+					projectId: input.projectId,
+					design: {
+						design: restored,
+						save: {
+							revision: nextRevision,
+							documentRevision: nextDocumentRevision,
+							savedAt,
+						},
+					},
+					scenarios: {
+						scenarios: input.scenarios,
+						save: { revision: nextScenarioRevision, savedAt },
+					},
+					edgeFunctions: {
+						edgeFunctions: input.edgeFunctions,
+						save: { revision: nextEdgeFunctionRevision, savedAt },
+					},
+				});
+
+				documentRevision = nextDocumentRevision;
+				scenarioRevision = nextScenarioRevision;
+				edgeFunctionRevision = nextEdgeFunctionRevision;
+				const undoRedo = recordDesignChange(input.projectId, current.design, restored, true);
+				const lastApplied = getLastAppliedSandbox(state.sandbox);
+				setState({
+					...state,
+					design: restored,
+					revision: nextRevision,
+					scenarios: input.scenarios,
+					edgeFunctions: input.edgeFunctions,
+					undoRedo,
+					save: { status: "saved", revision: nextRevision, savedAt },
+					scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt },
+					edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt },
+					sql: {
+						status: "checking",
+						draftRevision: nextRevision,
+						availableRevision: lastGeneratableSql?.revision ?? null,
+						sql: lastGeneratableSql?.sql ?? null,
+					},
+					sandbox: lastApplied === null ? { status: "idle" } : { status: "applied", ...lastApplied },
+				});
+				const preview = schedulePreview(input.projectId, nextRevision, restored);
+				await preview;
 				return state;
 			});
 		},

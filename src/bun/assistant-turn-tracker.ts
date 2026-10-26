@@ -1,0 +1,804 @@
+import type {
+	Design,
+	DesignEnumType,
+	DesignFunction,
+	DesignRelationship,
+	DesignTable,
+	DesignTrigger,
+	EdgeFunction,
+	Scenario,
+	WorkspaceState,
+} from "../shared/design";
+import type { StoredScenario } from "./store";
+
+type Node = Record<string, any>;
+const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
+const nodeName = (node: Node | undefined): string | undefined => node?.String?.sval ?? node?.sval ?? node?.name;
+
+export type RestorationResult =
+	| {
+			ok: true;
+			design: Design;
+			scenarios: StoredScenario[];
+			edgeFunctions: EdgeFunction[];
+	  }
+	| {
+			ok: false;
+			conflicts: string[];
+	  };
+
+export class TurnTracker {
+	readonly turnId: string;
+	readonly projectId: string;
+
+	// Tables
+	readonly addedTableIds = new Set<string>();
+	readonly removedTables = new Map<string, DesignTable>();
+	readonly modifiedTables = new Map<string, { before: DesignTable; after: DesignTable }>();
+	readonly addedTablesSnapshot = new Map<string, DesignTable>();
+
+	// Enum Types
+	readonly addedEnumIds = new Set<string>();
+	readonly removedEnums = new Map<string, DesignEnumType>();
+
+	// Functions
+	readonly addedFunctionIds = new Set<string>();
+	readonly removedFunctions = new Map<string, DesignFunction>();
+	readonly modifiedFunctions = new Map<string, { before: DesignFunction; after: DesignFunction }>();
+
+	// Triggers
+	readonly addedTriggerIds = new Set<string>();
+	readonly removedTriggers = new Map<string, DesignTrigger>();
+
+	// Relationships
+	readonly addedRelationshipIds = new Set<string>();
+	readonly removedRelationships = new Map<string, DesignRelationship>();
+
+	// Scenarios
+	readonly addedScenarioIds = new Set<string>();
+	readonly removedScenarios = new Map<string, StoredScenario>();
+	readonly modifiedScenarios = new Map<string, { before: StoredScenario; after: StoredScenario }>();
+	readonly addedScenariosSnapshot = new Map<string, StoredScenario>();
+
+	// Edge Functions
+	readonly addedEdgeFunctionIds = new Set<string>();
+	readonly removedEdgeFunctions = new Map<string, EdgeFunction>();
+	readonly modifiedEdgeFunctions = new Map<string, { before: EdgeFunction; after: EdgeFunction }>();
+	readonly addedEdgeFunctionsSnapshot = new Map<string, EdgeFunction>();
+
+	constructor(turnId: string, projectId: string) {
+		this.turnId = turnId;
+		this.projectId = projectId;
+	}
+
+	recordDesignMutation(before: Design, after: Design) {
+		// Tables added or modified
+		for (const table of after.tables) {
+			const prev = before.tables.find((t) => t.id === table.id);
+			if (!prev) {
+				if (this.removedTables.has(table.id)) {
+					const orig = this.removedTables.get(table.id)!;
+					this.removedTables.delete(table.id);
+					if (JSON.stringify(orig) !== JSON.stringify(table)) {
+						this.modifiedTables.set(table.id, { before: orig, after: structuredClone(table) });
+					}
+				} else {
+					this.addedTableIds.add(table.id);
+					this.addedTablesSnapshot.set(table.id, structuredClone(table));
+				}
+			} else if (JSON.stringify(prev) !== JSON.stringify(table)) {
+				if (this.addedTableIds.has(table.id)) {
+					this.addedTablesSnapshot.set(table.id, structuredClone(table));
+				} else if (this.modifiedTables.has(table.id)) {
+					const existing = this.modifiedTables.get(table.id)!;
+					this.modifiedTables.set(table.id, { before: existing.before, after: structuredClone(table) });
+				} else {
+					this.modifiedTables.set(table.id, { before: structuredClone(prev), after: structuredClone(table) });
+				}
+			}
+		}
+
+		// Tables removed
+		for (const table of before.tables) {
+			if (!after.tables.some((t) => t.id === table.id)) {
+				if (this.addedTableIds.has(table.id)) {
+					this.addedTableIds.delete(table.id);
+					this.addedTablesSnapshot.delete(table.id);
+				} else if (this.modifiedTables.has(table.id)) {
+					const existing = this.modifiedTables.get(table.id)!;
+					this.modifiedTables.delete(table.id);
+					this.removedTables.set(table.id, existing.before);
+				} else {
+					this.removedTables.set(table.id, structuredClone(table));
+				}
+			}
+		}
+
+		// Relationships
+		for (const rel of after.relationships) {
+			if (!before.relationships.some((r) => r.id === rel.id)) {
+				if (this.removedRelationships.has(rel.id)) {
+					this.removedRelationships.delete(rel.id);
+				} else {
+					this.addedRelationshipIds.add(rel.id);
+				}
+			}
+		}
+		for (const rel of before.relationships) {
+			if (!after.relationships.some((r) => r.id === rel.id)) {
+				if (this.addedRelationshipIds.has(rel.id)) {
+					this.addedRelationshipIds.delete(rel.id);
+				} else {
+					this.removedRelationships.set(rel.id, structuredClone(rel));
+				}
+			}
+		}
+
+		// Enum Types
+		for (const enumType of after.enumTypes ?? []) {
+			if (!(before.enumTypes ?? []).some((e) => e.id === enumType.id)) {
+				if (this.removedEnums.has(enumType.id)) {
+					this.removedEnums.delete(enumType.id);
+				} else {
+					this.addedEnumIds.add(enumType.id);
+				}
+			}
+		}
+		for (const enumType of before.enumTypes ?? []) {
+			if (!(after.enumTypes ?? []).some((e) => e.id === enumType.id)) {
+				if (this.addedEnumIds.has(enumType.id)) {
+					this.addedEnumIds.delete(enumType.id);
+				} else {
+					this.removedEnums.set(enumType.id, structuredClone(enumType));
+				}
+			}
+		}
+
+		// Functions
+		for (const fn of after.functions ?? []) {
+			const prev = (before.functions ?? []).find((f) => f.id === fn.id);
+			if (!prev) {
+				if (this.removedFunctions.has(fn.id)) {
+					const orig = this.removedFunctions.get(fn.id)!;
+					this.removedFunctions.delete(fn.id);
+					if (JSON.stringify(orig) !== JSON.stringify(fn)) {
+						this.modifiedFunctions.set(fn.id, { before: orig, after: structuredClone(fn) });
+					}
+				} else {
+					this.addedFunctionIds.add(fn.id);
+				}
+			} else if (JSON.stringify(prev) !== JSON.stringify(fn)) {
+				if (this.addedFunctionIds.has(fn.id)) {
+					// created this turn
+				} else if (this.modifiedFunctions.has(fn.id)) {
+					const existing = this.modifiedFunctions.get(fn.id)!;
+					this.modifiedFunctions.set(fn.id, { before: existing.before, after: structuredClone(fn) });
+				} else {
+					this.modifiedFunctions.set(fn.id, { before: structuredClone(prev), after: structuredClone(fn) });
+				}
+			}
+		}
+		for (const fn of before.functions ?? []) {
+			if (!(after.functions ?? []).some((f) => f.id === fn.id)) {
+				if (this.addedFunctionIds.has(fn.id)) {
+					this.addedFunctionIds.delete(fn.id);
+				} else if (this.modifiedFunctions.has(fn.id)) {
+					const existing = this.modifiedFunctions.get(fn.id)!;
+					this.modifiedFunctions.delete(fn.id);
+					this.removedFunctions.set(fn.id, existing.before);
+				} else {
+					this.removedFunctions.set(fn.id, structuredClone(fn));
+				}
+			}
+		}
+
+		// Triggers
+		for (const tr of after.triggers ?? []) {
+			if (!(before.triggers ?? []).some((t) => t.id === tr.id)) {
+				if (this.removedTriggers.has(tr.id)) {
+					this.removedTriggers.delete(tr.id);
+				} else {
+					this.addedTriggerIds.add(tr.id);
+				}
+			}
+		}
+		for (const tr of before.triggers ?? []) {
+			if (!(after.triggers ?? []).some((t) => t.id === tr.id)) {
+				if (this.addedTriggerIds.has(tr.id)) {
+					this.addedTriggerIds.delete(tr.id);
+				} else {
+					this.removedTriggers.set(tr.id, structuredClone(tr));
+				}
+			}
+		}
+	}
+
+	recordScenarioCreated(scenario: StoredScenario) {
+		this.addedScenarioIds.add(scenario.id);
+		this.addedScenariosSnapshot.set(scenario.id, structuredClone(scenario));
+	}
+
+	recordScenarioModified(before: StoredScenario, after: StoredScenario) {
+		if (this.addedScenarioIds.has(before.id)) {
+			this.addedScenariosSnapshot.set(before.id, structuredClone(after));
+		} else if (this.modifiedScenarios.has(before.id)) {
+			const existing = this.modifiedScenarios.get(before.id)!;
+			this.modifiedScenarios.set(before.id, { before: existing.before, after: structuredClone(after) });
+		} else {
+			this.modifiedScenarios.set(before.id, { before: structuredClone(before), after: structuredClone(after) });
+		}
+	}
+
+	recordScenarioRemoved(scenario: StoredScenario) {
+		if (this.addedScenarioIds.has(scenario.id)) {
+			this.addedScenarioIds.delete(scenario.id);
+			this.addedScenariosSnapshot.delete(scenario.id);
+		} else if (this.modifiedScenarios.has(scenario.id)) {
+			const existing = this.modifiedScenarios.get(scenario.id)!;
+			this.modifiedScenarios.delete(scenario.id);
+			this.removedScenarios.set(scenario.id, existing.before);
+		} else {
+			this.removedScenarios.set(scenario.id, structuredClone(scenario));
+		}
+	}
+
+	recordEdgeFunctionCreated(edge: EdgeFunction) {
+		this.addedEdgeFunctionIds.add(edge.id);
+		this.addedEdgeFunctionsSnapshot.set(edge.id, structuredClone(edge));
+	}
+
+	recordEdgeFunctionModified(before: EdgeFunction, after: EdgeFunction) {
+		if (this.addedEdgeFunctionIds.has(before.id)) {
+			this.addedEdgeFunctionsSnapshot.set(before.id, structuredClone(after));
+		} else if (this.modifiedEdgeFunctions.has(before.id)) {
+			const existing = this.modifiedEdgeFunctions.get(before.id)!;
+			this.modifiedEdgeFunctions.set(before.id, { before: existing.before, after: structuredClone(after) });
+		} else {
+			this.modifiedEdgeFunctions.set(before.id, { before: structuredClone(before), after: structuredClone(after) });
+		}
+	}
+
+	recordEdgeFunctionRemoved(edge: EdgeFunction) {
+		if (this.addedEdgeFunctionIds.has(edge.id)) {
+			this.addedEdgeFunctionIds.delete(edge.id);
+			this.addedEdgeFunctionsSnapshot.delete(edge.id);
+		} else if (this.modifiedEdgeFunctions.has(edge.id)) {
+			const existing = this.modifiedEdgeFunctions.get(edge.id)!;
+			this.modifiedEdgeFunctions.delete(edge.id);
+			this.removedEdgeFunctions.set(edge.id, existing.before);
+		} else {
+			this.removedEdgeFunctions.set(edge.id, structuredClone(edge));
+		}
+	}
+
+	hasChanges(): boolean {
+		return (
+			this.addedTableIds.size > 0 ||
+			this.removedTables.size > 0 ||
+			this.modifiedTables.size > 0 ||
+			this.addedEnumIds.size > 0 ||
+			this.removedEnums.size > 0 ||
+			this.addedFunctionIds.size > 0 ||
+			this.removedFunctions.size > 0 ||
+			this.modifiedFunctions.size > 0 ||
+			this.addedTriggerIds.size > 0 ||
+			this.removedTriggers.size > 0 ||
+			this.addedRelationshipIds.size > 0 ||
+			this.removedRelationships.size > 0 ||
+			this.addedScenarioIds.size > 0 ||
+			this.removedScenarios.size > 0 ||
+			this.modifiedScenarios.size > 0 ||
+			this.addedEdgeFunctionIds.size > 0 ||
+			this.removedEdgeFunctions.size > 0 ||
+			this.modifiedEdgeFunctions.size > 0
+		);
+	}
+
+	computeRestoration(currentState: WorkspaceState): RestorationResult {
+		const conflicts: string[] = [];
+
+		// 1. Scenarios conflict checks
+		for (const id of this.addedScenarioIds) {
+			const current = currentState.scenarios.find((s) => s.id === id);
+			if (current) {
+				const snapshot = this.addedScenariosSnapshot.get(id);
+				if (snapshot && (current.source !== snapshot.source || current.name !== snapshot.name)) {
+					conflicts.push(`Scenario "${current.name}" was modified after this turn`);
+				}
+			}
+		}
+		for (const [id, { before, after }] of this.modifiedScenarios) {
+			const current = currentState.scenarios.find((s) => s.id === id);
+			if (!current) {
+				conflicts.push(`Scenario "${before.name}" was removed after this turn`);
+			} else if (current.source !== after.source || current.name !== after.name) {
+				conflicts.push(`Scenario "${current.name}" was modified after this turn`);
+			}
+		}
+		for (const [, removed] of this.removedScenarios) {
+			if (currentState.scenarios.some((s) => s.name === removed.name)) {
+				conflicts.push(`Scenario "${removed.name}" already exists`);
+			}
+		}
+
+		// 2. Edge Functions conflict checks
+		for (const id of this.addedEdgeFunctionIds) {
+			const current = currentState.edgeFunctions.find((e) => e.id === id);
+			if (current) {
+				const snapshot = this.addedEdgeFunctionsSnapshot.get(id);
+				if (snapshot && (current.source !== snapshot.source || current.name !== snapshot.name)) {
+					conflicts.push(`Edge function "${current.name}" was modified after this turn`);
+				}
+			}
+		}
+		for (const [id, { before, after }] of this.modifiedEdgeFunctions) {
+			const current = currentState.edgeFunctions.find((e) => e.id === id);
+			if (!current) {
+				conflicts.push(`Edge function "${before.name}" was removed after this turn`);
+			} else if (current.source !== after.source || current.name !== after.name) {
+				conflicts.push(`Edge function "${current.name}" was modified after this turn`);
+			}
+		}
+		for (const [, removed] of this.removedEdgeFunctions) {
+			if (currentState.edgeFunctions.some((e) => e.name === removed.name)) {
+				conflicts.push(`Edge function "${removed.name}" already exists`);
+			}
+		}
+
+		// 3. Design conflict checks
+		const currentDesign = currentState.design;
+		if (!currentDesign) {
+			return { ok: false, conflicts: ["No design currently open"] };
+		}
+
+		for (const tableId of this.addedTableIds) {
+			const currentTable = currentDesign.tables.find((t) => t.id === tableId);
+			if (currentTable) {
+				// Foreign keys referencing this table
+				for (const rel of currentDesign.relationships) {
+					if (this.addedRelationshipIds.has(rel.id)) continue;
+					if (rel.referencedTableId === tableId) {
+						const referencingTable = currentDesign.tables.find((t) => t.id === rel.referencingTableId);
+						conflicts.push(`table "${currentTable.name}" is referenced by foreign key on table "${referencingTable?.name ?? "unknown"}"`);
+					}
+				}
+				// Modified manually after turn
+				const snapshot = this.addedTablesSnapshot.get(tableId);
+				if (snapshot && JSON.stringify(currentTable) !== JSON.stringify(snapshot)) {
+					conflicts.push(`table "${currentTable.name}" was modified after this turn`);
+				}
+			}
+		}
+
+		for (const [tableId, { before, after }] of this.modifiedTables) {
+			const currentTable = currentDesign.tables.find((t) => t.id === tableId);
+			if (!currentTable) {
+				conflicts.push(`table "${before.name}" was removed after this turn`);
+			} else {
+				const addedCols = after.columns.filter((c) => !before.columns.some((b) => b.id === c.id));
+				for (const col of addedCols) {
+					const curCol = currentTable.columns.find((c) => c.id === col.id);
+					if (curCol) {
+						for (const rel of currentDesign.relationships) {
+							if (this.addedRelationshipIds.has(rel.id)) continue;
+							if (rel.referencingColumnId === col.id || (rel.referencedTableId === currentTable.id && col.primaryKey)) {
+								conflicts.push(`column "${currentTable.name}.${col.name}" is referenced by a relationship`);
+							}
+						}
+						if (JSON.stringify(curCol) !== JSON.stringify(col)) {
+							conflicts.push(`column "${currentTable.name}.${col.name}" was modified after this turn`);
+						}
+					}
+				}
+			}
+		}
+
+		for (const enumId of this.addedEnumIds) {
+			const currentEnum = currentDesign.enumTypes?.find((e) => e.id === enumId);
+			if (currentEnum) {
+				for (const table of currentDesign.tables) {
+					if (this.addedTableIds.has(table.id)) continue;
+					for (const col of table.columns) {
+						if (col.enumTypeId === enumId) {
+							conflicts.push(`enum type "${currentEnum.name}" is used by column "${table.name}.${col.name}"`);
+						}
+					}
+				}
+			}
+		}
+
+		for (const fnId of this.addedFunctionIds) {
+			const currentFn = currentDesign.functions?.find((f) => f.id === fnId);
+			if (currentFn) {
+				for (const tr of currentDesign.triggers ?? []) {
+					if (this.addedTriggerIds.has(tr.id)) continue;
+					if (tr.functionId === fnId) {
+						conflicts.push(`Function "${currentFn.name}" is used by trigger "${tr.name}"`);
+					}
+				}
+			}
+		}
+
+		for (const [fnId, { before, after }] of this.modifiedFunctions) {
+			const currentFn = currentDesign.functions?.find((f) => f.id === fnId);
+			if (!currentFn) {
+				conflicts.push(`Function "${before.name}" was removed after this turn`);
+			} else if (currentFn.body !== after.body) {
+				conflicts.push(`Function "${currentFn.name}" was modified after this turn`);
+			}
+		}
+
+		for (const [, removed] of this.removedTables) {
+			if (currentDesign.tables.some((t) => t.name === removed.name)) {
+				conflicts.push(`table "${removed.name}" already exists`);
+			}
+		}
+
+		if (conflicts.length > 0) {
+			return { ok: false, conflicts };
+		}
+
+		// Compute restored scenarios
+		const restoredScenarios: StoredScenario[] = currentState.scenarios
+			.filter((s) => !this.addedScenarioIds.has(s.id))
+			.map((s) => {
+				const modified = this.modifiedScenarios.get(s.id);
+				return modified ? structuredClone(modified.before) : structuredClone(s);
+			});
+		for (const removed of this.removedScenarios.values()) {
+			restoredScenarios.push(structuredClone(removed));
+		}
+
+		// Compute restored edge functions
+		const restoredEdgeFunctions: EdgeFunction[] = currentState.edgeFunctions
+			.filter((e) => !this.addedEdgeFunctionIds.has(e.id))
+			.map((e) => {
+				const modified = this.modifiedEdgeFunctions.get(e.id);
+				return modified ? structuredClone(modified.before) : structuredClone(e);
+			});
+		for (const removed of this.removedEdgeFunctions.values()) {
+			restoredEdgeFunctions.push(structuredClone(removed));
+		}
+
+		// Compute restored design
+		const restoredTables: DesignTable[] = currentDesign.tables
+			.filter((t) => !this.addedTableIds.has(t.id))
+			.map((t) => {
+				const modified = this.modifiedTables.get(t.id);
+				if (!modified) return structuredClone(t);
+				const { before, after } = modified;
+				const assistantAddedColIds = new Set(
+					after.columns
+						.filter((c) => !before.columns.some((b) => b.id === c.id))
+						.map((c) => c.id),
+				);
+				const assistantRemovedCols = before.columns.filter(
+					(b) => !after.columns.some((c) => c.id === b.id),
+				);
+				const columns = t.columns
+					.filter((c) => !assistantAddedColIds.has(c.id))
+					.map((c) => {
+						const beforeCol = before.columns.find((b) => b.id === c.id);
+						const afterCol = after.columns.find((a) => a.id === c.id);
+						if (beforeCol && afterCol && JSON.stringify(beforeCol) !== JSON.stringify(afterCol)) {
+							return structuredClone(beforeCol);
+						}
+						return structuredClone(c);
+					});
+				for (const restoredCol of assistantRemovedCols) {
+					columns.push(structuredClone(restoredCol));
+				}
+				return {
+					...t,
+					name: t.name === after.name ? before.name : t.name,
+					rowLevelSecurity: t.rowLevelSecurity === after.rowLevelSecurity ? before.rowLevelSecurity : t.rowLevelSecurity,
+					columns,
+					indexes: structuredClone(before.indexes ?? []),
+					uniqueConstraints: structuredClone(before.uniqueConstraints ?? []),
+					policies: structuredClone(before.policies ?? []),
+				};
+			});
+		for (const removed of this.removedTables.values()) {
+			restoredTables.push(structuredClone(removed));
+		}
+
+		const restoredRelationships: DesignRelationship[] = currentDesign.relationships
+			.filter((r) => !this.addedRelationshipIds.has(r.id));
+		for (const removed of this.removedRelationships.values()) {
+			restoredRelationships.push(structuredClone(removed));
+		}
+
+		const restoredEnumTypes: DesignEnumType[] = (currentDesign.enumTypes ?? [])
+			.filter((e) => !this.addedEnumIds.has(e.id));
+		for (const removed of this.removedEnums.values()) {
+			restoredEnumTypes.push(structuredClone(removed));
+		}
+
+		const restoredFunctions: DesignFunction[] = (currentDesign.functions ?? [])
+			.filter((f) => !this.addedFunctionIds.has(f.id))
+			.map((f) => {
+				const modified = this.modifiedFunctions.get(f.id);
+				return modified ? structuredClone(modified.before) : structuredClone(f);
+			});
+		for (const removed of this.removedFunctions.values()) {
+			restoredFunctions.push(structuredClone(removed));
+		}
+
+		const restoredTriggers: DesignTrigger[] = (currentDesign.triggers ?? [])
+			.filter((tr) => !this.addedTriggerIds.has(tr.id));
+		for (const removed of this.removedTriggers.values()) {
+			restoredTriggers.push(structuredClone(removed));
+		}
+
+		const restoredDesign: Design = {
+			...currentDesign,
+			tables: restoredTables,
+			relationships: restoredRelationships,
+			enumTypes: restoredEnumTypes,
+			functions: restoredFunctions,
+			triggers: restoredTriggers,
+			viewport: currentDesign.viewport,
+		};
+
+		return {
+			ok: true,
+			design: restoredDesign,
+			scenarios: restoredScenarios,
+			edgeFunctions: restoredEdgeFunctions,
+		};
+	}
+}
+
+export function checkDdlRelevantContent(
+	readDesign: Design | undefined,
+	currentDesign: Design,
+	statements: Node[],
+): void {
+	if (!readDesign) return;
+
+	const batchCreatedTables = new Set<string>();
+	const batchCreatedEnums = new Set<string>();
+	const batchCreatedFunctions = new Set<string>();
+
+	for (const item of statements) {
+		const stmt = item.stmt as Node;
+		if (!stmt) continue;
+		if (stmt.CreateStmt) {
+			const name = nameOf(stmt.CreateStmt.relation);
+			if (name) batchCreatedTables.add(name);
+		} else if (stmt.CreateEnumStmt) {
+			const parts = stmt.CreateEnumStmt.typeName ?? [];
+			const name = nodeName(parts[parts.length - 1]);
+			if (name) batchCreatedEnums.add(name);
+		} else if (stmt.CreateFunctionStmt) {
+			const parts = stmt.CreateFunctionStmt.funcname?.map(nodeName).filter(Boolean) ?? [];
+			const name = parts[parts.length - 1];
+			if (name) batchCreatedFunctions.add(name);
+		}
+	}
+
+	for (const item of statements) {
+		const stmt = item.stmt as Node;
+		if (!stmt) continue;
+
+		if (stmt.CreateStmt) {
+			const tableName = nameOf(stmt.CreateStmt.relation);
+			if (tableName) {
+				if (
+					!readDesign.tables.some((t) => t.name === tableName) &&
+					currentDesign.tables.some((t) => t.name === tableName)
+				) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" was created since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+			// Check referenced foreign key tables
+			for (const elt of stmt.CreateStmt.tableElts ?? []) {
+				const colDef = elt.ColumnDef;
+				if (colDef) {
+					for (const c of colDef.constraints ?? []) {
+						const con = c.Constraint;
+						if (con?.contype === "CONSTR_FOREIGN") {
+							const refTable = nameOf(con.pktable);
+							if (refTable && !batchCreatedTables.has(refTable)) {
+								const readRef = readDesign.tables.find((t) => t.name === refTable);
+								const curRef = currentDesign.tables.find((t) => t.name === refTable);
+								if (!readRef || !curRef || JSON.stringify(readRef) !== JSON.stringify(curRef)) {
+									throw new Error(
+										`Stale relevant content: referenced table "${refTable}" changed since last read. Re-read the project before proposing changes.`,
+									);
+								}
+							}
+						}
+					}
+					const typeNames = colDef.typeName?.names?.map(nodeName).filter(Boolean) ?? [];
+					const rawType = typeNames[typeNames.length - 1];
+					if (rawType && !batchCreatedEnums.has(rawType) && readDesign.enumTypes?.some((e) => e.name === rawType)) {
+						const readEnum = readDesign.enumTypes.find((e) => e.name === rawType);
+						const curEnum = currentDesign.enumTypes?.find((e) => e.name === rawType);
+						if (!readEnum || !curEnum || JSON.stringify(readEnum) !== JSON.stringify(curEnum)) {
+							throw new Error(
+								`Stale relevant content: referenced enum type "${rawType}" changed since last read. Re-read the project before proposing changes.`,
+							);
+						}
+					}
+				}
+				const con = elt.Constraint;
+				if (con?.contype === "CONSTR_FOREIGN") {
+					const refTable = nameOf(con.pktable);
+					if (refTable && !batchCreatedTables.has(refTable)) {
+						const readRef = readDesign.tables.find((t) => t.name === refTable);
+						const curRef = currentDesign.tables.find((t) => t.name === refTable);
+						if (!readRef || !curRef || JSON.stringify(readRef) !== JSON.stringify(curRef)) {
+							throw new Error(
+								`Stale relevant content: referenced table "${refTable}" changed since last read. Re-read the project before proposing changes.`,
+							);
+						}
+					}
+				}
+			}
+		} else if (stmt.AlterTableStmt) {
+			const tableName = nameOf(stmt.AlterTableStmt.relation);
+			if (tableName) {
+				const readTable = readDesign.tables.find((t) => t.name === tableName);
+				const curTable = currentDesign.tables.find((t) => t.name === tableName);
+				if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		} else if (stmt.DropStmt) {
+			for (const obj of stmt.DropStmt.objects ?? []) {
+				const tableName = nameOf(obj) ?? (obj.List?.items ? nodeName(obj.List.items[obj.List.items.length - 1]) : undefined);
+				if (tableName) {
+					const readTable = readDesign.tables.find((t) => t.name === tableName);
+					const curTable = currentDesign.tables.find((t) => t.name === tableName);
+					if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+						throw new Error(
+							`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+						);
+					}
+					// Check if any new relationships reference this table
+					if (curTable) {
+						const newRefs = currentDesign.relationships.filter(
+							(r) => r.referencedTableId === curTable.id && !readDesign.relationships.some((rr) => rr.id === r.id),
+						);
+						if (newRefs.length > 0) {
+							throw new Error(
+								`Stale relevant content: new references were added to table "${tableName}" since last read. Re-read the project before proposing changes.`,
+							);
+						}
+					}
+				}
+			}
+		} else if (stmt.IndexStmt) {
+			const tableName = nameOf(stmt.IndexStmt.relation);
+			if (tableName) {
+				const readTable = readDesign.tables.find((t) => t.name === tableName);
+				const curTable = currentDesign.tables.find((t) => t.name === tableName);
+				if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		} else if (stmt.CreateTrigStmt) {
+			const tableName = nameOf(stmt.CreateTrigStmt.relation);
+			if (tableName) {
+				const readTable = readDesign.tables.find((t) => t.name === tableName);
+				const curTable = currentDesign.tables.find((t) => t.name === tableName);
+				if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+			const fnParts = stmt.CreateTrigStmt.funcname?.map(nodeName).filter(Boolean) ?? [];
+			const fnName = fnParts[fnParts.length - 1];
+			if (fnName) {
+				const readFn = readDesign.functions?.find((f) => f.name === fnName);
+				const curFn = currentDesign.functions?.find((f) => f.name === fnName);
+				if (!readFn || !curFn || JSON.stringify(readFn) !== JSON.stringify(curFn)) {
+					throw new Error(
+						`Stale relevant content: trigger function "${fnName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		} else if (stmt.CreatePolicyStmt) {
+			const tableName = nameOf(stmt.CreatePolicyStmt.table);
+			if (tableName) {
+				const readTable = readDesign.tables.find((t) => t.name === tableName);
+				const curTable = currentDesign.tables.find((t) => t.name === tableName);
+				if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		} else if (stmt.CommentStmt) {
+			const names = stmt.CommentStmt.object?.List?.items?.map(nodeName).filter(Boolean) ?? [];
+			if (names.length >= 1) {
+				const tableName = names[0];
+				const readTable = readDesign.tables.find((t) => t.name === tableName);
+				const curTable = currentDesign.tables.find((t) => t.name === tableName);
+				if (!readTable || !curTable || JSON.stringify(readTable) !== JSON.stringify(curTable)) {
+					throw new Error(
+						`Stale relevant content: table "${tableName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		} else if (stmt.CreateFunctionStmt) {
+			const fnParts = stmt.CreateFunctionStmt.funcname?.map(nodeName).filter(Boolean) ?? [];
+			const fnName = fnParts[fnParts.length - 1];
+			if (fnName) {
+				const readFn = readDesign.functions?.find((f) => f.name === fnName);
+				const curFn = currentDesign.functions?.find((f) => f.name === fnName);
+				if (readFn && curFn && JSON.stringify(readFn) !== JSON.stringify(curFn)) {
+					throw new Error(
+						`Stale relevant content: function "${fnName}" changed since last read. Re-read the project before proposing changes.`,
+					);
+				}
+			}
+		}
+	}
+}
+
+export function checkCodeRelevantContent(
+	readState: { revision: number; design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] } | undefined,
+	currentState: WorkspaceState,
+	kind: "scenario" | "edge-function" | "function-body",
+	id: string | undefined,
+	action: "create" | "rename" | "remove" | "write" | "edit",
+	name?: string,
+): void {
+	if (!readState) return;
+
+	if (action === "create") {
+		if (name) {
+			const trimmed = name.trim();
+			if (kind === "scenario") {
+				if (!readState.scenarios.some((s) => s.name === trimmed) && currentState.scenarios.some((s) => s.name === trimmed)) {
+					throw new Error(`Stale relevant content: Scenario "${trimmed}" was created since last read. Re-read the project before creating it.`);
+				}
+			} else if (kind === "edge-function") {
+				if (!readState.edgeFunctions.some((e) => e.name === trimmed) && currentState.edgeFunctions.some((e) => e.name === trimmed)) {
+					throw new Error(`Stale relevant content: Edge function "${trimmed}" was created since last read. Re-read the project before creating it.`);
+				}
+			}
+		}
+		return;
+	}
+
+	if (!id) return;
+
+	if (kind === "scenario") {
+		const readItem = readState.scenarios.find((s) => s.id === id);
+		const curItem = currentState.scenarios.find((s) => s.id === id);
+		if (readItem && curItem && (readItem.source !== curItem.source || readItem.name !== curItem.name)) {
+			throw new Error(`Stale relevant content: Scenario "${curItem.name}" changed since last read. Re-read the project before writing code.`);
+		}
+		if (readItem && !curItem) {
+			throw new Error(`Stale relevant content: Scenario "${readItem.name}" was removed since last read. Re-read the project before writing code.`);
+		}
+	} else if (kind === "edge-function") {
+		const readItem = readState.edgeFunctions.find((e) => e.id === id);
+		const curItem = currentState.edgeFunctions.find((e) => e.id === id);
+		if (readItem && curItem && (readItem.source !== curItem.source || readItem.name !== curItem.name)) {
+			throw new Error(`Stale relevant content: Edge function "${curItem.name}" changed since last read. Re-read the project before writing code.`);
+		}
+		if (readItem && !curItem) {
+			throw new Error(`Stale relevant content: Edge function "${readItem.name}" was removed since last read. Re-read the project before writing code.`);
+		}
+	} else if (kind === "function-body") {
+		const readFn = readState.design.functions?.find((f) => f.id === id);
+		const curFn = currentState.design?.functions?.find((f) => f.id === id);
+		if (readFn && curFn && readFn.body !== curFn.body) {
+			throw new Error(`Stale relevant content: Function "${curFn.name}" changed since last read. Re-read the project before writing code.`);
+		}
+		if (readFn && !curFn) {
+			throw new Error(`Stale relevant content: Function "${readFn.name}" was removed since last read. Re-read the project before writing code.`);
+		}
+	}
+}
