@@ -8,6 +8,7 @@ import {
 	type SystemDesign,
 	type SystemViewName,
 } from "../shared/system-design";
+import type { PreparedProjectImport } from "../shared/project-portability";
 import type { Walkthrough } from "../shared/walkthrough";
 
 /**
@@ -60,6 +61,8 @@ export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	saveWalkthroughs(projectId: string, walkthroughs: Walkthrough[], save: ScenarioSave): void | Promise<void>;
 	listDesigns(projectId: string): DatabaseDesignSummary[];
 	loadDesign(designId: string): DatabaseDesignRecord | null;
+	/** Writes a whole imported Project in one transaction: all of it is stored, or none of it. */
+	importProject(prepared: PreparedProjectImport, savedAt: number): void;
 	close(): void;
 }
 
@@ -134,6 +137,8 @@ type ProjectRow = {
 
 export type OpenDesignStoreOptions = {
 	_testSimulateMigrationFailure?: boolean;
+	/** Fails an import after its Project and Designs are written, to prove nothing is kept. */
+	_testSimulateImportFailure?: boolean;
 };
 
 const SCHEMA = `
@@ -528,6 +533,45 @@ export function openDesignStore(
 		(projectId: string, walkthroughs: Walkthrough[], save: ScenarioSave) => writeWalkthroughs(projectId, walkthroughs, save),
 	);
 
+	const insertWalkthroughDocument = database.query(
+		`INSERT INTO walkthrough_documents (project_id, document, revision, updated_at) VALUES (?, ?, 1, ?)`,
+	);
+	const insertScenarioDocument = database.query(
+		`INSERT INTO scenario_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, 1, ?)`,
+	);
+	const insertEdgeFunctionDocument = database.query(
+		`INSERT INTO edge_function_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, 1, ?)`,
+	);
+	const importProjectTransaction = database.transaction((prepared: PreparedProjectImport, savedAt: number) => {
+		const projectId = prepared.project.id;
+		insertProject.run(projectId, prepared.project.name, savedAt, savedAt);
+		for (const design of prepared.designs) {
+			insertDesign.run(design.id, projectId, design.name, 1, 1, JSON.stringify(design.design), savedAt);
+		}
+		if (options?._testSimulateImportFailure) {
+			throw new Error("Simulated import failure");
+		}
+		for (const design of prepared.designs) {
+			design.scenarios.forEach((scenario, position) =>
+				insertScenario.run(projectId, design.id, scenario.id, position, scenario.name, scenario.source),
+			);
+			insertScenarioDocument.run(projectId, design.id, savedAt);
+			design.edgeFunctions.forEach((edgeFunction, position) =>
+				insertEdgeFunction.run(projectId, design.id, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+			);
+			insertEdgeFunctionDocument.run(projectId, design.id, savedAt);
+		}
+		insertSystemDesign.run(
+			projectId,
+			JSON.stringify(prepared.systemDesign),
+			1,
+			1,
+			prepared.activeView,
+			savedAt,
+		);
+		insertWalkthroughDocument.run(projectId, JSON.stringify(prepared.walkthroughs), savedAt);
+	});
+
 
 	return {
 		listProjects() {
@@ -604,6 +648,9 @@ export function openDesignStore(
 				documentRevision: row.document_revision,
 				savedAt: row.updated_at,
 			};
+		},
+		importProject(prepared, savedAt) {
+			importProjectTransaction(prepared, savedAt);
 		},
 		loadScenarios(projectId, designId) {
 			const owner = selectDesignByIdAndProject.get(designId, projectId);

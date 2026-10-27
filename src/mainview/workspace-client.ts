@@ -59,6 +59,7 @@ import type {
 	SqlPreviewExportRequest,
 } from "../shared/rpc";
 import type { SchemaCodeSnapshot } from "../shared/schema-code";
+import type { ProjectTransferResult } from "../shared/project-portability";
 import { errorMessage } from "../shared/error-message";
 import type { Scenario } from "../shared/design";
 
@@ -74,6 +75,8 @@ const pendingSqlExports = new Map<
 	(result: SqlPreviewExportResult) => void
 >();
 
+const pendingProjectTransfers = new Map<string, (result: ProjectTransferResult) => void>();
+
 const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 	// Autosave plus sandbox validation can take longer than the 1s default.
 	maxRequestTime: 60_000,
@@ -87,6 +90,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 				const resolve = pendingSqlExports.get(requestId);
 				if (!resolve) return;
 				pendingSqlExports.delete(requestId);
+				resolve(result);
+			},
+			projectTransferCompleted({ requestId, result }) {
+				const resolve = pendingProjectTransfers.get(requestId);
+				if (!resolve) return;
+				pendingProjectTransfers.delete(requestId);
 				resolve(result);
 			},
 			assistantEvent({ conversationId, event }) {
@@ -377,6 +386,20 @@ export const workspaceClient = {
 			await rpc.request.beginSqlPreviewExport(request);
 		return chooseExportDirectory(requestId, request.preview.revision);
 	},
+	/** Writes the open Project to a new file in a folder the designer picks. */
+	async exportProject(): Promise<ProjectTransferResult> {
+		const { requestId } = await rpc.request.beginProjectExport({});
+		return awaitProjectTransfer(requestId, async () => {
+			await rpc.send.chooseProjectExportDirectory({ requestId });
+		});
+	},
+	/** Creates a new Project from a file the designer picks, and opens it. */
+	async importProject(): Promise<ProjectTransferResult> {
+		const { requestId } = await rpc.request.beginProjectImport({});
+		return awaitProjectTransfer(requestId, async () => {
+			await rpc.send.chooseProjectImportFile({ requestId });
+		});
+	},
 	copySchemaCode(snapshot: SchemaCodeSnapshot): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySchemaCode({ snapshot });
 	},
@@ -481,6 +504,19 @@ export const workspaceClient = {
 		return () => listeners.delete(listener);
 	},
 };
+
+/** Starts a picker for a begun Project transfer and resolves with its outcome, or a failure if the picker cannot start. */
+async function awaitProjectTransfer(requestId: string, startPicker: () => Promise<void>): Promise<ProjectTransferResult> {
+	const { promise, resolve } = Promise.withResolvers<ProjectTransferResult>();
+	pendingProjectTransfers.set(requestId, resolve);
+	try {
+		await startPicker();
+	} catch (cause) {
+		pendingProjectTransfers.delete(requestId);
+		return { status: "failed", error: errorMessage(cause) };
+	}
+	return promise;
+}
 
 /** Starts the native folder picker for a begun export and awaits its result. */
 async function chooseExportDirectory(

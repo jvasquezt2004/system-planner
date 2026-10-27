@@ -29,7 +29,7 @@ describe("client and traffic catalog registry", () => {
 			"proxy",
 		]);
 		expect(COMPONENT_CATALOG.map((entry) => entry.kind)).toEqual([...CATALOG_KINDS]);
-		expect(CATALOG_KINDS).toHaveLength(23);
+		expect(CATALOG_KINDS).toHaveLength(28);
 		expect(new Set(CATALOG_KINDS).size).toBe(CATALOG_KINDS.length);
 		for (const entry of COMPONENT_CATALOG) {
 			expect(entry.artwork).toBe(entry.kind);
@@ -65,6 +65,11 @@ describe("client and traffic catalog registry", () => {
 			"Topic",
 			"Event bus",
 			"Event stream",
+			"Identity provider",
+			"Secrets store",
+			"Configuration",
+			"Observability",
+			"Custom",
 		]);
 		expect(componentKindLabel("database")).toBe("Database");
 		expect(componentKindLabel("generic")).toBe("Component");

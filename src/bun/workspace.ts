@@ -155,6 +155,11 @@ import {
 	type UpdateSystemServiceAction,
 } from "../shared/system-design";
 import {
+	createProjectExportDocument,
+	prepareProjectImport,
+	type ProjectExportDocument,
+} from "../shared/project-portability";
+import {
 	acceptWalkthroughStepRedirection,
 	addWalkthrough,
 	addWalkthroughBlock,
@@ -224,6 +229,17 @@ export interface DesignWorkspace {
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
+	/**
+	 * The portable document for the open Project, built from its saved content.
+	 * Provider credentials and Assistant conversations are never included.
+	 */
+	exportProject(): Promise<ProjectExportDocument>;
+	/**
+	 * Validates a portable document, creates a new Project from it in one
+	 * transaction, and opens that Project. A malformed document is refused with
+	 * an error naming the problem, and nothing is written.
+	 */
+	importProject(document: unknown): Promise<WorkspaceState>;
 	/** Adds an independent database design to the open Project and opens it. */
 	createDesign(action: CreateDesignAction): Promise<WorkspaceState>;
 	/** Makes another design of the open Project the active one. */
@@ -1411,6 +1427,45 @@ export async function createDesignWorkspace(
 				const record = store.loadProject(action.projectId);
 				if (!record) throw new Error("That project could not be found.");
 				return activateDesign(record.project, record.designId, { openingProject: true });
+			});
+		},
+		exportProject() {
+			return runTask(async () => {
+				const project = state.project;
+				if (!project || activeProjectId === null) throw new Error("Open a project before exporting it.");
+				const projectId = project.id;
+				const systemRecord = store.loadSystemDesign(projectId);
+				const walkthroughRecord = store.loadWalkthroughs(projectId);
+				const designs = store.listDesigns(projectId).map((summary) => {
+					const record = store.loadDesign(summary.id);
+					if (!record) throw new Error(`Design "${summary.name || summary.id}" could not be read.`);
+					return {
+						id: summary.id,
+						name: summary.name,
+						design: record.design,
+						scenarios: store.loadScenarios(projectId, summary.id).scenarios,
+						edgeFunctions: store.loadEdgeFunctions(projectId, summary.id).edgeFunctions,
+					};
+				});
+				return createProjectExportDocument({
+					projectName: project.name,
+					activeDesignId: activeDesignId!,
+					activeView: systemRecord?.lastView ?? "system",
+					systemDesign: systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign(),
+					walkthroughs: walkthroughRecord ? normalizeWalkthroughs(walkthroughRecord.document) : [],
+					designs,
+				});
+			});
+		},
+		importProject(document) {
+			return runTask(async () => {
+				// Everything is validated and given fresh identities before the first write.
+				const prepared = prepareProjectImport(document, { createId, normalizeDesign: normalizeImportedDesign });
+				store.importProject(prepared, now());
+				setState({ ...state, projects: store.listProjects() });
+				return activateDesign({ id: prepared.project.id, name: prepared.project.name }, prepared.activeDesignId, {
+					openingProject: true,
+				});
 			});
 		},
 		createDesign(action) {
@@ -3089,6 +3144,18 @@ function functionTableDependencies(body: string, tables: DesignTable[], types: s
 		const relation = `(?:"${escapedName}"|${escapedName})`;
 		return new RegExp(`\\b(?:FROM|JOIN|UPDATE|INTO|REFERENCES)\\s+(?:public\\s*\\.\\s*)?${relation}(?![\\w$])`, "i").test(body);
 	}).map((table) => table.id);
+}
+
+/**
+ * An imported design gets the checks a designer's own edits get: the stored
+ * shape, then its Functions and triggers, which must reference what they name.
+ */
+function normalizeImportedDesign(value: unknown): Design {
+	const design = normalizeDesign(value as Design);
+	const withFunctions = design.functions ? { ...design, functions: normalizeFunctions(design.functions, design) } : design;
+	return withFunctions.triggers
+		? { ...withFunctions, triggers: normalizeTriggers(withFunctions.triggers, withFunctions) }
+		: withFunctions;
 }
 
 function normalizeDesign(design: Design): Design {

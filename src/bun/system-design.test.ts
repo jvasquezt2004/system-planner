@@ -223,6 +223,35 @@ describe("System design workspace", () => {
 		expect(workspace.getState().systemDesign?.connections.map((c) => c.id)).toEqual(["ab"]);
 	});
 
+	test("supporting and Custom Components save their kind, annotations, and chosen icon, and Undo and Redo move a changed icon", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Access" });
+		await first.addSystemComponent({ id: "idp", kind: "identity_provider", x: 0, y: 0 });
+		await first.updateSystemComponent({ componentId: "idp", changes: { properties: [{ key: "Issuer", value: "https://login.example.com" }] } });
+		await first.addSystemComponent({ id: "badge", kind: "custom", name: "Badge", icon: "gear", x: 240, y: 0 });
+		await first.updateSystemComponent({ componentId: "badge", changes: { icon: "cloud" } });
+
+		const designId = first.getState().activeDesignId!;
+		await first.undo({ designId });
+		expect(first.getState().systemDesign?.components.find((component) => component.id === "badge")?.icon).toBe("gear");
+		await first.redo({ designId });
+		expect(first.getState().systemDesign?.components.find((component) => component.id === "badge")?.icon).toBe("cloud");
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		expect(reopened.getState().systemDesign?.components).toEqual([
+			expect.objectContaining({
+				id: "idp",
+				kind: "identity_provider",
+				name: "Identity provider",
+				properties: [{ key: "Issuer", value: "https://login.example.com" }],
+			}),
+			expect.objectContaining({ id: "badge", kind: "custom", name: "Badge", icon: "cloud" }),
+		]);
+	});
+
 	test("Assistant-attributed System design edits form one turn that Undo reverts together", async () => {
 		const workspace = await openWorkspace(databasePathForTest());
 		await workspace.createProject({ name: "Chat" });

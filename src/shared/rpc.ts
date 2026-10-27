@@ -48,6 +48,7 @@ import type {
 	WorkspaceState,
 } from "./design";
 import type { SchemaCodeSnapshot } from "./schema-code";
+import type { ProjectTransferResult } from "./project-portability";
 import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
@@ -123,6 +124,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { projectId: string };
 				response: WorkspaceState;
 			};
+			/** Starts the native folder picker for a Project export; the outcome arrives as projectTransferCompleted. */
+			beginProjectExport: { params: Record<string, never>; response: { requestId: string } };
+			/** Starts the native file picker for a Project import; the outcome arrives as projectTransferCompleted. */
+			beginProjectImport: { params: Record<string, never>; response: { requestId: string } };
 			createDesign: { params: CreateDesignAction; response: WorkspaceState };
 			openDesign: { params: OpenDesignAction; response: WorkspaceState };
 			renameDesign: { params: RenameDesignAction; response: WorkspaceState };
@@ -295,6 +300,8 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		};
 		messages: {
 			chooseSqlPreviewExportDirectory: { requestId: string };
+			chooseProjectExportDirectory: { requestId: string };
+			chooseProjectImportFile: { requestId: string };
 			assistantScenarioRunCompleted: { requestId: string; designId?: string; run: ScenarioRun | null; error?: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
@@ -305,6 +312,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		messages: {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
+			projectTransferCompleted: { requestId: string; result: ProjectTransferResult };
 			assistantScenarioRunRequest: { requestId: string; projectId: string; designId: string; scenario: Scenario };
 			assistantScenarioRunCancel: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };

@@ -1,5 +1,5 @@
 import type { CanvasPoint, CanvasViewport } from "./design";
-import { CATALOG_KINDS, componentDefaultNameStem, type CatalogKind } from "./component-catalog";
+import { CATALOG_KINDS, CUSTOM_ICONS, componentDefaultNameStem, type CatalogKind, type CustomIcon } from "./component-catalog";
 
 /**
  * The authoritative System design of one Project: Services that own Components,
@@ -44,6 +44,8 @@ export type SystemComponent = {
 	 * conceptual.
 	 */
 	designId?: string;
+	/** The icon or shape a Custom Component shows. Only a Custom Component stores one; omitted means the rectangle. */
+	icon?: CustomIcon;
 };
 
 export type SystemServiceSize = {
@@ -182,11 +184,12 @@ export type SystemComponentInput = {
 	properties?: SystemComponentProperty[];
 	position: CanvasPoint;
 	designId?: string;
+	icon?: CustomIcon;
 	/** The owning Service. Omitted or null places the Component at system scope. */
 	serviceId?: string | null;
 };
 
-export type SystemComponentChanges = Partial<Pick<SystemComponent, "kind" | "name" | "technology" | "description" | "properties" | "designId" | "serviceId">>;
+export type SystemComponentChanges = Partial<Pick<SystemComponent, "kind" | "name" | "technology" | "description" | "properties" | "designId" | "serviceId" | "icon">>;
 
 export type SystemServiceInput = {
 	id: string;
@@ -638,8 +641,10 @@ export function addSystemComponent(design: SystemDesign, input: SystemComponentI
 		...optionalText("technology", input.technology),
 		...optionalText("description", input.description),
 		...optionalDesignId(input.designId),
+		...optionalIcon(input.icon),
 	};
 	requireLinkAllowed(component);
+	requireIconAllowed(component);
 	return { ...design, components: [...design.components, component] };
 }
 
@@ -656,10 +661,17 @@ export function updateSystemComponent(design: SystemDesign, componentId: string,
 		Object.assign(next, optionalDesignId(changes.designId));
 	}
 	if ("serviceId" in changes) next.serviceId = requireOwnerService(design, changes.serviceId);
+	if ("icon" in changes) {
+		delete next.icon;
+		Object.assign(next, optionalIcon(changes.icon));
+	}
 	if (changes.kind !== undefined && changes.kind !== "database" && current.designId !== undefined) {
 		throw new Error("Unlink this Component from its database design before changing its kind.");
 	}
+	// A chosen icon belongs to a Custom Component, so leaving that kind drops it.
+	if (changes.kind !== undefined && changes.kind !== "custom") delete next.icon;
 	requireLinkAllowed(next);
+	requireIconAllowed(next);
 	if (sameJson(current, next)) return design;
 	return replaceComponent(design, next);
 }
@@ -837,8 +849,10 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			...optionalText("technology", typeof item.technology === "string" ? item.technology : undefined),
 			...optionalText("description", typeof item.description === "string" ? item.description : undefined),
 			...optionalDesignId(typeof item.designId === "string" ? item.designId : undefined),
+			...optionalIcon(item.icon),
 		};
 		requireLinkAllowed(component);
+		requireIconAllowed(component);
 		components.push(component);
 	}
 
@@ -1100,6 +1114,21 @@ function setOptionalText(target: Record<string, unknown>, key: "technology" | "d
 
 function optionalDesignId(designId: string | undefined) {
 	return typeof designId === "string" && designId.length > 0 ? { designId } : {};
+}
+
+function optionalIcon(icon: unknown): { icon?: CustomIcon } {
+	if (icon === undefined || icon === null) return {};
+	if (typeof icon !== "string" || !CUSTOM_ICONS.includes(icon as CustomIcon)) {
+		throw new Error(`Unsupported Component icon "${String(icon)}".`);
+	}
+	return { icon: icon as CustomIcon };
+}
+
+/** Only a Custom component may choose an icon or shape. */
+function requireIconAllowed(component: SystemComponent) {
+	if (component.icon !== undefined && component.kind !== "custom") {
+		throw new Error("Only a Custom component can choose an icon or shape.");
+	}
 }
 
 /** Only a Database component may name a database Design. */

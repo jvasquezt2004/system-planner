@@ -9,6 +9,7 @@ import { createDesignWorkspace } from "./workspace";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 import type { SqlPreviewActions } from "./sql-preview";
+import type { ProjectTransferActions } from "./project-transfer";
 import type { ScenarioRun, WorkspaceState } from "../shared/design";
 
 describe("RPC request handlers", () => {
@@ -26,6 +27,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		const expectations: ScenarioRun["expectations"] = [
@@ -96,6 +99,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.addTable({ designId: "d-1", name: "Users", position: { x: 100, y: 200 } });
@@ -160,6 +165,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.addSystemGroup({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
@@ -199,6 +206,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.addSystemService({ id: "orders", name: "Orders", x: 40, y: 40 });
@@ -239,6 +248,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.linkSystemDatabase({ componentId: "replica", designId: "design-orders" });
@@ -273,6 +284,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.createWalkthrough({ id: "w-1", name: "Cached read" });
@@ -330,6 +343,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await handlers.undo({ designId: "d-1" });
@@ -380,6 +395,8 @@ describe("RPC request handlers", () => {
 			assistant: {} as AssistantRuntime,
 			sqlPreviewActions,
 			pendingSqlExports: pendingSqlExports as never,
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		const stalePreview = { status: "current", revision: 1, draftRevision: 1, sql: "CREATE TABLE a ();", designId: "old-design" } as const;
@@ -426,6 +443,8 @@ describe("RPC request handlers", () => {
 			assistant: fakeAssistant,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		const result = await handlers.sendAssistantMessage({
@@ -459,6 +478,8 @@ describe("RPC request handlers", () => {
 			assistant: fakeAssistant,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await expect(
@@ -499,6 +520,8 @@ describe("RPC request handlers", () => {
 			assistant: fakeAssistant,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		expect(await handlers.continueAssistantTurn({ conversationId: "conv-1" })).toEqual({ started: true });
@@ -522,6 +545,8 @@ describe("RPC request handlers", () => {
 			assistant: failingAssistant,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		await expect(failingHandlers.continueAssistantTurn({ conversationId: "conv-1" })).rejects.toThrow("This Assistant turn is not waiting to continue.");
@@ -572,6 +597,8 @@ describe("RPC request handlers", () => {
 			assistant: runtime,
 			sqlPreviewActions: {} as SqlPreviewActions,
 			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
 		});
 
 		// 1. sendAssistantMessage must resolve promptly before the model stream gate opens
@@ -614,5 +641,38 @@ describe("RPC request handlers", () => {
 		runtime.close();
 		await workspace.close();
 		rmSync(directory, { recursive: true, force: true });
+	});
+});
+
+describe("Project transfer request handlers", () => {
+	test("exporting needs an open Project, and an import starts its picker without one", async () => {
+		const calls: string[] = [];
+		const pendingProjectTransfers = new Map<string, () => Promise<unknown>>();
+		const fakeWorkspace = { getState: () => ({ project: null }) } as unknown as DesignWorkspace;
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+			projectTransfers: {
+				exportProject: async () => {
+					calls.push("export");
+					return { status: "cancelled" as const };
+				},
+				importProject: async () => {
+					calls.push("import");
+					return { status: "cancelled" as const };
+				},
+			},
+			pendingProjectTransfers: pendingProjectTransfers as never,
+		});
+
+		await expect(handlers.beginProjectExport()).rejects.toThrow("Open a project before exporting it.");
+		expect(pendingProjectTransfers.size).toBe(0);
+
+		const { requestId } = await handlers.beginProjectImport();
+		expect(pendingProjectTransfers.has(requestId)).toBe(true);
+		expect(await pendingProjectTransfers.get(requestId)!()).toEqual({ status: "cancelled" });
+		expect(calls).toEqual(["import"]);
 	});
 });

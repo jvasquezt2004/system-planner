@@ -60,12 +60,14 @@ and animation implementation remain open.
 ## Catalog registry
 
 `src/shared/component-catalog.ts` is the common registry for the client, traffic,
-compute, data, and messaging kinds: each entry gives the kind, label, family, optional descriptor
+compute, data, messaging, supporting, and Custom kinds: each entry gives the kind, label, family, optional descriptor
 keys stored in the Component's properties, operation presets (such as
 "Cache hit" or "Rejected"), artwork name, and reaction preset. The editor
 palette, the Inspector, playback, and later Assistant tools and exporters read
 kinds from this list. Descriptor values are optional annotations; no entry
-requires a vendor or configures executable network behavior. A Serverless
+requires a vendor or configures executable network behavior. A Custom
+Component may store one icon or shape from `CUSTOM_ICONS` (rectangle by
+default); no other kind stores one. A Serverless
 handler is a descriptive Component only: it never runs or links an Edge function
 (a database Design's server handler), and a Scheduled job's schedule is text
 that playback does not execute.

@@ -41,13 +41,44 @@ export const MESSAGING_KINDS = ["queue", "topic", "event_bus", "event_stream"] a
 
 export type MessagingKind = (typeof MESSAGING_KINDS)[number];
 
+export const SUPPORTING_KINDS = ["identity_provider", "secrets_store", "configuration", "observability"] as const;
+
+export type SupportingKind = (typeof SUPPORTING_KINDS)[number];
+
+export const CUSTOM_KINDS = ["custom"] as const;
+
+/**
+ * The icons or shapes a Custom Component can show. A Custom Component with no
+ * chosen icon draws the rectangle. Only a Custom Component stores one.
+ */
+export const CUSTOM_ICONS = ["rectangle", "hexagon", "diamond", "cylinder", "cloud", "document", "gear"] as const;
+
+export type CustomIcon = (typeof CUSTOM_ICONS)[number];
+
+export const CUSTOM_ICON_LABELS: Record<CustomIcon, string> = {
+	rectangle: "Rectangle",
+	hexagon: "Hexagon",
+	diamond: "Diamond",
+	cylinder: "Cylinder",
+	cloud: "Cloud",
+	document: "Document",
+	gear: "Gear",
+};
+
 /** Every kind registered in the catalog, in palette order. */
-export const CATALOG_KINDS = [...CLIENT_TRAFFIC_KINDS, ...COMPUTE_KINDS, ...DATA_KINDS, ...MESSAGING_KINDS] as const;
+export const CATALOG_KINDS = [
+	...CLIENT_TRAFFIC_KINDS,
+	...COMPUTE_KINDS,
+	...DATA_KINDS,
+	...MESSAGING_KINDS,
+	...SUPPORTING_KINDS,
+	...CUSTOM_KINDS,
+] as const;
 
 export type CatalogKind = (typeof CATALOG_KINDS)[number];
 
 /** A catalog kind's family, used to group the palette. */
-export type ComponentFamily = "clients" | "traffic" | "compute" | "data" | "messaging";
+export type ComponentFamily = "clients" | "traffic" | "compute" | "data" | "messaging" | "supporting" | "custom";
 
 export const COMPONENT_FAMILY_LABELS: Record<ComponentFamily, string> = {
 	clients: "Actors and clients",
@@ -55,6 +86,8 @@ export const COMPONENT_FAMILY_LABELS: Record<ComponentFamily, string> = {
 	compute: "Compute",
 	data: "Data",
 	messaging: "Messaging",
+	supporting: "Supporting capabilities",
+	custom: "Custom",
 };
 
 /**
@@ -438,6 +471,81 @@ export const COMPONENT_CATALOG: readonly ComponentCatalogEntry[] = [
 			{ id: "replay", label: "Replay" },
 		],
 		reactions: { kind: "event_stream", labels: labels("Appends", "Appended", "Consuming", "Consumed", "Failed") },
+	},
+	{
+		kind: "identity_provider",
+		label: "Identity provider",
+		family: "supporting",
+		artwork: "identity_provider",
+		defaultName: "Identity provider",
+		descriptors: [
+			{ key: "Authentication method", placeholder: "e.g. OpenID Connect, SAML" },
+			{ key: "Issuer", placeholder: "e.g. https://login.example.com" },
+		],
+		operations: [
+			{ id: "authenticate", label: "Authenticate" },
+			{ id: "issue-token", label: "Issue token" },
+			{ id: "deny", label: "Deny" },
+		],
+		reactions: { kind: "identity_provider", labels: labels("Requests", "Checks", "Authenticating", "Authenticated", "Denied") },
+	},
+	{
+		kind: "secrets_store",
+		label: "Secrets store",
+		family: "supporting",
+		artwork: "secrets_store",
+		defaultName: "Secrets store",
+		descriptors: [
+			{ key: "Secret references", placeholder: "e.g. payments/api-key, db/password" },
+			{ key: "Consuming roles", placeholder: "e.g. Orders API, Worker" },
+		],
+		operations: [
+			{ id: "retrieve", label: "Retrieve" },
+			{ id: "deny", label: "Deny" },
+		],
+		reactions: { kind: "secrets_store", labels: labels("Requests", "Request", "Retrieving", "Retrieved", "Denied") },
+	},
+	{
+		kind: "configuration",
+		label: "Configuration",
+		family: "supporting",
+		artwork: "configuration",
+		defaultName: "Configuration",
+		descriptors: [
+			{ key: "Configuration scope", placeholder: "e.g. Production, per service" },
+			{ key: "Consumers", placeholder: "e.g. Orders API, Worker" },
+		],
+		operations: [
+			{ id: "fetch", label: "Fetch" },
+			{ id: "deliver-update", label: "Deliver update" },
+		],
+		reactions: { kind: "configuration", labels: labels("Fetches", "Receives", "Loading", "Delivered", "Failed") },
+	},
+	{
+		kind: "observability",
+		label: "Observability",
+		family: "supporting",
+		artwork: "observability",
+		defaultName: "Observability",
+		descriptors: [
+			{ key: "Signals", placeholder: "e.g. Logs, metrics, traces" },
+			{ key: "Alert purpose", placeholder: "e.g. Page on-call when checkout fails" },
+		],
+		operations: [
+			{ id: "record", label: "Record" },
+			{ id: "alert", label: "Alert" },
+		],
+		reactions: { kind: "observability", labels: labels("Sends", "Receives", "Recording", "Recorded", "Failed") },
+	},
+	{
+		kind: "custom",
+		label: "Custom",
+		family: "custom",
+		artwork: "custom",
+		defaultName: "Custom",
+		descriptors: [{ key: "Purpose", placeholder: "e.g. Loyalty points calculator" }],
+		operations: [],
+		reactions: { kind: "custom", labels: labels("Sends", "Receives", "Processing", "Succeeded", "Failed") },
 	},
 ];
 

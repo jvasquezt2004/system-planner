@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, Network, PenTool, Plus, Redo2, ScrollText, Undo2, Workflow, X, Zap, Server } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, FolderInput, FolderOutput, Network, PenTool, Plus, Redo2, ScrollText, Undo2, Workflow, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
+import type { ProjectTransferResult } from "../shared/project-portability";
 import {
 	getLastAppliedSandbox,
 	getSqlPreviewValidationStatus,
@@ -92,6 +93,8 @@ export function App({
 	});
 	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
+	/** The outcome of the last Project export or import, shown until dismissed. */
+	const [projectNotice, setProjectNotice] = useState<string | null>(null);
 	const [designDialog, setDesignDialog] = useState<DesignDialogState | null>(null);
 	const [pendingRemoval, setPendingRemoval] = useState<{
 		target: RemovalTarget;
@@ -614,6 +617,26 @@ export function App({
 		[run],
 	);
 
+	/**
+	 * Runs a Project export or import. An import's new Project arrives as a
+	 * workspace update, so only its outcome is reported here.
+	 */
+	const transferProject = useCallback(async (transfer: () => Promise<ProjectTransferResult>) => {
+		setBusy(true);
+		setError(null);
+		setProjectNotice(null);
+		try {
+			const result = await transfer();
+			if (result.status === "exported") setProjectNotice(`Exported “${result.name}” to ${result.path}.`);
+			else if (result.status === "imported") setProjectNotice(`Imported “${result.name}” as a new project.`);
+			else if (result.status === "failed") setError(result.error);
+		} catch (cause) {
+			setError(errorMessage(cause));
+		} finally {
+			setBusy(false);
+		}
+	}, []);
+
 	const selectedTable =
 		state?.design?.tables.find((table) => table.id === selectedTableId) ?? null;
 	const inspectorRelationships =
@@ -644,6 +667,8 @@ export function App({
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
+				onExportProject={() => void transferProject(() => workspaceClient.exportProject())}
+				onImportProject={() => void transferProject(() => workspaceClient.importProject())}
 				onOpenDesign={(id) => run(() => workspaceClient.openDesign(id))}
 				onNewDesign={() => setDesignDialog({ mode: "create" })}
 				onRenameDesign={() => {
@@ -659,6 +684,24 @@ export function App({
 					void applyLayout(() => workspaceClient.setActiveView(next === "system" ? "system" : "database"));
 				}}
 			/>
+
+			{projectNotice && (
+				<div
+					role="status"
+					className="flex shrink-0 items-start gap-3 border-b border-rule bg-paper-tint px-6 py-2 text-[12.5px] text-ink-2"
+				>
+					<span className="kicker pt-px">Project</span>
+					<p className="min-w-0 flex-1 break-all">{projectNotice}</p>
+					<button
+						type="button"
+						aria-label="Dismiss project notice"
+						onClick={() => setProjectNotice(null)}
+						className="rounded-sm p-0.5 hover:bg-paper-raised"
+					>
+						<X className="size-3.5" />
+					</button>
+				</div>
+			)}
 
 			{error && (
 				<div
@@ -971,6 +1014,8 @@ export function Masthead({
 	busy,
 	onOpenProject,
 	onNewProject,
+	onExportProject,
+	onImportProject,
 	onOpenDesign,
 	onNewDesign,
 	onRenameDesign,
@@ -985,6 +1030,8 @@ export function Masthead({
 	busy: boolean;
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
+	onExportProject: () => void;
+	onImportProject: () => void;
 	onOpenDesign: (designId: string) => void;
 	onNewDesign: () => void;
 	onRenameDesign: () => void;
@@ -1052,6 +1099,14 @@ export function Masthead({
 						<DropdownMenuItem onSelect={onNewProject}>
 							<Plus />
 							New project…
+						</DropdownMenuItem>
+						<DropdownMenuItem onSelect={onImportProject} disabled={busy}>
+							<FolderInput />
+							Import project…
+						</DropdownMenuItem>
+						<DropdownMenuItem onSelect={onExportProject} disabled={!project || busy}>
+							<FolderOutput />
+							Export project…
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>
