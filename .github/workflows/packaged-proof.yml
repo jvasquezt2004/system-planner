@@ -1,0 +1,95 @@
+name: Packaged Proof Verification
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: ["agent/**", "main"]
+  workflow_dispatch:
+
+jobs:
+  linux-proof:
+    name: Linux Packaged Proof (WebKitGTK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-1 librsvg2-bin libwebkit2gtk-4.1-dev libgtk-3-dev xvfb
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Prepare Electrobun devkit
+        run: bun x electrobun prepare
+
+      - name: Run unit & invariant tests
+        run: bun test src/shared/architecture-proof.test.ts src/mainview/architecture-proof/svg-export.test.ts
+
+      - name: Typecheck
+        run: bun x tsc --noEmit
+
+      - name: Build frontend views
+        run: bun x vite build
+
+      - name: Build packaged Linux app
+        run: bun x electrobun build --env=stable
+
+      - name: Verify packaged proof
+        run: bun scripts/verify-packaged-proof.ts
+      - name: Upload Linux WebView proof report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-proof-linux
+          path: build/webview-proof-report.json
+          if-no-files-found: warn
+
+
+  windows-proof:
+    name: Windows Packaged Proof (WebView2)
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Prepare Electrobun devkit
+        run: bun x electrobun prepare
+
+      - name: Run unit & invariant tests
+        run: bun test src/shared/architecture-proof.test.ts src/mainview/architecture-proof/svg-export.test.ts
+
+      - name: Typecheck
+        run: bun x tsc --noEmit
+
+      - name: Build frontend views
+        run: bun x vite build
+
+      - name: Build packaged Windows app
+        run: bun x electrobun build --env=stable
+
+      - name: Verify packaged proof
+        run: bun scripts/verify-packaged-proof.ts
+      - name: Upload Windows WebView proof report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: packaged-proof-windows
+          path: build/webview-proof-report.json
+          if-no-files-found: warn

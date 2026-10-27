@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, Network, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
@@ -62,11 +62,12 @@ import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
 import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
+import { ArchitectureProofView } from "./architecture-proof";
 
 type RunAllOperation = { projectId: string; designId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
+type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers" | "architecture";
 type AssistantCodeTarget = { kind: "scenario" | "edge-function" | "function-body"; id: string };
 
 export function App({
@@ -83,7 +84,7 @@ export function App({
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
 	const [relating, setRelating] = useState(false);
-	const [view, setView] = useState<WorkspaceView>("canvas");
+	const [view, setView] = useState<WorkspaceView>(() => new URLSearchParams(window.location.search).has("proofReportUrl") ? "architecture" : "canvas");
 	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
 	const [pendingRemoval, setPendingRemoval] = useState<{
@@ -605,6 +606,9 @@ export function App({
 			? relationshipsForTable(state.design, selectedTable.id)
 			: [];
 
+	if (new URLSearchParams(window.location.search).has("proofReportUrl")) {
+		return <main className="h-screen"><ArchitectureProofView /></main>;
+	}
 	if (!state) {
 		return (
 			<main className="flex h-screen items-center justify-center bg-paper">
@@ -769,6 +773,9 @@ export function App({
 									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source, designId: state.activeDesignId! }))
 								}
 							/>
+						)}
+						{view === "architecture" && (
+							<ArchitectureProofView key={state.project.id} />
 						)}
 						</div>
 					{state.project && (
@@ -1058,7 +1065,8 @@ export function Masthead({
 							next === "scenarios" ||
 							next === "edge-functions" ||
 							next === "functions" ||
-							next === "triggers"
+							next === "triggers" ||
+							next === "architecture"
 						)
 							onViewChange(next);
 					}}
@@ -1123,6 +1131,16 @@ export function Masthead({
 					>
 						<Zap className="size-3.5 shrink-0" />
 						<span className="hidden xl:inline">Triggers</span>
+					</ToggleGroupItem>
+					<ToggleGroupItem
+						value="architecture"
+						data-testid="view-canvas-proof"
+						title="Canvas Proof (Technical Fixture)"
+						aria-label="Canvas Proof (Technical Fixture)"
+						className="h-7 px-2.5 xl:px-3 text-pencil font-medium"
+					>
+						<Network className="size-3.5 shrink-0 text-pencil" />
+						<span className="hidden xl:inline">Canvas Proof</span>
 					</ToggleGroupItem>
 				</ToggleGroup>
 			</div>

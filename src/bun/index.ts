@@ -1,7 +1,8 @@
 import { registerBunOAuthFlows } from "@earendil-works/pi-ai/bun-oauth";
 import { BrowserWindow, Updater, Utils } from "electrobun/main";
 import { defineElectrobunRPC } from "electrobun/rpc";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { mkdirSync, writeFileSync } from "node:fs";
 import type { ScenarioRun, SqlPreviewExportResult } from "../shared/design";
 import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
@@ -152,12 +153,50 @@ void assistantPromise.then((assistant) => {
 		rpc.send.assistantOAuthEvent({ providerId, event });
 	});
 });
+const proofReportPath = process.env.SCHEMA_DESIGNER_PROOF_REPORT_PATH;
+let proofServer: ReturnType<typeof Bun.serve> | undefined;
+let proofReportUrl: string | undefined;
+if (proofReportPath) {
+	proofServer = Bun.serve({
+		hostname: "127.0.0.1",
+		port: 0,
+		async fetch(request) {
+			const headers = {
+				"access-control-allow-origin": "*",
+				"access-control-allow-methods": "POST, OPTIONS",
+				"access-control-allow-headers": "content-type",
+			};
+			if (request.method === "OPTIONS") return new Response(null, { headers });
+			if (request.method !== "POST" || new URL(request.url).pathname !== "/report") {
+				return new Response("Not found", { status: 404, headers });
+			}
+			try {
+				const report = await request.json() as { allPassed?: boolean };
+				mkdirSync(dirname(proofReportPath), { recursive: true });
+				writeFileSync(proofReportPath, `${JSON.stringify(report, null, 2)}\n`);
+				const passed = report.allPassed === true;
+				setTimeout(() => {
+					proofServer?.stop();
+					process.exit(passed ? 0 : 1);
+				}, 100);
+				return Response.json({ accepted: true, allPassed: passed }, { headers });
+			} catch (error) {
+				console.error("[webview-proof] failed to save report", error);
+				return new Response(String(error), { status: 500, headers });
+			}
+		},
+	});
+	proofReportUrl = `http://127.0.0.1:${proofServer.port}/report`;
+}
 
 const url = await getMainViewUrl();
+const windowUrl = proofReportUrl
+	? `${url}${url.includes("?") ? "&" : "?"}proofReportUrl=${encodeURIComponent(proofReportUrl)}`
+	: url;
 
 const mainWindow = new BrowserWindow({
 	title: "Schema Designer",
-	url,
+	url: windowUrl,
 	frame: {
 		width: 1280,
 		height: 800,
