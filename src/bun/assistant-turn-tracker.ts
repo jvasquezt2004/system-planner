@@ -10,6 +10,7 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import type { StoredScenario } from "./store";
+import type { SystemComponent, SystemConnection, SystemContent } from "../shared/system-design";
 
 type Node = Record<string, any>;
 const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
@@ -21,6 +22,8 @@ export type RestorationResult =
 			design: Design;
 			scenarios: StoredScenario[];
 			edgeFunctions: EdgeFunction[];
+			/** Present when the turn changed Components or Connections. */
+			systemDesign?: { components: SystemComponent[]; connections: SystemConnection[] };
 	  }
 	| {
 			ok: false;
@@ -73,9 +76,41 @@ export class TurnTracker {
 	readonly modifiedEdgeFunctions = new Map<string, { before: EdgeFunction; after: EdgeFunction }>();
 	readonly addedEdgeFunctionsSnapshot = new Map<string, EdgeFunction>();
 
+	/**
+	 * System design Components and Connections the turn changed, keyed by kind and
+	 * id. `original` is the value before the turn (null when the turn added it);
+	 * `last` is the value the turn left (null when the turn removed it).
+	 */
+	readonly systemChanges = new Map<string, {
+		kind: "component" | "connection";
+		id: string;
+		original: SystemComponent | SystemConnection | null;
+		last: SystemComponent | SystemConnection | null;
+	}>();
+
 	constructor(turnId: string, projectId: string) {
 		this.turnId = turnId;
 		this.projectId = projectId;
+	}
+
+	/** Records one Assistant edit to the System design; net-zero changes leave no trace. */
+	recordSystemMutation(before: SystemContent, after: SystemContent) {
+		const compare = (kind: "component" | "connection", previous: (SystemComponent | SystemConnection)[], next: (SystemComponent | SystemConnection)[]) => {
+			const ids = new Set([...previous.map((item) => item.id), ...next.map((item) => item.id)]);
+			for (const id of ids) {
+				const prior = previous.find((item) => item.id === id) ?? null;
+				const latest = next.find((item) => item.id === id) ?? null;
+				if (JSON.stringify(prior) === JSON.stringify(latest)) continue;
+				const key = `${kind}:${id}`;
+				const existing = this.systemChanges.get(key);
+				const entry = existing ?? { kind, id, original: structuredClone(prior), last: null };
+				entry.last = structuredClone(latest);
+				if (JSON.stringify(entry.original) === JSON.stringify(entry.last)) this.systemChanges.delete(key);
+				else this.systemChanges.set(key, entry);
+			}
+		};
+		compare("component", before.components, after.components);
+		compare("connection", before.connections, after.connections);
 	}
 
 	recordDesignMutation(before: Design, after: Design) {
@@ -342,6 +377,7 @@ export class TurnTracker {
 
 	hasChanges(): boolean {
 		return (
+			this.systemChanges.size > 0 ||
 			this.addedTableIds.size > 0 ||
 			this.removedTables.size > 0 ||
 			this.modifiedTables.size > 0 ||
@@ -803,12 +839,45 @@ export class TurnTracker {
 			viewport: currentDesign.viewport,
 		};
 
+		const systemDesign = this.restoreSystemDesign(currentState);
+		if (typeof systemDesign === "string") return { ok: false, conflicts: [...conflicts, systemDesign] };
 		return {
 			ok: true,
 			design: restoredDesign,
 			scenarios: restoredScenarios,
 			edgeFunctions: restoredEdgeFunctions,
+			...(systemDesign ? { systemDesign } : {}),
 		};
+	}
+
+	/**
+	 * Restores the System design items the turn changed. A later manual edit to
+	 * one of them is a conflict, reported by name; untouched items are left alone.
+	 */
+	private restoreSystemDesign(
+		currentState: WorkspaceState,
+	): { components: SystemComponent[]; connections: SystemConnection[] } | string | null {
+		if (this.systemChanges.size === 0) return null;
+		const components = structuredClone(currentState.systemDesign?.components ?? []);
+		const connections = structuredClone(currentState.systemDesign?.connections ?? []);
+		const conflicts: string[] = [];
+		for (const change of this.systemChanges.values()) {
+			const current = change.kind === "component"
+				? components.find((item) => item.id === change.id) ?? null
+				: connections.find((item) => item.id === change.id) ?? null;
+			if (JSON.stringify(current) !== JSON.stringify(change.last)) {
+				conflicts.push(`${describeSystemChange(change)} was modified after this Assistant turn`);
+			}
+		}
+		if (conflicts.length > 0) return conflicts.join("; ");
+		for (const change of this.systemChanges.values()) {
+			if (change.kind === "component") {
+				restoreSystemItem(components, change.id, change.original as SystemComponent | null);
+			} else {
+				restoreSystemItem(connections, change.id, change.original as SystemConnection | null);
+			}
+		}
+		return { components, connections };
 	}
 }
 
@@ -1109,4 +1178,22 @@ export function checkCodeRelevantContent(
 			throw new Error(`Stale relevant content: Function "${readFn.name}" was removed since last read. Re-read the project before writing code.`);
 		}
 	}
+}
+
+/** Puts an item back to its original value, or removes it when the turn added it. */
+function restoreSystemItem<T extends { id: string }>(list: T[], id: string, original: T | null) {
+	const index = list.findIndex((item) => item.id === id);
+	if (original === null) {
+		if (index >= 0) list.splice(index, 1);
+	} else if (index >= 0) {
+		list[index] = structuredClone(original);
+	} else {
+		list.push(structuredClone(original));
+	}
+}
+
+function describeSystemChange(change: { kind: "component" | "connection"; original: SystemComponent | SystemConnection | null; last: SystemComponent | SystemConnection | null }): string {
+	const item = change.last ?? change.original;
+	if (change.kind === "component") return `Component "${(item as SystemComponent).name}"`;
+	return `Connection "${(item as SystemConnection).label}"`;
 }

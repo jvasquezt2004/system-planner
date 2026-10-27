@@ -87,6 +87,34 @@ import {
 	stepProjectHistory,
 	type ProjectHistory,
 } from "./project-history";
+import {
+	addSystemComponent,
+	addSystemConnection,
+	createEmptySystemDesign,
+	describeSystemComponentRemoval,
+	findSystemComponent,
+	findSystemConnection,
+	moveSystemComponent,
+	normalizeSystemDesign,
+	removeSystemComponent,
+	removeSystemConnection,
+	systemDesignContent,
+	type SystemContent,
+	updateSystemComponent,
+	updateSystemConnection,
+	type AddSystemComponentAction,
+	type AddSystemConnectionAction,
+	type MoveSystemComponentAction,
+	type RemoveSystemComponentAction,
+	type RemoveSystemConnectionAction,
+	type SetActiveViewAction,
+	type SetSystemViewportAction,
+	type SystemAttribution,
+	type SystemComponentRemovalPlan,
+	type SystemDesign,
+	type UpdateSystemComponentAction,
+	type UpdateSystemConnectionAction,
+} from "../shared/system-design";
 
 export type DesignWorkspaceOptions = {
 	databasePath: string;
@@ -144,6 +172,8 @@ export interface DesignWorkspace {
 			design: Design;
 			scenarios: Scenario[];
 			edgeFunctions: EdgeFunction[];
+			/** Present when the turn changed the System design; restores all of its items together. */
+			systemDesign?: SystemContent;
 		} | {
 			ok: false;
 			conflicts: string[];
@@ -172,6 +202,20 @@ export interface DesignWorkspace {
 	/** Throws unless `designId` names the open project's active Design. */
 	requireActiveDesign(designId: string | undefined): void;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
+	/** System design edits. Each one is a single Project-history action. */
+	addSystemComponent(action: AddSystemComponentAction): Promise<WorkspaceState>;
+	updateSystemComponent(action: UpdateSystemComponentAction): Promise<WorkspaceState>;
+	moveSystemComponent(action: MoveSystemComponentAction): Promise<WorkspaceState>;
+	removeSystemComponent(action: RemoveSystemComponentAction): Promise<WorkspaceState>;
+	/** Lists the Connections that removing the Component would delete, before anything changes. */
+	describeSystemComponentRemoval(componentId: string): SystemComponentRemovalPlan;
+	addSystemConnection(action: AddSystemConnectionAction): Promise<WorkspaceState>;
+	updateSystemConnection(action: UpdateSystemConnectionAction): Promise<WorkspaceState>;
+	removeSystemConnection(action: RemoveSystemConnectionAction): Promise<WorkspaceState>;
+	/** Saves the overview's pan and zoom. Navigation stays outside Project history. */
+	setSystemViewport(action: SetSystemViewportAction): Promise<WorkspaceState>;
+	/** Records the view to reopen for this Project. Navigation stays outside Project history. */
+	setActiveView(action: SetActiveViewAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
 
@@ -186,6 +230,8 @@ type ProjectContent = {
 	design: Design;
 	scenarios: Scenario[];
 	edgeFunctions: EdgeFunction[];
+	/** Components and Connections only; the overview viewport is navigation. */
+	systemDesign: SystemContent;
 };
 
 /** How one content change is named, grouped, and attributed in the history. */
@@ -216,8 +262,14 @@ export async function createDesignWorkspace(
 
 	const assistantMutationListeners = new Set<(turnId: string, before: Design, after: Design) => void>();
 
-	function projectContent(design: Design, scenarios: Scenario[], edgeFunctions: EdgeFunction[]): ProjectContent {
-		return structuredClone({ design: { ...design, viewport: DEFAULT_VIEWPORT }, scenarios, edgeFunctions });
+	function projectContent(
+		design: Design,
+		scenarios: Scenario[],
+		edgeFunctions: EdgeFunction[],
+		systemDesign: SystemDesign | null = state.systemDesign ?? null,
+	): ProjectContent {
+		const system = systemDesign ? systemDesignContent(systemDesign) : { components: [], connections: [] };
+		return structuredClone({ design: { ...design, viewport: DEFAULT_VIEWPORT }, scenarios, edgeFunctions, systemDesign: system });
 	}
 
 	/** The single entry point for recording content changes into the open Project's history. */
@@ -258,6 +310,9 @@ export async function createDesignWorkspace(
 		edgeFunctionSave: { status: "idle" },
 		scenarioRuns: {},
 		undoRedo: { canUndo: false, canRedo: false },
+		systemDesign: null,
+		systemSave: { status: "idle" },
+		activeView: "system",
 	};
 	let activeProjectId: string | null = null;
 	let activeDesignId: string | null = null;
@@ -265,6 +320,8 @@ export async function createDesignWorkspace(
 	let documentRevision = 0;
 	let scenarioRevision = 0;
 	let edgeFunctionRevision = 0;
+	/** Orders System design document writes; separate from the database Design's document revision. */
+	let systemDocumentRevision = 0;
 	let edgeFunctionProjectGeneration = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
@@ -778,14 +835,21 @@ export async function createDesignWorkspace(
 			!== JSON.stringify({ ...design, viewport: DEFAULT_VIEWPORT });
 		const scenariosChanged = JSON.stringify(current.scenarios) !== JSON.stringify(target.scenarios);
 		const edgeFunctionsChanged = JSON.stringify(current.edgeFunctions) !== JSON.stringify(target.edgeFunctions);
-		if (!designChanged && !scenariosChanged && !edgeFunctionsChanged) return current;
+		const currentSystem = current.systemDesign ? systemDesignContent(current.systemDesign) : null;
+		const systemChanged = currentSystem !== null && JSON.stringify(currentSystem) !== JSON.stringify(target.systemDesign);
+		if (!designChanged && !scenariosChanged && !edgeFunctionsChanged && !systemChanged) return current;
+		const nextSystemDesign: SystemDesign | null = systemChanged && current.systemDesign
+			? { ...structuredClone(target.systemDesign), viewport: current.systemDesign.viewport }
+			: current.systemDesign ?? null;
 
 		const schemaChanged = designChanged && structural;
 		const previousRevisions = {
 			documentRevision,
 			scenarioRevision,
 			edgeFunctionRevision,
+			systemDocumentRevision,
 		};
+		const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
 		const savedAt = now();
 		const nextRevision = schemaChanged ? current.revision + 1 : current.revision;
 		const nextDocumentRevision = designChanged ? ++documentRevision : documentRevision;
@@ -798,6 +862,10 @@ export async function createDesignWorkspace(
 			revision: nextRevision,
 			scenarios: scenariosChanged ? structuredClone(target.scenarios) : current.scenarios,
 			edgeFunctions: edgeFunctionsChanged ? structuredClone(target.edgeFunctions) : current.edgeFunctions,
+			systemDesign: nextSystemDesign,
+			systemSave: systemChanged && nextSystemDesign
+				? { status: "saving", revision: nextSystemDocumentRevision, designId }
+				: current.systemSave,
 			save: designChanged ? { status: "saving", revision: nextRevision, designId } : current.save,
 			scenarioSave: scenariosChanged
 				? { status: "saving", revision: nextScenarioRevision, designId }
@@ -833,17 +901,22 @@ export async function createDesignWorkspace(
 				...(edgeFunctionsChanged
 					? { edgeFunctions: { edgeFunctions: target.edgeFunctions, save: { revision: nextEdgeFunctionRevision, savedAt } } }
 					: {}),
+				...(systemChanged && nextSystemDesign
+					? { systemDesign: { systemDesign: nextSystemDesign, save: { revision: nextSystemDocumentRevision, documentRevision: nextSystemDocumentRevision, savedAt } } }
+					: {}),
 			});
 		} catch (error) {
 			documentRevision = previousRevisions.documentRevision;
 			scenarioRevision = previousRevisions.scenarioRevision;
 			edgeFunctionRevision = previousRevisions.edgeFunctionRevision;
+			systemDocumentRevision = previousRevisions.systemDocumentRevision;
 			setState(current);
 			throw error;
 		}
 		const latest = documentRevision === nextDocumentRevision
 			&& scenarioRevision === nextScenarioRevision
-			&& edgeFunctionRevision === nextEdgeFunctionRevision;
+			&& edgeFunctionRevision === nextEdgeFunctionRevision
+			&& systemDocumentRevision === nextSystemDocumentRevision;
 		if (latest && state.project?.id === projectId) {
 			setState({
 				...state,
@@ -851,6 +924,7 @@ export async function createDesignWorkspace(
 				...(designChanged ? { save: { status: "saved", revision: nextRevision, savedAt, designId } } : {}),
 				...(scenariosChanged ? { scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt, designId } } : {}),
 				...(edgeFunctionsChanged ? { edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt, designId } } : {}),
+				...(systemChanged ? { systemSave: { status: "saved", revision: nextSystemDocumentRevision, savedAt, designId } } : {}),
 			});
 		}
 		if (schemaChanged) await schedulePreview(projectId, nextRevision, design, designId);
@@ -868,6 +942,60 @@ export async function createDesignWorkspace(
 			throw new Error(`Target database design '${targetDesignId}' is not the active design.`);
 		}
 		return { projectId: activeProjectId, design: state.design, designId: activeDesignId };
+	}
+
+	/** System design edits need an open Project, not a particular database Design. */
+	function requireOpenProject(): { projectId: string; designId: string } {
+		if (!state.project || !state.systemDesign || activeProjectId === null || activeDesignId === null) {
+			throw new Error("Open a project before editing its System design.");
+		}
+		return { projectId: activeProjectId, designId: activeDesignId };
+	}
+
+	/**
+	 * Applies one System design change: validate it, record it as one history
+	 * action, then save the whole document. A failed save keeps the draft and
+	 * shows the error; the next successful save writes the whole document.
+	 */
+	async function applySystemDesignChange(
+		mutate: (design: SystemDesign) => { next: SystemDesign; action: HistoryAction },
+	): Promise<WorkspaceState> {
+		const { projectId, designId } = requireOpenProject();
+		const current = state.systemDesign!;
+		const { next, action } = mutate(current);
+		if (JSON.stringify(systemDesignContent(next)) === JSON.stringify(systemDesignContent(current))) return state;
+		recordContentChange(
+			action,
+			projectContent(state.design!, state.scenarios, state.edgeFunctions, current),
+			projectContent(state.design!, state.scenarios, state.edgeFunctions, next),
+			false,
+		);
+		return persistSystemDesign(projectId, designId, next);
+	}
+
+	function persistSystemDesign(projectId: string, designId: string, next: SystemDesign): WorkspaceState {
+		const revision = ++systemDocumentRevision;
+		const savedAt = now();
+		setState({ ...state, systemDesign: next, systemSave: { status: "saving", revision, designId } });
+		try {
+			store.saveSystemDesign(projectId, next, { revision, documentRevision: revision, savedAt });
+			if (activeProjectId === projectId && systemDocumentRevision === revision) {
+				setState({ ...state, systemSave: { status: "saved", revision, savedAt, designId } });
+			}
+		} catch (error) {
+			if (activeProjectId === projectId && systemDocumentRevision === revision) {
+				setState({
+					...state,
+					systemSave: {
+						status: "failed",
+						revision,
+						error: error instanceof Error ? error.message : String(error),
+						designId,
+					},
+				});
+			}
+		}
+		return state;
 	}
 
 	const workspace: DesignWorkspace = {
@@ -909,6 +1037,7 @@ export async function createDesignWorkspace(
 				edgeFunctionProjectGeneration += 1;
 				documentRevision = revision;
 				scenarioRevision = 0;
+				systemDocumentRevision = revision;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -925,6 +1054,9 @@ export async function createDesignWorkspace(
 					edgeFunctionSave: { status: "idle" },
 					scenarioRuns: {},
 					undoRedo: { canUndo: false, canRedo: false },
+					systemDesign: createEmptySystemDesign(),
+					systemSave: { status: "saved", revision, savedAt, designId },
+					activeView: "system",
 				});
 				return state;
 			});
@@ -946,6 +1078,9 @@ export async function createDesignWorkspace(
 				const edgeFunctionDocument = store.loadEdgeFunctions(record.project.id, designId);
 				edgeFunctionRevision = Math.max(edgeFunctionRevision, edgeFunctionDocument.revision);
 				scenarioRevision = scenarioDocument.revision;
+				const systemRecord = store.loadSystemDesign(record.project.id);
+				const systemDesign = systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign();
+				systemDocumentRevision = systemRecord?.documentRevision ?? 0;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -983,6 +1118,11 @@ export async function createDesignWorkspace(
 									savedAt: edgeFunctionDocument.savedAt,
 									designId,
 								},
+					systemDesign,
+					systemSave: systemRecord
+						? { status: "saved", revision: systemRecord.revision, savedAt: systemRecord.savedAt, designId }
+						: { status: "idle" },
+					activeView: systemRecord?.lastView ?? "system",
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
@@ -1323,6 +1463,7 @@ export async function createDesignWorkspace(
 				let targetDesign = input.design;
 				let targetScenarios = input.scenarios;
 				let targetEdgeFunctions = input.edgeFunctions;
+				let targetSystem: SystemContent | undefined;
 
 				if (input.validateAndRestore) {
 					const result = input.validateAndRestore(current);
@@ -1332,6 +1473,7 @@ export async function createDesignWorkspace(
 					targetDesign = result.design;
 					targetScenarios = result.scenarios;
 					targetEdgeFunctions = result.edgeFunctions;
+					targetSystem = result.systemDesign;
 				}
 
 				if (!targetDesign || !targetScenarios || !targetEdgeFunctions) {
@@ -1344,17 +1486,24 @@ export async function createDesignWorkspace(
 					if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
 				}
 				const restored = normalizeDesign({ ...targetDesign, viewport: current.design.viewport });
+				const systemChanged = current.systemDesign !== null && current.systemDesign !== undefined
+					&& targetSystem !== undefined
+					&& JSON.stringify(systemDesignContent(current.systemDesign)) !== JSON.stringify(targetSystem);
+				const nextSystem: SystemDesign | null = systemChanged && current.systemDesign
+					? { ...structuredClone(targetSystem!), viewport: current.systemDesign.viewport }
+					: current.systemDesign ?? null;
 				const nextRevision = state.revision + 1;
 				const nextDocumentRevision = ++documentRevision;
 				const nextScenarioRevision = ++scenarioRevision;
 				const nextEdgeFunctionRevision = ++edgeFunctionRevision;
+				const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
 				const savedAt = now();
 				const history = histories.get(input.projectId);
 				const originalHistory = history ? structuredClone(history) : undefined;
 				recordContentChange(
 					{ name: REVERT_ASSISTANT_TURN_ACTION_NAME },
 					projectContent(current.design, current.scenarios, current.edgeFunctions),
-					projectContent(restored, targetScenarios, targetEdgeFunctions),
+					projectContent(restored, targetScenarios, targetEdgeFunctions, nextSystem),
 					true,
 				);
 				const lastApplied = getLastAppliedSandbox(state.sandbox);
@@ -1364,6 +1513,8 @@ export async function createDesignWorkspace(
 					revision: nextRevision,
 					scenarios: targetScenarios,
 					edgeFunctions: targetEdgeFunctions,
+					systemDesign: nextSystem,
+					...(systemChanged ? { systemSave: { status: "saving" as const, revision: nextSystemDocumentRevision, designId } } : {}),
 					save: { status: "saving", revision: nextRevision, designId },
 					scenarioSave: { status: "saving", revision: nextScenarioRevision, designId },
 					edgeFunctionSave: { status: "saving", revision: nextEdgeFunctionRevision, designId },
@@ -1381,16 +1532,21 @@ export async function createDesignWorkspace(
 					design: { design: restored, save: { revision: nextRevision, documentRevision: nextDocumentRevision, savedAt } },
 					scenarios: { scenarios: targetScenarios, save: { revision: nextScenarioRevision, savedAt } },
 					edgeFunctions: { edgeFunctions: targetEdgeFunctions, save: { revision: nextEdgeFunctionRevision, savedAt } },
+					...(systemChanged && nextSystem
+						? { systemDesign: { systemDesign: nextSystem, save: { revision: nextSystemDocumentRevision, documentRevision: nextSystemDocumentRevision, savedAt } } }
+						: {}),
 				};
 				try {
 					await store.saveProjectArtifacts(initialSave);
 				} catch (error) {
 					const concurrentEdit = state.revision !== nextRevision || documentRevision !== nextDocumentRevision
-						|| scenarioRevision !== nextScenarioRevision || edgeFunctionRevision !== nextEdgeFunctionRevision;
+						|| scenarioRevision !== nextScenarioRevision || edgeFunctionRevision !== nextEdgeFunctionRevision
+						|| systemDocumentRevision !== nextSystemDocumentRevision;
 					if (!concurrentEdit) {
 						documentRevision = nextDocumentRevision - 1;
 						scenarioRevision = nextScenarioRevision - 1;
 						edgeFunctionRevision = nextEdgeFunctionRevision - 1;
+						if (systemChanged) systemDocumentRevision = nextSystemDocumentRevision - 1;
 						if (originalHistory) histories.set(input.projectId, originalHistory);
 						else histories.delete(input.projectId);
 						setState(current);
@@ -1403,18 +1559,23 @@ export async function createDesignWorkspace(
 							design: { design: currentState.design!, save: { revision: currentState.revision, documentRevision: correctiveDocumentRevision, savedAt: now() } },
 							scenarios: { scenarios: currentState.scenarios, save: { revision: ++scenarioRevision, savedAt: now() } },
 							edgeFunctions: { edgeFunctions: currentState.edgeFunctions, save: { revision: ++edgeFunctionRevision, savedAt: now() } },
+							...(currentState.systemDesign
+								? { systemDesign: { systemDesign: currentState.systemDesign, save: { revision: ++systemDocumentRevision, documentRevision: systemDocumentRevision, savedAt: now() } } }
+								: {}),
 						});
 					}
 					throw error;
 				}
 				if (state.revision === nextRevision && documentRevision === nextDocumentRevision
-					&& scenarioRevision === nextScenarioRevision && edgeFunctionRevision === nextEdgeFunctionRevision) {
+					&& scenarioRevision === nextScenarioRevision && edgeFunctionRevision === nextEdgeFunctionRevision
+					&& systemDocumentRevision === nextSystemDocumentRevision) {
 					setState({
 						...state,
 						projects: store.listProjects(),
 						save: { status: "saved", revision: nextRevision, savedAt, designId },
 						scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt, designId },
 						edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt, designId },
+						...(systemChanged ? { systemSave: { status: "saved" as const, revision: nextSystemDocumentRevision, savedAt, designId } } : {}),
 					});
 					schedulePreview(input.projectId, nextRevision, restored, designId);
 				} else {
@@ -1422,12 +1583,16 @@ export async function createDesignWorkspace(
 					const correctiveDocumentRevision = ++documentRevision;
 					const correctiveScenarioRevision = ++scenarioRevision;
 					const correctiveEdgeFunctionRevision = ++edgeFunctionRevision;
+					const correctiveSystemRevision = latest.systemDesign ? ++systemDocumentRevision : systemDocumentRevision;
 					await store.saveProjectArtifacts({
 						projectId: input.projectId,
 						designId,
 						design: { design: latest.design!, save: { revision: latest.revision, documentRevision: correctiveDocumentRevision, savedAt: now() } },
 						scenarios: { scenarios: latest.scenarios, save: { revision: correctiveScenarioRevision, savedAt: now() } },
 						edgeFunctions: { edgeFunctions: latest.edgeFunctions, save: { revision: correctiveEdgeFunctionRevision, savedAt: now() } },
+						...(latest.systemDesign
+							? { systemDesign: { systemDesign: latest.systemDesign, save: { revision: correctiveSystemRevision, documentRevision: correctiveSystemRevision, savedAt: now() } } }
+							: {}),
 					});
 				}
 				return state;
@@ -1939,6 +2104,118 @@ export async function createDesignWorkspace(
 				);
 			});
 		},
+		addSystemComponent(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applySystemDesignChange(
+					(design) => {
+						const next = addSystemComponent(design, { ...action, id, position: { x: action.x, y: action.y } });
+						const added = findSystemComponent(next, id)!;
+						return { next, action: attributed(action, { name: `Add component “${added.name}”` }) };
+					},
+				);
+			});
+		},
+		updateSystemComponent(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const before = findSystemComponent(design, action.componentId);
+					const next = updateSystemComponent(design, action.componentId, action.changes);
+					const after = findSystemComponent(next, action.componentId);
+					if (!after || !before) throw new Error("That Component could not be found.");
+					const renamed = after.name !== before.name;
+					return {
+						next,
+						action: attributed(action, renamed
+							? { name: `Rename component to “${after.name}”` }
+							: { name: `Edit component “${after.name}”`, coalesceKey: `system-component:${action.componentId}` }),
+					};
+				});
+			});
+		},
+		moveSystemComponent(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = moveSystemComponent(design, action.componentId, { x: action.x, y: action.y });
+					const moved = findSystemComponent(next, action.componentId);
+					if (!moved) throw new Error("That Component could not be found.");
+					return { next, action: attributed(action, { name: `Move “${moved.name}”` }) };
+				});
+			});
+		},
+		removeSystemComponent(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const removed = findSystemComponent(design, action.componentId);
+					if (!removed) throw new Error("That Component could not be found.");
+					return {
+						next: removeSystemComponent(design, action.componentId),
+						action: attributed(action, { name: `Remove component “${removed.name}”` }),
+					};
+				});
+			});
+		},
+		describeSystemComponentRemoval(componentId) {
+			requireOpenProject();
+			return describeSystemComponentRemoval(state.systemDesign!, componentId);
+		},
+		addSystemConnection(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applySystemDesignChange((design) => {
+					const next = addSystemConnection(design, { ...action, id });
+					const added = findSystemConnection(next, id)!;
+					return { next, action: attributed(action, { name: `Add connection “${added.label}”` }) };
+				});
+			});
+		},
+		updateSystemConnection(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = updateSystemConnection(design, action.connectionId, action.changes);
+					const after = findSystemConnection(next, action.connectionId);
+					if (!after) throw new Error("That Connection could not be found.");
+					return {
+						next,
+						action: attributed(action, { name: `Edit connection “${after.label}”`, coalesceKey: `system-connection:${action.connectionId}` }),
+					};
+				});
+			});
+		},
+		removeSystemConnection(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const removed = findSystemConnection(design, action.connectionId);
+					if (!removed) throw new Error("That Connection could not be found.");
+					return {
+						next: removeSystemConnection(design, action.connectionId),
+						action: attributed(action, { name: `Remove connection “${removed.label}”` }),
+					};
+				});
+			});
+		},
+		setSystemViewport(action) {
+			return runTask(async () => {
+				const { projectId, designId } = requireOpenProject();
+				const current = state.systemDesign!;
+				const viewport = {
+					x: requireNumber(action.x, "Canvas position"),
+					y: requireNumber(action.y, "Canvas position"),
+					zoom: clamp(requireNumber(action.zoom, "Canvas zoom"), CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM),
+				};
+				if (sameViewport(current.viewport, viewport)) return state;
+				return persistSystemDesign(projectId, designId, { ...current, viewport });
+			});
+		},
+		setActiveView(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenProject();
+				if (state.activeView === action.view) return state;
+				store.saveLastView(projectId, action.view);
+				setState({ ...state, activeView: action.view });
+				return state;
+			});
+		},
 		async close() {
 			invalidatePreviewWork();
 			await disposeActiveScenarioRun();
@@ -1955,6 +2232,15 @@ export async function createDesignWorkspace(
 	}
 
 	return workspace;
+}
+
+/**
+ * Names a System design change. An Assistant-attributed change joins its turn's
+ * single history action, which carries the Assistant turn name.
+ */
+function attributed(attribution: SystemAttribution, action: HistoryAction): HistoryAction {
+	if (attribution.assistantTurnId === undefined) return action;
+	return { name: ASSISTANT_TURN_ACTION_NAME, assistantTurnId: attribution.assistantTurnId };
 }
 
 /** Names a Function edit for the Project history, with typing in one body grouped. */

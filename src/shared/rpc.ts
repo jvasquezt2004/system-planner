@@ -45,6 +45,18 @@ import type {
 	WorkspaceState,
 } from "./design";
 import type { SchemaCodeSnapshot } from "./schema-code";
+import type {
+	AddSystemComponentAction,
+	AddSystemConnectionAction,
+	MoveSystemComponentAction,
+	RemoveSystemComponentAction,
+	RemoveSystemConnectionAction,
+	SetActiveViewAction,
+	SetSystemViewportAction,
+	SystemComponentRemovalPlan,
+	UpdateSystemComponentAction,
+	UpdateSystemConnectionAction,
+} from "./system-design";
 export type SqlPreviewExportRequest = Readonly<{
 	preview: DisplayedSqlPreview;
 	fileName: string;
@@ -148,6 +160,16 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: SetViewportAction;
 				response: WorkspaceState;
 			};
+			addSystemComponent: { params: AddSystemComponentAction; response: WorkspaceState };
+			updateSystemComponent: { params: UpdateSystemComponentAction; response: WorkspaceState };
+			moveSystemComponent: { params: MoveSystemComponentAction; response: WorkspaceState };
+			removeSystemComponent: { params: RemoveSystemComponentAction; response: WorkspaceState };
+			describeSystemComponentRemoval: { params: { componentId: string }; response: SystemComponentRemovalPlan };
+			addSystemConnection: { params: AddSystemConnectionAction; response: WorkspaceState };
+			updateSystemConnection: { params: UpdateSystemConnectionAction; response: WorkspaceState };
+			removeSystemConnection: { params: RemoveSystemConnectionAction; response: WorkspaceState };
+			setSystemViewport: { params: SetSystemViewportAction; response: WorkspaceState };
+			setActiveView: { params: SetActiveViewAction; response: WorkspaceState };
 			copySqlPreview: {
 				params: { preview: DisplayedSqlPreview };
 				response: SqlPreviewCopyResult;
