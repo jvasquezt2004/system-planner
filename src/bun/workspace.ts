@@ -1594,7 +1594,7 @@ export async function createDesignWorkspace(
 				const nextEdgeFunctionRevision = ++edgeFunctionRevision;
 				const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
 				const savedAt = now();
-				const history = histories.get(input.projectId);
+				const history = histories.get(designId);
 				const originalHistory = history ? structuredClone(history) : undefined;
 				recordContentChange(
 					{ name: REVERT_ASSISTANT_TURN_ACTION_NAME },
@@ -1643,8 +1643,8 @@ export async function createDesignWorkspace(
 						scenarioRevision = nextScenarioRevision - 1;
 						edgeFunctionRevision = nextEdgeFunctionRevision - 1;
 						if (systemChanged) systemDocumentRevision = nextSystemDocumentRevision - 1;
-						if (originalHistory) histories.set(input.projectId, originalHistory);
-						else histories.delete(input.projectId);
+						if (originalHistory) histories.set(designId, originalHistory);
+						else histories.delete(designId);
 						setState(current);
 					} else {
 						const currentState = state;
