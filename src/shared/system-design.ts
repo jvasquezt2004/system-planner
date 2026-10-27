@@ -1,4 +1,5 @@
 import type { CanvasPoint, CanvasViewport } from "./design";
+import { CATALOG_KINDS, componentDefaultNameStem, type CatalogKind } from "./component-catalog";
 
 /**
  * The authoritative System design of one Project: Services that own Components,
@@ -15,7 +16,8 @@ import type { CanvasPoint, CanvasViewport } from "./design";
  * never changes ownership.
  */
 
-export type SystemComponentKind = "generic" | "database";
+/** "generic" and "database" are the original kinds; the rest are registered in the catalog. */
+export type SystemComponentKind = "generic" | "database" | CatalogKind;
 
 export type SystemComponentProperty = {
 	key: string;
@@ -110,7 +112,7 @@ export type SystemContent = Omit<SystemDesign, "viewport" | "collapsedServiceIds
 
 export type SystemViewName = "system" | "database";
 
-export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database"];
+export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database", ...CATALOG_KINDS];
 export const DEFAULT_SYSTEM_CONNECTION_LABEL = "Interaction";
 export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;
@@ -235,6 +237,11 @@ export type SystemServiceRemovalPlan = {
 	releasedComponents: { id: string; name: string }[];
 	/** Connections whose actual endpoint is this Service. Removing the Service deletes them. */
 	connections: AffectedSystemConnection[];
+};
+
+export type SystemConnectionRemovalPlan = {
+	connectionId: string;
+	connectionLabel: string;
 };
 
 export function findSystemService(design: SystemDesign, serviceId: string): SystemService | undefined {
@@ -585,6 +592,11 @@ export function describeSystemComponentRemoval(design: SystemDesign, componentId
 	};
 }
 
+export function describeSystemConnectionRemoval(design: SystemDesign, connectionId: string): SystemConnectionRemovalPlan {
+	const connection = requireSystemConnection(design, connectionId);
+	return { connectionId, connectionLabel: connection.label };
+}
+
 /** Removes the Component, its Connections, and its Group memberships. */
 export function removeSystemComponent(design: SystemDesign, componentId: string): SystemDesign {
 	requireSystemComponent(design, componentId);
@@ -915,7 +927,7 @@ function requireOwnerService(design: SystemDesign, serviceId: string | null | un
 }
 
 function defaultComponentName(design: SystemDesign, kind: SystemComponentKind): string {
-	return nextDefaultName(kind === "database" ? "Database" : "Component", design.components.map((component) => component.name));
+	return nextDefaultName(componentDefaultNameStem(kind), design.components.map((component) => component.name));
 }
 
 function nextDefaultName(base: string, names: string[]): string {

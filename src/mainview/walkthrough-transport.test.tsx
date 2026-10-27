@@ -32,6 +32,7 @@ function controls(overrides: Partial<WalkthroughPlaybackControls> = {}): Walkthr
 		previous: noop,
 		next: noop,
 		seekStep: noop,
+		seekTime: noop,
 		setSpeed: noop,
 		...overrides,
 	};
@@ -75,5 +76,42 @@ describe("walkthrough transport controls", () => {
 		expect(isDisabled(html, "Pause walkthrough")).toBe(false);
 		expect(html).toContain("Step 2 of 2");
 		expect(html).toContain("2. Enqueue");
+	});
+
+	test("the time scrubber spans the whole Walkthrough and follows the clock", () => {
+		const html = renderToStaticMarkup(
+			<WalkthroughTransport controls={controls({ active: { ...activeAt(1, true), frame: { ...activeAt(1, true).frame, timeMs: 1400 } as PlaybackFrame } })} />,
+		);
+		expect(html).toMatch(/<input[^>]*aria-label="Playback time"[^>]*>/);
+		const scrubber = html.match(/<input[^>]*aria-label="Playback time"[^>]*>/)![0];
+		expect(scrubber).toContain('max="2000"');
+		expect(scrubber).toContain('value="1400"');
+	});
+
+	test("the time scrubber is unavailable while a step needs repair", () => {
+		const html = renderToStaticMarkup(
+			<WalkthroughTransport controls={controls({ problems: ["Step 1 plays a Connection that was removed."], timeline: null })} />,
+		);
+		const scrubber = html.match(/<input[^>]*aria-label="Playback time"[^>]*>/)![0];
+		expect(/\sdisabled=""/.test(scrubber)).toBe(true);
+	});
+
+	test("camera follow is offered as a toggle that shows whether it is on", () => {
+		const off = renderToStaticMarkup(
+			<WalkthroughTransport controls={controls()} follow={{ enabled: false, onChange: noop }} />,
+		);
+		expect(off).toContain('aria-pressed="false"');
+		expect(off).toContain("Follow camera");
+
+		const on = renderToStaticMarkup(
+			<WalkthroughTransport controls={controls({ active: activeAt(0, true) })} follow={{ enabled: true, onChange: noop }} />,
+		);
+		const button = on.match(/<button[^>]*aria-pressed="true"[^>]*>/);
+		expect(button).not.toBeNull();
+	});
+
+	test("without a follow prop the transport offers no camera toggle", () => {
+		const html = renderToStaticMarkup(<WalkthroughTransport controls={controls()} />);
+		expect(html).not.toContain("Follow camera");
 	});
 });

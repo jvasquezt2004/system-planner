@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, BoxSelect, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu";
 import type { CanvasPoint, CanvasViewport, DatabaseDesignSummary, WorkspaceState } from "../shared/design";
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
@@ -9,6 +18,7 @@ import {
 	SYSTEM_SERVICE_COLLAPSED_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
 	describeSystemComponentRemoval,
+	describeSystemConnectionRemoval,
 	describeSystemServiceRemoval,
 	canAddSystemGroupMember,
 	findSystemComponent,
@@ -23,6 +33,7 @@ import {
 	type SystemComponent,
 	type SystemComponentKind,
 	type SystemComponentRemovalPlan,
+	type SystemConnectionRemovalPlan,
 	type SystemConnection,
 	type SystemDesign,
 	type SystemGroup,
@@ -30,13 +41,33 @@ import {
 	type SystemServiceRemovalPlan,
 	type SystemServiceSize,
 } from "../shared/system-design";
+import {
+	COMPONENT_CATALOG,
+	COMPONENT_FAMILY_LABELS,
+	catalogEntryFor,
+	componentKindLabel,
+	descriptorKeysFor,
+	descriptorValue,
+	isCatalogKind,
+	mergeFreeProperties,
+	withDescriptorValue,
+	type ComponentFamily,
+} from "../shared/component-catalog";
+import { ComponentArtwork } from "./component-artwork";
 import type { workspaceClient } from "./workspace-client";
-import { findWalkthrough, selectedWalkthroughHighlight, type WalkthroughHighlight } from "../shared/walkthrough";
+import {
+	findWalkthrough,
+	selectedWalkthroughHighlight,
+	type AffectedWalkthroughStep,
+	type WalkthroughHighlight,
+	walkthroughStepsOnConnections,
+} from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
 import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
+	followViewport,
 	groupFrameAround,
 	internalConnectionCount,
 	labelWidth,
@@ -80,14 +111,11 @@ type Drag = {
 	moved: boolean;
 };
 type Pan = { pointerStart: CanvasPoint; viewportStart: CanvasViewport; moved: boolean };
-type PendingRemoval =
-	| { kind: "component"; plan: SystemComponentRemovalPlan }
-	| { kind: "service"; plan: SystemServiceRemovalPlan };
-
-const KIND_LABELS: Record<SystemComponentKind, string> = {
-	generic: "Component",
-	database: "Database",
-};
+/** A removal waiting for confirmation. `walkthroughSteps` are the steps it would leave dangling. */
+export type PendingRemoval =
+	| { kind: "component"; plan: SystemComponentRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] }
+	| { kind: "service"; plan: SystemServiceRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] }
+	| { kind: "connection"; plan: SystemConnectionRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] };
 
 const SAVE_DEBOUNCE_MS = 400;
 /** Height of a Group frame's header, where its name sits and where it can be dragged from. */
@@ -125,6 +153,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
 	const [walkthroughSelection, setWalkthroughSelection] = useState<WalkthroughSelection | null>(null);
+	/** Optional: center the overview on each step's interaction. Manual pan or zoom turns it off. */
+	const [followCamera, setFollowCamera] = useState(false);
 	const pan = useRef<Pan | null>(null);
 	const interacting = useRef(false);
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -155,6 +185,18 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	// Playback runs on the drawn scene, so a dragged Component's route moves with the message.
 	const playback = useWalkthroughPlayback({ walkthrough: selectedWalkthrough, design: scene, routes, reducedMotion });
 	const frame = playback.active?.frame ?? null;
+	const activeStepIndex = frame?.stepIndex ?? null;
+
+	// Follow centers the canvas once when a step starts or the clock seeks to a different step.
+	// Routes are not a dependency, so dragging a Component does not keep moving the camera.
+	useEffect(() => {
+		const container = containerRef.current;
+		if (!followCamera || !frame || !container) return;
+		const route = routes.get(frame.step.connectionId);
+		if (!route) return;
+		const rect = container.getBoundingClientRect();
+		setLocalViewport(followViewport(latestViewport.current, route, { width: rect.width, height: rect.height }));
+	}, [followCamera, activeStepIndex]);
 
 	if (!design || !scene) {
 		return (
@@ -196,6 +238,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
 		const point = pointerInContainer(event);
 		const factor = Math.exp(-event.deltaY * 0.0015);
+		setFollowCamera(false);
 		scheduleViewportSave(zoomAroundPoint(latestViewport.current, point, latestViewport.current.zoom * factor));
 	}
 
@@ -227,6 +270,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			const moved = active.moved || movedBeyondThreshold(active.pointerStart, point);
 			pan.current = { ...active, moved };
 			if (!moved) return;
+			setFollowCamera(false);
 			setLocalViewport({
 				...active.viewportStart,
 				x: active.viewportStart.x + (point.x - active.pointerStart.x),
@@ -407,11 +451,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		return screenToWorld({ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 }, latestViewport.current);
 	}
 
-	function addComponent() {
+	function addComponent(kind: SystemComponentKind = "generic") {
 		const spot = openSpotNear(design!, visibleCenter());
 		const id = crypto.randomUUID();
 		setSelection({ kind: "component", id });
-		onApply(() => client.addSystemComponent({ id, kind: "generic", x: spot.x, y: spot.y }));
+		onApply(() => client.addSystemComponent({ id, kind, x: spot.x, y: spot.y }));
 	}
 
 	function addService() {
@@ -429,19 +473,40 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if (removal.kind === "component") {
 			const componentId = removal.plan.componentId;
 			onApply(() => client.removeSystemComponent(componentId));
-		} else {
+		} else if (removal.kind === "service") {
 			const serviceId = removal.plan.serviceId;
 			onApply(() => client.removeSystemService(serviceId));
+		} else {
+			const connectionId = removal.plan.connectionId;
+			onApply(() => client.removeSystemConnection(connectionId));
 		}
 	}
 
 	/** Lists what the removal changes in the displayed design; the workspace checks again on confirm. */
 	function openComponentRemoval(componentId: string) {
-		setPendingRemoval({ kind: "component", plan: describeSystemComponentRemoval(design!, componentId) });
+		const plan = describeSystemComponentRemoval(design!, componentId);
+		setPendingRemoval({ kind: "component", plan, walkthroughSteps: stepsOnConnections(plan.connections) });
 	}
 
 	function openServiceRemoval(serviceId: string) {
-		setPendingRemoval({ kind: "service", plan: describeSystemServiceRemoval(design!, serviceId) });
+		const plan = describeSystemServiceRemoval(design!, serviceId);
+		setPendingRemoval({ kind: "service", plan, walkthroughSteps: stepsOnConnections(plan.connections) });
+	}
+
+	/** A Connection no Walkthrough plays is removed at once; one that a step plays is confirmed first, because its steps go dangling. */
+	function requestConnectionRemoval(connectionId: string) {
+		setSelection(null);
+		const walkthroughSteps = stepsOnConnections([{ id: connectionId }]);
+		if (walkthroughSteps.length === 0) {
+			onApply(() => client.removeSystemConnection(connectionId));
+			return;
+		}
+		const plan = describeSystemConnectionRemoval(design!, connectionId);
+		setPendingRemoval({ kind: "connection", plan, walkthroughSteps });
+	}
+
+	function stepsOnConnections(connections: { id: string }[]): AffectedWalkthroughStep[] {
+		return walkthroughStepsOnConnections(state.walkthroughs ?? [], connections.map((connection) => connection.id));
 	}
 
 	function handleBackgroundClick() {
@@ -450,6 +515,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	function zoomBy(factor: number) {
+		setFollowCamera(false);
 		const rect = containerRef.current?.getBoundingClientRect();
 		const center = { x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 };
 		scheduleViewportSave(zoomAroundPoint(latestViewport.current, center, latestViewport.current.zoom * factor));
@@ -466,9 +532,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if ((event.key === "Delete" || event.key === "Backspace") && selection) {
 			event.preventDefault();
 			if (selection.kind === "connection") {
-				const id = selection.id;
-				setSelection(null);
-				onApply(() => client.removeSystemConnection(id));
+				requestConnectionRemoval(selection.id);
 			} else if (selection.kind === "group") {
 				// Removing a Group keeps its members, so it needs no confirmation.
 				const id = selection.id;
@@ -498,6 +562,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					selection={walkthroughSelection}
 					onSelect={setWalkthroughSelection}
 					playback={playback}
+					followCamera={{ enabled: followCamera, onChange: setFollowCamera }}
 					onClose={() => {
 						setWalkthroughsOpen(false);
 						setWalkthroughSelection(null);
@@ -779,7 +844,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									transform={`translate(${component.position.x} ${component.position.y})`}
 									role="button"
 									tabIndex={0}
-									aria-label={`${KIND_LABELS[component.kind]}: ${component.name}`}
+									aria-label={`${componentKindLabel(component.kind)}: ${component.name}`}
 									aria-pressed={selected}
 									className="cursor-pointer"
 									onPointerDown={(event) => handleComponentPointerDown(event, component)}
@@ -815,8 +880,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										strokeWidth={selected || linking || traced ? 2 : 1.25}
 									/>
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
-										{KIND_LABELS[component.kind].toUpperCase()}
+										{componentKindLabel(component.kind).toUpperCase()}
 									</text>
+									{isCatalogKind(component.kind) && (
+										<ComponentArtwork artwork={component.kind} x={SYSTEM_COMPONENT_SIZE.width - 38} y={12} />
+									)}
 									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(component.name, 22)}
 									</text>
@@ -855,10 +923,28 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						<Frame className="size-3.5" />
 						Add service
 					</Button>
-					<Button type="button" size="sm" variant="outline" onClick={addComponent}>
-						<Plus className="size-3.5" />
-						Add component
-					</Button>
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button type="button" size="sm" variant="outline">
+								<Plus className="size-3.5" />
+								Add component
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="start" className="w-56">
+							<DropdownMenuItem onSelect={() => addComponent("generic")}>Component</DropdownMenuItem>
+							{(Object.keys(COMPONENT_FAMILY_LABELS) as ComponentFamily[]).map((family) => (
+								<DropdownMenuGroup key={family}>
+									<DropdownMenuSeparator />
+									<DropdownMenuLabel>{COMPONENT_FAMILY_LABELS[family]}</DropdownMenuLabel>
+									{COMPONENT_CATALOG.filter((entry) => entry.family === family).map((entry) => (
+										<DropdownMenuItem key={entry.kind} data-kind={entry.kind} onSelect={() => addComponent(entry.kind)}>
+											{entry.label}
+										</DropdownMenuItem>
+									))}
+								</DropdownMenuGroup>
+							))}
+						</DropdownMenuContent>
+					</DropdownMenu>
 					<Button
 						type="button"
 						size="sm"
@@ -963,7 +1049,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				>
 					{selectedComponent && (
 						<ComponentInspector
-							key={selectedComponent.id}
+							key={`${selectedComponent.id}:${selectedComponent.kind}`}
 							component={selectedComponent}
 							design={design}
 							designs={designs}
@@ -1014,11 +1100,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onClose={() => setSelection(null)}
 							onApply={onApply}
 							client={client}
-							onRemove={() => {
-								const id = selectedConnection.id;
-								setSelection(null);
-								onApply(() => client.removeSystemConnection(id));
-							}}
+							onRemove={() => requestConnectionRemoval(selectedConnection.id)}
 						/>
 					)}
 				</aside>
@@ -1030,7 +1112,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					<DialogFooter>
 						<Button type="button" variant="outline" onClick={() => setPendingRemoval(null)}>Cancel</Button>
 						<Button type="button" variant="destructive" onClick={confirmRemoval}>
-							{pendingRemoval?.kind === "service" ? "Remove service" : "Remove component"}
+							{removalButtonLabel(pendingRemoval)}
 						</Button>
 					</DialogFooter>
 				</DialogContent>
@@ -1054,19 +1136,43 @@ function sceneAfterPointer(drag: Drag, dx: number, dy: number): SceneDrag {
 	return { mode: "service", id: scene.id, position };
 }
 
-function RemovalSummary({ removal }: { removal: PendingRemoval }) {
+function removalButtonLabel(removal: PendingRemoval | null): string {
+	if (removal?.kind === "service") return "Remove service";
+	if (removal?.kind === "connection") return "Remove connection";
+	return "Remove component";
+}
+
+export function RemovalSummary({ removal }: { removal: PendingRemoval }) {
+	if (removal.kind === "connection") {
+		return (
+			<>
+				<DialogHeader>
+					<DialogTitle>Remove “{removal.plan.connectionLabel}”?</DialogTitle>
+					<DialogDescription>
+						{removal.walkthroughSteps.length} Walkthrough step{removal.walkthroughSteps.length === 1 ? "" : "s"} play this connection.
+						They keep their text and become dangling until you repair them.
+					</DialogDescription>
+				</DialogHeader>
+				<WalkthroughStepList steps={removal.walkthroughSteps} />
+			</>
+		);
+	}
 	const connections = removal.plan.connections;
 	const connectionText = connections.length === 0
 		? ""
 		: `This also removes ${connections.length} connection${connections.length === 1 ? "" : "s"}:`;
+	const stepText = removal.walkthroughSteps.length === 0
+		? ""
+		: `${removal.walkthroughSteps.length} Walkthrough step${removal.walkthroughSteps.length === 1 ? "" : "s"} will become dangling and keep ${removal.walkthroughSteps.length === 1 ? "its" : "their"} text.`;
 	if (removal.kind === "component") {
 		return (
 			<>
 				<DialogHeader>
 					<DialogTitle>Remove “{removal.plan.componentName}”?</DialogTitle>
-					<DialogDescription>{connectionText || "No connections use this component."}</DialogDescription>
+					<DialogDescription>{[connectionText || "No connections use this component.", stepText].filter(Boolean).join(" ")}</DialogDescription>
 				</DialogHeader>
 				{connections.length > 0 && <ConnectionList connections={connections} />}
+				<WalkthroughStepList steps={removal.walkthroughSteps} />
 			</>
 		);
 	}
@@ -1078,7 +1184,7 @@ function RemovalSummary({ removal }: { removal: PendingRemoval }) {
 		<>
 			<DialogHeader>
 				<DialogTitle>Remove “{removal.plan.serviceName}”?</DialogTitle>
-				<DialogDescription>{[releasedText, connectionText].filter(Boolean).join(" ")}</DialogDescription>
+				<DialogDescription>{[releasedText, connectionText, stepText].filter(Boolean).join(" ")}</DialogDescription>
 			</DialogHeader>
 			{released.length > 0 && (
 				<ul className="max-h-40 space-y-1 overflow-y-auto text-[13px] text-ink-2" aria-label="Released components">
@@ -1088,7 +1194,22 @@ function RemovalSummary({ removal }: { removal: PendingRemoval }) {
 				</ul>
 			)}
 			{connections.length > 0 && <ConnectionList connections={connections} />}
+			<WalkthroughStepList steps={removal.walkthroughSteps} />
 		</>
+	);
+}
+
+/** The Walkthrough steps a removal leaves dangling, grouped by the Walkthrough they belong to. */
+function WalkthroughStepList({ steps }: { steps: AffectedWalkthroughStep[] }) {
+	if (steps.length === 0) return null;
+	return (
+		<ul className="max-h-48 space-y-1 overflow-y-auto text-[13px] text-ink-2" aria-label="Affected Walkthrough steps">
+			{steps.map((step) => (
+				<li key={`${step.walkthroughId}:${step.stepId}`} className="rounded-sm bg-proof-red-wash px-2 py-1 text-proof-red">
+					{step.walkthroughName}: {step.title || "Untitled step"}
+				</li>
+			))}
+		</ul>
 	);
 }
 
@@ -1148,7 +1269,11 @@ function ComponentInspector({
 	const [name, setName] = useState(component.name);
 	const [technology, setTechnology] = useState(component.technology ?? "");
 	const [description, setDescription] = useState(component.description ?? "");
-	const [properties, setProperties] = useState(component.properties);
+	/** Free-form rows: the properties that are not this kind's suggested descriptors. */
+	const [freeRows, setFreeRows] = useState(() => component.properties.filter((property) => !descriptorKeysFor(component.kind).includes(property.key)));
+	/** Unsaved descriptor text, by descriptor key; a missing key shows the saved value. */
+	const [descriptorDrafts, setDescriptorDrafts] = useState<Record<string, string>>({});
+	const descriptors = catalogEntryFor(component.kind)?.descriptors ?? [];
 	const related = design.connections.filter((connection) => connection.sourceId === component.id || connection.targetId === component.id);
 
 	function commitName() {
@@ -1167,17 +1292,25 @@ function ComponentInspector({
 		if ((changes.technology ?? "") === (component.technology ?? "") && (changes.description ?? "") === (component.description ?? "")) return;
 		onApply(() => client.updateSystemComponent(component.id, changes));
 	}
-	function commitProperties(next: typeof properties) {
+	function commitProperties(next: typeof freeRows) {
 		const cleaned = next.map((item) => ({ key: item.key.trim(), value: item.value }));
 		if (cleaned.some((item) => item.key.length === 0)) return;
-		if (JSON.stringify(cleaned) === JSON.stringify(component.properties)) return;
-		onApply(() => client.updateSystemComponent(component.id, { properties: cleaned }));
+		const merged = mergeFreeProperties(component.properties, component.kind, cleaned);
+		if (JSON.stringify(merged) === JSON.stringify(component.properties)) return;
+		onApply(() => client.updateSystemComponent(component.id, { properties: merged }));
+	}
+	function commitDescriptor(key: string) {
+		const value = (descriptorDrafts[key] ?? descriptorValue(component.properties, key)).trim();
+		setDescriptorDrafts((drafts) => ({ ...drafts, [key]: value }));
+		const next = withDescriptorValue(component.properties, key, value);
+		if (JSON.stringify(next) === JSON.stringify(component.properties)) return;
+		onApply(() => client.updateSystemComponent(component.id, { properties: next }));
 	}
 
 	return (
 		<div className="flex flex-col gap-3 text-[13px]">
 			<div className="flex items-center justify-between">
-				<span className="kicker">{KIND_LABELS[component.kind]}</span>
+				<span className="kicker">{componentKindLabel(component.kind)}</span>
 				<Button type="button" size="icon" variant="ghost" aria-label="Close inspector" className="size-7" onClick={onClose}>
 					<X className="size-3.5" />
 				</Button>
@@ -1205,7 +1338,7 @@ function ComponentInspector({
 					className="h-8 rounded-md border border-input bg-paper-raised px-2"
 				>
 					{SYSTEM_COMPONENT_KINDS.map((kind) => (
-						<option key={kind} value={kind}>{KIND_LABELS[kind]}</option>
+						<option key={kind} value={kind}>{componentKindLabel(kind)}</option>
 					))}
 				</select>
 			</label>
@@ -1232,6 +1365,19 @@ function ComponentInspector({
 				<span className="text-ink-3">Description</span>
 				<Textarea value={description} maxLength={500} rows={3} onChange={(event) => setDescription(event.target.value)} onBlur={commitDetails} />
 			</label>
+			{descriptors.map((descriptor) => (
+				<label key={descriptor.key} className="flex flex-col gap-1">
+					<span className="text-ink-3">{descriptor.key}</span>
+					<Input
+						aria-label={descriptor.key}
+						value={descriptorDrafts[descriptor.key] ?? descriptorValue(component.properties, descriptor.key)}
+						maxLength={500}
+						placeholder={`Optional. ${descriptor.placeholder}`}
+						onChange={(event) => setDescriptorDrafts((drafts) => ({ ...drafts, [descriptor.key]: event.target.value }))}
+						onBlur={() => commitDescriptor(descriptor.key)}
+					/>
+				</label>
+			))}
 			<div className="flex flex-col gap-1.5">
 				<div className="flex items-center justify-between">
 					<span className="text-ink-3">Properties</span>
@@ -1240,31 +1386,31 @@ function ComponentInspector({
 						size="xs"
 						variant="outline"
 						onClick={() => {
-							const next = [...properties, { key: `property ${properties.length + 1}`, value: "" }];
-							setProperties(next);
+							const next = [...freeRows, { key: `property ${freeRows.length + 1}`, value: "" }];
+							setFreeRows(next);
 							commitProperties(next);
 						}}
 					>
 						Add property
 					</Button>
 				</div>
-				{properties.map((item, index) => (
+				{freeRows.map((item, index) => (
 					<div key={index} className="flex items-center gap-1">
 						<Input
 							aria-label={`Property ${index + 1} name`}
 							value={item.key}
 							maxLength={60}
 							className="h-7 w-28"
-							onChange={(event) => setProperties(properties.map((entry, i) => (i === index ? { ...entry, key: event.target.value } : entry)))}
-							onBlur={() => commitProperties(properties)}
+							onChange={(event) => setFreeRows(freeRows.map((entry, i) => (i === index ? { ...entry, key: event.target.value } : entry)))}
+							onBlur={() => commitProperties(freeRows)}
 						/>
 						<Input
 							aria-label={`Property ${index + 1} value`}
 							value={item.value}
 							maxLength={500}
 							className="h-7 min-w-0 flex-1"
-							onChange={(event) => setProperties(properties.map((entry, i) => (i === index ? { ...entry, value: event.target.value } : entry)))}
-							onBlur={() => commitProperties(properties)}
+							onChange={(event) => setFreeRows(freeRows.map((entry, i) => (i === index ? { ...entry, value: event.target.value } : entry)))}
+							onBlur={() => commitProperties(freeRows)}
 						/>
 						<Button
 							type="button"
@@ -1273,8 +1419,8 @@ function ComponentInspector({
 							aria-label={`Remove property ${index + 1}`}
 							className="size-7 shrink-0"
 							onClick={() => {
-								const next = properties.filter((_, i) => i !== index);
-								setProperties(next);
+								const next = freeRows.filter((_, i) => i !== index);
+								setFreeRows(next);
 								commitProperties(next);
 							}}
 						>

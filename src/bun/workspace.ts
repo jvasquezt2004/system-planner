@@ -98,6 +98,7 @@ import {
 	addSystemService,
 	createEmptySystemDesign,
 	describeSystemComponentRemoval,
+	describeSystemConnectionRemoval,
 	describeSystemServiceRemoval,
 	findSystemComponent,
 	findSystemConnection,
@@ -143,6 +144,7 @@ import {
 	type SetSystemViewportAction,
 	type SystemAttribution,
 	type SystemComponentRemovalPlan,
+	type SystemConnectionRemovalPlan,
 	type SystemDesign,
 	type SystemGroup,
 	type SystemServiceRemovalPlan,
@@ -151,6 +153,7 @@ import {
 	type UpdateSystemServiceAction,
 } from "../shared/system-design";
 import {
+	acceptWalkthroughStepRedirection,
 	addWalkthrough,
 	addWalkthroughStep,
 	findWalkthrough,
@@ -162,6 +165,7 @@ import {
 	removeWalkthroughStep,
 	renameWalkthrough,
 	repairWalkthroughStep,
+	type AcceptWalkthroughStepRedirectionAction,
 	updateWalkthroughStep,
 	type AddWalkthroughStepAction,
 	type CreateWalkthroughAction,
@@ -173,6 +177,8 @@ import {
 	type RepairWalkthroughStepAction,
 	type UpdateWalkthroughStepAction,
 	type Walkthrough,
+	type WalkthroughRemovalImpact,
+	walkthroughStepsOnConnections,
 } from "../shared/walkthrough";
 
 export type DesignWorkspaceOptions = {
@@ -281,8 +287,8 @@ export interface DesignWorkspace {
 	 * never enters Project history and Undo does not reverse it.
 	 */
 	setSystemServiceCollapsed(action: SetSystemServiceCollapsedAction): Promise<WorkspaceState>;
-	/** Lists what removing the Service releases and deletes, before anything changes. */
-	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan;
+	/** Lists what removing the Service releases, deletes, and which Walkthrough steps it leaves dangling, before anything changes. */
+	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan & WalkthroughRemovalImpact;
 	/** Groups organize Components, Services, and child Groups. Each edit is one Project-history action. */
 	addSystemGroup(action: AddSystemGroupAction): Promise<WorkspaceState>;
 	/** Renames a Group or replaces its members; a nesting cycle is refused and changes nothing. */
@@ -296,11 +302,13 @@ export interface DesignWorkspace {
 	updateSystemComponent(action: UpdateSystemComponentAction): Promise<WorkspaceState>;
 	moveSystemComponent(action: MoveSystemComponentAction): Promise<WorkspaceState>;
 	removeSystemComponent(action: RemoveSystemComponentAction): Promise<WorkspaceState>;
-	/** Lists the Connections that removing the Component would delete, before anything changes. */
-	describeSystemComponentRemoval(componentId: string): SystemComponentRemovalPlan;
+	/** Lists the Connections and Walkthrough steps that removing the Component would affect, before anything changes. */
+	describeSystemComponentRemoval(componentId: string): SystemComponentRemovalPlan & WalkthroughRemovalImpact;
 	addSystemConnection(action: AddSystemConnectionAction): Promise<WorkspaceState>;
 	updateSystemConnection(action: UpdateSystemConnectionAction): Promise<WorkspaceState>;
 	removeSystemConnection(action: RemoveSystemConnectionAction): Promise<WorkspaceState>;
+	/** Lists the Walkthrough steps that removing the Connection would leave dangling, before anything changes. */
+	describeSystemConnectionRemoval(connectionId: string): SystemConnectionRemovalPlan & WalkthroughRemovalImpact;
 	/** Saves the overview's pan and zoom. Navigation stays outside Project history. */
 	setSystemViewport(action: SetSystemViewportAction): Promise<WorkspaceState>;
 	/** Records the view to reopen for this Project. Navigation stays outside Project history. */
@@ -327,6 +335,8 @@ export interface DesignWorkspace {
 	removeWalkthroughStep(action: RemoveWalkthroughStepAction): Promise<WorkspaceState>;
 	/** Points a step at a Connection and accepts that Connection's current endpoints. */
 	repairWalkthroughStep(action: RepairWalkthroughStepAction): Promise<WorkspaceState>;
+	/** Accepts the changed route of a redirected step. Only that step's recorded endpoints change. */
+	acceptWalkthroughStepRedirection(action: AcceptWalkthroughStepRedirectionAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
 
@@ -1253,6 +1263,11 @@ export async function createDesignWorkspace(
 			}
 		}
 		return state;
+	}
+
+	/** The Walkthrough steps that removing these Connections leaves dangling, across the open Project's Walkthroughs. */
+	function walkthroughRemovalImpact(connections: readonly { id: string }[]): WalkthroughRemovalImpact {
+		return { walkthroughSteps: walkthroughStepsOnConnections(state.walkthroughs ?? [], connections.map((connection) => connection.id)) };
 	}
 
 	/**
@@ -2490,7 +2505,8 @@ export async function createDesignWorkspace(
 		},
 		describeSystemServiceRemoval(serviceId) {
 			requireOpenProject();
-			return describeSystemServiceRemoval(state.systemDesign!, serviceId);
+			const plan = describeSystemServiceRemoval(state.systemDesign!, serviceId);
+			return { ...plan, ...walkthroughRemovalImpact(plan.connections) };
 		},
 		addSystemGroup(action) {
 			return runTask(async () => {
@@ -2577,7 +2593,13 @@ export async function createDesignWorkspace(
 		},
 		describeSystemComponentRemoval(componentId) {
 			requireOpenProject();
-			return describeSystemComponentRemoval(state.systemDesign!, componentId);
+			const plan = describeSystemComponentRemoval(state.systemDesign!, componentId);
+			return { ...plan, ...walkthroughRemovalImpact(plan.connections) };
+		},
+		describeSystemConnectionRemoval(connectionId) {
+			requireOpenProject();
+			const plan = describeSystemConnectionRemoval(state.systemDesign!, connectionId);
+			return { ...plan, ...walkthroughRemovalImpact([{ id: connectionId }]) };
 		},
 		addSystemConnection(action) {
 			return runTask(async () => {
@@ -2781,6 +2803,17 @@ export async function createDesignWorkspace(
 						next,
 						action: { name: relinked ? `Relink step “${repaired.title}”` : `Accept route for step “${repaired.title}”` },
 					};
+				});
+			});
+		},
+		acceptWalkthroughStepRedirection(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const before = findWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId);
+					if (!before) throw new Error("That step could not be found.");
+					const next = acceptWalkthroughStepRedirection(walkthroughs, action.walkthroughId, action.stepId, state.systemDesign!);
+					const accepted = findWalkthroughStep(next, action.walkthroughId, action.stepId)!;
+					return { next, action: { name: `Accept route for step “${accepted.title}”` } };
 				});
 			});
 		},

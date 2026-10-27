@@ -10,7 +10,8 @@ import {
 	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
-import { SystemDesignView } from "./system-design-view";
+import { Dialog } from "@/components/ui/dialog";
+import { RemovalSummary, SystemDesignView, type PendingRemoval } from "./system-design-view";
 
 function render(design: SystemDesign): string {
 	const state = {
@@ -92,6 +93,91 @@ describe("system overview rendering", () => {
 		expect(shared.match(/data-testid="schema-link-badge"/g)).toHaveLength(2);
 		expect(shared.match(/>SHARED</g)).toHaveLength(2);
 		expect(shared).not.toContain(">LINKED<");
+	});
+
+	test("each client and traffic kind draws its own labelled artwork on the card", () => {
+		const kinds = ["person", "browser", "mobile_app", "external_system", "dns", "cdn", "load_balancer", "api_gateway", "proxy"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-component-id="${kind}" data-kind="${kind}"`);
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">LOAD BALANCER<");
+		expect(html).toContain('aria-label="API gateway: Node 7"');
+	});
+
+	test("each compute kind draws its own labelled artwork on the card", () => {
+		const kinds = ["application", "api", "worker", "scheduled_job", "serverless_handler"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">SCHEDULED JOB<");
+		expect(html).toContain(">SERVERLESS HANDLER<");
+		expect(html).toContain('aria-label="Serverless handler: Node 4"');
+	});
+
+	test("the original generic and database Components draw no catalog artwork", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
+		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+	});
+});
+
+/** The summary sits inside the confirmation dialog, which needs its context to render. */
+function renderSummary(removal: PendingRemoval): string {
+	return renderToStaticMarkup(
+		<Dialog open onOpenChange={() => {}}>
+			<RemovalSummary removal={removal} />
+		</Dialog>,
+	);
+}
+
+describe("removal confirmation", () => {
+	test("removing a Component lists the Walkthrough steps it leaves dangling", () => {
+		const removal: PendingRemoval = {
+			kind: "component",
+			plan: {
+				componentId: "api",
+				componentName: "API",
+				connections: [{ id: "upload", label: "Upload", sourceId: "client", targetId: "api" }],
+			},
+			walkthroughSteps: [{ walkthroughId: "w", walkthroughName: "Upload flow", stepId: "s", title: "Send", connectionId: "upload" }],
+		};
+		const html = renderSummary(removal);
+		expect(html).toContain("Remove “API”?");
+		expect(html).toContain("1 Walkthrough step will become dangling and keep its text.");
+		expect(html).toContain('aria-label="Affected Walkthrough steps"');
+		expect(html).toContain("Upload flow: Send");
+	});
+
+	test("removing a Connection that a step plays names that step; a Connection with no steps lists none", () => {
+		const affected: PendingRemoval = {
+			kind: "connection",
+			plan: { connectionId: "enqueue", connectionLabel: "Enqueue" },
+			walkthroughSteps: [{ walkthroughId: "w", walkthroughName: "Upload flow", stepId: "t", title: "Queue", connectionId: "enqueue" }],
+		};
+		const html = renderSummary(affected);
+		expect(html).toContain("Remove “Enqueue”?");
+		expect(html).toContain("1 Walkthrough step play this connection.");
+		expect(html).toContain("Upload flow: Queue");
+
+		const unreferenced: PendingRemoval = { kind: "connection", plan: { connectionId: "reply", connectionLabel: "Reply" }, walkthroughSteps: [] };
+		const plain = renderSummary(unreferenced);
+		expect(plain).not.toContain("Affected Walkthrough steps");
 	});
 });
 

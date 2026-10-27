@@ -9,7 +9,8 @@ import { findSystemEndpoint, walkthroughStepStatus, type Walkthrough, type Walkt
  * seek, a pause, a speed change, or a geometry change therefore yields the same
  * state for the same `t`.
  *
- * Each step's authored duration is split into fixed illustrative phases:
+ * Each step's authored duration is split into illustrative phases. The travel
+ * share (`travelPercent`, 60 by default) sets where the arrival falls:
  *   - depart:  the sender activates with `send` while the message travels;
  *   - arrive:  the destination reacts with `receive` on arrival;
  *   - outcome: the destination shows the step's own `process`, `succeed`, or `fail`
@@ -18,8 +19,8 @@ import { findSystemEndpoint, walkthroughStepStatus, type Walkthrough, type Walkt
  * still reaches its destination at the authored arrival time.
  */
 
-/** Share of a step's duration spent before the message reaches the destination. */
-export const PLAYBACK_ARRIVAL_FRACTION = 0.6;
+/** Share of a step's duration spent before the message reaches the destination, unless the step sets its own. */
+export const PLAYBACK_DEFAULT_TRAVEL_PERCENT = 60;
 /** Share of the post-arrival time that shows the arrival reaction before the outcome. */
 export const PLAYBACK_ARRIVAL_HOLD_FRACTION = 0.5;
 /** Duration used for a step whose designer has not set one. */
@@ -68,6 +69,8 @@ export type PlaybackReaction = {
 	phase: "depart" | "arrive" | "outcome";
 	/** 0 to 1. Reduced motion holds every visible reaction at 1. */
 	intensity: number;
+	/** The step's operation, carried to the destination so its kind preset can name it. */
+	operation?: string;
 };
 
 export type PlaybackFrame = {
@@ -117,6 +120,7 @@ export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: Sys
 	const steps = walkthrough.steps.map((step, index): PlaybackStep => {
 		const connection = findSystemConnection(design, step.connectionId)!;
 		const durationMs = step.durationMs ?? PLAYBACK_DEFAULT_STEP_MS;
+		const travelPercent = step.travelPercent ?? PLAYBACK_DEFAULT_TRAVEL_PERCENT;
 		const startMs = cursor;
 		cursor += durationMs;
 		return {
@@ -133,7 +137,7 @@ export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: Sys
 			examplePayload: step.examplePayload,
 			startMs,
 			durationMs,
-			arrivalMs: startMs + Math.round(durationMs * PLAYBACK_ARRIVAL_FRACTION),
+			arrivalMs: startMs + Math.round(durationMs * (travelPercent / 100)),
 			endMs: cursor,
 		};
 	});
@@ -190,12 +194,14 @@ export function deriveWalkthroughFrame(
 				role: "destination",
 				phase: "arrive",
 				intensity: reducedMotion ? 1 : (local - arrivalLocal) / span,
+				operation: step.operation,
 			}
 			: {
 				action: step.action === "process" || step.action === "succeed" || step.action === "fail" ? step.action : "receive",
 				role: "destination",
 				phase: "outcome",
 				intensity: 1,
+				operation: step.operation,
 			};
 	}
 

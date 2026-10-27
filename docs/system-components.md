@@ -57,6 +57,19 @@ and animation implementation remain open.
 | Supporting capabilities | Observability | Logs, metrics, traces, alert purpose | Receive telemetry, record, alert |
 | Custom | Custom | Chosen icon/shape and descriptive annotations | Shared send/receive/process/succeed/fail presets |
 
+## Catalog registry
+
+`src/shared/component-catalog.ts` is the common registry for the client, traffic,
+and compute kinds: each entry gives the kind, label, family, optional descriptor
+keys stored in the Component's properties, operation presets (such as
+"Cache hit" or "Rejected"), artwork name, and reaction preset. The editor
+palette, the Inspector, playback, and later Assistant tools and exporters read
+kinds from this list. Descriptor values are optional annotations; no entry
+requires a vendor or configures executable network behavior. A Serverless
+handler is a descriptive Component only: it never runs or links an Edge function
+(a database Design's server handler), and a Scheduled job's schedule is text
+that playback does not execute.
+
 ## Reaction registry contract
 
 Walkthrough playback reads reactions through `src/shared/component-reactions.ts`.
@@ -66,7 +79,9 @@ change per kind without changing the authored timeline, which stays the same for
 every kind (ADR-0010).
 
 - `reactionPresetFor(kind)` resolves the preset for a kind, falling back to generic.
-- Kind-specific presets (#136–#139) add an entry to `KIND_REACTION_PRESETS`.
+- Kind-specific presets come from the catalog registry (`component-catalog.ts`),
+  which `KIND_REACTION_PRESETS` collects. An operation preset replaces the
+  destination's wording when a step names it, such as "Cache hit" on a CDN.
 - Presets style reactions only. A preset cannot change durations, arrival time,
   the route, or the step order.
 

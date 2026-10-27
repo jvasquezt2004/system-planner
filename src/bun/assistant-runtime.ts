@@ -24,7 +24,7 @@ import type { ScenarioRun } from "../shared/design";
 import type { Scenario } from "../shared/design";
 import { runAllScenarios, SCENARIO_RUN_TIMEOUT_MS } from "../shared/run-all";
 import { TurnTracker, checkCodeRelevantContent } from "./assistant-turn-tracker";
-import { systemDesignContent, type SystemContent } from "../shared/system-design";
+import { SYSTEM_COMPONENT_KINDS, systemDesignContent, type SystemContent } from "../shared/system-design";
 import {
 	applySystemOperationPlan,
 	checkSystemReadPreconditions,
@@ -689,7 +689,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				sourceId: Type.Optional(Type.String({ description: "Existing Component id where a Connection starts" })),
 				targetId: Type.Optional(Type.String({ description: "Existing Component id where a Connection arrives" })),
 				name: Type.Optional(Type.String()),
-				kind: Type.Optional(Type.Union([Type.Literal("generic"), Type.Literal("database")])),
+				kind: Type.Optional(Type.Union(SYSTEM_COMPONENT_KINDS.map((kind) => Type.Literal(kind)))),
 				technology: Type.Optional(Type.String()),
 				description: Type.Optional(Type.String()),
 				label: Type.Optional(Type.String({ description: "Connection label describing the interaction" })),

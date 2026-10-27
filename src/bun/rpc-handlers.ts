@@ -61,6 +61,7 @@ import type {
 	SetActiveViewAction,
 	SetSystemViewportAction,
 	SystemComponentRemovalPlan,
+	SystemConnectionRemovalPlan,
 	SystemServiceRemovalPlan,
 	UpdateSystemComponentAction,
 	UpdateSystemConnectionAction,
@@ -74,7 +75,9 @@ import type {
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
+	AcceptWalkthroughStepRedirectionAction,
 	RepairWalkthroughStepAction,
+	WalkthroughRemovalImpact,
 	UpdateWalkthroughStepAction,
 } from "../shared/walkthrough";
 import type { SqlPreviewActions } from "./sql-preview";
@@ -150,7 +153,7 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeSystemService: async (action: RemoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemService(action),
 		setSystemServiceCollapsed: async (action: SetSystemServiceCollapsedAction): Promise<WorkspaceState> =>
 			(await deps.workspace).setSystemServiceCollapsed(action),
-		describeSystemServiceRemoval: async ({ serviceId }: { serviceId: string }): Promise<SystemServiceRemovalPlan> =>
+		describeSystemServiceRemoval: async ({ serviceId }: { serviceId: string }): Promise<SystemServiceRemovalPlan & WalkthroughRemovalImpact> =>
 			(await deps.workspace).describeSystemServiceRemoval(serviceId),
 		addSystemGroup: async (action: AddSystemGroupAction): Promise<WorkspaceState> => (await deps.workspace).addSystemGroup(action),
 		updateSystemGroup: async (action: UpdateSystemGroupAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemGroup(action),
@@ -161,8 +164,10 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		updateSystemComponent: async (action: UpdateSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemComponent(action),
 		moveSystemComponent: async (action: MoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemComponent(action),
 		removeSystemComponent: async (action: RemoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemComponent(action),
-		describeSystemComponentRemoval: async ({ componentId }: { componentId: string }): Promise<SystemComponentRemovalPlan> =>
+		describeSystemComponentRemoval: async ({ componentId }: { componentId: string }): Promise<SystemComponentRemovalPlan & WalkthroughRemovalImpact> =>
 			(await deps.workspace).describeSystemComponentRemoval(componentId),
+		describeSystemConnectionRemoval: async ({ connectionId }: { connectionId: string }): Promise<SystemConnectionRemovalPlan & WalkthroughRemovalImpact> =>
+			(await deps.workspace).describeSystemConnectionRemoval(connectionId),
 		addSystemConnection: async (action: AddSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).addSystemConnection(action),
 		updateSystemConnection: async (action: UpdateSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemConnection(action),
 		removeSystemConnection: async (action: RemoveSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemConnection(action),
@@ -180,6 +185,8 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		moveWalkthroughStep: async (action: MoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughStep(action),
 		removeWalkthroughStep: async (action: RemoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthroughStep(action),
 		repairWalkthroughStep: async (action: RepairWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).repairWalkthroughStep(action),
+		acceptWalkthroughStepRedirection: async (action: AcceptWalkthroughStepRedirectionAction): Promise<WorkspaceState> =>
+			(await deps.workspace).acceptWalkthroughStepRedirection(action),
 		copySqlPreview: async ({ preview }: { preview: DisplayedSqlPreview }): Promise<SqlPreviewCopyResult> => {
 			(await deps.workspace).requireActiveDesign(preview.designId);
 			return deps.sqlPreviewActions.copy(preview);

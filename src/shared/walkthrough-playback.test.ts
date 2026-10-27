@@ -26,6 +26,7 @@ import {
 	removeSystemConnection,
 	resizeSystemGroup,
 	updateSystemComponent,
+	updateSystemConnection,
 	type SystemDesign,
 } from "./system-design";
 import { addWalkthrough, addWalkthroughStep, updateWalkthroughStep, type Walkthrough } from "./walkthrough";
@@ -253,6 +254,57 @@ describe("Walkthrough frames derive from authored time", () => {
 	});
 });
 
+describe("Walkthrough travel share and time scrubbing", () => {
+	test("a step's travel share moves its arrival while its duration and the Walkthrough's total stay the same", () => {
+		const design = fixtureDesign();
+		let walkthroughs = walkthroughWith(design, [
+			{ id: "s1", connectionId: "upload", durationMs: 1000 },
+			{ id: "s2", connectionId: "enqueue", durationMs: 1000 },
+		]);
+		walkthroughs = updateWalkthroughStep(walkthroughs, "upload", "s1", { travelPercent: 25 });
+		const timeline = compiled(design, walkthroughs);
+
+		expect(timeline.steps[0]).toMatchObject({ startMs: 0, durationMs: 1000, arrivalMs: 250, endMs: 1000 });
+		expect(timeline.steps[1]).toMatchObject({ startMs: 1000, arrivalMs: 1600 });
+		expect(timeline.totalMs).toBe(2000);
+
+		const arrived = deriveWalkthroughFrame(timeline, routesFor(design), 250);
+		expect(arrived.message?.progress).toBe(1);
+		expect(arrived.reactions.api).toEqual({ action: "receive", role: "destination", phase: "arrive", intensity: 0 });
+	});
+
+	test("scrubbing forward past a message and back gives the same frame, with no leftover message or reaction", () => {
+		const design = fixtureDesign();
+		const timeline = compiled(design, walkthroughWith(design, [
+			{ id: "s1", connectionId: "upload", durationMs: 1000 },
+			{ id: "s2", connectionId: "enqueue", durationMs: 1000, action: "fail" },
+		]));
+		const routes = routesFor(design);
+
+		const before = deriveWalkthroughFrame(timeline, routes, 300);
+		deriveWalkthroughFrame(timeline, routes, 1700);
+		expect(deriveWalkthroughFrame(timeline, routes, 300)).toEqual(before);
+
+		const later = deriveWalkthroughFrame(timeline, routes, 1700);
+		expect(later.step.connectionId).toBe("enqueue");
+		expect(later.reactions.client).toBeUndefined();
+		expect(later.reactions.api).toBeUndefined();
+		expect(later.message).toBeNull();
+		expect(later.reactions.queue).toEqual({ action: "receive", role: "destination", phase: "arrive", intensity: expect.any(Number) });
+	});
+
+	test("a time scrub keeps a paused clock paused at the chosen time and a playing clock playing from it", () => {
+		const total = 4000;
+		const paused = seekTransport(createPlaybackTransport(), 1500, 100, total);
+		expect(isTransportPlaying(paused, 9000, total)).toBe(false);
+		expect(transportTimeMs(paused, 9000, total)).toBe(1500);
+
+		const playing = seekTransport(playTransport(createPlaybackTransport(), 0, total), 2500, 1000, total);
+		expect(isTransportPlaying(playing, 1000, total)).toBe(true);
+		expect(transportTimeMs(playing, 1200, total)).toBe(2700);
+	});
+});
+
 describe("Walkthrough clock transport", () => {
 	test("plays, pauses, and resumes on a controlled clock", () => {
 		const total = 3000;
@@ -335,5 +387,55 @@ describe("Walkthrough playback key", () => {
 
 		const edited = updateWalkthroughStep(walkthroughs, "upload", "s1", { explanation: "Now explained" });
 		expect(walkthroughPlaybackKey(edited[0]!, design)).not.toBe(key);
+	});
+});
+
+describe("Walkthrough reactions carry operation presets to the destination only", () => {
+	test("a destination reaction keeps the step's operation through arrival and outcome, while the sender's does not", () => {
+		const design = fixtureDesign();
+		let walkthroughs = walkthroughWith(design, [{ id: "s1", connectionId: "upload", durationMs: 1000, action: "succeed" }]);
+		walkthroughs = updateWalkthroughStep(walkthroughs, "upload", "s1", { operation: "cache hit" });
+		const timeline = compiled(design, walkthroughs);
+		const routes = routesFor(design);
+		const arrival = timeline.steps[0]!.arrivalMs;
+
+		expect(deriveWalkthroughFrame(timeline, routes, 0).reactions.client?.operation).toBeUndefined();
+		expect(deriveWalkthroughFrame(timeline, routes, arrival + 1).reactions.api).toMatchObject({ phase: "arrive", operation: "cache hit" });
+		expect(deriveWalkthroughFrame(timeline, routes, 900).reactions.api).toMatchObject({ phase: "outcome", action: "succeed", operation: "cache hit" });
+	});
+});
+
+describe("Walkthrough playback after architecture changes", () => {
+	test("a redirected step blocks only its own Walkthrough, and an unaffected Walkthrough still plays", () => {
+		const design = fixtureDesign();
+		let walkthroughs = addWalkthrough([], { id: "upload", name: "Upload" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u1", connectionId: "upload", title: "Send" }, design);
+		walkthroughs = addWalkthrough(walkthroughs, { id: "reply", name: "Reply" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "reply", { id: "r1", connectionId: "reply", title: "Answer" }, design);
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u2", connectionId: "enqueue", title: "Queue" }, design);
+
+		// Retaining the Connection id alone does not accept its new endpoints.
+		const redirected = updateSystemConnection(design, "enqueue", { sourceId: "client" });
+		const affected = compileWalkthroughPlayback(walkthroughs[0]!, redirected);
+		expect(affected.ok).toBe(false);
+		if (affected.ok) throw new Error("Expected the redirected Walkthrough to be blocked.");
+		expect(affected.problems).toEqual(["Step 2 now runs a changed route. Accept the current route or repair the step."]);
+
+		expect(compileWalkthroughPlayback(walkthroughs[1]!, redirected).ok).toBe(true);
+	});
+
+	test("a removed Connection blocks only the Walkthroughs that play it", () => {
+		const design = fixtureDesign();
+		let walkthroughs = addWalkthrough([], { id: "upload", name: "Upload" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u1", connectionId: "upload", title: "Send" }, design);
+		walkthroughs = addWalkthrough(walkthroughs, { id: "reply", name: "Reply" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "reply", { id: "r1", connectionId: "reply", title: "Answer" }, design);
+
+		const removed = removeSystemConnection(design, "upload");
+		const blocked = compileWalkthroughPlayback(walkthroughs[0]!, removed);
+		expect(blocked.ok).toBe(false);
+		if (blocked.ok) throw new Error("Expected the dangling Walkthrough to be blocked.");
+		expect(blocked.problems).toEqual(["Step 1 plays a Connection that was removed. Choose a Connection to repair it."]);
+		expect(compileWalkthroughPlayback(walkthroughs[1]!, removed).ok).toBe(true);
 	});
 });

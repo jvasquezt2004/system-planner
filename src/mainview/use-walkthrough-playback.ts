@@ -41,6 +41,8 @@ export type WalkthroughPlaybackControls = {
 	previous: () => void;
 	next: () => void;
 	seekStep: (index: number) => void;
+	/** Moves the clock to any time on the Walkthrough, keeping whether it is playing. */
+	seekTime: (timeMs: number) => void;
 	setSpeed: (speed: PlaybackSpeed) => void;
 };
 
@@ -157,6 +159,7 @@ export function useWalkthroughPlayback({
 		seekStep: (index) => {
 			if (timeline) change((current, now, total) => seekTransport(current, stepStartMs(timeline, index), now, total));
 		},
+		seekTime: (timeMs) => change((current, now, total) => seekTransport(current, timeMs, now, total)),
 		setSpeed: (speed) => change((current, now, total) => setTransportSpeed(current, speed, now, total)),
 	};
 }

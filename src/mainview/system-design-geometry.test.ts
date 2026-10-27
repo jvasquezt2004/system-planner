@@ -17,6 +17,7 @@ import {
 	clampZoom,
 	connectionGeometries,
 	drawnEndpointRect,
+	followViewport,
 	groupFrameAround,
 	internalConnectionCount,
 	movedBeyondThreshold,
@@ -129,6 +130,21 @@ function ownedServiceDesign(): SystemDesign {
 	design = addSystemConnection(design, { id: "dispatch", sourceId: "orders", targetId: "queue", label: "Dispatches" });
 	return design;
 }
+
+describe("Walkthrough camera follow", () => {
+	test("follow centers the midpoint of the active route on the canvas at the zoom the author set", () => {
+		const route = { start: { x: 100, y: 200 }, cp1: { x: 200, y: 200 }, cp2: { x: 400, y: 200 }, end: { x: 500, y: 200 } };
+		const viewport = followViewport({ x: 40, y: -90, zoom: 2 }, route, { width: 800, height: 600 });
+
+		// The midpoint (300, 200) lands on the screen centre (400, 300) at zoom 2.
+		expect(viewport).toEqual({ x: 400 - 300 * 2, y: 300 - 200 * 2, zoom: 2 });
+	});
+
+	test("follow leaves a route that already sits at the centre where it is", () => {
+		const route = { start: { x: 0, y: 0 }, cp1: { x: 0, y: 0 }, cp2: { x: 0, y: 0 }, end: { x: 800, y: 600 } };
+		expect(followViewport({ x: 0, y: 0, zoom: 1 }, route, { width: 800, height: 600 })).toEqual({ x: 0, y: 0, zoom: 1 });
+	});
+});
 
 describe("Walkthrough playback routes", () => {
 	test("a playback route is the curve the overview draws, so a message sampled on it lies on the Connection", () => {

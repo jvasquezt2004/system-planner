@@ -23,6 +23,9 @@ export const WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT = 500;
 export const WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT = 4000;
 export const WALKTHROUGH_DURATION_MIN_MS = 100;
 export const WALKTHROUGH_DURATION_MAX_MS = 10_000;
+/** Share of a step spent travelling before the message arrives; the rest shows arrival and outcome. */
+export const WALKTHROUGH_TRAVEL_PERCENT_MIN = 10;
+export const WALKTHROUGH_TRAVEL_PERCENT_MAX = 90;
 export const WALKTHROUGH_LIMIT = 50;
 export const WALKTHROUGH_STEP_LIMIT = 200;
 
@@ -39,6 +42,8 @@ export type WalkthroughStep = {
 	operation?: string;
 	/** Illustrative duration in milliseconds. */
 	durationMs?: number;
+	/** Whole percent of the step's duration spent travelling, from 10 to 90. Defaults to the playback default. */
+	travelPercent?: number;
 	exampleMessage?: string;
 	examplePayload?: string;
 };
@@ -56,6 +61,8 @@ export type WalkthroughStepDraft = {
 	action?: WalkthroughAction;
 	operation?: string;
 	durationMs?: number | null;
+	/** Null clears the share, returning the step to the playback default. */
+	travelPercent?: number | null;
 	exampleMessage?: string;
 	examplePayload?: string;
 };
@@ -80,6 +87,19 @@ export type UpdateWalkthroughStepAction = { walkthroughId: string; stepId: strin
 export type MoveWalkthroughStepAction = { walkthroughId: string; stepId: string; toIndex: number };
 export type RemoveWalkthroughStepAction = { walkthroughId: string; stepId: string };
 export type RepairWalkthroughStepAction = { walkthroughId: string; stepId: string; connectionId: string };
+export type AcceptWalkthroughStepRedirectionAction = { walkthroughId: string; stepId: string };
+
+/** A step, in any Walkthrough, that plays a Connection a pending removal would delete. */
+export type AffectedWalkthroughStep = {
+	walkthroughId: string;
+	walkthroughName: string;
+	stepId: string;
+	title: string;
+	connectionId: string;
+};
+
+/** What removing architecture content does to Walkthroughs. Affected steps keep their text and become dangling. */
+export type WalkthroughRemovalImpact = { walkthroughSteps: AffectedWalkthroughStep[] };
 
 export function findWalkthrough(walkthroughs: Walkthrough[], walkthroughId: string): Walkthrough | undefined {
 	return walkthroughs.find((walkthrough) => walkthrough.id === walkthroughId);
@@ -201,6 +221,45 @@ export function repairWalkthroughStep(
 	});
 }
 
+/**
+ * Accepts the route a redirected step's Connection now runs. Keeping the same
+ * Connection id is not enough on its own: only a step whose endpoints changed
+ * can be accepted, and acceptance records the endpoints the designer reviewed.
+ */
+export function acceptWalkthroughStepRedirection(
+	walkthroughs: Walkthrough[],
+	walkthroughId: string,
+	stepId: string,
+	design: SystemDesign,
+): Walkthrough[] {
+	const walkthrough = requireWalkthrough(walkthroughs, walkthroughId);
+	const current = requireStep(walkthrough, stepId);
+	if (walkthroughStepStatus(current, design).status !== "redirected") {
+		throw new Error("This step does not run a changed route to accept.");
+	}
+	return repairWalkthroughStep(walkthroughs, walkthroughId, stepId, current.connectionId, design);
+}
+
+/**
+ * The steps, across every Walkthrough, that play one of the given Connections.
+ * Removing those Connections, directly or with the Components and Services they
+ * join, leaves these steps dangling. Nothing is deleted by listing them.
+ */
+export function walkthroughStepsOnConnections(walkthroughs: Walkthrough[], connectionIds: readonly string[]): AffectedWalkthroughStep[] {
+	const ids = new Set(connectionIds);
+	return walkthroughs.flatMap((walkthrough) =>
+		walkthrough.steps
+			.filter((step) => ids.has(step.connectionId))
+			.map((step) => ({
+				walkthroughId: walkthrough.id,
+				walkthroughName: walkthrough.name,
+				stepId: step.id,
+				title: step.title,
+				connectionId: step.connectionId,
+			})),
+	);
+}
+
 /** The highlight for the selected step, or null when the selection no longer names a step. */
 export function selectedWalkthroughHighlight(
 	walkthroughs: Walkthrough[],
@@ -287,6 +346,7 @@ export function normalizeWalkthroughs(value: unknown): Walkthrough[] {
 				action: requireAction(stepItem.action),
 				operation: optionalStoredText(stepItem.operation, WALKTHROUGH_OPERATION_LIMIT, "Step operation"),
 				durationMs: optionalStoredDuration(stepItem.durationMs),
+				travelPercent: optionalStoredTravelPercent(stepItem.travelPercent),
 				exampleMessage: optionalStoredText(stepItem.exampleMessage, WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT, "Example message"),
 				examplePayload: optionalStoredText(stepItem.examplePayload, WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT, "Example payload"),
 			});
@@ -306,6 +366,9 @@ function applyStepChanges(step: WalkthroughStep, changes: WalkthroughStepDraft):
 		next.operation = optionalText(changes.operation, WALKTHROUGH_OPERATION_LIMIT, "Step operation");
 	}
 	if (changes.durationMs !== undefined) next.durationMs = changes.durationMs === null ? undefined : requireDuration(changes.durationMs);
+	if (changes.travelPercent !== undefined) {
+		next.travelPercent = changes.travelPercent === null ? undefined : requireTravelPercent(changes.travelPercent);
+	}
 	if (changes.exampleMessage !== undefined) {
 		next.exampleMessage = optionalText(changes.exampleMessage, WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT, "Example message");
 	}
@@ -409,6 +472,21 @@ function requireDuration(value: unknown): number {
 function optionalStoredDuration(value: unknown): number | undefined {
 	if (value === undefined) return undefined;
 	return requireDuration(value);
+}
+
+function requireTravelPercent(value: unknown): number {
+	if (typeof value !== "number" || !Number.isInteger(value)
+		|| value < WALKTHROUGH_TRAVEL_PERCENT_MIN || value > WALKTHROUGH_TRAVEL_PERCENT_MAX) {
+		throw new Error(
+			`Step travel share must be a whole percent from ${WALKTHROUGH_TRAVEL_PERCENT_MIN} to ${WALKTHROUGH_TRAVEL_PERCENT_MAX}.`,
+		);
+	}
+	return value;
+}
+
+function optionalStoredTravelPercent(value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	return requireTravelPercent(value);
 }
 
 function withoutUndefined<T extends object>(value: T): T {

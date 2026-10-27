@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import type { SaveState, WorkspaceState } from "../shared/design";
-import type { SystemConnection, SystemDesign } from "../shared/system-design";
+import { findSystemComponent, type SystemConnection, type SystemDesign } from "../shared/system-design";
+import { catalogEntryFor } from "../shared/component-catalog";
 import {
 	WALKTHROUGH_ACTIONS,
 	WALKTHROUGH_DURATION_MAX_MS,
@@ -10,6 +11,8 @@ import {
 	WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT,
 	WALKTHROUGH_EXPLANATION_LIMIT,
 	WALKTHROUGH_NAME_LIMIT,
+	WALKTHROUGH_TRAVEL_PERCENT_MAX,
+	WALKTHROUGH_TRAVEL_PERCENT_MIN,
 	WALKTHROUGH_OPERATION_LIMIT,
 	WALKTHROUGH_TITLE_LIMIT,
 	findSystemEndpoint,
@@ -44,6 +47,7 @@ export type WalkthroughEditorProps = {
 	onSelect: (selection: WalkthroughSelection | null) => void;
 	onClose: () => void;
 	playback: WalkthroughPlaybackControls;
+	followCamera: { enabled: boolean; onChange: (enabled: boolean) => void };
 };
 
 /**
@@ -61,6 +65,7 @@ export function WalkthroughEditor({
 	onSelect,
 	onClose,
 	playback,
+	followCamera,
 }: WalkthroughEditorProps) {
 	const walkthrough = selection ? findWalkthrough(walkthroughs, selection.walkthroughId) ?? null : null;
 	const step = walkthrough && selection?.stepId
@@ -188,7 +193,7 @@ export function WalkthroughEditor({
 							</ol>
 						</div>
 
-						<WalkthroughTransport controls={playback} />
+						<WalkthroughTransport controls={playback} follow={followCamera} />
 
 						<AddStepControl
 							walkthroughId={walkthrough.id}
@@ -423,7 +428,11 @@ function StepEditor({
 	const [title, setTitle] = useState(step.title);
 	const [explanation, setExplanation] = useState(step.explanation);
 	const [operation, setOperation] = useState(step.operation ?? "");
+	/** Operation presets the destination's kind names; they suggest text and do not restrict it. */
+	const operationPresets = catalogEntryFor(findSystemComponent(design, step.route.targetId)?.kind ?? "")?.operations ?? [];
+	const operationListId = `operation-presets-${step.id}`;
 	const [duration, setDuration] = useState(step.durationMs === undefined ? "" : String(step.durationMs));
+	const [travelPercent, setTravelPercent] = useState(step.travelPercent === undefined ? "" : String(step.travelPercent));
 	const [exampleMessage, setExampleMessage] = useState(step.exampleMessage ?? "");
 	const [examplePayload, setExamplePayload] = useState(step.examplePayload ?? "");
 
@@ -433,6 +442,10 @@ function StepEditor({
 	function commitRepair(connectionId: string) {
 		if (!connectionId) return;
 		onApply(() => client.repairWalkthroughStep(walkthroughId, step.id, connectionId));
+	}
+	/** Accepts the endpoints the Connection now joins. Choosing a different Connection repairs the step instead. */
+	function commitAcceptRedirection() {
+		onApply(() => client.acceptWalkthroughStepRedirection(walkthroughId, step.id));
 	}
 	function commitText(
 		key: "title" | "explanation" | "operation" | "exampleMessage" | "examplePayload",
@@ -456,6 +469,19 @@ function StepEditor({
 		}
 		if (value !== step.durationMs) commit({ durationMs: value });
 	}
+	function commitTravelPercent() {
+		const trimmed = travelPercent.trim();
+		if (trimmed.length === 0) {
+			if (step.travelPercent !== undefined) commit({ travelPercent: null });
+			return;
+		}
+		const value = Number(trimmed);
+		if (!Number.isInteger(value)) {
+			setTravelPercent(step.travelPercent === undefined ? "" : String(step.travelPercent));
+			return;
+		}
+		if (value !== step.travelPercent) commit({ travelPercent: value });
+	}
 
 	return (
 		<div className="flex flex-col gap-3 rounded-md border border-rule-soft p-3" aria-label="Selected step">
@@ -474,7 +500,7 @@ function StepEditor({
 						size="sm"
 						variant="outline"
 						className="self-start"
-						onClick={() => commitRepair(step.connectionId)}
+						onClick={commitAcceptRedirection}
 					>
 						Accept current route
 					</Button>
@@ -556,15 +582,39 @@ function StepEditor({
 			</div>
 
 			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Travel share (%)</span>
+				<Input
+					type="number"
+					inputMode="numeric"
+					min={WALKTHROUGH_TRAVEL_PERCENT_MIN}
+					max={WALKTHROUGH_TRAVEL_PERCENT_MAX}
+					value={travelPercent}
+					aria-label="Step travel share in percent"
+					placeholder="Default 60"
+					onChange={(event) => setTravelPercent(event.target.value)}
+					onBlur={commitTravelPercent}
+				/>
+				<span className="text-[11.5px] text-ink-3">The part of the duration spent travelling before the message arrives.</span>
+			</label>
+
+			<label className="flex flex-col gap-1">
 				<span className="text-ink-3">Operation</span>
 				<Input
 					value={operation}
 					maxLength={WALKTHROUGH_OPERATION_LIMIT}
 					aria-label="Step operation"
 					placeholder="Optional, e.g. cache hit"
+					list={operationPresets.length > 0 ? operationListId : undefined}
 					onChange={(event) => setOperation(event.target.value)}
 					onBlur={() => commitText("operation", operation)}
 				/>
+				{operationPresets.length > 0 && (
+					<datalist id={operationListId}>
+						{operationPresets.map((preset) => (
+							<option key={preset.id} value={preset.label} />
+						))}
+					</datalist>
+				)}
 			</label>
 
 			<label className="flex flex-col gap-1">

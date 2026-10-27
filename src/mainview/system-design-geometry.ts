@@ -143,6 +143,20 @@ export function zoomAroundPoint(viewport: CanvasViewport, screenPoint: CanvasPoi
 	};
 }
 
+/**
+ * The viewport that centers a Walkthrough step's interaction on the canvas: the
+ * midpoint of its route's two ends, at the current zoom. Pan and zoom otherwise
+ * stay as they are.
+ */
+export function followViewport(viewport: CanvasViewport, route: PlaybackRoute, size: { width: number; height: number }): CanvasViewport {
+	const midpoint = { x: (route.start.x + route.end.x) / 2, y: (route.start.y + route.end.y) / 2 };
+	return {
+		x: size.width / 2 - midpoint.x * viewport.zoom,
+		y: size.height / 2 - midpoint.y * viewport.zoom,
+		zoom: viewport.zoom,
+	};
+}
+
 export function componentRect(component: Pick<SystemComponent, "position">): ProofRect {
 	return { x: component.position.x, y: component.position.y, width: SYSTEM_COMPONENT_SIZE.width, height: SYSTEM_COMPONENT_SIZE.height };
 }
