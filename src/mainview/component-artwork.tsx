@@ -1,15 +1,15 @@
 import type { ReactNode } from "react";
-import type { ClientTrafficKind } from "../shared/component-catalog";
+import type { CatalogKind } from "../shared/component-catalog";
 
 /**
- * Pencil-line artwork for the client and traffic catalog kinds. Each glyph sits
- * in a 24 by 24 box, strokes with the pencil colour, and leaves fills empty, so
- * it reads like the rest of the sketch. The registry names the artwork per kind;
- * the record below must cover every kind, so a new kind cannot ship without one.
+ * Pencil-line artwork for the catalog kinds. Each glyph sits in a 24 by 24 box,
+ * strokes with the pencil colour, and leaves fills empty, so it reads like the
+ * rest of the sketch. The registry names the artwork per kind; the record below
+ * must cover every kind, so a new kind cannot ship without one.
  */
 export const COMPONENT_ARTWORK_SIZE = 24;
 
-const ARTWORK: Record<ClientTrafficKind, () => ReactNode> = {
+const ARTWORK: Record<CatalogKind, () => ReactNode> = {
 	person: () => (
 		<>
 			<circle cx={12} cy={8} r={3.5} />
@@ -75,10 +75,42 @@ const ARTWORK: Record<ClientTrafficKind, () => ReactNode> = {
 			<path d="M7.5 12L4 15.5l3.5 3.5" />
 		</>
 	),
+	application: () => (
+		<>
+			<rect x={3} y={4.5} width={18} height={15} rx={2} />
+			<path d="M3 9h18" />
+			<path d="M9.5 12.5L7.5 14.5l2 2M14.5 12.5l2 2-2 2" />
+		</>
+	),
+	api: () => (
+		<>
+			<path d="M8.5 6L3 12l5.5 6" />
+			<path d="M15.5 6L21 12l-5.5 6" />
+			<path d="M13.5 4.5l-3 15" />
+		</>
+	),
+	worker: () => (
+		<>
+			<circle cx={12} cy={12} r={3} />
+			<circle cx={12} cy={12} r={7.5} />
+			<path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.1 5.1l1.5 1.5M17.4 17.4l1.5 1.5M5.1 18.9l1.5-1.5M17.4 6.6l1.5-1.5" />
+		</>
+	),
+	scheduled_job: () => (
+		<>
+			<circle cx={12} cy={12} r={9} />
+			<path d="M12 7v5l3.5 2" />
+		</>
+	),
+	serverless_handler: () => (
+		<>
+			<path d="M13.5 2.5L5 13.5h6l-1 8 8.5-11h-6l1-7.5z" />
+		</>
+	),
 };
 
 /** Artwork for a catalog kind, placed with its top-left corner at (x, y). */
-export function ComponentArtwork({ artwork, x, y }: { artwork: ClientTrafficKind; x: number; y: number }) {
+export function ComponentArtwork({ artwork, x, y }: { artwork: CatalogKind; x: number; y: number }) {
 	return (
 		<g
 			data-testid="component-artwork"

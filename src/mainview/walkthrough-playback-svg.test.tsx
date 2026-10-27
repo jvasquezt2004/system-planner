@@ -104,6 +104,13 @@ describe("walkthrough SVG playback", () => {
 		expect(html).toContain(`stroke-opacity="${reaction.intensity}"`);
 	});
 
+	test("a compute destination shows its operation preset, and its shared action wording otherwise", () => {
+		const retried = { action: "fail", role: "destination", phase: "outcome", intensity: 1, operation: "retry" } as const;
+		expect(svg(<ReactionTag reaction={retried} kind="worker" x={0} y={-12} />)).toContain(">RETRY<");
+		const returned = { action: "succeed", role: "destination", phase: "outcome", intensity: 1 } as const;
+		expect(svg(<ReactionTag reaction={returned} kind="serverless_handler" x={0} y={-12} />)).toContain(">RETURNED<");
+	});
+
 	test("a catalog destination names its operation preset, while the sender keeps the action wording", () => {
 		const destination = { action: "receive", role: "destination", phase: "arrive", intensity: 1, operation: "cache hit" } as const;
 		const cacheHit = svg(<ReactionTag reaction={destination} kind="cdn" x={0} y={-12} />);
