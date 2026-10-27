@@ -84,7 +84,7 @@ function routesFor(design: SystemDesign): Map<string, PlaybackRoute> {
 	const routes = new Map<string, PlaybackRoute>();
 	for (const connection of design.connections) {
 		const route = computeConnectionPath(rects.get(connection.sourceId)!, rects.get(connection.targetId)!, 0);
-		routes.set(connection.id, { start: route.start, cp1: route.cp1, cp2: route.cp2, end: route.end });
+		routes.set(connection.id, { segments: [route] });
 	}
 	return routes;
 }
@@ -158,7 +158,7 @@ describe("Walkthrough frames derive from authored time", () => {
 		expect(frame.reactions.client).toEqual({ action: "send", role: "sender", phase: "depart", intensity: 1 });
 		expect(frame.reactions.api).toBeUndefined();
 		expect(frame.messages[0]?.progress).toBe(0);
-		expect(frame.messages[0]?.point).toEqual(routes.get("upload")!.start);
+		expect(frame.messages[0]?.point).toEqual(routes.get("upload")!.segments[0]!.start);
 		expect(frame.highlight).toEqual({ connectionId: "upload", endpointIds: ["client", "api"] });
 	});
 
@@ -170,8 +170,8 @@ describe("Walkthrough frames derive from authored time", () => {
 
 		const atArrival = deriveWalkthroughFrame(timeline, routes, arrival);
 		expect(atArrival.messages[0]?.progress).toBe(1);
-		expect(atArrival.messages[0]?.point.x).toBeCloseTo(routes.get("upload")!.end.x, 6);
-		expect(atArrival.messages[0]?.point.y).toBeCloseTo(routes.get("upload")!.end.y, 6);
+		expect(atArrival.messages[0]?.point.x).toBeCloseTo(routes.get("upload")!.segments[0]!.end.x, 6);
+		expect(atArrival.messages[0]?.point.y).toBeCloseTo(routes.get("upload")!.segments[0]!.end.y, 6);
 
 		const afterArrival = deriveWalkthroughFrame(timeline, routes, arrival + 1);
 		expect(afterArrival.messages).toEqual([]);
@@ -261,9 +261,9 @@ describe("Walkthrough frames derive from authored time", () => {
 		const movedRoutes = routesFor(moved);
 
 		const arrival = deriveWalkthroughFrame(timeline, movedRoutes, timeline.steps[0]!.arrivalMs);
-		expect(arrival.messages[0]?.point.x).toBeCloseTo(movedRoutes.get("upload")!.end.x, 6);
-		expect(arrival.messages[0]?.point.y).toBeCloseTo(movedRoutes.get("upload")!.end.y, 6);
-		expect(arrival.messages[0]?.point).not.toEqual(routesFor(design).get("upload")!.end);
+		expect(arrival.messages[0]?.point.x).toBeCloseTo(movedRoutes.get("upload")!.segments[0]!.end.x, 6);
+		expect(arrival.messages[0]?.point.y).toBeCloseTo(movedRoutes.get("upload")!.segments[0]!.end.y, 6);
+		expect(arrival.messages[0]?.point).not.toEqual(routesFor(design).get("upload")!.segments[0]!.end);
 		expect(timeline.steps[0]!.arrivalMs).toBe(Math.round(1000 * 0.6));
 	});
 });

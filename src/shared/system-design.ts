@@ -79,6 +79,15 @@ export type SystemGroup = {
 	memberIds: string[];
 };
 
+/**
+ * A side a Connection attaches to. "auto" is the default, and is stored as an
+ * omitted field: the route then picks the side that faces its next point.
+ */
+export type SystemConnectionSide = "top" | "right" | "bottom" | "left" | "auto";
+
+export const SYSTEM_CONNECTION_SIDES: readonly SystemConnectionSide[] = ["auto", "top", "right", "bottom", "left"];
+export const SYSTEM_CONNECTION_BEND_LIMIT = 8;
+
 export type SystemConnection = {
 	id: string;
 	/** A Component or Service id. */
@@ -89,6 +98,14 @@ export type SystemConnection = {
 	/** Optional interaction type, such as "Synchronous request" or "Event". */
 	interactionType?: string;
 	protocol?: string;
+	/** The side of the source endpoint the route leaves from. Omitted means automatic. */
+	fromSide?: SystemConnectionSide;
+	/** The side of the target endpoint the route arrives at. Omitted means automatic. */
+	toSide?: SystemConnectionSide;
+	/** Waypoints in canvas space, from source to target. The route passes through each one. */
+	bendPoints?: CanvasPoint[];
+	/** Offset of the label from the route's midpoint. Omitted means the label sits on the route. */
+	labelOffset?: CanvasPoint;
 };
 
 export type SystemDesign = {
@@ -229,7 +246,19 @@ export type SystemConnectionInput = {
 	protocol?: string;
 };
 
-export type SystemConnectionChanges = Partial<Pick<SystemConnection, "sourceId" | "targetId" | "label" | "interactionType" | "protocol">>;
+/**
+ * Route edits. A `null` or "auto" side restores the automatic side, an empty
+ * `bendPoints` removes every bend, and a `null` label offset puts the label back
+ * on the route. An omitted field is left as it is.
+ */
+export type SystemConnectionRouteChanges = {
+	fromSide?: SystemConnectionSide | null;
+	toSide?: SystemConnectionSide | null;
+	bendPoints?: CanvasPoint[];
+	labelOffset?: CanvasPoint | null;
+};
+
+export type SystemConnectionChanges = Partial<Pick<SystemConnection, "sourceId" | "targetId" | "label" | "interactionType" | "protocol">> & SystemConnectionRouteChanges;
 
 /** A Connection that a removal would delete because one of its endpoints is removed. */
 export type AffectedSystemConnection = {
@@ -728,6 +757,14 @@ export function addSystemConnection(design: SystemDesign, input: SystemConnectio
 	return { ...design, connections: [...design.connections, connection] };
 }
 
+/** True when the changes adjust how the Connection is drawn rather than what it means. */
+export function hasSystemConnectionRouteChange(changes: SystemConnectionChanges): boolean {
+	return changes.fromSide !== undefined
+		|| changes.toSide !== undefined
+		|| changes.bendPoints !== undefined
+		|| changes.labelOffset !== undefined;
+}
+
 export function updateSystemConnection(design: SystemDesign, connectionId: string, changes: SystemConnectionChanges): SystemDesign {
 	const current = requireSystemConnection(design, connectionId);
 	const next: SystemConnection = { ...current };
@@ -739,6 +776,13 @@ export function updateSystemConnection(design: SystemDesign, connectionId: strin
 	}
 	if ("interactionType" in changes) setOptionalText(next, "interactionType", changes.interactionType);
 	if ("protocol" in changes) setOptionalText(next, "protocol", changes.protocol);
+	if (changes.fromSide !== undefined) setOptionalSide(next, "fromSide", changes.fromSide);
+	if (changes.toSide !== undefined) setOptionalSide(next, "toSide", changes.toSide);
+	if (changes.bendPoints !== undefined) setOptionalBends(next, changes.bendPoints);
+	if (changes.labelOffset !== undefined) {
+		if (changes.labelOffset === null) delete next.labelOffset;
+		else next.labelOffset = requirePosition(changes.labelOffset, "Label offset");
+	}
 	if (sameJson(current, next)) return design;
 	return {
 		...design,
@@ -887,6 +931,7 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			label: requireSystemName(item.label, "Connection label", SYSTEM_CONNECTION_LABEL_LIMIT),
 			...optionalText("interactionType", typeof item.interactionType === "string" ? item.interactionType : undefined),
 			...optionalText("protocol", typeof item.protocol === "string" ? item.protocol : undefined),
+			...normalizeRouteFields(item),
 		});
 	}
 	const viewport = isRecord(value.viewport) ? value.viewport : SYSTEM_DEFAULT_VIEWPORT;
@@ -1010,6 +1055,55 @@ function requireSystemComponent(design: SystemDesign, componentId: string): Syst
 	const component = findSystemComponent(design, componentId);
 	if (!component) throw new Error("That Component could not be found.");
 	return component;
+}
+
+/** Sides, bend points, and label offset of a saved Connection. The automatic choice is stored as an omitted field. */
+function normalizeRouteFields(item: Record<string, unknown>): Partial<Pick<SystemConnection, "fromSide" | "toSide" | "bendPoints" | "labelOffset">> {
+	const fields: Partial<Pick<SystemConnection, "fromSide" | "toSide" | "bendPoints" | "labelOffset">> = {};
+	const fromSide = item.fromSide === undefined || item.fromSide === null ? "auto" : requireSystemSide(item.fromSide);
+	const toSide = item.toSide === undefined || item.toSide === null ? "auto" : requireSystemSide(item.toSide);
+	if (fromSide !== "auto") fields.fromSide = fromSide;
+	if (toSide !== "auto") fields.toSide = toSide;
+	if (item.bendPoints !== undefined && item.bendPoints !== null) {
+		if (!Array.isArray(item.bendPoints)) throw new Error("A saved Connection has malformed bend points.");
+		const bends = normalizeBendPoints(item.bendPoints);
+		if (bends.length > 0) fields.bendPoints = bends;
+	}
+	if (item.labelOffset !== undefined && item.labelOffset !== null) {
+		fields.labelOffset = requirePosition(item.labelOffset as CanvasPoint, "Label offset");
+	}
+	return fields;
+}
+
+function requireSystemSide(value: unknown): SystemConnectionSide {
+	if (typeof value !== "string" || !SYSTEM_CONNECTION_SIDES.includes(value as SystemConnectionSide)) {
+		throw new Error("A Connection side must be top, right, bottom, left, or auto.");
+	}
+	return value as SystemConnectionSide;
+}
+
+function normalizeBendPoints(values: readonly unknown[]): CanvasPoint[] {
+	if (values.length > SYSTEM_CONNECTION_BEND_LIMIT) {
+		throw new Error(`A Connection can have at most ${SYSTEM_CONNECTION_BEND_LIMIT} bend points.`);
+	}
+	return values.map((value) => requirePosition(value as CanvasPoint, "Bend point"));
+}
+
+/** A side is stored only when it is not automatic, so an unchanged route compares equal and leaves no field behind. */
+function setOptionalSide(target: SystemConnection, key: "fromSide" | "toSide", value: SystemConnectionSide | null) {
+	if (value === null || value === "auto") {
+		delete target[key];
+		return;
+	}
+	target[key] = requireSystemSide(value);
+}
+
+function setOptionalBends(target: SystemConnection, value: readonly CanvasPoint[]) {
+	if (value.length === 0) {
+		delete target.bendPoints;
+		return;
+	}
+	target.bendPoints = normalizeBendPoints(value);
 }
 
 function requireSystemConnection(design: SystemDesign, connectionId: string): SystemConnection {

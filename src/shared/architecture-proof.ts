@@ -683,6 +683,166 @@ export function sampleCubicBezier(
 	};
 }
 
+/** One cubic Bezier piece of a drawn route. A route with bend points is one piece per leg; the pieces meet at each bend point. */
+export type ProofCubic = { start: ProofPoint; cp1: ProofPoint; cp2: ProofPoint; end: ProofPoint };
+
+/** A side of a rectangle a Connection can attach to. */
+export type ProofSide = "top" | "right" | "bottom" | "left";
+
+/** The side a Connection asks for. "auto" picks the side that faces the route's next point. */
+export type ProofSideChoice = ProofSide | "auto";
+
+/** Optional route adjustments. Absent or "auto" sides and no bend points keep the automatic route. */
+export type ProofRouteHints = {
+	fromSide?: ProofSideChoice;
+	toSide?: ProofSideChoice;
+	bendPoints?: readonly ProofPoint[];
+};
+
+const SIDE_NORMALS: Record<ProofSide, ProofPoint> = {
+	top: { x: 0, y: -1 },
+	right: { x: 1, y: 0 },
+	bottom: { x: 0, y: 1 },
+	left: { x: -1, y: 0 },
+};
+
+/** Parallel routes are separated by this many pixels per offset step, applied to control points only. */
+const PARALLEL_ROUTE_STEP = 14;
+/** Samples per piece when measuring a route's length for playback and label placement. */
+const LENGTH_SAMPLES = 16;
+
+function rectCenter(rect: ProofRect): ProofPoint {
+	return { x: rect.x + rect.width / 2, y: rect.y + rect.height / 2 };
+}
+
+/** The side of `rect` that faces `toward`. It follows the same rule the automatic route uses for its sides. */
+export function autoSideToward(rect: ProofRect, toward: ProofPoint): ProofSide {
+	const center = rectCenter(rect);
+	const dx = toward.x - center.x;
+	const dy = toward.y - center.y;
+	if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? "right" : "left";
+	return dy >= 0 ? "bottom" : "top";
+}
+
+/** The midpoint of one side of `rect`, where a Connection attaches to that side. */
+export function sideAnchor(rect: ProofRect, side: ProofSide): ProofPoint {
+	const center = rectCenter(rect);
+	if (side === "top") return { x: center.x, y: rect.y };
+	if (side === "bottom") return { x: center.x, y: rect.y + rect.height };
+	if (side === "left") return { x: rect.x, y: center.y };
+	return { x: rect.x + rect.width, y: center.y };
+}
+
+function unitVector(vector: ProofPoint): ProofPoint {
+	const length = Math.hypot(vector.x, vector.y);
+	return length === 0 ? { x: 0, y: 0 } : { x: vector.x / length, y: vector.y / length };
+}
+
+/**
+ * Routes one Connection between two rectangles, as the one path that painting,
+ * hit-testing, label placement, and message motion all read. With no hints this
+ * is the automatic curve. Manual sides and bend points produce one cubic piece per
+ * leg, so the path passes exactly through every bend point. `routeOffset` bends
+ * the control points of parallel Connections apart, so they never coincide.
+ */
+export function routeConnectionPath(
+	sourceRect: ProofRect,
+	targetRect: ProofRect,
+	routeOffset: number = 0,
+	hints: ProofRouteHints = {},
+): ProofCubic[] {
+	const bends = hints.bendPoints ?? [];
+	const manualFrom = hints.fromSide !== undefined && hints.fromSide !== "auto";
+	const manualTo = hints.toSide !== undefined && hints.toSide !== "auto";
+	if (bends.length === 0 && !manualFrom && !manualTo) {
+		const { start, cp1, cp2, end } = computeConnectionPath(sourceRect, targetRect, routeOffset);
+		return [{ start, cp1, cp2, end }];
+	}
+
+	const outSide: ProofSide = hints.fromSide && hints.fromSide !== "auto"
+		? hints.fromSide
+		: autoSideToward(sourceRect, bends[0] ?? rectCenter(targetRect));
+	const inSide: ProofSide = hints.toSide && hints.toSide !== "auto"
+		? hints.toSide
+		: autoSideToward(targetRect, bends[bends.length - 1] ?? rectCenter(sourceRect));
+	const points: ProofPoint[] = [sideAnchor(sourceRect, outSide), ...bends, sideAnchor(targetRect, inSide)];
+
+	// Travel direction at the route's ends follows the sides it leaves and enters through.
+	const leaving = SIDE_NORMALS[outSide];
+	const entering = { x: -SIDE_NORMALS[inSide].x, y: -SIDE_NORMALS[inSide].y };
+	const first = points[0]!;
+	const last = points[points.length - 1]!;
+	const main = unitVector({ x: last.x - first.x, y: last.y - first.y });
+	const normal = { x: -main.y, y: main.x };
+	const shift = routeOffset * PARALLEL_ROUTE_STEP;
+
+	const pieces: ProofCubic[] = [];
+	for (let index = 0; index < points.length - 1; index++) {
+		const a = points[index]!;
+		const b = points[index + 1]!;
+		const travelA = index === 0 ? leaving : unitVector(vectorBetween(points[index - 1]!, points[index + 1]!));
+		const travelB = index + 1 === points.length - 1 ? entering : unitVector(vectorBetween(points[index], points[index + 2]!));
+		const reach = Math.max(Math.hypot(b.x - a.x, b.y - a.y) / 3, 24);
+		pieces.push({
+			start: a,
+			cp1: { x: a.x + travelA.x * reach + normal.x * shift, y: a.y + travelA.y * reach + normal.y * shift },
+			cp2: { x: b.x - travelB.x * reach + normal.x * shift, y: b.y - travelB.y * reach + normal.y * shift },
+			end: b,
+		});
+	}
+	return pieces;
+}
+
+function vectorBetween(from: ProofPoint, to: ProofPoint): ProofPoint {
+	return { x: to.x - from.x, y: to.y - from.y };
+}
+
+/** The SVG path string for a route. One piece reads exactly like the automatic curve's string. */
+export function pathStringOf(pieces: readonly ProofCubic[]): string {
+	const first = pieces[0];
+	if (!first) return "";
+	const format = (point: ProofPoint) => `${point.x.toFixed(1)} ${point.y.toFixed(1)}`;
+	const curves = pieces.map((piece) => `C ${format(piece.cp1)}, ${format(piece.cp2)}, ${format(piece.end)}`);
+	return [`M ${format(first.start)}`, ...curves].join(" ");
+}
+
+function cubicLength(piece: ProofCubic): number {
+	let length = 0;
+	let previous = piece.start;
+	for (let step = 1; step <= LENGTH_SAMPLES; step++) {
+		const point = sampleCubicBezier(piece.start, piece.cp1, piece.cp2, piece.end, step / LENGTH_SAMPLES);
+		length += Math.hypot(point.x - previous.x, point.y - previous.y);
+		previous = point;
+	}
+	return length;
+}
+
+/**
+ * The point a fraction `t` of the way along a route, measured by length. Playback
+ * and label placement sample the same path, so a message travels exactly along
+ * the drawn route. A single piece samples its curve parametrically.
+ */
+export function samplePath(pieces: readonly ProofCubic[], t: number): ProofPoint {
+	const first = pieces[0]!;
+	const last = pieces[pieces.length - 1]!;
+	if (pieces.length === 1) return sampleCubicBezier(first.start, first.cp1, first.cp2, first.end, t);
+	if (t <= 0) return first.start;
+	if (t >= 1) return last.end;
+	const lengths = pieces.map(cubicLength);
+	const total = lengths.reduce((sum, length) => sum + length, 0);
+	if (total === 0) return first.start;
+	let remaining = t * total;
+	for (let index = 0; index < pieces.length; index++) {
+		const length = lengths[index]!;
+		if (remaining <= length || index === pieces.length - 1) {
+			const piece = pieces[index]!;
+			return sampleCubicBezier(piece.start, piece.cp1, piece.cp2, piece.end, length === 0 ? 0 : remaining / length);
+		}
+		remaining -= length;
+	}
+	return last.end;
+}
+
 export type PlaybackParticle = {
 	connectionId: string;
 	progress: number;

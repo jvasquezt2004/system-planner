@@ -1,4 +1,4 @@
-import { sampleCubicBezier, type ProofPoint } from "./architecture-proof";
+import { samplePath, type ProofCubic, type ProofPoint } from "./architecture-proof";
 import { findSystemConnection, type SystemDesign } from "./system-design";
 import {
 	findSystemEndpoint,
@@ -73,8 +73,8 @@ export type PlaybackCompileResult =
 	| { ok: true; timeline: PlaybackTimeline }
 	| { ok: false; problems: string[] };
 
-/** Endpoints of a drawn Connection, in the same space as the overview's routes. */
-export type PlaybackRoute = { start: ProofPoint; cp1: ProofPoint; cp2: ProofPoint; end: ProofPoint };
+/** The drawn path of a Connection, in the same space as the overview's routes. Messages travel along exactly these pieces. */
+export type PlaybackRoute = { segments: readonly ProofCubic[] };
 
 export type PlaybackMessage = { connectionId: string; progress: number; point: ProofPoint };
 
@@ -291,7 +291,7 @@ export function deriveWalkthroughFrame(
 			messages.push({
 				connectionId: step.connectionId,
 				progress,
-				point: sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, progress),
+				point: samplePath(route.segments, progress),
 			});
 		}
 	}

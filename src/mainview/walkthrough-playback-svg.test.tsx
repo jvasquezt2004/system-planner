@@ -44,7 +44,7 @@ function timelineAndRoutes(durationMs: number, action: "send" | "fail" = "send")
 	const route = computeConnectionPath(rects.get("client")!, rects.get("queue")!, 0);
 	return {
 		timeline: result.timeline,
-		routes: new Map([["enqueue", { start: route.start, cp1: route.cp1, cp2: route.cp2, end: route.end }]]),
+		routes: new Map([["enqueue", { segments: [route] }]]),
 	};
 }
 

@@ -49,6 +49,18 @@ or Services. Multiple Connections may join the same endpoints; their existence
 does not determine a Walkthrough's order of events.
 _Avoid_: Relationship, executed request
 
+**Attachment side**:
+The side of a Connection's endpoint where its route leaves or arrives. Automatic
+by default, and a designer can fix it to top, right, bottom, or left. It changes
+only how the Connection is drawn.
+_Avoid_: Port, handle
+
+**Bend point**:
+A waypoint a designer places on a Connection's route, which the route passes
+through in order. It shapes the drawn path, and playback follows that same path
+without changing the authored step order or durations.
+_Avoid_: Control point, waypoint
+
 **Database component**:
 A Component representing a database, optionally linked to a Design for supported
 schema detail. Multiple Database components may intentionally share a Design

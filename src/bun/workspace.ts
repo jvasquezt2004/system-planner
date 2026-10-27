@@ -104,6 +104,7 @@ import {
 	findSystemConnection,
 	findSystemGroup,
 	findSystemService,
+	hasSystemConnectionRouteChange,
 	moveSystemComponent,
 	moveSystemGroup,
 	moveSystemService,
@@ -2709,6 +2710,10 @@ export async function createDesignWorkspace(
 					const next = updateSystemConnection(design, action.connectionId, action.changes);
 					const after = findSystemConnection(next, action.connectionId);
 					if (!after) throw new Error("That Connection could not be found.");
+					// A route edit is one completed gesture, so it is never merged with a later edit to the same Connection.
+					if (hasSystemConnectionRouteChange(action.changes)) {
+						return { next, action: attributed(action, { name: `Reroute connection “${after.label}”` }) };
+					}
 					return {
 						next,
 						action: attributed(action, { name: `Edit connection “${after.label}”`, coalesceKey: `system-connection:${action.connectionId}` }),

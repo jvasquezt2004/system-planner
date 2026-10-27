@@ -4,10 +4,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+	SYSTEM_CONNECTION_BEND_LIMIT,
 	addSystemComponent,
 	addSystemConnection,
 	addSystemGroup,
 	addSystemService,
+	hasSystemConnectionRouteChange,
+	updateSystemConnection,
 	componentsLinkedToDesign,
 	createEmptySystemDesign,
 	createMigratedSystemDesign,
@@ -1179,5 +1182,89 @@ describe("System design focused Service workspace", () => {
 
 		const removed = await workspace.removeSystemService({ serviceId: "orders" });
 		expect(removed.systemDesign?.focusedServiceId).toBeNull();
+	});
+});
+
+describe("System design Connection routes", () => {
+	function routedDesign() {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "client", position: { x: 0, y: 0 }, name: "Client" });
+		design = addSystemComponent(design, { id: "api", position: { x: 320, y: 0 }, name: "API" });
+		return addSystemConnection(design, { id: "reads", sourceId: "client", targetId: "api", label: "Reads" });
+	}
+
+	test("sides, bend points, and label offset are stored on the Connection and keep its identity", () => {
+		const design = updateSystemConnection(routedDesign(), "reads", {
+			fromSide: "top",
+			toSide: "left",
+			bendPoints: [{ x: 160, y: -80 }],
+			labelOffset: { x: 12, y: -6 },
+		});
+		const connection = design.connections[0]!;
+		expect(connection).toMatchObject({
+			id: "reads",
+			sourceId: "client",
+			targetId: "api",
+			fromSide: "top",
+			toSide: "left",
+			bendPoints: [{ x: 160, y: -80 }],
+			labelOffset: { x: 12, y: -6 },
+		});
+	});
+
+	test("automatic sides and null or empty values remove the stored route, so the Connection is as it was before", () => {
+		const routed = updateSystemConnection(routedDesign(), "reads", {
+			fromSide: "top",
+			toSide: "right",
+			bendPoints: [{ x: 160, y: -80 }],
+			labelOffset: { x: 4, y: 4 },
+		});
+		const cleared = updateSystemConnection(routed, "reads", { fromSide: "auto", toSide: null, bendPoints: [], labelOffset: null });
+		expect(cleared.connections[0]).toEqual(routedDesign().connections[0]);
+		expect(JSON.stringify(cleared)).toBe(JSON.stringify(routedDesign()));
+	});
+
+	test("a route change that leaves the Connection unchanged returns the same design, so no history entry is recorded", () => {
+		const routed = updateSystemConnection(routedDesign(), "reads", { fromSide: "bottom", bendPoints: [{ x: 1, y: 2 }] });
+		expect(updateSystemConnection(routed, "reads", { fromSide: "bottom", bendPoints: [{ x: 1, y: 2 }] })).toBe(routed);
+	});
+
+	test("refuses an unknown side, too many bend points, and a non-finite point, leaving the design unchanged", () => {
+		const design = routedDesign();
+		expect(() => updateSystemConnection(design, "reads", { fromSide: "diagonal" as never })).toThrow(/side must be/);
+		const tooMany = Array.from({ length: SYSTEM_CONNECTION_BEND_LIMIT + 1 }, (_, index) => ({ x: index, y: 0 }));
+		expect(() => updateSystemConnection(design, "reads", { bendPoints: tooMany })).toThrow(`at most ${SYSTEM_CONNECTION_BEND_LIMIT}`);
+		expect(() => updateSystemConnection(design, "reads", { bendPoints: [{ x: Number.NaN, y: 0 }] })).toThrow(/Bend point must be finite/);
+		expect(design.connections[0]).toEqual(routedDesign().connections[0]);
+	});
+
+	test("reports route changes separately from label and protocol edits", () => {
+		expect(hasSystemConnectionRouteChange({ bendPoints: [] })).toBe(true);
+		expect(hasSystemConnectionRouteChange({ labelOffset: null })).toBe(true);
+		expect(hasSystemConnectionRouteChange({ fromSide: "auto" })).toBe(true);
+		expect(hasSystemConnectionRouteChange({ label: "Reads again", protocol: "HTTPS" })).toBe(false);
+	});
+
+	test("a saved route round-trips, the automatic side is not stored, and a malformed route is rejected", () => {
+		const routed = updateSystemConnection(routedDesign(), "reads", {
+			fromSide: "right",
+			toSide: "auto",
+			bendPoints: [{ x: 160, y: -80 }, { x: 200, y: 40 }],
+			labelOffset: { x: -8, y: 10 },
+		});
+		const stored = JSON.parse(JSON.stringify(routed));
+		expect(normalizeSystemDesign(stored)).toEqual(routed);
+		expect(normalizeSystemDesign(stored).connections[0]).not.toHaveProperty("toSide");
+
+		const legacy = normalizeSystemDesign(JSON.parse(JSON.stringify(routedDesign())));
+		expect(legacy.connections[0]).not.toHaveProperty("bendPoints");
+
+		const badSide = JSON.parse(JSON.stringify(routed));
+		badSide.connections[0].fromSide = "middle";
+		expect(() => normalizeSystemDesign(badSide)).toThrow(/side must be/);
+
+		const badBends = JSON.parse(JSON.stringify(routed));
+		badBends.connections[0].bendPoints = "not a list";
+		expect(() => normalizeSystemDesign(badBends)).toThrow(/bend points/);
 	});
 });
