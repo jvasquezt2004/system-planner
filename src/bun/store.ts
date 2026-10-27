@@ -32,6 +32,13 @@ export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
 	createProject(project: ProjectSummary, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
 	saveDesign(projectId: string, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
+	saveProjectArtifacts(input: {
+		projectId: string;
+		designId?: string;
+		design?: { design: Design; save: DesignSave };
+		scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+		edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+	}): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	listDesigns(projectId: string): DatabaseDesignSummary[];
 	loadDesign(designId: string): DatabaseDesignRecord | null;
@@ -378,6 +385,50 @@ export function openDesignStore(
 			}
 		},
 	);
+	const saveProjectArtifactsTransaction = database.transaction(
+		(input: {
+			projectId: string;
+			designId?: string;
+			design?: { design: Design; save: DesignSave };
+			scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+			edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+		}) => {
+			if (input.design) {
+				const { design, save } = input.design;
+				if (input.designId !== undefined && !selectDesignByIdAndProject.get(input.designId, input.projectId)) {
+					throw new Error(`Database design "${input.designId}" does not belong to project "${input.projectId}".`);
+				}
+				const result = input.designId !== undefined
+					? updateDesignByIdAndProject.run(save.revision, save.documentRevision, JSON.stringify(design), save.savedAt, input.designId, input.projectId, save.documentRevision)
+					: updatePrimaryDesignByProject.run(save.revision, save.documentRevision, JSON.stringify(design), save.savedAt, input.projectId, save.documentRevision);
+				if (result.changes === 0) throw new Error("Stale design document revision during atomic save.");
+				touchProject.run(save.savedAt, input.projectId);
+			}
+			if (input.scenarios) {
+				const { scenarios, save } = input.scenarios;
+				const current = selectScenarioRevision.get(input.projectId);
+				if (current && current.revision >= save.revision) throw new Error("Stale scenario revision during atomic save.");
+				deleteScenarios.run(input.projectId);
+				scenarios.forEach((scenario, position) =>
+					insertScenario.run(input.projectId, null, scenario.id, position, scenario.name, scenario.source),
+				);
+				upsertScenarioRevision.run(input.projectId, null, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
+			}
+			if (input.edgeFunctions) {
+				const { edgeFunctions, save } = input.edgeFunctions;
+				const current = selectEdgeFunctionRevision.get(input.projectId);
+				if (current && current.revision >= save.revision) throw new Error("Stale edge function revision during atomic save.");
+				deleteEdgeFunctions.run(input.projectId);
+				edgeFunctions.forEach((edgeFunction, position) =>
+					insertEdgeFunction.run(input.projectId, null, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+				);
+				upsertEdgeFunctionRevision.run(input.projectId, null, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
+			}
+		},
+	);
+
 
 	return {
 		listProjects() {
@@ -388,6 +439,9 @@ export function openDesignStore(
 		},
 		saveDesign(projectId, design, save, designId) {
 			saveDesignTransaction(projectId, design, save, designId);
+		},
+		saveProjectArtifacts(input) {
+			saveProjectArtifactsTransaction(input);
 		},
 		loadProject(projectId) {
 			const row = selectProject.get(projectId);
