@@ -75,4 +75,21 @@ describe("system overview rendering", () => {
 		expect(html).toContain('data-component-id="queue"');
 		expect(html).toContain("Group");
 	});
+
+	test("a Database component with a linked Design is badged LINKED, and SHARED when several Database components link that Design", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "primary", kind: "database", name: "Primary", position: { x: 0, y: 0 }, designId: "design-orders" });
+		design = addSystemComponent(design, { id: "concept", kind: "database", name: "Session store", position: { x: 300, y: 0 } });
+
+		const single = render(design);
+		expect(single.match(/data-testid="schema-link-badge"/g)).toHaveLength(1);
+		expect(single).toContain(">LINKED<");
+		expect(single).not.toContain(">SHARED<");
+
+		design = addSystemComponent(design, { id: "replica", kind: "database", name: "Read replica", position: { x: 300, y: 160 }, designId: "design-orders" });
+		const shared = render(design);
+		expect(shared.match(/data-testid="schema-link-badge"/g)).toHaveLength(2);
+		expect(shared.match(/>SHARED</g)).toHaveLength(2);
+		expect(shared).not.toContain(">LINKED<");
+	});
 });

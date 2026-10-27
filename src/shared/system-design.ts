@@ -470,6 +470,7 @@ export function addSystemComponent(design: SystemDesign, input: SystemComponentI
 		...optionalText("description", input.description),
 		...optionalDesignId(input.designId),
 	};
+	requireLinkAllowed(component);
 	return { ...design, components: [...design.components, component] };
 }
 
@@ -486,6 +487,10 @@ export function updateSystemComponent(design: SystemDesign, componentId: string,
 		Object.assign(next, optionalDesignId(changes.designId));
 	}
 	if ("serviceId" in changes) next.serviceId = requireOwnerService(design, changes.serviceId);
+	if (changes.kind !== undefined && changes.kind !== "database" && current.designId !== undefined) {
+		throw new Error("Unlink this Component from its database design before changing its kind.");
+	}
+	requireLinkAllowed(next);
 	if (sameJson(current, next)) return design;
 	return replaceComponent(design, next);
 }
@@ -643,7 +648,7 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 		if (serviceId !== null && !serviceIds.has(serviceId)) {
 			throw new Error(`Component "${id}" belongs to a Service that does not exist.`);
 		}
-		components.push({
+		const component: SystemComponent = {
 			id,
 			kind: requireKind(item.kind),
 			name: requireSystemName(item.name, "Component name"),
@@ -653,7 +658,9 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			...optionalText("technology", typeof item.technology === "string" ? item.technology : undefined),
 			...optionalText("description", typeof item.description === "string" ? item.description : undefined),
 			...optionalDesignId(typeof item.designId === "string" ? item.designId : undefined),
-		});
+		};
+		requireLinkAllowed(component);
+		components.push(component);
 	}
 
 	const endpointIds = new Set([...componentIds, ...serviceIds]);
@@ -900,6 +907,21 @@ function optionalDesignId(designId: string | undefined) {
 	return typeof designId === "string" && designId.length > 0 ? { designId } : {};
 }
 
+/** Only a Database component may name a database Design. */
+function requireLinkAllowed(component: SystemComponent) {
+	if (component.designId !== undefined && component.kind !== "database") {
+		throw new Error("Only a Database component can link to a database design.");
+	}
+}
+
+/**
+ * The Components that link one Design. More than one means a Shared schema: the
+ * Components are distinct architectural databases that describe one schema.
+ */
+export function componentsLinkedToDesign(design: SystemDesign, designId: string): SystemComponent[] {
+	return design.components.filter((component) => component.designId === designId);
+}
+
 function finiteOr(value: unknown, fallback: number): number {
 	return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
@@ -946,6 +968,10 @@ export type UpdateSystemConnectionAction = SystemAttribution & { connectionId: s
 export type RemoveSystemConnectionAction = SystemAttribution & { connectionId: string };
 export type SetSystemViewportAction = CanvasViewport;
 export type SetActiveViewAction = { view: SystemViewName };
+/** Links a Database component to a Design of the Project, or unlinks it with `null`. */
+export type LinkSystemDatabaseAction = { componentId: string; designId: string | null };
+/** Creates a new database Design for a conceptual Database component and links it. */
+export type CreateSystemDatabaseDesignAction = { componentId: string; name?: string };
 
 /** A free spot for a new Component near the middle of what the designer sees. */
 export function openSpotNear(design: SystemDesign, center: CanvasPoint): CanvasPoint {

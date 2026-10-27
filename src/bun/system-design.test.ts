@@ -8,12 +8,14 @@ import {
 	addSystemConnection,
 	addSystemGroup,
 	addSystemService,
+	componentsLinkedToDesign,
 	createEmptySystemDesign,
 	createMigratedSystemDesign,
 	describeSystemComponentRemoval,
 	canAddSystemGroupMember,
 	describeSystemGroupMove,
 	describeSystemServiceRemoval,
+	findSystemComponent,
 	keepSystemGroupMembers,
 	systemGroupsContaining,
 	moveSystemComponent,
@@ -717,3 +719,152 @@ describe("System design Group helpers", () => {
 	});
 });
 
+
+describe("System design database links", () => {
+	test("only a Database component may name a Design, and a linked Component cannot change kind until it is unlinked", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "orders-db", kind: "database", name: "Orders DB", position: { x: 0, y: 0 }, designId: "design-orders" });
+		expect(() => addSystemComponent(design, { id: "cache", kind: "generic", name: "Cache", position: { x: 300, y: 0 }, designId: "design-orders" }))
+			.toThrow("Only a Database component can link to a database design.");
+		expect(() => updateSystemComponent(design, "orders-db", { kind: "generic" }))
+			.toThrow("Unlink this Component from its database design before changing its kind.");
+
+		const unlinked = updateSystemComponent(design, "orders-db", { designId: undefined });
+		expect(findSystemComponent(unlinked, "orders-db")).not.toHaveProperty("designId");
+		expect(updateSystemComponent(unlinked, "orders-db", { kind: "generic" }).components[0]!.kind).toBe("generic");
+	});
+
+	test("a stored document with a generic Component naming a Design is rejected", () => {
+		expect(() => normalizeSystemDesign({
+			components: [{ id: "cache", kind: "generic", name: "Cache", properties: [], position: { x: 0, y: 0 }, serviceId: null, designId: "design-1" }],
+			connections: [],
+		})).toThrow("Only a Database component can link to a database design.");
+	});
+
+	test("a conceptual database such as Redis stays unlinked, while a linked Database component keeps its own identity", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Checkout" });
+		await workspace.addSystemComponent({ id: "redis", kind: "database", name: "Session store", technology: "Redis", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", technology: "PostgreSQL", x: 300, y: 0 });
+
+		expect(componentIn(workspace, "redis")).not.toHaveProperty("designId");
+		const linked = await workspace.createSystemDatabaseDesign({ componentId: "orders-db", name: "Orders schema" });
+		const designId = linked.activeDesignId!;
+		expect(componentIn(workspace, "orders-db").designId).toBe(designId);
+		expect(designId).not.toBe("orders-db");
+		expect(componentIn(workspace, "redis")).not.toHaveProperty("designId");
+		expect(linked.designs.find((design) => design.id === designId)?.name).toBe("Orders schema");
+
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+		const reopened = await openWorkspace(databasePath);
+		expect(componentIn(reopened, "orders-db").designId).toBe(designId);
+		expect(componentIn(reopened, "redis")).not.toHaveProperty("designId");
+	});
+
+	test("creating a Design for a Database component keeps the overview open and its save status, and switching Designs keeps them too", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Overview" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		await workspace.setActiveView({ view: "system" });
+
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "orders-db" });
+		expect(created.systemDesign?.components.map((component) => component.id)).toEqual(["orders-db"]);
+		expect(created.activeView).toBe("system");
+		expect(created.systemSave?.status).toBe("saved");
+
+		const first = created.designs.find((design) => design.id !== created.activeDesignId)!;
+		const switched = await workspace.openDesign({ designId: first.id });
+		expect(switched.systemDesign?.components.map((component) => component.id)).toEqual(["orders-db"]);
+		expect(switched.activeView).toBe("system");
+	});
+
+	test("linking, unlinking, and relinking are Project-history actions that Undo and Redo step through, naming each change", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "History" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "orders-db", name: "Orders schema" });
+		const designId = created.activeDesignId!;
+		expect(created.undoActionName).toBe("Link “Orders DB” to “Orders schema”");
+
+		await workspace.linkSystemDatabase({ componentId: "orders-db", designId: null });
+		expect(componentIn(workspace, "orders-db")).not.toHaveProperty("designId");
+		expect(workspace.getState().undoActionName).toBe("Unlink “Orders DB” from its design");
+
+		await workspace.undo({ designId });
+		expect(componentIn(workspace, "orders-db").designId).toBe(designId);
+		await workspace.redo({ designId });
+		expect(componentIn(workspace, "orders-db")).not.toHaveProperty("designId");
+	});
+
+	test("two Database components can share one Design, and a schema edit is visible through either link across reopen", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Replicas" });
+		await workspace.addSystemComponent({ id: "primary", kind: "database", name: "Primary", technology: "PostgreSQL", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "replica", kind: "database", name: "Read replica", technology: "PostgreSQL", x: 300, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "primary", name: "Orders schema" });
+		const shared = created.activeDesignId!;
+		const linked = await workspace.linkSystemDatabase({ componentId: "replica", designId: shared });
+
+		expect(componentsLinkedToDesign(linked.systemDesign!, shared).map((component) => component.id)).toEqual(["primary", "replica"]);
+		expect(linked.undoActionName).toBe("Link “Read replica” to “Orders schema”");
+
+		await workspace.addTable({ name: "orders", designId: shared });
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const state = reopened.getState();
+		expect(componentsLinkedToDesign(state.systemDesign!, shared)).toHaveLength(2);
+		const opened = await reopened.openDesign({ designId: shared });
+		expect(opened.design?.tables.map((table) => table.name)).toEqual(["orders"]);
+	});
+
+	test("unlinking or removing a Database component keeps its Design, Scenarios, and Edge functions", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Billing" });
+		await workspace.addSystemComponent({ id: "billing-db", kind: "database", name: "Billing DB", x: 0, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "billing-db", name: "Billing schema" });
+		const designId = created.activeDesignId!;
+		await workspace.createScenario({ name: "Charge card", designId });
+		await workspace.createEdgeFunction({ name: "webhook", designId });
+
+		await workspace.linkSystemDatabase({ componentId: "billing-db", designId: null });
+		await workspace.removeSystemComponent({ componentId: "billing-db" });
+		expect(workspace.getState().systemDesign?.components).toEqual([]);
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const opened = await reopened.openDesign({ designId });
+		expect(opened.designs.map((design) => design.name)).toContain("Billing schema");
+		expect(opened.scenarios.map((scenario) => scenario.name)).toEqual(["Charge card"]);
+		expect(opened.edgeFunctions.map((edgeFunction) => edgeFunction.name)).toEqual(["webhook"]);
+	});
+
+	test("link requests refuse a Design outside the Project, a generic Component, and a Component that is already linked", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Guards" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 0 });
+		await expect(workspace.linkSystemDatabase({ componentId: "orders-db", designId: "missing-design" }))
+			.rejects.toThrow("That design could not be found in this project.");
+		await expect(workspace.linkSystemDatabase({ componentId: "queue", designId: workspace.getState().activeDesignId! }))
+			.rejects.toThrow("Only a Database component can link to a database design.");
+		await expect(workspace.createSystemDatabaseDesign({ componentId: "queue" }))
+			.rejects.toThrow("Only a Database component can link to a database design.");
+
+		await workspace.createSystemDatabaseDesign({ componentId: "orders-db" });
+		await expect(workspace.createSystemDatabaseDesign({ componentId: "orders-db" }))
+			.rejects.toThrow("This database component is already linked to a design. Unlink it first.");
+	});
+});
+
+function componentIn(workspace: DesignWorkspace, componentId: string) {
+	const component = workspace.getState().systemDesign?.components.find((item) => item.id === componentId);
+	if (!component) throw new Error(`Missing component ${componentId}`);
+	return component;
+}

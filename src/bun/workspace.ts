@@ -114,6 +114,7 @@ import {
 	resizeSystemGroup,
 	resizeSystemService,
 	systemDesignContent,
+	type SystemComponent,
 	type SystemContent,
 	updateSystemComponent,
 	updateSystemConnection,
@@ -123,6 +124,8 @@ import {
 	type AddSystemConnectionAction,
 	type AddSystemGroupAction,
 	type AddSystemServiceAction,
+	type CreateSystemDatabaseDesignAction,
+	type LinkSystemDatabaseAction,
 	type MoveSystemComponentAction,
 	type MoveSystemGroupAction,
 	type MoveSystemServiceAction,
@@ -144,6 +147,30 @@ import {
 	type UpdateSystemConnectionAction,
 	type UpdateSystemServiceAction,
 } from "../shared/system-design";
+import {
+	addWalkthrough,
+	addWalkthroughStep,
+	findWalkthrough,
+	findWalkthroughStep,
+	moveWalkthrough,
+	moveWalkthroughStep,
+	normalizeWalkthroughs,
+	removeWalkthrough,
+	removeWalkthroughStep,
+	renameWalkthrough,
+	repairWalkthroughStep,
+	updateWalkthroughStep,
+	type AddWalkthroughStepAction,
+	type CreateWalkthroughAction,
+	type MoveWalkthroughAction,
+	type MoveWalkthroughStepAction,
+	type RemoveWalkthroughAction,
+	type RemoveWalkthroughStepAction,
+	type RenameWalkthroughAction,
+	type RepairWalkthroughStepAction,
+	type UpdateWalkthroughStepAction,
+	type Walkthrough,
+} from "../shared/walkthrough";
 
 export type DesignWorkspaceOptions = {
 	databasePath: string;
@@ -270,6 +297,28 @@ export interface DesignWorkspace {
 	setSystemViewport(action: SetSystemViewportAction): Promise<WorkspaceState>;
 	/** Records the view to reopen for this Project. Navigation stays outside Project history. */
 	setActiveView(action: SetActiveViewAction): Promise<WorkspaceState>;
+	/**
+	 * Links a Database component to a Design of the Project, or unlinks it with
+	 * `null`. Several Database components may name one Design: a Shared schema.
+	 * The Design itself, its Scenarios, and its Edge functions are never changed.
+	 */
+	linkSystemDatabase(action: LinkSystemDatabaseAction): Promise<WorkspaceState>;
+	/**
+	 * Creates a database Design in the Project for a conceptual Database component
+	 * and links it. The new Design becomes the active one; the overview stays open.
+	 */
+	createSystemDatabaseDesign(action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState>;
+	/** Walkthrough edits. Each one is a single Project-history action; steps are never deleted by topology changes. */
+	createWalkthrough(action: CreateWalkthroughAction): Promise<WorkspaceState>;
+	renameWalkthrough(action: RenameWalkthroughAction): Promise<WorkspaceState>;
+	removeWalkthrough(action: RemoveWalkthroughAction): Promise<WorkspaceState>;
+	moveWalkthrough(action: MoveWalkthroughAction): Promise<WorkspaceState>;
+	addWalkthroughStep(action: AddWalkthroughStepAction): Promise<WorkspaceState>;
+	updateWalkthroughStep(action: UpdateWalkthroughStepAction): Promise<WorkspaceState>;
+	moveWalkthroughStep(action: MoveWalkthroughStepAction): Promise<WorkspaceState>;
+	removeWalkthroughStep(action: RemoveWalkthroughStepAction): Promise<WorkspaceState>;
+	/** Points a step at a Connection and accepts that Connection's current endpoints. */
+	repairWalkthroughStep(action: RepairWalkthroughStepAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
 
@@ -286,6 +335,7 @@ type ProjectContent = {
 	edgeFunctions: EdgeFunction[];
 	/** Components and Connections only; the overview viewport is navigation. */
 	systemDesign: SystemContent;
+	walkthroughs: Walkthrough[];
 };
 
 /** How one content change is named, grouped, and attributed in the history. */
@@ -322,9 +372,16 @@ export async function createDesignWorkspace(
 		scenarios: Scenario[],
 		edgeFunctions: EdgeFunction[],
 		systemDesign: SystemDesign | null = state.systemDesign ?? null,
+		walkthroughs: Walkthrough[] = state.walkthroughs ?? [],
 	): ProjectContent {
 		const system = systemDesign ? systemDesignContent(systemDesign) : { services: [], groups: [], components: [], connections: [] };
-		return structuredClone({ design: { ...design, viewport: DEFAULT_VIEWPORT }, scenarios, edgeFunctions, systemDesign: system });
+		return structuredClone({
+			design: { ...design, viewport: DEFAULT_VIEWPORT },
+			scenarios,
+			edgeFunctions,
+			systemDesign: system,
+			walkthroughs,
+		});
 	}
 
 	/** The single entry point for recording content changes into the open Project's history. */
@@ -369,6 +426,8 @@ export async function createDesignWorkspace(
 		systemDesign: null,
 		systemSave: { status: "idle" },
 		activeView: "system",
+		walkthroughs: [],
+		walkthroughSave: { status: "idle" },
 	};
 	let activeProjectId: string | null = null;
 	let activeDesignId: string | null = null;
@@ -378,6 +437,8 @@ export async function createDesignWorkspace(
 	let edgeFunctionRevision = 0;
 	/** Orders System design document writes; separate from the database Design's document revision. */
 	let systemDocumentRevision = 0;
+	/** Orders Walkthrough document writes, including those made by Undo and Redo. */
+	let walkthroughDocumentRevision = 0;
 	let edgeFunctionProjectGeneration = 0;
 	let lastGeneratableSql: { revision: number; sql: string } | null = null;
 	const inFlight = new Set<Promise<unknown>>();
@@ -893,7 +954,8 @@ export async function createDesignWorkspace(
 		const edgeFunctionsChanged = JSON.stringify(current.edgeFunctions) !== JSON.stringify(target.edgeFunctions);
 		const currentSystem = current.systemDesign ? systemDesignContent(current.systemDesign) : null;
 		const systemChanged = currentSystem !== null && JSON.stringify(currentSystem) !== JSON.stringify(target.systemDesign);
-		if (!designChanged && !scenariosChanged && !edgeFunctionsChanged && !systemChanged) return current;
+		const walkthroughsChanged = JSON.stringify(current.walkthroughs ?? []) !== JSON.stringify(target.walkthroughs);
+		if (!designChanged && !scenariosChanged && !edgeFunctionsChanged && !systemChanged && !walkthroughsChanged) return current;
 		const nextSystemDesign: SystemDesign | null = systemChanged && current.systemDesign
 			? { ...structuredClone(target.systemDesign), viewport: current.systemDesign.viewport }
 			: current.systemDesign ?? null;
@@ -904,8 +966,10 @@ export async function createDesignWorkspace(
 			scenarioRevision,
 			edgeFunctionRevision,
 			systemDocumentRevision,
+			walkthroughDocumentRevision,
 		};
 		const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
+		const nextWalkthroughDocumentRevision = walkthroughsChanged ? ++walkthroughDocumentRevision : walkthroughDocumentRevision;
 		const savedAt = now();
 		const nextRevision = schemaChanged ? current.revision + 1 : current.revision;
 		const nextDocumentRevision = designChanged ? ++documentRevision : documentRevision;
@@ -922,6 +986,10 @@ export async function createDesignWorkspace(
 			systemSave: systemChanged && nextSystemDesign
 				? { status: "saving", revision: nextSystemDocumentRevision, designId }
 				: current.systemSave,
+			walkthroughs: walkthroughsChanged ? structuredClone(target.walkthroughs) : current.walkthroughs,
+			walkthroughSave: walkthroughsChanged
+				? { status: "saving", revision: nextWalkthroughDocumentRevision, designId }
+				: current.walkthroughSave,
 			save: designChanged ? { status: "saving", revision: nextRevision, designId } : current.save,
 			scenarioSave: scenariosChanged
 				? { status: "saving", revision: nextScenarioRevision, designId }
@@ -960,19 +1028,24 @@ export async function createDesignWorkspace(
 				...(systemChanged && nextSystemDesign
 					? { systemDesign: { systemDesign: nextSystemDesign, save: { revision: nextSystemDocumentRevision, documentRevision: nextSystemDocumentRevision, savedAt } } }
 					: {}),
+				...(walkthroughsChanged
+					? { walkthroughs: { walkthroughs: target.walkthroughs, save: { revision: nextWalkthroughDocumentRevision, savedAt } } }
+					: {}),
 			});
 		} catch (error) {
 			documentRevision = previousRevisions.documentRevision;
 			scenarioRevision = previousRevisions.scenarioRevision;
 			edgeFunctionRevision = previousRevisions.edgeFunctionRevision;
 			systemDocumentRevision = previousRevisions.systemDocumentRevision;
+			walkthroughDocumentRevision = previousRevisions.walkthroughDocumentRevision;
 			if (activeDesignId === designId) setState(current);
 			throw error;
 		}
 		const latest = documentRevision === nextDocumentRevision
 			&& scenarioRevision === nextScenarioRevision
 			&& edgeFunctionRevision === nextEdgeFunctionRevision
-			&& systemDocumentRevision === nextSystemDocumentRevision;
+			&& systemDocumentRevision === nextSystemDocumentRevision
+			&& walkthroughDocumentRevision === nextWalkthroughDocumentRevision;
 		if (latest && state.project?.id === projectId && activeDesignId === designId) {
 			setState({
 				...state,
@@ -981,6 +1054,7 @@ export async function createDesignWorkspace(
 				...(scenariosChanged ? { scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt, designId } } : {}),
 				...(edgeFunctionsChanged ? { edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt, designId } } : {}),
 				...(systemChanged ? { systemSave: { status: "saved", revision: nextSystemDocumentRevision, savedAt, designId } } : {}),
+				...(walkthroughsChanged ? { walkthroughSave: { status: "saved", revision: nextWalkthroughDocumentRevision, savedAt, designId } } : {}),
 			});
 		}
 		if (schemaChanged) await schedulePreview(projectId, nextRevision, design, designId);
@@ -1011,11 +1085,15 @@ export async function createDesignWorkspace(
 		// for an earlier activation can never share a revision with a new one.
 		edgeFunctionRevision = Math.max(edgeFunctionRevision, edgeFunctionDocument.revision);
 		scenarioRevision = scenarioDocument.revision;
-		// The System design belongs to the Project, so it loads only when the Project opens.
+		// The System design and Walkthroughs belong to the Project, so they load only when the Project opens.
 		// Switching designs keeps what is already loaded, along with the view.
 		const systemRecord = options.openingProject ? store.loadSystemDesign(project.id) : null;
 		if (options.openingProject) {
 			systemDocumentRevision = systemRecord?.documentRevision ?? 0;
+		}
+		const walkthroughRecord = options.openingProject ? store.loadWalkthroughs(project.id) : null;
+		if (options.openingProject) {
+			walkthroughDocumentRevision = walkthroughRecord?.revision ?? 0;
 		}
 		lastGeneratableSql = null;
 		setState({
@@ -1055,6 +1133,7 @@ export async function createDesignWorkspace(
 							savedAt: edgeFunctionDocument.savedAt,
 							designId,
 						},
+			// The workspace state is replaced, not merged, so project-level fields are carried over explicitly.
 			...(options.openingProject
 				? {
 						systemDesign: systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign(),
@@ -1062,8 +1141,18 @@ export async function createDesignWorkspace(
 							? { status: "saved" as const, revision: systemRecord.revision, savedAt: systemRecord.savedAt, designId }
 							: { status: "idle" as const },
 						activeView: systemRecord?.lastView ?? "system",
+						walkthroughs: walkthroughRecord ? normalizeWalkthroughs(walkthroughRecord.document) : [],
+						walkthroughSave: walkthroughRecord
+							? { status: "saved" as const, revision: walkthroughRecord.revision, savedAt: walkthroughRecord.savedAt, designId }
+							: { status: "idle" as const },
 					}
-				: {}),
+				: {
+						systemDesign: state.systemDesign,
+						systemSave: state.systemSave,
+						activeView: state.activeView,
+						walkthroughs: state.walkthroughs,
+						walkthroughSave: state.walkthroughSave,
+					}),
 		});
 		if (design.tables.length > 0) {
 			const requestId = ++previewRequestId;
@@ -1158,6 +1247,52 @@ export async function createDesignWorkspace(
 		return state;
 	}
 
+	/**
+	 * Applies one Walkthrough change: record it as one history action, then save
+	 * the whole Walkthrough document. As with the System design, a failed save
+	 * keeps the draft visible and the next successful save writes all of it.
+	 */
+	async function applyWalkthroughChange(
+		mutate: (walkthroughs: Walkthrough[]) => { next: Walkthrough[]; action: HistoryAction },
+	): Promise<WorkspaceState> {
+		const { projectId, designId } = requireOpenProject();
+		const current = state.walkthroughs ?? [];
+		const { next, action } = mutate(current);
+		if (JSON.stringify(next) === JSON.stringify(current)) return state;
+		recordContentChange(
+			action,
+			projectContent(state.design!, state.scenarios, state.edgeFunctions, state.systemDesign ?? null, current),
+			projectContent(state.design!, state.scenarios, state.edgeFunctions, state.systemDesign ?? null, next),
+			false,
+		);
+		return persistWalkthroughs(projectId, designId, next);
+	}
+
+	function persistWalkthroughs(projectId: string, designId: string, next: Walkthrough[]): WorkspaceState {
+		const revision = ++walkthroughDocumentRevision;
+		const savedAt = now();
+		setState({ ...state, walkthroughs: next, walkthroughSave: { status: "saving", revision, designId } });
+		try {
+			store.saveWalkthroughs(projectId, next, { revision, savedAt });
+			if (activeProjectId === projectId && walkthroughDocumentRevision === revision) {
+				setState({ ...state, walkthroughSave: { status: "saved", revision, savedAt, designId } });
+			}
+		} catch (error) {
+			if (activeProjectId === projectId && walkthroughDocumentRevision === revision) {
+				setState({
+					...state,
+					walkthroughSave: {
+						status: "failed",
+						revision,
+						error: error instanceof Error ? error.message : String(error),
+						designId,
+					},
+				});
+			}
+		}
+		return state;
+	}
+
 	const workspace: DesignWorkspace = {
 		getState() {
 			return state;
@@ -1198,6 +1333,7 @@ export async function createDesignWorkspace(
 				documentRevision = revision;
 				scenarioRevision = 0;
 				systemDocumentRevision = revision;
+				walkthroughDocumentRevision = 0;
 				lastGeneratableSql = null;
 				setState({
 					projects: store.listProjects(),
@@ -1218,6 +1354,8 @@ export async function createDesignWorkspace(
 					systemDesign: createEmptySystemDesign(),
 					systemSave: { status: "saved", revision, savedAt, designId },
 					activeView: "system",
+					walkthroughs: [],
+					walkthroughSave: { status: "idle" },
 				});
 				return state;
 			});
@@ -2481,6 +2619,154 @@ export async function createDesignWorkspace(
 				return state;
 			});
 		},
+		linkSystemDatabase(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenProject();
+				const designs = store.listDesigns(projectId);
+				const target = action.designId === null ? null : designs.find((design) => design.id === action.designId);
+				if (action.designId !== null && !target) throw new Error("That design could not be found in this project.");
+				return applySystemDesignChange((design) => {
+					const component = requireDatabaseComponent(design, action.componentId);
+					const next = updateSystemComponent(design, component.id, { designId: action.designId ?? undefined });
+					return {
+						next,
+						action: {
+							name: target
+								? `Link “${component.name}” to “${target.name}”`
+								: `Unlink “${component.name}” from its design`,
+						},
+					};
+				});
+			});
+		},
+		createWalkthrough(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = addWalkthrough(walkthroughs, { id, name: action.name });
+					const added = findWalkthrough(next, id)!;
+					return { next, action: { name: `Add walkthrough “${added.name}”` } };
+				});
+			});
+		},
+		renameWalkthrough(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = renameWalkthrough(walkthroughs, action.walkthroughId, action.name);
+					const renamed = findWalkthrough(next, action.walkthroughId)!;
+					return { next, action: { name: `Rename walkthrough to “${renamed.name}”` } };
+				});
+			});
+		},
+		removeWalkthrough(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const removed = findWalkthrough(walkthroughs, action.walkthroughId);
+					if (!removed) throw new Error("That Walkthrough could not be found.");
+					return {
+						next: removeWalkthrough(walkthroughs, action.walkthroughId),
+						action: { name: `Remove walkthrough “${removed.name}”` },
+					};
+				});
+			});
+		},
+		createSystemDatabaseDesign(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenProject();
+				const project = state.project!;
+				const component = requireDatabaseComponent(state.systemDesign!, action.componentId);
+				if (component.designId !== undefined) {
+					throw new Error("This database component is already linked to a design. Unlink it first.");
+				}
+				const existing = store.listDesigns(projectId);
+				const name = action.name !== undefined && action.name.trim().length > 0
+					? requireDesignName(action.name, existing)
+					: nextDefaultDesignName(existing);
+				const designId = createId();
+				await store.createDesign(projectId, designId, name, createEmptyDesign(), {
+					revision: 1,
+					documentRevision: 1,
+					savedAt: now(),
+				});
+				await activateDesign(project, designId);
+				return applySystemDesignChange((design) => {
+					const next = updateSystemComponent(design, component.id, { designId });
+					return { next, action: { name: `Link “${component.name}” to “${name}”` } };
+				});
+			});
+		},
+		moveWalkthrough(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = moveWalkthrough(walkthroughs, action.walkthroughId, action.toIndex);
+					const moved = findWalkthrough(next, action.walkthroughId)!;
+					return { next, action: { name: `Move walkthrough “${moved.name}”` } };
+				});
+			});
+		},
+		addWalkthroughStep(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = addWalkthroughStep(walkthroughs, action.walkthroughId, { ...action, id }, state.systemDesign!);
+					const added = findWalkthroughStep(next, action.walkthroughId, id)!;
+					return { next, action: { name: `Add step “${added.title}”` } };
+				});
+			});
+		},
+		updateWalkthroughStep(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const before = findWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId);
+					const next = updateWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId, action.changes);
+					const after = findWalkthroughStep(next, action.walkthroughId, action.stepId);
+					if (!before || !after) throw new Error("That step could not be found.");
+					const retitled = after.title !== before.title;
+					return {
+						next,
+						action: retitled
+							? { name: `Rename step to “${after.title}”` }
+							: { name: `Edit step “${after.title}”`, coalesceKey: `walkthrough-step:${action.stepId}` },
+					};
+				});
+			});
+		},
+		moveWalkthroughStep(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = moveWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId, action.toIndex);
+					const moved = findWalkthroughStep(next, action.walkthroughId, action.stepId)!;
+					return { next, action: { name: `Move step “${moved.title}”` } };
+				});
+			});
+		},
+		removeWalkthroughStep(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const removed = findWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId);
+					if (!removed) throw new Error("That step could not be found.");
+					return {
+						next: removeWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId),
+						action: { name: `Remove step “${removed.title}”` },
+					};
+				});
+			});
+		},
+		repairWalkthroughStep(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const before = findWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId);
+					if (!before) throw new Error("That step could not be found.");
+					const next = repairWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId, action.connectionId, state.systemDesign!);
+					const repaired = findWalkthroughStep(next, action.walkthroughId, action.stepId)!;
+					const relinked = repaired.connectionId !== before.connectionId;
+					return {
+						next,
+						action: { name: relinked ? `Relink step “${repaired.title}”` : `Accept route for step “${repaired.title}”` },
+					};
+				});
+			});
+		},
 		async close() {
 			invalidatePreviewWork();
 			await disposeActiveScenarioRun();
@@ -2497,6 +2783,14 @@ export async function createDesignWorkspace(
 	}
 
 	return workspace;
+}
+
+/** A Component that can link to a database design: it must be a Database component. */
+function requireDatabaseComponent(design: SystemDesign, componentId: string): SystemComponent {
+	const component = findSystemComponent(design, componentId);
+	if (!component) throw new Error("That Component could not be found.");
+	if (component.kind !== "database") throw new Error("Only a Database component can link to a database design.");
+	return component;
 }
 
 /** A design with no content yet, placed like a new Project's first design. */
