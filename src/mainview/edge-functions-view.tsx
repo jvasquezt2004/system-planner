@@ -4,7 +4,7 @@ import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { configureTypeScript } from "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { EdgeFunction, EdgeFunctionSaveState, DesignEnumType, DesignFunction, SandboxAppliedTable } from "../shared/design";
-import { generateScenarioDatabaseTypes, scenarioTypeLibraryUri } from "../shared/scenario-types";
+import { generateScenarioDatabaseTypes, scenarioDatabaseTypeUri, scenarioTypeLibraryUri } from "../shared/scenario-types";
 import { edgeFunctionDenoDeclarations, edgeFunctionSupabaseTypePaths } from "../shared/edge-function-types";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,7 @@ const allSupabaseTypeDeclarations = {
 	...phoenixTypeDeclarations,
 };
 type Props = {
+	designId: string;
 	initialSelectedId?: string | null;
 	edgeFunctions: EdgeFunction[];
 	save: EdgeFunctionSaveState;
@@ -43,7 +44,7 @@ type Props = {
 
 /** Manage project Edge functions as saved source, separate from design history. */
 export function EdgeFunctionsView({
-	initialSelectedId,
+	designId,
 	edgeFunctions, save, appliedTables, appliedEnums, appliedFunctions,
 	onCreate, onRename, onRemove, onUpdateSource,
 }: Props) {
@@ -125,7 +126,7 @@ export function EdgeFunctionsView({
 						</div>
 						<div className="flex items-center justify-between border-b border-rule px-5 py-2"><label htmlFor="edge-function-source" className="kicker">TypeScript handler</label><span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span></div>
 						<Editor
-							key={generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}
+							key={`${designId}:${generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}`}
 							height="min(68vh, 720px)" language="typescript" value={sourceDraft}
 							onChange={(source) => setSourceDraft(source ?? "")}
 							onMount={(instance, monaco) => { monacoEditor.current = instance; monacoApi.current = monaco; }}
@@ -134,9 +135,9 @@ export function EdgeFunctionsView({
 							if (!monaco || !model || !markers.some((marker) => marker.severity === monaco.MarkerSeverity.Error)) return;
 							monaco.editor.setModelMarkers(model, "typescript", markers.map((marker) => ({ ...marker, severity: monaco.MarkerSeverity.Warning })));
 						}}
-							beforeMount={() => configureTypeScript(edgeFunctionSupabaseTypePaths, [
+							beforeMount={() => configureTypeScript(designId, edgeFunctionSupabaseTypePaths, [
 							[edgeFunctionDenoDeclarations, "file:///edge-function-deno.d.ts"],
-							[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), "file:///edge-function-database.d.ts"],
+							[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), scenarioDatabaseTypeUri(designId)],
 							...Object.entries(allSupabaseTypeDeclarations).map(([filename, contents]): [string, string] => [contents, scenarioTypeLibraryUri(filename)]),
 						])}
 							options={{ ariaLabel: "Edge function TypeScript source", fontFamily: "IBM Plex Mono, monospace", fontSize: 13, minimap: { enabled: false }, scrollBeyondLastLine: false, wordWrap: "on" }}

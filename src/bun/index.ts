@@ -66,7 +66,8 @@ const assistantPromise = workspacePromise.then((workspace) =>
 		databasePath,
 		workspace,
 		openExternal: (url) => Utils.openExternal(url),
-		runScenario: (projectId, scenario, signal, timeoutMs) => {
+		runScenario: (projectId, designId, scenario, signal, timeoutMs) => {
+			if (!designId) throw new Error("The Assistant Scenario run has no target Design.");
 			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
 			const requestId = crypto.randomUUID();
 			const onAbort = () => {
@@ -90,7 +91,7 @@ const assistantPromise = workspacePromise.then((workspace) =>
 			if (signal?.aborted) onAbort();
 			else {
 				signal?.addEventListener("abort", onAbort, { once: true });
-				void Promise.resolve(rpc.send.assistantScenarioRunRequest({ requestId, projectId, scenario })).catch((cause: unknown) => {
+				void Promise.resolve(rpc.send.assistantScenarioRunRequest({ requestId, projectId, designId, scenario })).catch((cause: unknown) => {
 					rejectPendingAssistantScenarioRun(
 						requestId,
 						cause instanceof Error ? cause : new Error(String(cause)),

@@ -61,6 +61,7 @@ export type ScenarioRun = {
 	scenarioId?: string;
 	status: ScenarioRunStatus;
 	revision: number;
+	scenarioRevision: number;
 	edgeFunctionRevision: number;
 	stale: boolean;
 	requests: ScenarioRequestLogEntry[];

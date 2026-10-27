@@ -107,7 +107,7 @@ export type AssistantRuntimeOptions = {
 	maxRequestsPerTurn?: number;
 	openExternal?: (url: string) => unknown;
 	scenarioRunTimeoutMs?: number;
-	runScenario?: (projectId: string, scenario: Scenario, signal: AbortSignal | undefined, timeoutMs: number) => Promise<ScenarioRun | null>;
+	runScenario?: (projectId: string, designId: string, scenario: Scenario, signal: AbortSignal | undefined, timeoutMs: number) => Promise<ScenarioRun | null>;
 };
 function compactExpectationMessage(message: string) {
 	const receivedAt = message.search(/,\s*received\b/i);
@@ -376,8 +376,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		statement: string;
 		statements: string[];
 		affectedTables: Array<{ name: string; change: "added" | "changed" | "removed" }>;
+		projectId: string;
+		designId: string | undefined;
 	};
 	const lastConfirmedDrops = new Map<string, ConfirmedDropGuard>();
+	type AssistantTarget = { projectId: string; designId: string };
 	const turnUsages = new Map<string, {
 		inputTokens: number;
 		outputTokens: number;
@@ -560,14 +563,26 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	};
 
 
+	function stateMatchesTarget(state: ReturnType<DesignWorkspace["getState"]>, target: AssistantTarget) {
+		return state.project?.id === target.projectId
+			&& state.design !== null
+			&& (state.activeDesignId ?? undefined) === target.designId;
+	}
+	function assertTargetState(state: ReturnType<DesignWorkspace["getState"]>, target: AssistantTarget, message: string) {
+		if (!stateMatchesTarget(state, target)) throw new Error(message);
+	}
 	function requireBoundState(conversationId: string) {
 		const conversation = store.loadConversation(conversationId);
 		if (!conversation) throw new Error("Conversation not found.");
 		const state = workspace.getState();
-		if (!state.project || !state.design || state.project.id !== conversation.project_id) {
-			throw new Error("This conversation is bound to a different project. Reopen its project before using project tools.");
+		if (!state.project || !state.design || state.project.id !== conversation.project_id || !state.activeDesignId) {
+			throw new Error("This conversation requires its project and an active Design to use project tools.");
 		}
-		return { conversation, state: state as BoundWorkspaceState };
+		return {
+			conversation,
+			state: state as BoundWorkspaceState,
+			target: { projectId: conversation.project_id, designId: state.activeDesignId } satisfies AssistantTarget,
+		};
 	}
 	function projectSnapshot(state: ReturnType<DesignWorkspace["getState"]>): string {
 		return JSON.stringify({ design: state.design, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions });
@@ -582,11 +597,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		description: "Read the current project design, generated SQL, sandbox status, Functions, Triggers, Policies, Scenarios, Edge functions, and Scenario run results. Always use this before proposing changes.",
 		parameters: Type.Object({}),
 		execute: async () => {
-			const { state } = requireBoundState(conversationId);
+			const { state, target } = requireBoundState(conversationId);
 			const generated = generateDesignSql(state.design);
 			store.observeProjectSnapshot(conversationId, projectSnapshot(state), state.revision);
 			return {
 				content: [{ type: "text", text: JSON.stringify({
+					projectId: target.projectId,
+					designId: target.designId,
 					project: state.project,
 					revision: state.revision,
 					design: state.design,
@@ -601,7 +618,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						? [compactScenarioRun(scenarioId, state.scenarios.find(({ id }) => id === scenarioId)?.name ?? scenarioId, run)]
 						: []),
 				}) }],
-				details: { projectId: state.project.id, revision: state.revision },
+				details: { projectId: target.projectId, designId: target.designId, revision: state.revision },
 			};
 		},
 	},
@@ -616,20 +633,20 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		executionMode: "sequential",
 		execute: async (_toolCallId, params, signal) => {
 			const input = params as { mode: "one" | "all"; scenarioId?: string };
-			const { conversation, state } = requireBoundState(conversationId);
+			const { state, target } = requireBoundState(conversationId);
 			if (!runScenario) throw new Error("Scenario runs are unavailable because the view is not connected.");
 			if (input.mode === "one" && !input.scenarioId) throw new Error("A Scenario id is required to run one Scenario.");
 			const scenarios = input.mode === "one"
-				? state.scenarios.filter(({ id }) => id === input.scenarioId)
+				? state.scenarios.filter(({ id }) => id === input.scenarioId).map((scenario) => ({ ...scenario }))
 				: state.scenarios.map((scenario) => ({ ...scenario }));
 			if (input.mode === "one" && scenarios.length === 0) throw new Error("That Scenario does not exist in the bound project.");
-			if (input.mode === "all" && scenarios.length === 0) return scenarioToolResult({ mode: "all", runs: [] });
+			if (input.mode === "all" && scenarios.length === 0) return scenarioToolResult({ projectId: target.projectId, designId: target.designId, mode: "all", runs: [] });
 			const stoppedScenarios: Scenario[] = [];
 			const results = await runAllScenarios(scenarios, async (scenario) => {
-				const current = requireBoundState(conversationId);
-				if (current.conversation.project_id !== conversation.project_id) throw new Error("The project changed before the Scenario run started.");
+				assertTargetState(workspace.getState(), target, "The project or Design changed before the Scenario run started.");
 				try {
-					const run = await runScenario(conversation.project_id, scenario, signal, scenarioRunTimeoutMs);
+					const run = await runScenario(target.projectId, target.designId, scenario, signal, scenarioRunTimeoutMs);
+					assertTargetState(workspace.getState(), target, "The project or Design changed while the Scenario run was in progress.");
 					if (!run && signal?.aborted) stoppedScenarios.push(scenario);
 					return run;
 				} catch (cause) {
@@ -637,12 +654,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					stoppedScenarios.push(scenario);
 					return null;
 				}
-			}, () => {
-				const current = workspace.getState();
-				return current.project?.id === conversation.project_id;
-			});
-			const current = workspace.getState();
-			if (current.project?.id !== conversation.project_id) throw new Error("The project changed while the Scenario run was in progress.");
+			}, () => stateMatchesTarget(workspace.getState(), target));
+			assertTargetState(workspace.getState(), target, "The project or Design changed while the Scenario run was in progress.");
 			const runs: Record<string, unknown>[] = results.map(({ scenario, run }) =>
 				compactScenarioRun(scenario.id, scenario.name, run),
 			);
@@ -650,7 +663,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (stoppedScenario) {
 				runs.push({ scenario: stoppedScenario.name, scenarioId: stoppedScenario.id, status: "stopped", reason: "stopped" });
 			}
-			return scenarioToolResult({ mode: input.mode, runs });
+			return scenarioToolResult({ projectId: target.projectId, designId: target.designId, mode: input.mode, runs });
 	},
 		},
 	{
@@ -660,13 +673,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		parameters: Type.Object({ sql: Type.String({ description: "PostgreSQL DDL to parse and apply" }) }),
 		executionMode: "sequential",
 		execute: async (_toolCallId, params) => {
-			const { conversation } = requireBoundState(conversationId);
+			const { state: invocationState, target } = requireBoundState(conversationId);
 			const { sql } = params as { sql: string };
 			const currentTurnId = turnIds.get(conversationId);
 			const lastConfirmed = lastConfirmedDrops.get(conversationId);
-			if (lastConfirmed && lastConfirmed.turnId === currentTurnId && normalizeDdl(lastConfirmed.statement) === normalizeDdl(sql)) {
+			if (lastConfirmed && lastConfirmed.turnId === currentTurnId && lastConfirmed.projectId === target.projectId
+				&& lastConfirmed.designId === target.designId && normalizeDdl(lastConfirmed.statement) === normalizeDdl(sql)) {
 				lastConfirmedDrops.delete(conversationId);
 				const currentState = workspace.getState();
+				assertTargetState(currentState, target, "The project or Design changed after the confirmed DDL was applied.");
 				const alreadyApplied = {
 					status: "already applied" as const,
 					message: "This DDL change was already applied upon confirmation. Do not re-run it.",
@@ -678,34 +693,35 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				};
 				return {
 					content: [{ type: "text", text: JSON.stringify(alreadyApplied) }],
-					details: alreadyApplied,
+					details: { ...alreadyApplied, projectId: target.projectId, designId: target.designId },
 				};
 			}
 			lastConfirmedDrops.delete(conversationId);
-			const before = workspace.getState().design;
+			const before = invocationState.design;
 			const result = await applyAssistantDdl(workspace, sql, {
 				assistantTurnId: turnIds.get(conversationId),
-				expectedProjectId: conversation.project_id,
+				expectedProjectId: target.projectId,
+				expectedDesignId: target.designId,
 				idFactory: deterministicDdlIdFactory(_toolCallId),
 			});
+			assertTargetState(workspace.getState(), target, "The project or Design changed before the DDL result was accepted.");
 			if (result.status === "confirmation-required") {
 				const rejected = rejectedDrops.get(conversationId);
 				if (rejected && rejected.turnId === turnIds.get(conversationId) && rejected.plans.has(JSON.stringify(result.removal))) {
 					const refused = { status: "rejected-earlier", message: "Not applied: the designer already rejected this destructive change in this turn. Do not retry it; explain and ask what they want instead." };
 					return { content: [{ type: "text", text: JSON.stringify(refused) }], details: refused };
 				}
+				pendingDdlTargets.set(conversationId, target);
 				pendingConfirmations.add(conversationId);
 				publish(conversationId, { type: "assistant_confirmation_required" });
+				const details = { ...result, projectId: target.projectId, designId: target.designId };
 				return {
-					content: [{ type: "text", text: JSON.stringify(result) }],
-					details: result,
+					content: [{ type: "text", text: JSON.stringify(details) }],
+					details,
 					terminate: true,
 				};
 			}
-			if (result.status === "applied" && result.state.project?.id !== conversation.project_id) {
-				const changedProject = { applied: true, note: "project switched; re-read on next turn" };
-				return { content: [{ type: "text", text: JSON.stringify(changedProject) }], details: changedProject };
-			}
+			if (result.status === "applied") assertTargetState(result.state, target, "The project or Design changed before the DDL change completed.");
 			const after = result.state;
 			store.observeProjectSnapshot(conversationId, projectSnapshot(after), after.revision);
 			const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
@@ -751,6 +767,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 
 			const details = {
 				status: "applied" as const,
+				projectId: target.projectId,
+				designId: target.designId,
 				statements: appliedStatements,
 				affectedTables,
 				revision: after.revision,
@@ -759,11 +777,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			};
 
 			return {
-				content: [{ type: "text", text: JSON.stringify(modelResult) }],
+				content: [{ type: "text", text: JSON.stringify({ ...modelResult, projectId: target.projectId, designId: target.designId }) }],
 				details,
 			};
 		},
-	},
 	{
 		name: "manage_code",
 		label: "Manage project code",
@@ -794,21 +811,23 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				oldText?: string;
 				newText?: string;
 			};
-			const { conversation } = requireBoundState(conversationId);
+			const { state: boundState, target } = requireBoundState(conversationId);
 			const kind = input.kind;
 			if (input.action === "create") {
 				if (kind === "function-body") throw new Error("Function bodies cannot be created; define a Function through apply_ddl.");
 				if (!input.name) throw new Error("A name is required to create a code item.");
 				const state = kind === "scenario"
-					? await workspace.createScenario({ name: input.name })
-					: await workspace.createEdgeFunction({ name: input.name });
-				if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code item was created.");
+					? await workspace.createScenario({ name: input.name, designId: target.designId })
+					: await workspace.createEdgeFunction({ name: input.name, designId: target.designId });
+				assertTargetState(state, target, "The project or Design changed before the code item was created.");
+				assertTargetState(workspace.getState(), target, "The project or Design changed before the code item was created.");
 				const item = kind === "scenario"
 					? state.scenarios.find((candidate) => candidate.name === input.name?.trim())
 					: state.edgeFunctions.find((candidate) => candidate.name === input.name?.trim());
-				if (!item) throw new Error("The created code item could not be found in the bound project.");
+				if (!item) throw new Error("The created code item could not be found in the bound project and Design.");
 				if (input.source === undefined) {
-					return { content: [{ type: "text", text: JSON.stringify({ action: "created", kind, id: item.id, name: item.name }) }], details: { action: "created", kind, id: item.id, name: item.name } };
+					const details = { action: "created", kind, id: item.id, name: item.name, projectId: target.projectId, designId: target.designId };
+					return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 				}
 				// A create that carries source continues as a whole-file write of the new item.
 				input.id = item.id;
@@ -820,31 +839,39 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (input.action === "rename" && !input.name) throw new Error("A new name is required to rename a code item.");
 				const state = kind === "scenario"
 					? input.action === "rename"
-						? await workspace.renameScenario({ scenarioId: input.id, name: input.name! })
-						: await workspace.removeScenario({ scenarioId: input.id })
+						? await workspace.renameScenario({ scenarioId: input.id, name: input.name!, designId: target.designId })
+						: await workspace.removeScenario({ scenarioId: input.id, designId: target.designId })
 					: input.action === "rename"
-						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name! })
-						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id });
-				if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code item was updated.");
-				return { content: [{ type: "text", text: JSON.stringify({ action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name }) }], details: { action: input.action === "rename" ? "renamed" : "removed", kind, id: input.id, name: input.name } };
+						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name!, designId: target.designId })
+						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id, designId: target.designId });
+				assertTargetState(state, target, "The project or Design changed before the code item was updated.");
+				assertTargetState(workspace.getState(), target, "The project or Design changed before the code item was updated.");
+				const details = {
+					action: input.action === "rename" ? "renamed" : "removed",
+					kind,
+					id: input.id,
+					name: input.name,
+					projectId: target.projectId,
+					designId: target.designId,
+				};
+				return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 			}
 
-			const bound = requireBoundState(conversationId);
 			if (!input.id) throw new Error("An item id is required to write code.");
 			let itemName: string;
 			let before: string;
 			if (kind === "scenario") {
-				const item = bound.state.scenarios.find(({ id }) => id === input.id);
+				const item = boundState.scenarios.find(({ id }) => id === input.id);
 				if (!item) throw new Error("That Scenario could not be found in the bound project.");
 				itemName = item.name;
 				before = item.source;
 			} else if (kind === "edge-function") {
-				const item = bound.state.edgeFunctions.find(({ id }) => id === input.id);
+				const item = boundState.edgeFunctions.find(({ id }) => id === input.id);
 				if (!item) throw new Error("That Edge function could not be found in the bound project.");
 				itemName = item.name;
 				before = item.source;
 			} else {
-				const item = bound.state.design?.functions?.find(({ id }) => id === input.id);
+				const item = boundState.design?.functions?.find(({ id }) => id === input.id);
 				if (!item) throw new Error("That Function could not be found in the bound project.");
 				itemName = item.name;
 				before = item.body;
@@ -861,24 +888,26 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				after = before.replace(input.oldText, input.newText);
 			}
 			let state: WorkspaceState;
-			if (kind === "scenario") state = await workspace.updateScenarioSource({ scenarioId: input.id, source: after });
-			else if (kind === "edge-function") state = await workspace.updateEdgeFunctionSource({ edgeFunctionId: input.id, source: after });
+			if (kind === "scenario") state = await workspace.updateScenarioSource({ scenarioId: input.id, source: after, designId: target.designId });
+			else if (kind === "edge-function") state = await workspace.updateEdgeFunctionSource({ edgeFunctionId: input.id, source: after, designId: target.designId });
 			else {
-				const design = bound.state.design;
+				const design = boundState.design;
 				if (!design) throw new Error("Open a project before writing a Function body.");
 				const functions = (design.functions ?? []).map((fn) => fn.id === input.id ? { ...fn, body: after } : fn);
 				state = await workspace.applyAssistantDesign(
 					{ ...design, functions },
 					turnIds.get(conversationId),
+					target.designId,
 				);
 			}
-			if (state.project?.id !== conversation.project_id) throw new Error("The open project changed before the code write completed.");
+			assertTargetState(state, target, "The project or Design changed before the code write completed.");
+			assertTargetState(workspace.getState(), target, "The project or Design changed before the code write completed.");
 			const appliedSource = kind === "scenario"
 				? state.scenarios.find(({ id }) => id === input.id)?.source
 				: kind === "edge-function"
 					? state.edgeFunctions.find(({ id }) => id === input.id)?.source
 					: state.design?.functions?.find(({ id }) => id === input.id)?.body;
-			if (appliedSource !== after) throw new Error("The code write was not saved to the bound project.");
+			if (appliedSource !== after) throw new Error("The code write was not saved to the bound project and Design.");
 			const snapshot = getLastAppliedSandbox(state.sandbox);
 			const diagnostics = kind === "function-body" ? [] : getAssistantCodeDiagnostics(
 				kind,
@@ -892,6 +921,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				kind,
 				id: input.id,
 				name: itemName,
+				projectId: target.projectId,
+				designId: target.designId,
 				before,
 				after,
 				diagnostics,
@@ -1196,7 +1227,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		},
 		async confirmDdlDrop(conversationId: string, toolCallId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
 			const waitForCompletion = options?.waitForCompletion ?? true;
-			const { conversation } = requireBoundState(conversationId);
+			const { conversation, state: invocationState } = requireBoundState(conversationId);
 			if (confirmingDrops.has(toolCallId)) throw new Error("This DDL confirmation is already being processed.");
 			if (conversation.messages.some((message) => {
 				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
@@ -1204,6 +1235,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					&& "status" in message.payload && (message.payload.status === "consumed" || message.payload.status === "rejected");
 			})) throw new Error("This DDL confirmation has already been used.");
 			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
+			const target = pendingDdlTargets.get(conversationId);
+			if (!target) throw new Error("The target Design for this DDL confirmation is no longer available.");
+			assertTargetState(invocationState, target, "The project or Design changed before DDL confirmation.");
 			const confirmation = [...conversation.messages].reverse().find((message) => {
 				const payload = message.payload;
 				if (message.role !== "toolResult" || !payload || typeof payload !== "object" || !("toolCallId" in payload) || !("details" in payload)) return false;
@@ -1224,23 +1258,29 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const savedPlan = (updatedDetails?.details ?? originalDetails) as {
 				statement: string;
 				projectId: string;
+				designId?: string;
 				revision: number;
 				removal: unknown;
 				targets: { targetId: string }[];
 			};
 			if (!originalDetails || typeof originalDetails !== "object" || !("statement" in originalDetails) || typeof savedPlan.statement !== "string"
-				|| !Array.isArray(savedPlan.targets) || savedPlan.targets.some((target) => !target || typeof target.targetId !== "string")
-				|| savedPlan.projectId !== conversation.project_id) {
-				throw new Error("The saved DDL confirmation is malformed or belongs to another project.");
+				|| !Array.isArray(savedPlan.targets) || savedPlan.targets.some((item) => !item || typeof item.targetId !== "string")
+				|| savedPlan.projectId !== conversation.project_id || savedPlan.designId !== target.designId) {
+				throw new Error("The saved DDL confirmation is malformed or belongs to another project or Design.");
 			}
 			const statement = savedPlan.statement;
 			confirmingDrops.add(toolCallId);
 			try {
 				const plan = await applyAssistantDdl(workspace, statement, {
-					expectedProjectId: conversation.project_id,
+					expectedProjectId: target.projectId,
+					expectedDesignId: target.designId,
 					idFactory: deterministicDdlIdFactory(toolCallId),
 					planOnly: true,
 				});
+				assertTargetState(workspace.getState(), target, "The project or Design changed while refreshing the DDL confirmation.");
+				if (plan.projectId !== target.projectId || plan.designId !== target.designId) {
+					throw new Error("The refreshed DDL plan belongs to another project or Design.");
+				}
 				if (plan.status !== "confirmation-required") throw new Error("Could not refresh the destructive DDL plan.");
 				if (plan.projectId !== savedPlan.projectId || plan.revision !== savedPlan.revision
 					|| JSON.stringify(plan.removal) !== JSON.stringify(savedPlan.removal)
@@ -1251,13 +1291,14 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						payload: {
 							toolCallId,
 							status: "updated",
-							details: plan,
+							details: { ...plan, projectId: target.projectId, designId: target.designId },
 							note: "The plan changed. Review the updated plan before confirming.",
 						},
 					});
 					publish(conversationId, { type: "assistant_confirmation_plan_updated" });
 					return store.loadConversation(conversationId);
 				}
+				assertTargetState(workspace.getState(), target, "The project or Design changed while refreshing the DDL confirmation.");
 				const before = workspace.getState().design;
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
@@ -1265,7 +1306,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				const result = await applyAssistantDdl(workspace, statement, {
 					assistantTurnId: turnId,
 					confirmedDrops: true,
-					expectedProjectId: conversation.project_id,
+					expectedProjectId: target.projectId,
+					expectedDesignId: target.designId,
 					idFactory: deterministicDdlIdFactory(toolCallId),
 					confirmation: {
 						projectId: savedPlan.projectId,
@@ -1274,6 +1316,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					},
 				});
 				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
+				assertTargetState(result.state, target, "The project or Design changed before the confirmed DDL change completed.");
 				const after = result.state;
 				const affectedTables: Array<{
 					id: string;
@@ -1308,6 +1351,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 
 				const modelResult = {
 					status: "applied" as const,
+					projectId: target.projectId,
+					designId: target.designId,
 					statements: appliedStatements,
 					affectedTables: modelAffectedTables,
 					revision: after.revision,
@@ -1317,12 +1362,15 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 
 				const details = {
 					status: "applied" as const,
+					projectId: target.projectId,
+					designId: target.designId,
 					statements: appliedStatements,
 					affectedTables,
 					revision: after.revision,
 					sql: compactSqlStatus(after.sql),
 					sandbox: compactSandboxStatus(after.sandbox),
 				};
+
 
 				store.appendMessage(conversationId, {
 					role: "system",
@@ -1338,6 +1386,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				const rowId = store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
 				(toolResult as { id?: string }).id = rowId;
 				pendingConfirmations.delete(conversationId);
+				pendingDdlTargets.delete(conversationId);
 				publish(conversationId, { type: "assistant_confirmation_resolved" });
 				store.observeProjectSnapshot(conversationId, projectSnapshot(result.state), result.state.revision);
 				lastConfirmedDrops.set(conversationId, {
@@ -1345,10 +1394,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					statement,
 					statements: appliedStatements,
 					affectedTables: modelAffectedTables,
+					projectId: target.projectId,
+					designId: target.designId,
 				});
-				const agent = active.get(conversationId);
-				if (agent) {
-					agent.clearAllQueues();
 					pausedTurns.delete(conversationId);
 					agent.state.messages.push(toolResult as never);
 					runningTurns.add(conversationId);
@@ -1378,7 +1426,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		},
 		async rejectDdlDrop(conversationId: string, toolCallId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
 			const waitForCompletion = options?.waitForCompletion ?? true;
-			const { conversation } = requireBoundState(conversationId);
+			const { conversation, state } = requireBoundState(conversationId);
+			const target = pendingDdlTargets.get(conversationId);
+			if (!target) throw new Error("The target Design for this DDL confirmation is no longer available.");
+			assertTargetState(state, target, "The project or Design changed before DDL confirmation.");
 			if (!pendingConfirmations.has(conversationId)) throw new Error("This DDL confirmation is no longer available.");
 			if (conversation.messages.some((message) => {
 				if (message.kind !== "assistant-drop-confirmation" || !message.payload || typeof message.payload !== "object") return false;
@@ -1411,6 +1462,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const rowId = store.appendMessage(conversationId, { role: "toolResult", kind: "tool-result", payload: toolResult });
 			(toolResult as { id?: string }).id = rowId;
 			pendingConfirmations.delete(conversationId);
+			pendingDdlTargets.delete(conversationId);
 			publish(conversationId, { type: "assistant_confirmation_resolved" });
 				const agent = active.get(conversationId);
 				if (agent) {

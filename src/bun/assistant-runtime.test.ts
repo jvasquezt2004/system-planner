@@ -455,10 +455,11 @@ describe("Assistant pi agent runtime", () => {
 		expect(generated.sql).not.toContain("COMMENT ON COLUMN");
 		const readResult = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult");
 		const readPayload = readResult?.payload as { content?: Array<{ text?: string }> } | undefined;
-		const readProject = JSON.parse(readPayload?.content?.[0]?.text ?? "{}") as { generatedSql?: string };
+		const readProject = JSON.parse(readPayload?.content?.[0]?.text ?? "{}") as { projectId?: string; designId?: string; generatedSql?: string };
+		expect(readProject.projectId).toBe(state.project.id);
+		expect(readProject.designId).toBe(state.activeDesignId);
 		expect(readProject.generatedSql).toContain('-- Column notes\n-- "t"."id": old private intent');
 		expect(readProject.generatedSql).not.toContain("COMMENT ON COLUMN");
-		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
 
 	test("confirms staged table dependencies from a deterministic plan", async () => {
@@ -702,6 +703,54 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().scenarios).toEqual([]);
 		expect(workspace.getState().edgeFunctions).toEqual([]);
 		expect(runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult")).toHaveLength(6);
+	});
+	test("does not create a Scenario in the newly active Design when its tool call is pending", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-target-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const first = await workspace.createProject({ name: "Scenario target" });
+		if (!first.project || !first.activeDesignId) throw new Error("Expected the first project Design to be open.");
+		const firstProjectId = first.project.id;
+		const firstDesignId = first.activeDesignId;
+		const second = await workspace.createProject({ name: "Other target" });
+		if (!second.project || !second.activeDesignId) throw new Error("Expected the second project Design to be open.");
+		await workspace.openProject({ projectId: firstProjectId });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(firstProjectId);
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Must stay in source Design" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Finished.")]),
+		]);
+
+		const originalCreateScenario = workspace.createScenario.bind(workspace);
+		const callStarted = Promise.withResolvers<{ designId?: string }>();
+		const releaseCall = Promise.withResolvers<void>();
+		workspace.createScenario = async (action) => {
+			callStarted.resolve({ designId: action.designId });
+			await releaseCall.promise;
+			return originalCreateScenario(action);
+		};
+		const send = runtime.sendMessage(conversation.id, "Create a scenario.", "scripted-model");
+		const action = await callStarted.promise;
+		expect(action.designId).toBe(firstDesignId);
+		await workspace.openProject({ projectId: second.project.id });
+		releaseCall.resolve();
+		await send;
+
+		expect(workspace.getState().project?.id).toBe(second.project.id);
+		expect(workspace.getState().scenarios).toEqual([]);
+		const toolResults = runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult") ?? [];
+		expect(toolResults).toHaveLength(1);
+		expect(JSON.stringify(toolResults[0]?.payload)).toContain("Design");
 	});
 	test("undoes and redoes a Function-body write together with DDL in one Assistant turn", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-function-turn-"));

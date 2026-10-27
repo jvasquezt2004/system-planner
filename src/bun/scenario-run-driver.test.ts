@@ -57,7 +57,14 @@ describe("Scenario run driver", () => {
 			const results = await runAllScenarios(scenarios, (scenario) => driver.run(scenario), () => true);
 			expect(results.map(({ run }) => run.status)).toEqual(["passed", "failed", "errored"]);
 			for (const { scenario, run } of results) {
-				expect(workspace.getState().scenarioRuns[scenario.id]).toMatchObject({ id: run.id, status: run.status });
+				expect(run.designId).toBe(scenario.designId);
+				expect(typeof run.scenarioRevision).toBe("number");
+				expect(workspace.getState().scenarioRuns[scenario.id]).toMatchObject({
+					id: run.id,
+					designId: scenario.designId,
+					status: run.status,
+					scenarioRevision: run.scenarioRevision,
+				});
 				expect(run.requests[0]?.result).toEqual([]);
 			}
 			expect(results[1]?.run.expectations[0]?.passed).toBe(false);
