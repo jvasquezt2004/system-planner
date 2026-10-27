@@ -84,7 +84,7 @@ export function App({
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
 	const [relating, setRelating] = useState(false);
-	const [view, setView] = useState<WorkspaceView>("canvas");
+	const [view, setView] = useState<WorkspaceView>(() => new URLSearchParams(window.location.search).has("proofReportUrl") ? "architecture" : "canvas");
 	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
 	const [pendingRemoval, setPendingRemoval] = useState<{
@@ -585,6 +585,9 @@ export function App({
 			? relationshipsForTable(state.design, selectedTable.id)
 			: [];
 
+	if (new URLSearchParams(window.location.search).has("proofReportUrl")) {
+		return <main className="h-screen"><ArchitectureProofView /></main>;
+	}
 	if (!state) {
 		return (
 			<main className="flex h-screen items-center justify-center bg-paper">

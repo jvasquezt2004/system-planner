@@ -221,7 +221,7 @@ export function CustomArchitectureCanvas({
 						Architecture Technical Proof (Custom Canvas)
 					</span>
 					{focusedServiceId && (
-						<div className="flex items-center gap-1.5 px-2 py-0.5 bg-pencil/10 border border-pencil/30 rounded text-xs text-pencil font-medium">
+						<div data-proof-focus-context="" className="flex items-center gap-1.5 px-2 py-0.5 bg-pencil/10 border border-pencil/30 rounded text-xs text-pencil font-medium">
 							<Eye className="size-3" />
 							<span>Focusing: {arch.services.find((s) => s.id === focusedServiceId)?.name}</span>
 							<button
@@ -294,7 +294,7 @@ export function CustomArchitectureCanvas({
 			</div>
 
 			{/* Interactive Viewport */}
-			<div
+			<div data-proof-viewport=""
 				ref={containerRef}
 				onMouseDown={handleMouseDownCanvas}
 				onMouseMove={handleMouseMove}
@@ -322,6 +322,7 @@ export function CustomArchitectureCanvas({
 						return (
 							<div
 								key={grp.id}
+								data-group-id={grp.id}
 								onMouseDown={(e) => handleMouseDownGroup(e, grp.id)}
 								style={{
 									left: grp.bounds.x,
@@ -362,6 +363,8 @@ export function CustomArchitectureCanvas({
 						return (
 							<div
 								key={svc.id}
+								data-service-id={svc.id}
+								data-collapsed={svc.isCollapsed ? "true" : "false"}
 								style={{
 									left: b.x,
 									top: b.y,
@@ -400,6 +403,7 @@ export function CustomArchitectureCanvas({
 									<div className="flex items-center gap-1">
 										<button
 											type="button"
+											data-proof-focus=""
 											onClick={(e) => {
 												e.stopPropagation();
 												setFocusedServiceId(isFocused ? null : svc.id);
@@ -471,6 +475,9 @@ export function CustomArchitectureCanvas({
 
 									{/* Rendered connector */}
 									<path
+										data-connection-id={conn.id}
+										data-source-id={conn.sourceId}
+										data-target-id={conn.targetId}
 										d={route.pathString}
 										fill="none"
 										stroke={isHighlighted ? "#d97706" : isSelected ? "#0f172a" : "#2563eb"}
@@ -511,7 +518,7 @@ export function CustomArchitectureCanvas({
 						{/* Active Animated Message Particles along paths */}
 						{!reducedMotion &&
 							currentFrame.activeParticles.map((particle) => (
-								<g key={`${particle.connectionId}-${particle.progress}`} transform={`translate(${particle.point.x}, ${particle.point.y})`}>
+								<g key={`${particle.connectionId}-${particle.progress}`} data-proof-particle={particle.connectionId} transform={`translate(${particle.point.x}, ${particle.point.y})`}>
 									<circle r="7" fill="#d97706" opacity="0.3" className="animate-ping" />
 									<circle r="5" fill="#d97706" stroke="#ffffff" strokeWidth="1.5" />
 								</g>
@@ -530,6 +537,8 @@ export function CustomArchitectureCanvas({
 						return (
 							<div
 								key={comp.id}
+								data-component-id={comp.id}
+								data-owner-service-id={comp.serviceId ?? ""}
 								onMouseDown={(e) => handleMouseDownComponent(e, comp.id)}
 								style={{
 									left: comp.position.x,
@@ -594,6 +603,7 @@ export function CustomArchitectureCanvas({
 					<Button
 						variant="outline"
 						size="sm"
+						data-proof-play=""
 						onClick={() => setIsPlaying((p) => !p)}
 						className="h-8 w-20 gap-1.5 font-medium"
 					>
@@ -637,6 +647,7 @@ export function CustomArchitectureCanvas({
 							<button
 								key={spd}
 								type="button"
+								data-proof-speed={spd}
 								onClick={() => setPlaybackSpeed(spd)}
 								className={cn(
 									"px-2 py-1 transition-colors",
@@ -651,6 +662,7 @@ export function CustomArchitectureCanvas({
 					{/* Reduced Motion Toggle */}
 					<button
 						type="button"
+						data-proof-reduced-motion=""
 						onClick={() => setReducedMotion((r) => !r)}
 						className={cn(
 							"px-2.5 py-1 rounded border text-xs font-medium transition-colors flex items-center gap-1.5",
@@ -678,6 +690,7 @@ export function CustomArchitectureCanvas({
 						return (
 							<button
 								key={sched.step.id}
+								data-step-id={sched.step.id}
 								type="button"
 								onClick={() => {
 									setIsPlaying(false);

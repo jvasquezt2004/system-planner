@@ -1,12 +1,17 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { CustomArchitectureCanvas } from "./custom-canvas";
 import { ReactFlowEvaluation } from "./reactflow-evaluation";
+import { runWebViewProof } from "./webview-proof";
 import { cn } from "@/lib/utils";
 
 export type ProofTab = "canvas" | "evaluation";
 
 export function ArchitectureProofView() {
 	const [tab, setTab] = useState<ProofTab>("canvas");
+	useEffect(() => {
+		const reportUrl = new URLSearchParams(window.location.search).get("proofReportUrl");
+		if (reportUrl) void runWebViewProof(reportUrl);
+	}, []);
 
 	return (
 		<div className="flex flex-col h-full bg-[#fcfbf7] overflow-hidden" data-testid="architecture-proof-view">
