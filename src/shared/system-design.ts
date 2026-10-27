@@ -2,14 +2,17 @@ import type { CanvasPoint, CanvasViewport } from "./design";
 
 /**
  * The authoritative System design of one Project: Services that own Components,
- * generic and database Components at system scope or inside a Service, and the
- * directed, labeled Connections between Components and Services. Groups,
- * Walkthroughs, and kind-specific catalogs are added by later tickets.
+ * generic and database Components at system scope or inside a Service, the
+ * directed, labeled Connections between Components and Services, and Groups that
+ * organize Components, Services, and other Groups. Walkthroughs and kind-specific
+ * catalogs are added by later tickets.
  *
- * Component, Service, and Connection `id`s are stable identities. Component and
- * Service ids share one namespace, so a Connection endpoint names exactly one
- * item. A Component has at most one owning Service (`serviceId`). Ownership
- * changes only through explicit actions; a Component's position never assigns it.
+ * Component, Service, Group, and Connection `id`s are stable identities.
+ * Component, Service, and Group ids share one namespace, so a Connection endpoint
+ * or a Group member names exactly one item. A Component has at most one owning
+ * Service (`serviceId`). Ownership changes only through explicit actions; a
+ * Component's position never assigns it. Group membership is also explicit and
+ * never changes ownership.
  */
 
 export type SystemComponentKind = "generic" | "database";
@@ -55,6 +58,23 @@ export type SystemService = {
 	size: SystemServiceSize;
 };
 
+/**
+ * A named, non-owning region such as a business domain, region, or network
+ * boundary. `memberIds` name Components, Services, or child Groups explicitly;
+ * the frame's geometry is layout only and never decides membership. Members may
+ * belong to several Groups, and a Group may nest inside another, but never
+ * contain itself. A Group is not a Connection endpoint.
+ */
+export type SystemGroup = {
+	id: string;
+	name: string;
+	/** The top-left corner of the frame, in canvas space. */
+	position: CanvasPoint;
+	size: SystemServiceSize;
+	/** Component, Service, or child Group ids, without duplicates. */
+	memberIds: string[];
+};
+
 export type SystemConnection = {
 	id: string;
 	/** A Component or Service id. */
@@ -69,6 +89,7 @@ export type SystemConnection = {
 
 export type SystemDesign = {
 	services: SystemService[];
+	groups: SystemGroup[];
 	components: SystemComponent[];
 	connections: SystemConnection[];
 	/** Presentation only: saved outside Project content history. */
@@ -88,10 +109,12 @@ export const SYSTEM_PROPERTY_LIMIT = 40;
 export const SYSTEM_COMPONENT_SIZE = { width: 180, height: 84 } as const;
 export const SYSTEM_SERVICE_DEFAULT_SIZE: SystemServiceSize = { width: 420, height: 280 };
 export const SYSTEM_SERVICE_MIN_SIZE: SystemServiceSize = { width: 240, height: 160 };
+export const SYSTEM_GROUP_DEFAULT_SIZE: SystemServiceSize = { width: 360, height: 240 };
+export const SYSTEM_GROUP_MIN_SIZE: SystemServiceSize = { width: 160, height: 120 };
 export const SYSTEM_DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
 export function createEmptySystemDesign(): SystemDesign {
-	return { services: [], components: [], connections: [], viewport: { ...SYSTEM_DEFAULT_VIEWPORT } };
+	return { services: [], groups: [], components: [], connections: [], viewport: { ...SYSTEM_DEFAULT_VIEWPORT } };
 }
 
 /**
@@ -102,6 +125,7 @@ export function createEmptySystemDesign(): SystemDesign {
 export function createMigratedSystemDesign(databaseDesignId: string, componentId: string, name = "Database"): SystemDesign {
 	return {
 		services: [],
+		groups: [],
 		components: [{
 			id: componentId,
 			kind: "database",
@@ -139,6 +163,26 @@ export type SystemServiceInput = {
 };
 
 export type SystemServiceChanges = Partial<Pick<SystemService, "name">>;
+
+export type SystemGroupInput = {
+	id: string;
+	name?: string;
+	position: CanvasPoint;
+	size?: SystemServiceSize;
+	memberIds?: string[];
+};
+
+export type SystemGroupChanges = Partial<Pick<SystemGroup, "name" | "memberIds">>;
+
+/**
+ * The identities a move of one Group carries, each listed once even when
+ * memberships overlap or nest. Owned Components of a moved Service move with it.
+ */
+export type SystemGroupMoveTargets = {
+	groupIds: string[];
+	serviceIds: string[];
+	componentIds: string[];
+};
 
 export type SystemConnectionInput = {
 	id: string;
@@ -186,6 +230,10 @@ export function findSystemConnection(design: SystemDesign, connectionId: string)
 	return design.connections.find((connection) => connection.id === connectionId);
 }
 
+export function findSystemGroup(design: SystemDesign, groupId: string): SystemGroup | undefined {
+	return design.groups.find((group) => group.id === groupId);
+}
+
 export function addSystemService(design: SystemDesign, input: SystemServiceInput): SystemDesign {
 	requireIdentity(input.id, "Service id");
 	if (findSystemService(design, input.id)) throw new Error(`Service "${input.id}" already exists.`);
@@ -194,7 +242,7 @@ export function addSystemService(design: SystemDesign, input: SystemServiceInput
 		id: input.id,
 		name: requireSystemName(input.name ?? nextDefaultName("Service", design.services.map((item) => item.name)), "Service name"),
 		position: requirePosition(input.position, "Service position"),
-		size: normalizeServiceSize(input.size ?? SYSTEM_SERVICE_DEFAULT_SIZE),
+		size: normalizeFrameSize(input.size ?? SYSTEM_SERVICE_DEFAULT_SIZE, SYSTEM_SERVICE_MIN_SIZE),
 	};
 	return { ...design, services: [...design.services, service] };
 }
@@ -230,7 +278,7 @@ export function moveSystemService(design: SystemDesign, serviceId: string, posit
 
 export function resizeSystemService(design: SystemDesign, serviceId: string, size: SystemServiceSize): SystemDesign {
 	const current = requireSystemService(design, serviceId);
-	const next = normalizeServiceSize(size);
+	const next = normalizeFrameSize(size, SYSTEM_SERVICE_MIN_SIZE);
 	if (current.size.width === next.width && current.size.height === next.height) return design;
 	return replaceService(design, { ...current, size: next });
 }
@@ -260,6 +308,7 @@ export function removeSystemService(design: SystemDesign, serviceId: string): Sy
 	return {
 		...design,
 		services: design.services.filter((service) => service.id !== serviceId),
+		groups: pruneSystemGroupMemberships(design.groups, serviceId),
 		components: design.components.map((component) => (
 			component.serviceId === serviceId ? { ...component, serviceId: null } : component
 		)),
@@ -267,6 +316,143 @@ export function removeSystemService(design: SystemDesign, serviceId: string): Sy
 			(connection) => connection.sourceId !== serviceId && connection.targetId !== serviceId,
 		),
 	};
+}
+
+export function addSystemGroup(design: SystemDesign, input: SystemGroupInput): SystemDesign {
+	requireIdentity(input.id, "Group id");
+	if (findSystemGroup(design, input.id)) throw new Error(`Group "${input.id}" already exists.`);
+	requireUnusedId(design, input.id);
+	const group: SystemGroup = {
+		id: input.id,
+		name: requireSystemName(input.name ?? nextDefaultName("Group", design.groups.map((item) => item.name)), "Group name"),
+		position: requirePosition(input.position, "Group position"),
+		size: normalizeFrameSize(input.size ?? SYSTEM_GROUP_DEFAULT_SIZE, SYSTEM_GROUP_MIN_SIZE),
+		memberIds: requireGroupMembers(design, input.id, input.memberIds ?? []),
+	};
+	return { ...design, groups: [...design.groups, group] };
+}
+
+/**
+ * Renames a Group or replaces its members. Membership is validated as a whole:
+ * an unknown member, a Group containing itself, or a nesting cycle refuses the
+ * change and leaves the design as it was.
+ */
+export function updateSystemGroup(design: SystemDesign, groupId: string, changes: SystemGroupChanges): SystemDesign {
+	const current = requireSystemGroup(design, groupId);
+	const next: SystemGroup = { ...current };
+	if (changes.name !== undefined) next.name = requireSystemName(changes.name, "Group name");
+	if (changes.memberIds !== undefined) next.memberIds = requireGroupMembers(design, groupId, changes.memberIds);
+	if (sameJson(current, next)) return design;
+	return replaceGroup(design, next);
+}
+
+/**
+ * Lists every identity a move of the Group carries. A nested Group contributes its
+ * own members transitively; each Component, Service, and child Group is listed
+ * once, however many memberships reach it.
+ */
+export function describeSystemGroupMove(design: SystemDesign, groupId: string): SystemGroupMoveTargets {
+	requireSystemGroup(design, groupId);
+	const groupIds = new Set<string>();
+	const serviceIds = new Set<string>();
+	const componentIds = new Set<string>();
+	const visit = (id: string) => {
+		if (groupIds.has(id)) return;
+		groupIds.add(id);
+		for (const memberId of requireSystemGroup(design, id).memberIds) {
+			if (findSystemGroup(design, memberId)) visit(memberId);
+			else if (findSystemService(design, memberId)) serviceIds.add(memberId);
+			else if (findSystemComponent(design, memberId)) componentIds.add(memberId);
+		}
+	};
+	visit(groupId);
+	for (const component of design.components) {
+		if (component.serviceId !== null && serviceIds.has(component.serviceId)) componentIds.add(component.id);
+	}
+	return { groupIds: [...groupIds], serviceIds: [...serviceIds], componentIds: [...componentIds] };
+}
+
+/**
+ * Moves a Group frame to a new position and carries every identity it resolves
+ * to by the same offset, each exactly once. Ownership and membership are unchanged.
+ */
+export function moveSystemGroup(design: SystemDesign, groupId: string, position: CanvasPoint): SystemDesign {
+	const current = requireSystemGroup(design, groupId);
+	const next = requirePosition(position, "Group position");
+	const dx = next.x - current.position.x;
+	const dy = next.y - current.position.y;
+	if (dx === 0 && dy === 0) return design;
+	const targets = describeSystemGroupMove(design, groupId);
+	const groupSet = new Set(targets.groupIds);
+	const serviceSet = new Set(targets.serviceIds);
+	const componentSet = new Set(targets.componentIds);
+	const shifted = (point: CanvasPoint) => requirePosition({ x: point.x + dx, y: point.y + dy }, "Position");
+	return {
+		...design,
+		groups: design.groups.map((group) => {
+			if (group.id === groupId) return { ...group, position: next };
+			return groupSet.has(group.id) ? { ...group, position: shifted(group.position) } : group;
+		}),
+		services: design.services.map((service) => (serviceSet.has(service.id) ? { ...service, position: shifted(service.position) } : service)),
+		components: design.components.map((component) => (componentSet.has(component.id) ? { ...component, position: shifted(component.position) } : component)),
+	};
+}
+
+/** Changes the frame's size only. Drawing or resizing a Group never changes its membership. */
+export function resizeSystemGroup(design: SystemDesign, groupId: string, size: SystemServiceSize): SystemDesign {
+	const current = requireSystemGroup(design, groupId);
+	const next = normalizeFrameSize(size, SYSTEM_GROUP_MIN_SIZE);
+	if (current.size.width === next.width && current.size.height === next.height) return design;
+	return replaceGroup(design, { ...current, size: next });
+}
+
+/**
+ * Removes the Group frame. Its members stay where they are with their ownership
+ * and Connections; the Group is only removed from any Group that contained it.
+ */
+export function removeSystemGroup(design: SystemDesign, groupId: string): SystemDesign {
+	requireSystemGroup(design, groupId);
+	return {
+		...design,
+		groups: pruneSystemGroupMemberships(design.groups.filter((group) => group.id !== groupId), groupId),
+	};
+}
+
+/** The Groups that name `id` as a member, so the designer can see every organization it belongs to. */
+export function systemGroupsContaining(design: SystemDesign, id: string): SystemGroup[] {
+	return design.groups.filter((group) => group.memberIds.includes(id));
+}
+
+/**
+ * Whether `memberId` may join the Group now: it must exist, not be the Group
+ * itself, and not already contain the Group. Used to offer only valid choices.
+ */
+export function canAddSystemGroupMember(design: SystemDesign, groupId: string, memberId: string): boolean {
+	if (memberId === groupId || !isIdentity(design, memberId)) return false;
+	return !findSystemGroup(design, memberId) || !reachesGroup(design.groups, memberId, groupId);
+}
+
+/**
+ * Drops one identity from every Group's members. Used when a Component or Service
+ * is removed, so no Group names an item that no longer exists.
+ */
+export function pruneSystemGroupMemberships(groups: readonly SystemGroup[], removedId: string): SystemGroup[] {
+	return groups.map((group) => (
+		group.memberIds.includes(removedId)
+			? { ...group, memberIds: group.memberIds.filter((id) => id !== removedId) }
+			: group
+	));
+}
+
+/**
+ * Drops members that are not in `liveIds`. Assistant Revert uses it after it
+ * restores items, so a Group never names an identity the restored design lacks.
+ */
+export function keepSystemGroupMembers(groups: readonly SystemGroup[], liveIds: ReadonlySet<string>): SystemGroup[] {
+	return groups.map((group) => {
+		const kept = group.memberIds.filter((id) => liveIds.has(id));
+		return kept.length === group.memberIds.length ? group : { ...group, memberIds: kept };
+	});
 }
 
 export function addSystemComponent(design: SystemDesign, input: SystemComponentInput): SystemDesign {
@@ -328,11 +514,12 @@ export function describeSystemComponentRemoval(design: SystemDesign, componentId
 	};
 }
 
-/** Removes the Component and every Connection that uses it as an endpoint. */
+/** Removes the Component, its Connections, and its Group memberships. */
 export function removeSystemComponent(design: SystemDesign, componentId: string): SystemDesign {
 	requireSystemComponent(design, componentId);
 	return {
 		...design,
+		groups: pruneSystemGroupMemberships(design.groups, componentId),
 		components: design.components.filter((component) => component.id !== componentId),
 		connections: design.connections.filter(
 			(connection) => connection.sourceId !== componentId && connection.targetId !== componentId,
@@ -411,7 +598,8 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 		throw new Error("The saved System design is malformed.");
 	}
 	const rawServices = value.services ?? [];
-	if (!Array.isArray(rawServices)) throw new Error("The saved System design is malformed.");
+	const rawGroups = value.groups ?? [];
+	if (!Array.isArray(rawServices) || !Array.isArray(rawGroups)) throw new Error("The saved System design is malformed.");
 
 	const services: SystemService[] = [];
 	const serviceIds = new Set<string>();
@@ -424,7 +612,26 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			id,
 			name: requireSystemName(item.name, "Service name"),
 			position: requirePosition(item.position as CanvasPoint, "Service position"),
-			size: normalizeServiceSize(isRecord(item.size) ? (item.size as unknown as SystemServiceSize) : SYSTEM_SERVICE_DEFAULT_SIZE),
+			size: normalizeFrameSize(isRecord(item.size) ? (item.size as unknown as SystemServiceSize) : SYSTEM_SERVICE_DEFAULT_SIZE, SYSTEM_SERVICE_MIN_SIZE),
+		});
+	}
+
+	const groups: SystemGroup[] = [];
+	const groupIds = new Set<string>();
+	for (const item of rawGroups) {
+		if (!isRecord(item)) throw new Error("A saved Group is malformed.");
+		const id = requireIdentity(item.id, "Group id");
+		if (groupIds.has(id)) throw new Error(`Group "${id}" is duplicated.`);
+		if (serviceIds.has(id)) throw new Error(`Group "${id}" uses the id of a Service.`);
+		groupIds.add(id);
+		const rawMembers = item.memberIds ?? [];
+		if (!Array.isArray(rawMembers)) throw new Error(`Group "${id}" has malformed members.`);
+		groups.push({
+			id,
+			name: requireSystemName(item.name, "Group name"),
+			position: requirePosition(item.position as CanvasPoint, "Group position"),
+			size: normalizeFrameSize(isRecord(item.size) ? (item.size as unknown as SystemServiceSize) : SYSTEM_GROUP_DEFAULT_SIZE, SYSTEM_GROUP_MIN_SIZE),
+			memberIds: rawMembers.map((memberId) => requireIdentity(memberId, `Group "${id}" member`)),
 		});
 	}
 
@@ -435,6 +642,7 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 		const id = requireIdentity(item.id, "Component id");
 		if (componentIds.has(id)) throw new Error(`Component "${id}" is duplicated.`);
 		if (serviceIds.has(id)) throw new Error(`Component "${id}" uses the id of a Service.`);
+		if (groupIds.has(id)) throw new Error(`Component "${id}" uses the id of a Group.`);
 		componentIds.add(id);
 		const serviceId = typeof item.serviceId === "string" ? item.serviceId : null;
 		if (serviceId !== null && !serviceIds.has(serviceId)) {
@@ -456,6 +664,16 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 	}
 
 	const endpointIds = new Set([...componentIds, ...serviceIds]);
+	const identityIds = new Set([...endpointIds, ...groupIds]);
+	for (const group of groups) {
+		if (new Set(group.memberIds).size !== group.memberIds.length) throw new Error(`Group "${group.id}" lists a member twice.`);
+		for (const memberId of group.memberIds) {
+			if (memberId === group.id) throw new Error(`Group "${group.id}" cannot contain itself.`);
+			if (!identityIds.has(memberId)) throw new Error(`Group "${group.id}" contains "${memberId}", which does not exist.`);
+		}
+		if (reachesGroup(groups, group.id, group.id)) throw new Error(`Group "${group.id}" is part of a nesting cycle.`);
+	}
+
 	const connections: SystemConnection[] = [];
 	const connectionIds = new Set<string>();
 	for (const item of value.connections) {
@@ -481,6 +699,7 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 	const viewport = isRecord(value.viewport) ? value.viewport : SYSTEM_DEFAULT_VIEWPORT;
 	return {
 		services,
+		groups,
 		components,
 		connections,
 		viewport: {
@@ -493,13 +712,20 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 
 /** Keeps only the content that Undo and Revert restore; viewport is navigation. */
 export function systemDesignContent(design: SystemDesign): SystemContent {
-	return { services: design.services, components: design.components, connections: design.connections };
+	return { services: design.services, groups: design.groups, components: design.components, connections: design.connections };
 }
 
 function replaceComponent(design: SystemDesign, next: SystemComponent): SystemDesign {
 	return {
 		...design,
 		components: design.components.map((component) => (component.id === next.id ? next : component)),
+	};
+}
+
+function replaceGroup(design: SystemDesign, next: SystemGroup): SystemDesign {
+	return {
+		...design,
+		groups: design.groups.map((group) => (group.id === next.id ? next : group)),
 	};
 }
 
@@ -514,6 +740,61 @@ function requireSystemService(design: SystemDesign, serviceId: string): SystemSe
 	const service = findSystemService(design, serviceId);
 	if (!service) throw new Error("That Service could not be found.");
 	return service;
+}
+
+function requireSystemGroup(design: SystemDesign, groupId: string): SystemGroup {
+	const group = findSystemGroup(design, groupId);
+	if (!group) throw new Error("That Group could not be found.");
+	return group;
+}
+
+/**
+ * Checks a complete member list for a Group. Members must exist, a Group cannot
+ * contain itself, and no member Group may already contain this one, directly or
+ * through its own Groups. Duplicates collapse to one membership.
+ */
+function requireGroupMembers(design: SystemDesign, groupId: string, memberIds: readonly string[]): string[] {
+	const members: string[] = [];
+	for (const memberId of memberIds) {
+		requireIdentity(memberId, "Group member");
+		if (members.includes(memberId)) continue;
+		if (memberId === groupId) throw new Error("A Group cannot contain itself.");
+		if (!isIdentity(design, memberId)) throw new Error(`"${memberId}" does not match a Component, Service, or Group.`);
+		members.push(memberId);
+	}
+	const target = findSystemGroup(design, groupId);
+	for (const memberId of members) {
+		const member = findSystemGroup(design, memberId);
+		if (member && reachesGroup(design.groups, memberId, groupId)) {
+			throw new Error(`Nesting "${target?.name ?? groupId}" inside "${member.name}" would create a cycle.`);
+		}
+	}
+	return members;
+}
+
+/** True when `targetId` is reachable from `fromId` through member Groups, so `fromId` contains it. */
+function reachesGroup(groups: readonly SystemGroup[], fromId: string, targetId: string): boolean {
+	const seen = new Set<string>();
+	const stack = [fromId];
+	while (stack.length > 0) {
+		const currentId = stack.pop();
+		const group = groups.find((item) => item.id === currentId);
+		if (!group) continue;
+		for (const memberId of group.memberIds) {
+			if (memberId === targetId) return true;
+			if (!seen.has(memberId)) {
+				seen.add(memberId);
+				stack.push(memberId);
+			}
+		}
+	}
+	return false;
+}
+
+function isIdentity(design: SystemDesign, id: string): boolean {
+	return findSystemComponent(design, id) !== undefined
+		|| findSystemService(design, id) !== undefined
+		|| findSystemGroup(design, id) !== undefined;
 }
 
 function requireSystemComponent(design: SystemDesign, componentId: string): SystemComponent {
@@ -538,10 +819,11 @@ function requireDistinctEndpoints(design: SystemDesign, sourceId: string, target
 	if (sourceId === targetId) throw new Error("A Connection must join two different Components.");
 }
 
-/** Component and Service ids share one namespace, so a Connection endpoint is never ambiguous. */
+/** Component, Service, and Group ids share one namespace, so a Connection endpoint or Group member is never ambiguous. */
 function requireUnusedId(design: SystemDesign, id: string) {
 	if (findSystemService(design, id)) throw new Error(`"${id}" is already used by a Service.`);
 	if (findSystemComponent(design, id)) throw new Error(`"${id}" is already used by a Component.`);
+	if (findSystemGroup(design, id)) throw new Error(`"${id}" is already used by a Group.`);
 }
 
 /** Services own Components; a Component names at most one owning Service, or none for system scope. */
@@ -589,12 +871,12 @@ function requirePosition(point: CanvasPoint, label = "Component position"): Canv
 	return { x: Math.round(point.x * 100) / 100, y: Math.round(point.y * 100) / 100 };
 }
 
-/** Sizes are whole pixels and never smaller than the minimum boundary that keeps its header readable. */
-function normalizeServiceSize(size: SystemServiceSize): SystemServiceSize {
-	if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) throw new Error("Service size must be finite.");
+/** Sizes are whole pixels and never smaller than the minimum that keeps the frame's header readable. */
+function normalizeFrameSize(size: SystemServiceSize, minimum: SystemServiceSize): SystemServiceSize {
+	if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) throw new Error("Size must be finite.");
 	return {
-		width: Math.max(SYSTEM_SERVICE_MIN_SIZE.width, Math.round(size.width)),
-		height: Math.max(SYSTEM_SERVICE_MIN_SIZE.height, Math.round(size.height)),
+		width: Math.max(minimum.width, Math.round(size.width)),
+		height: Math.max(minimum.height, Math.round(size.height)),
 	};
 }
 
@@ -664,6 +946,19 @@ export type UpdateSystemServiceAction = SystemAttribution & { serviceId: string;
 export type MoveSystemServiceAction = SystemAttribution & { serviceId: string; x: number; y: number };
 export type ResizeSystemServiceAction = SystemAttribution & { serviceId: string; width: number; height: number };
 export type RemoveSystemServiceAction = SystemAttribution & { serviceId: string };
+export type AddSystemGroupAction = SystemAttribution & {
+	id?: string;
+	name?: string;
+	x: number;
+	y: number;
+	width?: number;
+	height?: number;
+	memberIds?: string[];
+};
+export type UpdateSystemGroupAction = SystemAttribution & { groupId: string; changes: SystemGroupChanges };
+export type MoveSystemGroupAction = SystemAttribution & { groupId: string; x: number; y: number };
+export type ResizeSystemGroupAction = SystemAttribution & { groupId: string; width: number; height: number };
+export type RemoveSystemGroupAction = SystemAttribution & { groupId: string };
 export type AddSystemComponentAction = Omit<SystemComponentInput, "position"> & SystemAttribution & { x: number; y: number };
 export type UpdateSystemComponentAction = SystemAttribution & { componentId: string; changes: SystemComponentChanges };
 export type MoveSystemComponentAction = SystemAttribution & { componentId: string; x: number; y: number };

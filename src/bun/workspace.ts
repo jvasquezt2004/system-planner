@@ -94,42 +94,54 @@ import {
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
 	describeSystemComponentRemoval,
 	describeSystemServiceRemoval,
 	findSystemComponent,
 	findSystemConnection,
+	findSystemGroup,
 	findSystemService,
 	moveSystemComponent,
+	moveSystemGroup,
 	moveSystemService,
 	normalizeSystemDesign,
 	removeSystemComponent,
 	removeSystemConnection,
+	removeSystemGroup,
 	removeSystemService,
+	resizeSystemGroup,
 	resizeSystemService,
 	systemDesignContent,
 	type SystemComponent,
 	type SystemContent,
 	updateSystemComponent,
 	updateSystemConnection,
+	updateSystemGroup,
 	updateSystemService,
 	type AddSystemComponentAction,
 	type AddSystemConnectionAction,
+	type AddSystemGroupAction,
 	type AddSystemServiceAction,
 	type CreateSystemDatabaseDesignAction,
 	type LinkSystemDatabaseAction,
 	type MoveSystemComponentAction,
+	type MoveSystemGroupAction,
 	type MoveSystemServiceAction,
 	type RemoveSystemComponentAction,
 	type RemoveSystemConnectionAction,
+	type RemoveSystemGroupAction,
 	type RemoveSystemServiceAction,
+	type ResizeSystemGroupAction,
 	type ResizeSystemServiceAction,
+	type UpdateSystemGroupAction,
 	type SetActiveViewAction,
 	type SetSystemViewportAction,
 	type SystemAttribution,
 	type SystemComponentRemovalPlan,
 	type SystemDesign,
+	type SystemGroup,
 	type SystemServiceRemovalPlan,
 	type UpdateSystemComponentAction,
 	type UpdateSystemConnectionAction,
@@ -263,6 +275,15 @@ export interface DesignWorkspace {
 	removeSystemService(action: RemoveSystemServiceAction): Promise<WorkspaceState>;
 	/** Lists what removing the Service releases and deletes, before anything changes. */
 	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan;
+	/** Groups organize Components, Services, and child Groups. Each edit is one Project-history action. */
+	addSystemGroup(action: AddSystemGroupAction): Promise<WorkspaceState>;
+	/** Renames a Group or replaces its members; a nesting cycle is refused and changes nothing. */
+	updateSystemGroup(action: UpdateSystemGroupAction): Promise<WorkspaceState>;
+	/** Moves the frame and every member it resolves to, each once. Membership is unchanged. */
+	moveSystemGroup(action: MoveSystemGroupAction): Promise<WorkspaceState>;
+	resizeSystemGroup(action: ResizeSystemGroupAction): Promise<WorkspaceState>;
+	/** Removes the frame only; its members and their Connections stay. */
+	removeSystemGroup(action: RemoveSystemGroupAction): Promise<WorkspaceState>;
 	addSystemComponent(action: AddSystemComponentAction): Promise<WorkspaceState>;
 	updateSystemComponent(action: UpdateSystemComponentAction): Promise<WorkspaceState>;
 	moveSystemComponent(action: MoveSystemComponentAction): Promise<WorkspaceState>;
@@ -353,7 +374,7 @@ export async function createDesignWorkspace(
 		systemDesign: SystemDesign | null = state.systemDesign ?? null,
 		walkthroughs: Walkthrough[] = state.walkthroughs ?? [],
 	): ProjectContent {
-		const system = systemDesign ? systemDesignContent(systemDesign) : { services: [], components: [], connections: [] };
+		const system = systemDesign ? systemDesignContent(systemDesign) : { services: [], groups: [], components: [], connections: [] };
 		return structuredClone({
 			design: { ...design, viewport: DEFAULT_VIEWPORT },
 			scenarios,
@@ -2454,6 +2475,67 @@ export async function createDesignWorkspace(
 			requireOpenProject();
 			return describeSystemServiceRemoval(state.systemDesign!, serviceId);
 		},
+		addSystemGroup(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applySystemDesignChange((design) => {
+					const next = addSystemGroup(design, {
+						id,
+						name: action.name,
+						position: { x: action.x, y: action.y },
+						size: action.width !== undefined && action.height !== undefined
+							? { width: action.width, height: action.height }
+							: undefined,
+						memberIds: action.memberIds,
+					});
+					const added = findSystemGroup(next, id)!;
+					return { next, action: attributed(action, { name: `Add group “${added.name}”` }) };
+				});
+			});
+		},
+		updateSystemGroup(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const before = findSystemGroup(design, action.groupId);
+					const next = updateSystemGroup(design, action.groupId, action.changes);
+					const after = findSystemGroup(next, action.groupId);
+					if (!before || !after) throw new Error("That Group could not be found.");
+					return { next, action: attributed(action, groupEditHistoryAction(design, before, after)) };
+				});
+			});
+		},
+		moveSystemGroup(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = moveSystemGroup(design, action.groupId, { x: action.x, y: action.y });
+					const moved = findSystemGroup(next, action.groupId);
+					if (!moved) throw new Error("That Group could not be found.");
+					return { next, action: attributed(action, { name: `Move group “${moved.name}”` }) };
+				});
+			});
+		},
+		resizeSystemGroup(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = resizeSystemGroup(design, action.groupId, { width: action.width, height: action.height });
+					const resized = findSystemGroup(next, action.groupId);
+					if (!resized) throw new Error("That Group could not be found.");
+					return { next, action: attributed(action, { name: `Resize group “${resized.name}”` }) };
+				});
+			});
+		},
+		removeSystemGroup(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const removed = findSystemGroup(design, action.groupId);
+					if (!removed) throw new Error("That Group could not be found.");
+					return {
+						next: removeSystemGroup(design, action.groupId),
+						action: attributed(action, { name: `Remove group “${removed.name}”` }),
+					};
+				});
+			});
+		},
 		moveSystemComponent(action) {
 			return runTask(async () => {
 				return applySystemDesignChange((design) => {
@@ -2728,6 +2810,20 @@ function nextDefaultDesignName(existing: DatabaseDesignSummary[]): string {
 		const name = `Design ${number}`;
 		if (!taken.has(name.toLowerCase())) return name;
 	}
+}
+
+/**
+ * Names a Group edit by what changed: a rename, one member added or removed, or
+ * a broader change to the member list.
+ */
+function groupEditHistoryAction(design: SystemDesign, before: SystemGroup, after: SystemGroup): HistoryAction {
+	if (after.name !== before.name) return { name: `Rename group to “${after.name}”` };
+	const added = after.memberIds.filter((id) => !before.memberIds.includes(id));
+	const removed = before.memberIds.filter((id) => !after.memberIds.includes(id));
+	const label = (id: string) => findSystemComponent(design, id)?.name ?? findSystemService(design, id)?.name ?? findSystemGroup(design, id)?.name ?? id;
+	if (added.length === 1 && removed.length === 0) return { name: `Add “${label(added[0]!)}” to “${after.name}”` };
+	if (removed.length === 1 && added.length === 0) return { name: `Remove “${label(removed[0]!)}” from “${after.name}”` };
+	return { name: `Edit members of “${after.name}”` };
 }
 
 /**

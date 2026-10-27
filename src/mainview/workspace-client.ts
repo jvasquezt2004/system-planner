@@ -8,12 +8,14 @@ import type {
 } from "../shared/walkthrough";
 import type {
 	AddSystemComponentAction,
+	AddSystemGroupAction,
 	AddSystemServiceAction,
 	CreateSystemDatabaseDesignAction,
 	LinkSystemDatabaseAction,
 	SystemComponentChanges,
 	SystemComponentRemovalPlan,
 	SystemConnectionChanges,
+	SystemGroupChanges,
 	SystemServiceChanges,
 	SystemServiceRemovalPlan,
 	SystemServiceSize,
@@ -255,6 +257,21 @@ export const workspaceClient = {
 	},
 	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan> {
 		return rpc.request.describeSystemServiceRemoval({ serviceId });
+	},
+	addSystemGroup(group: AddSystemGroupAction): Promise<WorkspaceState> {
+		return rpc.request.addSystemGroup(group);
+	},
+	updateSystemGroup(groupId: string, changes: SystemGroupChanges): Promise<WorkspaceState> {
+		return rpc.request.updateSystemGroup({ groupId, changes });
+	},
+	moveSystemGroup(groupId: string, point: CanvasPoint): Promise<WorkspaceState> {
+		return rpc.request.moveSystemGroup({ groupId, x: point.x, y: point.y });
+	},
+	resizeSystemGroup(groupId: string, size: SystemServiceSize): Promise<WorkspaceState> {
+		return rpc.request.resizeSystemGroup({ groupId, width: size.width, height: size.height });
+	},
+	removeSystemGroup(groupId: string): Promise<WorkspaceState> {
+		return rpc.request.removeSystemGroup({ groupId });
 	},
 	addSystemComponent(component: AddSystemComponentAction): Promise<WorkspaceState> {
 		return rpc.request.addSystemComponent(component);

@@ -87,6 +87,29 @@ describe("Assistant edits to the System design", () => {
 		expect(JSON.stringify(toolResults)).toContain('targetId \\"nowhere\\" does not match a Component.');
 	});
 
+	test("Revert drops Group membership of a Component it removes, and keeps the Group and its other members", async () => {
+		const { workspace, runtime, scripted, conversation } = await scriptedProject("Groups");
+		await workspace.addSystemComponent({ id: "manual", name: "Manual", x: 0, y: 0 });
+		await workspace.addSystemGroup({ id: "domain", name: "Domain", x: -24, y: -48, memberIds: ["manual"] });
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("read_project", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([
+				fauxToolCall("edit_system_design", {
+					operations: [{ op: "add_component", id: "cache", name: "Cache", kind: "generic", x: 40, y: 40 }],
+				}),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Added a cache.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Add a cache.", "scripted-model");
+		// A designer then files the Assistant's new Component into the existing Group.
+		await workspace.updateSystemGroup({ groupId: "domain", changes: { memberIds: ["manual", "cache"] } });
+
+		await runtime.revertTurn(conversation.id);
+		const system = workspace.getState().systemDesign!;
+		expect(system.components.map((component) => component.id)).toEqual(["manual"]);
+		expect(system.groups).toEqual([expect.objectContaining({ id: "domain", memberIds: ["manual"] })]);
+	});
+
 	test("Revert is refused with the conflicting Component named when a designer moved it after the turn", async () => {
 		const { workspace, runtime, scripted, conversation } = await scriptedProject("Conflict");
 		scripted.setResponses([
