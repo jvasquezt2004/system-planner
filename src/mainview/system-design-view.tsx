@@ -67,6 +67,7 @@ import {
 	walkthroughStepsOnConnections,
 } from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
+import { hiddenActivityStep, strongestReaction } from "../shared/walkthrough-playback";
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
 import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
@@ -712,8 +713,12 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const owned = collapsed ? scene.components.filter((component) => component.serviceId === service.id) : [];
 							const traced = (highlight?.endpointIds.includes(service.id) ?? false)
 								|| owned.some((component) => highlight?.endpointIds.includes(component.id));
-							const reaction = frame?.reactions[service.id]
-								?? owned.map((component) => frame?.reactions[component.id]).find((item) => item !== undefined);
+							// The boundary shows the strongest reaction among itself and the Components it hides, so one parallel step never hides another.
+							const reaction = strongestReaction(frame?.reactions ?? {}, [service.id, ...owned.map((component) => component.id)]);
+							// An internal step has no drawn route, so while it runs the boundary names it in place of the static summary.
+							const hiddenStep = collapsed && frame && playback.timeline
+								? hiddenActivityStep(playback.timeline, frame, new Set(owned.map((component) => component.id)))
+								: null;
 							const { width, height } = collapsed ? SYSTEM_SERVICE_COLLAPSED_SIZE : service.size;
 							const internal = collapsed ? internalConnectionCount(scene, service.id) : 0;
 							const summary = `${owned.length} ${owned.length === 1 ? "component" : "components"}${internal > 0 ? ` · ${internal} internal` : ""}`;
@@ -762,7 +767,12 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<text x={16} y={46} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(service.name, compact ? 22 : 32)}
 									</text>
-									{collapsed && (
+									{collapsed && hiddenStep && (
+										<text x={16} y={66} fontSize={11.5} data-testid="collapsed-service-activity" style={{ fill: "var(--color-pencil)" }}>
+											{truncateLabel(hiddenStep.title || "Internal step", 30)}
+										</text>
+									)}
+									{collapsed && !hiddenStep && (
 										<text x={16} y={66} fontSize={11.5} data-testid="collapsed-service-summary" style={{ fill: "var(--color-ink-2)" }}>
 											{summary}
 										</text>

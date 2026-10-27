@@ -311,6 +311,43 @@ export function deriveWalkthroughFrame(
 }
 
 /**
+ * The reaction a collapsed Service boundary shows for itself and the Components it
+ * hides. The strongest phase wins (outcome, then arrival, then departure); among
+ * equals the more intense one wins, and among those the earlier endpoint, so the
+ * Service's own reaction is kept when nothing outranks it.
+ */
+export function strongestReaction(reactions: Readonly<Record<string, PlaybackReaction>>, endpointIds: readonly string[]): PlaybackReaction | undefined {
+	let best: PlaybackReaction | undefined;
+	for (const endpointId of endpointIds) {
+		const candidate = reactions[endpointId];
+		if (!candidate) continue;
+		if (!best) {
+			best = candidate;
+			continue;
+		}
+		const rank = PHASE_RANK[candidate.phase] - PHASE_RANK[best.phase];
+		if (rank > 0 || (rank === 0 && candidate.intensity > best.intensity)) best = candidate;
+	}
+	return best;
+}
+
+/**
+ * The latest-started running step that stays inside a collapsed Service: both of
+ * its endpoints are Components the Service hides. Such a step has no drawn route,
+ * so the boundary names it in place of a message. Steps that cross the boundary
+ * are drawn as messages and are not returned.
+ */
+export function hiddenActivityStep(timeline: PlaybackTimeline, frame: PlaybackFrame, hiddenIds: ReadonlySet<string>): PlaybackStep | null {
+	let found: PlaybackStep | null = null;
+	for (const index of frame.activeStepIndexes) {
+		const step = timeline.steps[index];
+		if (!step || !hiddenIds.has(step.sourceId) || !hiddenIds.has(step.targetId)) continue;
+		if (!found || step.startMs >= found.startMs) found = step;
+	}
+	return found;
+}
+
+/**
  * The start of the step before the one at `timeMs` on the clock: the latest start
  * earlier than the leading step's start, or 0. Steps that start together count as one.
  */
