@@ -48,11 +48,20 @@ async function main() {
 	if (process.platform === "win32") {
 		const setup = files.find((file) => /schema.?designer-setup\.exe$/i.test(file));
 		if (!setup) throw new Error(`No packaged Windows setup executable found under ${buildDir}`);
-		const installer = Bun.spawn([setup, "/S"], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
-		await installer.exited;
+		// Electrobun's Windows setup rejects NSIS-style "/S" with InvalidArguments; "--quiet" runs it unattended.
+		const installer = Bun.spawn([setup, "--quiet"], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
+		const timedOut = await Promise.race([
+			installer.exited.then(() => false),
+			Bun.sleep(180_000).then(() => true),
+		]);
+		if (timedOut) {
+			installer.kill();
+			throw new Error("Packaged Windows installer did not finish within 180 seconds; it may be waiting on an interactive dialog");
+		}
 		if (installer.exitCode !== 0) throw new Error(`Packaged Windows installer exited ${installer.exitCode}`);
-		const installedLauncher = join(process.env.LOCALAPPDATA ?? "", "com.dbplanner.schema-designer", "stable", "app", "bin", "launcher.exe");
-		if (!existsSync(installedLauncher)) throw new Error(`Packaged application was not installed at ${installedLauncher}`);
+		const installRoot = join(process.env.LOCALAPPDATA ?? "", "com.dbplanner.schema-designer");
+		const installedLauncher = findFiles(installRoot).find((file) => /[\\/]app[\\/]bin[\\/]launcher\.exe$/i.test(file));
+		if (!installedLauncher) throw new Error(`Packaged application was not installed under ${installRoot}`);
 		launcher = installedLauncher;
 	}
 	const command = process.platform === "linux" && !process.env.DISPLAY

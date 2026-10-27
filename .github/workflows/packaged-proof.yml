@@ -11,6 +11,7 @@ jobs:
   linux-proof:
     name: Linux Packaged Proof (WebKitGTK)
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -56,6 +57,7 @@ jobs:
   windows-proof:
     name: Windows Packaged Proof (WebView2)
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
