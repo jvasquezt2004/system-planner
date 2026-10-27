@@ -51,13 +51,18 @@ import type { SchemaCodeSnapshot } from "./schema-code";
 import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
+	AddSystemGroupAction,
 	AddSystemServiceAction,
 	MoveSystemComponentAction,
+	MoveSystemGroupAction,
 	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
 	RemoveSystemConnectionAction,
+	RemoveSystemGroupAction,
 	RemoveSystemServiceAction,
+	ResizeSystemGroupAction,
 	ResizeSystemServiceAction,
+	UpdateSystemGroupAction,
 	SetActiveViewAction,
 	SetSystemViewportAction,
 	SystemComponentRemovalPlan,
@@ -178,6 +183,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			resizeSystemService: { params: ResizeSystemServiceAction; response: WorkspaceState };
 			removeSystemService: { params: RemoveSystemServiceAction; response: WorkspaceState };
 			describeSystemServiceRemoval: { params: { serviceId: string }; response: SystemServiceRemovalPlan };
+			addSystemGroup: { params: AddSystemGroupAction; response: WorkspaceState };
+			updateSystemGroup: { params: UpdateSystemGroupAction; response: WorkspaceState };
+			moveSystemGroup: { params: MoveSystemGroupAction; response: WorkspaceState };
+			resizeSystemGroup: { params: ResizeSystemGroupAction; response: WorkspaceState };
+			removeSystemGroup: { params: RemoveSystemGroupAction; response: WorkspaceState };
 			addSystemComponent: { params: AddSystemComponentAction; response: WorkspaceState };
 			updateSystemComponent: { params: UpdateSystemComponentAction; response: WorkspaceState };
 			moveSystemComponent: { params: MoveSystemComponentAction; response: WorkspaceState };

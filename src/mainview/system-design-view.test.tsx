@@ -4,6 +4,7 @@ import type { WorkspaceState } from "../shared/design";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
 	type SystemDesign,
@@ -53,5 +54,25 @@ describe("system overview rendering", () => {
 		expect(html).not.toContain("in Orders");
 		expect(html).toContain('data-connection-id="dispatch"');
 		expect(html).toContain("Dispatches");
+	});
+
+	test("a Group frame draws behind the Services it spans without changing their ownership", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 600, y: 60 } });
+		design = addSystemGroup(design, { id: "platform", name: "Platform", position: { x: -24, y: -48 }, memberIds: ["orders", "queue"] });
+
+		const html = render(design);
+		expect(html).toContain('data-group-id="platform"');
+		expect(html).toContain('aria-label="Group: Platform"');
+		expect(html).toContain("GROUP · 2");
+		expect(html).toContain('data-testid="group-resize-handle"');
+		expect(html.indexOf('data-group-id="platform"')).toBeLessThan(html.indexOf('data-service-id="orders"'));
+		expect(html).toContain('data-service-id="orders"');
+		expect(html).toContain("in Orders");
+		expect(html).toContain('data-component-id="worker"');
+		expect(html).toContain('data-component-id="queue"');
+		expect(html).toContain("Group");
 	});
 });

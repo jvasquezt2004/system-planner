@@ -141,6 +141,39 @@ describe("RPC request handlers", () => {
 		});
 	});
 
+	test("System design Group requests forward their complete parameters to the workspace", async () => {
+		const captured: Record<string, unknown> = {};
+		const record = (name: string) => async (action: unknown) => {
+			captured[name] = action;
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			addSystemGroup: record("addSystemGroup"),
+			updateSystemGroup: record("updateSystemGroup"),
+			moveSystemGroup: record("moveSystemGroup"),
+			resizeSystemGroup: record("resizeSystemGroup"),
+			removeSystemGroup: record("removeSystemGroup"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.addSystemGroup({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
+		expect(captured.addSystemGroup).toEqual({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
+		await handlers.updateSystemGroup({ groupId: "domain", changes: { memberIds: ["queue"] } });
+		expect(captured.updateSystemGroup).toEqual({ groupId: "domain", changes: { memberIds: ["queue"] } });
+		await handlers.moveSystemGroup({ groupId: "domain", x: 60, y: 30 });
+		expect(captured.moveSystemGroup).toEqual({ groupId: "domain", x: 60, y: 30 });
+		await handlers.resizeSystemGroup({ groupId: "domain", width: 500, height: 300 });
+		expect(captured.resizeSystemGroup).toEqual({ groupId: "domain", width: 500, height: 300 });
+		await handlers.removeSystemGroup({ groupId: "domain" });
+		expect(captured.removeSystemGroup).toEqual({ groupId: "domain" });
+	});
+
 	test("System design Service requests forward their complete parameters to the workspace", async () => {
 		const captured: Record<string, unknown> = {};
 		const record = (name: string) => async (action: unknown) => {
