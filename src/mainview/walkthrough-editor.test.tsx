@@ -53,6 +53,7 @@ function renderStep(design: SystemDesign, walkthroughs: Walkthrough[], stepId: s
 			onSelect={() => {}}
 			onClose={() => {}}
 			playback={playback}
+			followCamera={{ enabled: false, onChange: () => {} }}
 		/>,
 	);
 }
