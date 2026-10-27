@@ -44,6 +44,8 @@ import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
 	AddSystemServiceAction,
+	CreateSystemDatabaseDesignAction,
+	LinkSystemDatabaseAction,
 	MoveSystemComponentAction,
 	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
@@ -153,6 +155,9 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeSystemConnection: async (action: RemoveSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemConnection(action),
 		setSystemViewport: async (action: SetSystemViewportAction): Promise<WorkspaceState> => (await deps.workspace).setSystemViewport(action),
 		setActiveView: async (action: SetActiveViewAction): Promise<WorkspaceState> => (await deps.workspace).setActiveView(action),
+		linkSystemDatabase: async (action: LinkSystemDatabaseAction): Promise<WorkspaceState> => (await deps.workspace).linkSystemDatabase(action),
+		createSystemDatabaseDesign: async (action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState> =>
+			(await deps.workspace).createSystemDatabaseDesign(action),
 		createWalkthrough: async (action: CreateWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).createWalkthrough(action),
 		renameWalkthrough: async (action: RenameWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).renameWalkthrough(action),
 		removeWalkthrough: async (action: RemoveWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthrough(action),

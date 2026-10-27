@@ -48,10 +48,11 @@ function stateWithDesigns(activeDesignId: string): WorkspaceState {
 	} as WorkspaceState;
 }
 
-function renderMasthead(state: WorkspaceState) {
+function renderMasthead(state: WorkspaceState, schemaLinks: string[] = []) {
 	return renderToStaticMarkup(
 		<Masthead
 			state={state}
+			schemaLinks={schemaLinks}
 			busy={false}
 			onOpenProject={() => {}}
 			onNewProject={() => {}}
@@ -81,6 +82,16 @@ describe("design switcher", () => {
 		single.designs = [{ id: "design-orders", projectId: "project-1", name: "Orders" }];
 		const markup = renderMasthead(single);
 		expect(markup).toContain('data-testid="design-switcher"');
+	});
+
+	test("a Design that several architecture Components link names the shared schema in the header", () => {
+		const shared = renderMasthead(stateWithDesigns("design-orders"), ["Primary", "Read replica"]);
+		expect(shared).toContain('data-testid="shared-schema-indicator"');
+		expect(shared).toContain("Shared schema · 2");
+		expect(shared).toContain('title="Shared schema: Primary, Read replica"');
+
+		const single = renderMasthead(stateWithDesigns("design-orders"), ["Primary"]);
+		expect(single).not.toContain('data-testid="shared-schema-indicator"');
 	});
 
 	test("no switcher appears without an open project", () => {

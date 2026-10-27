@@ -182,6 +182,32 @@ describe("RPC request handlers", () => {
 		expect(plan.serviceName).toBe("Orders");
 	});
 
+	test("database link requests forward the component, the target Design, and the create-and-link name", async () => {
+		const captured: Record<string, unknown> = {};
+		const record = (name: string) => async (action: unknown) => {
+			captured[name] = action;
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			linkSystemDatabase: record("linkSystemDatabase"),
+			createSystemDatabaseDesign: record("createSystemDatabaseDesign"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.linkSystemDatabase({ componentId: "replica", designId: "design-orders" });
+		expect(captured.linkSystemDatabase).toEqual({ componentId: "replica", designId: "design-orders" });
+		await handlers.linkSystemDatabase({ componentId: "replica", designId: null });
+		expect(captured.linkSystemDatabase).toEqual({ componentId: "replica", designId: null });
+		await handlers.createSystemDatabaseDesign({ componentId: "primary", name: "Orders schema" });
+		expect(captured.createSystemDatabaseDesign).toEqual({ componentId: "primary", name: "Orders schema" });
+	});
+
 	test("Walkthrough requests forward their complete parameter objects to the workspace", async () => {
 		const calls: Array<{ method: string; action: unknown }> = [];
 		const record = (method: string) => async (action: unknown) => {

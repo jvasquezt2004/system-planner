@@ -52,6 +52,8 @@ import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
 	AddSystemServiceAction,
+	CreateSystemDatabaseDesignAction,
+	LinkSystemDatabaseAction,
 	MoveSystemComponentAction,
 	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
@@ -199,6 +201,8 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			removeSystemConnection: { params: RemoveSystemConnectionAction; response: WorkspaceState };
 			setSystemViewport: { params: SetSystemViewportAction; response: WorkspaceState };
 			setActiveView: { params: SetActiveViewAction; response: WorkspaceState };
+			linkSystemDatabase: { params: LinkSystemDatabaseAction; response: WorkspaceState };
+			createSystemDatabaseDesign: { params: CreateSystemDatabaseDesignAction; response: WorkspaceState };
 			createWalkthrough: { params: CreateWalkthroughAction; response: WorkspaceState };
 			renameWalkthrough: { params: RenameWalkthroughAction; response: WorkspaceState };
 			removeWalkthrough: { params: RemoveWalkthroughAction; response: WorkspaceState };
