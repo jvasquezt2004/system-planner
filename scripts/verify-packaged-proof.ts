@@ -48,8 +48,9 @@ async function main() {
 	if (process.platform === "win32") {
 		const setup = files.find((file) => /schema.?designer-setup\.exe$/i.test(file));
 		if (!setup) throw new Error(`No packaged Windows setup executable found under ${buildDir}`);
-		// Electrobun's Windows setup rejects NSIS-style "/S" with InvalidArguments; "--quiet" runs it unattended.
-		const installer = Bun.spawn([setup, "--quiet"], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
+		// Electrobun's Windows setup rejects NSIS-style "/S" (InvalidArguments) and treats "--quiet" as an
+		// uninstall request (InvalidUninstallLocation), so it runs with no arguments, matching the Linux self-extractor.
+		const installer = Bun.spawn([setup], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
 		const timedOut = await Promise.race([
 			installer.exited.then(() => false),
 			Bun.sleep(180_000).then(() => true),
