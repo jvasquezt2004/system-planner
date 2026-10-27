@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import type { CatalogKind } from "../shared/component-catalog";
+import type { CatalogKind, CustomIcon } from "../shared/component-catalog";
 
 /**
  * Pencil-line artwork for the catalog kinds. Each glyph sits in a 24 by 24 box,
@@ -8,6 +8,34 @@ import type { CatalogKind } from "../shared/component-catalog";
  * must cover every kind, so a new kind cannot ship without one.
  */
 export const COMPONENT_ARTWORK_SIZE = 24;
+
+/** The shapes a Custom component can show, one glyph per supported icon. */
+const CUSTOM_ICON_ARTWORK: Record<CustomIcon, () => ReactNode> = {
+	rectangle: () => <rect x={3} y={5.5} width={18} height={13} rx={1.5} />,
+	hexagon: () => <path d="M7 3.5h10l5 8.5-5 8.5H7l-5-8.5z" />,
+	diamond: () => <path d="M12 2.5l9.5 9.5-9.5 9.5L2.5 12z" />,
+	cylinder: () => (
+		<>
+			<ellipse cx={12} cy={5.5} rx={7.5} ry={2.5} />
+			<path d="M4.5 5.5v13c0 1.38 3.36 2.5 7.5 2.5s7.5-1.12 7.5-2.5v-13" />
+		</>
+	),
+	cloud: () => <path d="M7.5 18.5h9a4.5 4.5 0 0 0 .4-8.98A6 6 0 0 0 5.6 11.2 4 4 0 0 0 7.5 18.5z" />,
+	document: () => (
+		<>
+			<path d="M6 2.5h8.5L19 7v14.5H6z" />
+			<path d="M14.5 2.5V7H19" />
+			<path d="M9 12h7M9 15.5h7" />
+		</>
+	),
+	gear: () => (
+		<>
+			<circle cx={12} cy={12} r={3} />
+			<circle cx={12} cy={12} r={7.5} />
+			<path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.1 5.1l2.1 2.1M16.8 16.8l2.1 2.1M5.1 18.9l2.1-2.1M16.8 7.2l2.1-2.1" />
+		</>
+	),
+};
 
 const ARTWORK: Record<CatalogKind, () => ReactNode> = {
 	person: () => (
@@ -173,19 +201,52 @@ const ARTWORK: Record<CatalogKind, () => ReactNode> = {
 			<path d="M8 18h12" />
 		</>
 	),
+	identity_provider: () => (
+		<>
+			<circle cx={7.5} cy={12} r={3.5} />
+			<path d="M11 12h10M18 12v3.5M21 12v2.5" />
+		</>
+	),
+	secrets_store: () => (
+		<>
+			<rect x={5} y={11} width={14} height={10} rx={2} />
+			<path d="M8 11V8a4 4 0 0 1 8 0v3" />
+			<path d="M12 14.5v2.5" />
+		</>
+	),
+	configuration: () => (
+		<>
+			<path d="M4 7h16M4 12h16M4 17h16" />
+			<circle cx={9} cy={7} r={1.8} />
+			<circle cx={15} cy={12} r={1.8} />
+			<circle cx={8} cy={17} r={1.8} />
+		</>
+	),
+	observability: () => (
+		<>
+			<path d="M4 4v16h16" />
+			<path d="M7.5 15l3.5-4 3 2.5 4.5-6" />
+		</>
+	),
+	custom: () => CUSTOM_ICON_ARTWORK.rectangle(),
 };
 
-/** Artwork for a catalog kind, placed with its top-left corner at (x, y). */
-export function ComponentArtwork({ artwork, x, y }: { artwork: CatalogKind; x: number; y: number }) {
+/**
+ * Artwork for a catalog kind, placed with its top-left corner at (x, y). A Custom
+ * component draws its chosen icon or shape, and the rectangle when none is chosen.
+ */
+export function ComponentArtwork({ artwork, x, y, icon }: { artwork: CatalogKind; x: number; y: number; icon?: CustomIcon }) {
+	const glyph = artwork === "custom" && icon !== undefined ? CUSTOM_ICON_ARTWORK[icon]() : ARTWORK[artwork]();
 	return (
 		<g
 			data-testid="component-artwork"
 			data-artwork={artwork}
+			data-icon={artwork === "custom" ? (icon ?? "rectangle") : undefined}
 			transform={`translate(${x} ${y})`}
 			pointerEvents="none"
 			style={{ fill: "none", stroke: "var(--color-pencil)", strokeWidth: 1.5, strokeLinecap: "round", strokeLinejoin: "round" }}
 		>
-			{ARTWORK[artwork]()}
+			{glyph}
 		</g>
 	);
 }

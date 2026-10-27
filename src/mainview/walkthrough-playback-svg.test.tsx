@@ -151,4 +151,15 @@ describe("walkthrough SVG playback", () => {
 		expect(svg(<ReceptionItem reaction={arriving} kind="cache" width={180} height={84} />)).toBe("<svg></svg>");
 		expect(svg(<ReceptionItem reaction={arriving} kind="cdn" width={180} height={84} />)).toBe("<svg></svg>");
 	});
+
+	test("a supporting or Custom reaction tag shows its preset wording, and an operation preset replaces the destination's", () => {
+		const denied = { action: "fail", role: "destination", phase: "outcome", intensity: 1, operation: "deny" } as const;
+		expect(svg(<ReactionTag reaction={denied} kind="identity_provider" x={0} y={-12} />)).toContain(">DENY<");
+
+		const retrieving = { action: "receive", role: "destination", phase: "arrive", intensity: 0.5 } as const;
+		expect(svg(<ReactionTag reaction={retrieving} kind="secrets_store" x={0} y={-12} />)).toContain(">REQUEST<");
+
+		const custom = { action: "succeed", role: "destination", phase: "outcome", intensity: 1 } as const;
+		expect(svg(<ReactionTag reaction={custom} kind="custom" x={0} y={-12} />)).toContain(">SUCCEEDED<");
+	});
 });
