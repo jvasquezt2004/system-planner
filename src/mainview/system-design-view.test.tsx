@@ -92,4 +92,28 @@ describe("system overview rendering", () => {
 		expect(shared.match(/>SHARED</g)).toHaveLength(2);
 		expect(shared).not.toContain(">LINKED<");
 	});
+
+	test("each client and traffic kind draws its own labelled artwork on the card", () => {
+		const kinds = ["person", "browser", "mobile_app", "external_system", "dns", "cdn", "load_balancer", "api_gateway", "proxy"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-component-id="${kind}" data-kind="${kind}"`);
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">LOAD BALANCER<");
+		expect(html).toContain('aria-label="API gateway: Node 7"');
+	});
+
+	test("the original generic and database Components draw no catalog artwork", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
+		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+	});
 });

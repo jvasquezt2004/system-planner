@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, BoxSelect, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
+import {
+	DropdownMenu,
+	DropdownMenuContent,
+	DropdownMenuGroup,
+	DropdownMenuItem,
+	DropdownMenuLabel,
+	DropdownMenuSeparator,
+	DropdownMenuTrigger,
+} from "./components/ui/dropdown-menu";
 import type { CanvasPoint, CanvasViewport, DatabaseDesignSummary, WorkspaceState } from "../shared/design";
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
@@ -27,6 +36,19 @@ import {
 	type SystemServiceRemovalPlan,
 	type SystemServiceSize,
 } from "../shared/system-design";
+import {
+	COMPONENT_CATALOG,
+	COMPONENT_FAMILY_LABELS,
+	catalogEntryFor,
+	componentKindLabel,
+	descriptorKeysFor,
+	descriptorValue,
+	isClientTrafficKind,
+	mergeFreeProperties,
+	withDescriptorValue,
+	type ComponentFamily,
+} from "../shared/component-catalog";
+import { ComponentArtwork } from "./component-artwork";
 import type { workspaceClient } from "./workspace-client";
 import { findWalkthrough, selectedWalkthroughHighlight, type WalkthroughHighlight } from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
@@ -80,11 +102,6 @@ type Pan = { pointerStart: CanvasPoint; viewportStart: CanvasViewport; moved: bo
 type PendingRemoval =
 	| { kind: "component"; plan: SystemComponentRemovalPlan }
 	| { kind: "service"; plan: SystemServiceRemovalPlan };
-
-const KIND_LABELS: Record<SystemComponentKind, string> = {
-	generic: "Component",
-	database: "Database",
-};
 
 const SAVE_DEBOUNCE_MS = 400;
 /** Height of a Group frame's header, where its name sits and where it can be dragged from. */
@@ -406,11 +423,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		return screenToWorld({ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 }, latestViewport.current);
 	}
 
-	function addComponent() {
+	function addComponent(kind: SystemComponentKind = "generic") {
 		const spot = openSpotNear(design!, visibleCenter());
 		const id = crypto.randomUUID();
 		setSelection({ kind: "component", id });
-		onApply(() => client.addSystemComponent({ id, kind: "generic", x: spot.x, y: spot.y }));
+		onApply(() => client.addSystemComponent({ id, kind, x: spot.x, y: spot.y }));
 	}
 
 	function addService() {
@@ -765,7 +782,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									transform={`translate(${component.position.x} ${component.position.y})`}
 									role="button"
 									tabIndex={0}
-									aria-label={`${KIND_LABELS[component.kind]}: ${component.name}`}
+									aria-label={`${componentKindLabel(component.kind)}: ${component.name}`}
 									aria-pressed={selected}
 									className="cursor-pointer"
 									onPointerDown={(event) => handleComponentPointerDown(event, component)}
@@ -801,8 +818,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										strokeWidth={selected || linking || traced ? 2 : 1.25}
 									/>
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
-										{KIND_LABELS[component.kind].toUpperCase()}
+										{componentKindLabel(component.kind).toUpperCase()}
 									</text>
+									{isClientTrafficKind(component.kind) && (
+										<ComponentArtwork artwork={component.kind} x={SYSTEM_COMPONENT_SIZE.width - 38} y={12} />
+									)}
 									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(component.name, 22)}
 									</text>
@@ -841,10 +861,28 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						<Frame className="size-3.5" />
 						Add service
 					</Button>
-					<Button type="button" size="sm" variant="outline" onClick={addComponent}>
-						<Plus className="size-3.5" />
-						Add component
-					</Button>
+					<DropdownMenu>
+						<DropdownMenuTrigger asChild>
+							<Button type="button" size="sm" variant="outline">
+								<Plus className="size-3.5" />
+								Add component
+							</Button>
+						</DropdownMenuTrigger>
+						<DropdownMenuContent align="start" className="w-56">
+							<DropdownMenuItem onSelect={() => addComponent("generic")}>Component</DropdownMenuItem>
+							{(Object.keys(COMPONENT_FAMILY_LABELS) as ComponentFamily[]).map((family) => (
+								<DropdownMenuGroup key={family}>
+									<DropdownMenuSeparator />
+									<DropdownMenuLabel>{COMPONENT_FAMILY_LABELS[family]}</DropdownMenuLabel>
+									{COMPONENT_CATALOG.filter((entry) => entry.family === family).map((entry) => (
+										<DropdownMenuItem key={entry.kind} data-kind={entry.kind} onSelect={() => addComponent(entry.kind)}>
+											{entry.label}
+										</DropdownMenuItem>
+									))}
+								</DropdownMenuGroup>
+							))}
+						</DropdownMenuContent>
+					</DropdownMenu>
 					<Button
 						type="button"
 						size="sm"
@@ -949,7 +987,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				>
 					{selectedComponent && (
 						<ComponentInspector
-							key={selectedComponent.id}
+							key={`${selectedComponent.id}:${selectedComponent.kind}`}
 							component={selectedComponent}
 							design={design}
 							designs={designs}
@@ -1132,7 +1170,11 @@ function ComponentInspector({
 	const [name, setName] = useState(component.name);
 	const [technology, setTechnology] = useState(component.technology ?? "");
 	const [description, setDescription] = useState(component.description ?? "");
-	const [properties, setProperties] = useState(component.properties);
+	/** Free-form rows: the properties that are not this kind's suggested descriptors. */
+	const [freeRows, setFreeRows] = useState(() => component.properties.filter((property) => !descriptorKeysFor(component.kind).includes(property.key)));
+	/** Unsaved descriptor text, by descriptor key; a missing key shows the saved value. */
+	const [descriptorDrafts, setDescriptorDrafts] = useState<Record<string, string>>({});
+	const descriptors = catalogEntryFor(component.kind)?.descriptors ?? [];
 	const related = design.connections.filter((connection) => connection.sourceId === component.id || connection.targetId === component.id);
 
 	function commitName() {
@@ -1151,17 +1193,25 @@ function ComponentInspector({
 		if ((changes.technology ?? "") === (component.technology ?? "") && (changes.description ?? "") === (component.description ?? "")) return;
 		onApply(() => client.updateSystemComponent(component.id, changes));
 	}
-	function commitProperties(next: typeof properties) {
+	function commitProperties(next: typeof freeRows) {
 		const cleaned = next.map((item) => ({ key: item.key.trim(), value: item.value }));
 		if (cleaned.some((item) => item.key.length === 0)) return;
-		if (JSON.stringify(cleaned) === JSON.stringify(component.properties)) return;
-		onApply(() => client.updateSystemComponent(component.id, { properties: cleaned }));
+		const merged = mergeFreeProperties(component.properties, component.kind, cleaned);
+		if (JSON.stringify(merged) === JSON.stringify(component.properties)) return;
+		onApply(() => client.updateSystemComponent(component.id, { properties: merged }));
+	}
+	function commitDescriptor(key: string) {
+		const value = (descriptorDrafts[key] ?? descriptorValue(component.properties, key)).trim();
+		setDescriptorDrafts((drafts) => ({ ...drafts, [key]: value }));
+		const next = withDescriptorValue(component.properties, key, value);
+		if (JSON.stringify(next) === JSON.stringify(component.properties)) return;
+		onApply(() => client.updateSystemComponent(component.id, { properties: next }));
 	}
 
 	return (
 		<div className="flex flex-col gap-3 text-[13px]">
 			<div className="flex items-center justify-between">
-				<span className="kicker">{KIND_LABELS[component.kind]}</span>
+				<span className="kicker">{componentKindLabel(component.kind)}</span>
 				<Button type="button" size="icon" variant="ghost" aria-label="Close inspector" className="size-7" onClick={onClose}>
 					<X className="size-3.5" />
 				</Button>
@@ -1189,7 +1239,7 @@ function ComponentInspector({
 					className="h-8 rounded-md border border-input bg-paper-raised px-2"
 				>
 					{SYSTEM_COMPONENT_KINDS.map((kind) => (
-						<option key={kind} value={kind}>{KIND_LABELS[kind]}</option>
+						<option key={kind} value={kind}>{componentKindLabel(kind)}</option>
 					))}
 				</select>
 			</label>
@@ -1216,6 +1266,19 @@ function ComponentInspector({
 				<span className="text-ink-3">Description</span>
 				<Textarea value={description} maxLength={500} rows={3} onChange={(event) => setDescription(event.target.value)} onBlur={commitDetails} />
 			</label>
+			{descriptors.map((descriptor) => (
+				<label key={descriptor.key} className="flex flex-col gap-1">
+					<span className="text-ink-3">{descriptor.key}</span>
+					<Input
+						aria-label={descriptor.key}
+						value={descriptorDrafts[descriptor.key] ?? descriptorValue(component.properties, descriptor.key)}
+						maxLength={500}
+						placeholder={`Optional. ${descriptor.placeholder}`}
+						onChange={(event) => setDescriptorDrafts((drafts) => ({ ...drafts, [descriptor.key]: event.target.value }))}
+						onBlur={() => commitDescriptor(descriptor.key)}
+					/>
+				</label>
+			))}
 			<div className="flex flex-col gap-1.5">
 				<div className="flex items-center justify-between">
 					<span className="text-ink-3">Properties</span>
@@ -1224,31 +1287,31 @@ function ComponentInspector({
 						size="xs"
 						variant="outline"
 						onClick={() => {
-							const next = [...properties, { key: `property ${properties.length + 1}`, value: "" }];
-							setProperties(next);
+							const next = [...freeRows, { key: `property ${freeRows.length + 1}`, value: "" }];
+							setFreeRows(next);
 							commitProperties(next);
 						}}
 					>
 						Add property
 					</Button>
 				</div>
-				{properties.map((item, index) => (
+				{freeRows.map((item, index) => (
 					<div key={index} className="flex items-center gap-1">
 						<Input
 							aria-label={`Property ${index + 1} name`}
 							value={item.key}
 							maxLength={60}
 							className="h-7 w-28"
-							onChange={(event) => setProperties(properties.map((entry, i) => (i === index ? { ...entry, key: event.target.value } : entry)))}
-							onBlur={() => commitProperties(properties)}
+							onChange={(event) => setFreeRows(freeRows.map((entry, i) => (i === index ? { ...entry, key: event.target.value } : entry)))}
+							onBlur={() => commitProperties(freeRows)}
 						/>
 						<Input
 							aria-label={`Property ${index + 1} value`}
 							value={item.value}
 							maxLength={500}
 							className="h-7 min-w-0 flex-1"
-							onChange={(event) => setProperties(properties.map((entry, i) => (i === index ? { ...entry, value: event.target.value } : entry)))}
-							onBlur={() => commitProperties(properties)}
+							onChange={(event) => setFreeRows(freeRows.map((entry, i) => (i === index ? { ...entry, value: event.target.value } : entry)))}
+							onBlur={() => commitProperties(freeRows)}
 						/>
 						<Button
 							type="button"
@@ -1257,8 +1320,8 @@ function ComponentInspector({
 							aria-label={`Remove property ${index + 1}`}
 							className="size-7 shrink-0"
 							onClick={() => {
-								const next = properties.filter((_, i) => i !== index);
-								setProperties(next);
+								const next = freeRows.filter((_, i) => i !== index);
+								setFreeRows(next);
 								commitProperties(next);
 							}}
 						>

@@ -388,3 +388,19 @@ describe("Walkthrough playback key", () => {
 		expect(walkthroughPlaybackKey(edited[0]!, design)).not.toBe(key);
 	});
 });
+
+describe("Walkthrough reactions carry operation presets to the destination only", () => {
+	test("a destination reaction keeps the step's operation through arrival and outcome, while the sender's does not", () => {
+		const design = fixtureDesign();
+		let walkthroughs = walkthroughWith(design, [{ id: "s1", connectionId: "upload", durationMs: 1000, action: "succeed" }]);
+		walkthroughs = updateWalkthroughStep(walkthroughs, "upload", "s1", { operation: "cache hit" });
+		const timeline = compiled(design, walkthroughs);
+		const routes = routesFor(design);
+		const arrival = timeline.steps[0]!.arrivalMs;
+
+		expect(deriveWalkthroughFrame(timeline, routes, 0).reactions.client?.operation).toBeUndefined();
+		expect(deriveWalkthroughFrame(timeline, routes, arrival + 1).reactions.api).toMatchObject({ phase: "arrive", operation: "cache hit" });
+		expect(deriveWalkthroughFrame(timeline, routes, 900).reactions.api).toMatchObject({ phase: "outcome", action: "succeed", operation: "cache hit" });
+	});
+});
+

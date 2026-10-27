@@ -103,4 +103,14 @@ describe("walkthrough SVG playback", () => {
 		const html = svg(<ReactionRing reaction={reaction} width={180} height={84} radius={14} />);
 		expect(html).toContain(`stroke-opacity="${reaction.intensity}"`);
 	});
+
+	test("a catalog destination names its operation preset, while the sender keeps the action wording", () => {
+		const destination = { action: "receive", role: "destination", phase: "arrive", intensity: 1, operation: "cache hit" } as const;
+		const cacheHit = svg(<ReactionTag reaction={destination} kind="cdn" x={0} y={-12} />);
+		expect(cacheHit).toContain(">CACHE HIT<");
+		expect(cacheHit).toContain('data-action="receive"');
+
+		const sender = svg(<ReactionTag reaction={{ ...destination, action: "send", role: "sender", phase: "depart", operation: undefined }} kind="cdn" x={0} y={-12} />);
+		expect(sender).toContain(">REQUESTS<");
+	});
 });

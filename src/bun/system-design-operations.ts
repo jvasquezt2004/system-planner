@@ -1,5 +1,6 @@
 import type { CanvasPoint, WorkspaceState } from "../shared/design";
 import {
+	type SystemComponentKind,
 	addSystemComponent,
 	addSystemConnection,
 	findSystemComponent,
@@ -38,7 +39,7 @@ export type SystemOperation = {
 	sourceId?: string;
 	targetId?: string;
 	name?: string;
-	kind?: "generic" | "database";
+	kind?: SystemComponentKind;
 	technology?: string;
 	description?: string;
 	label?: string;

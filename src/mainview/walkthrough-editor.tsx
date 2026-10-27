@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import type { SaveState, WorkspaceState } from "../shared/design";
-import type { SystemConnection, SystemDesign } from "../shared/system-design";
+import { findSystemComponent, type SystemConnection, type SystemDesign } from "../shared/system-design";
+import { catalogEntryFor } from "../shared/component-catalog";
 import {
 	WALKTHROUGH_ACTIONS,
 	WALKTHROUGH_DURATION_MAX_MS,
@@ -427,6 +428,9 @@ function StepEditor({
 	const [title, setTitle] = useState(step.title);
 	const [explanation, setExplanation] = useState(step.explanation);
 	const [operation, setOperation] = useState(step.operation ?? "");
+	/** Operation presets the destination's kind names; they suggest text and do not restrict it. */
+	const operationPresets = catalogEntryFor(findSystemComponent(design, step.route.targetId)?.kind ?? "")?.operations ?? [];
+	const operationListId = `operation-presets-${step.id}`;
 	const [duration, setDuration] = useState(step.durationMs === undefined ? "" : String(step.durationMs));
 	const [travelPercent, setTravelPercent] = useState(step.travelPercent === undefined ? "" : String(step.travelPercent));
 	const [exampleMessage, setExampleMessage] = useState(step.exampleMessage ?? "");
@@ -596,9 +600,17 @@ function StepEditor({
 					maxLength={WALKTHROUGH_OPERATION_LIMIT}
 					aria-label="Step operation"
 					placeholder="Optional, e.g. cache hit"
+					list={operationPresets.length > 0 ? operationListId : undefined}
 					onChange={(event) => setOperation(event.target.value)}
 					onBlur={() => commitText("operation", operation)}
 				/>
+				{operationPresets.length > 0 && (
+					<datalist id={operationListId}>
+						{operationPresets.map((preset) => (
+							<option key={preset.id} value={preset.label} />
+						))}
+					</datalist>
+				)}
 			</label>
 
 			<label className="flex flex-col gap-1">
