@@ -1,5 +1,5 @@
 import type { CanvasPoint, CanvasViewport } from "./design";
-import { CLIENT_TRAFFIC_KINDS, componentDefaultNameStem, type ClientTrafficKind } from "./component-catalog";
+import { CATALOG_KINDS, componentDefaultNameStem, type CatalogKind } from "./component-catalog";
 
 /**
  * The authoritative System design of one Project: Services that own Components,
@@ -17,7 +17,7 @@ import { CLIENT_TRAFFIC_KINDS, componentDefaultNameStem, type ClientTrafficKind 
  */
 
 /** "generic" and "database" are the original kinds; the rest are registered in the catalog. */
-export type SystemComponentKind = "generic" | "database" | ClientTrafficKind;
+export type SystemComponentKind = "generic" | "database" | CatalogKind;
 
 export type SystemComponentProperty = {
 	key: string;
@@ -103,7 +103,7 @@ export type SystemContent = Omit<SystemDesign, "viewport">;
 
 export type SystemViewName = "system" | "database";
 
-export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database", ...CLIENT_TRAFFIC_KINDS];
+export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database", ...CATALOG_KINDS];
 export const DEFAULT_SYSTEM_CONNECTION_LABEL = "Interaction";
 export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+	CATALOG_KINDS,
 	CLIENT_TRAFFIC_KINDS,
 	COMPONENT_CATALOG,
 	catalogEntryFor,
@@ -15,7 +16,7 @@ import { KIND_REACTION_PRESETS } from "./component-reactions";
 import { WALKTHROUGH_ACTIONS } from "./walkthrough";
 
 describe("client and traffic catalog registry", () => {
-	test("registers exactly the nine agreed kinds, each once, with its own artwork and reaction preset", () => {
+	test("registers the nine agreed client and traffic kinds, then the five compute kinds, each once, with its own artwork and reaction preset", () => {
 		expect([...CLIENT_TRAFFIC_KINDS]).toEqual([
 			"person",
 			"browser",
@@ -27,7 +28,8 @@ describe("client and traffic catalog registry", () => {
 			"api_gateway",
 			"proxy",
 		]);
-		expect(COMPONENT_CATALOG.map((entry) => entry.kind)).toEqual([...CLIENT_TRAFFIC_KINDS]);
+		expect(COMPONENT_CATALOG.map((entry) => entry.kind)).toEqual([...CATALOG_KINDS]);
+		expect(new Set(CATALOG_KINDS).size).toBe(CATALOG_KINDS.length);
 		for (const entry of COMPONENT_CATALOG) {
 			expect(entry.artwork).toBe(entry.kind);
 			expect(entry.label.length).toBeGreaterThan(0);
@@ -48,6 +50,11 @@ describe("client and traffic catalog registry", () => {
 			"Load balancer",
 			"API gateway",
 			"Proxy",
+			"Application",
+			"API",
+			"Worker",
+			"Scheduled job",
+			"Serverless handler",
 		]);
 		expect(componentKindLabel("database")).toBe("Database");
 		expect(componentKindLabel("generic")).toBe("Component");

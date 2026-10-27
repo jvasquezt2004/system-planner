@@ -23,12 +23,22 @@ export const CLIENT_TRAFFIC_KINDS = [
 
 export type ClientTrafficKind = (typeof CLIENT_TRAFFIC_KINDS)[number];
 
+export const COMPUTE_KINDS = ["application", "api", "worker", "scheduled_job", "serverless_handler"] as const;
+
+export type ComputeKind = (typeof COMPUTE_KINDS)[number];
+
+/** Every kind registered in the catalog, in palette order. */
+export const CATALOG_KINDS = [...CLIENT_TRAFFIC_KINDS, ...COMPUTE_KINDS] as const;
+
+export type CatalogKind = (typeof CATALOG_KINDS)[number];
+
 /** A catalog kind's family, used to group the palette. */
-export type ComponentFamily = "clients" | "traffic";
+export type ComponentFamily = "clients" | "traffic" | "compute";
 
 export const COMPONENT_FAMILY_LABELS: Record<ComponentFamily, string> = {
 	clients: "Actors and clients",
 	traffic: "Traffic and networking",
+	compute: "Compute",
 };
 
 /**
@@ -49,11 +59,11 @@ export type ComponentOperationPreset = {
 };
 
 export type ComponentCatalogEntry = {
-	kind: ClientTrafficKind;
+	kind: CatalogKind;
 	label: string;
 	family: ComponentFamily;
 	/** Name of the artwork the view draws for this kind. */
-	artwork: ClientTrafficKind;
+	artwork: CatalogKind;
 	/** Default name stem for new Components of this kind. */
 	defaultName: string;
 	descriptors: readonly ComponentPropertyDescriptor[];
@@ -198,6 +208,68 @@ export const COMPONENT_CATALOG: readonly ComponentCatalogEntry[] = [
 		operations: [{ id: "forward", label: "Forward" }],
 		reactions: { kind: "proxy", labels: labels("Sends", "Receives", "Forwarding", "Returned", "Failed") },
 	},
+	{
+		kind: "application",
+		label: "Application",
+		family: "compute",
+		artwork: "application",
+		defaultName: "Application",
+		descriptors: [{ key: "Responsibility", placeholder: "What the application is responsible for" }],
+		operations: [],
+		reactions: { kind: "application", labels: labels("Calls", "Receives", "Processing", "Completed", "Failed") },
+	},
+	{
+		kind: "api",
+		label: "API",
+		family: "compute",
+		artwork: "api",
+		defaultName: "API",
+		descriptors: [
+			{ key: "Operations", placeholder: "e.g. GET /orders, create order" },
+			{ key: "Protocols", placeholder: "e.g. HTTPS, gRPC" },
+		],
+		operations: [
+			{ id: "respond", label: "Respond" },
+			{ id: "error-response", label: "Error response" },
+		],
+		reactions: { kind: "api", labels: labels("Calls", "Request", "Processing", "Responds", "Error") },
+	},
+	{
+		kind: "worker",
+		label: "Worker",
+		family: "compute",
+		artwork: "worker",
+		defaultName: "Worker",
+		descriptors: [{ key: "Job type", placeholder: "e.g. Send receipts, resize images" }],
+		operations: [{ id: "retry", label: "Retry" }],
+		reactions: { kind: "worker", labels: labels("Sends", "Job received", "Processing", "Completed", "Failed") },
+	},
+	{
+		kind: "scheduled_job",
+		label: "Scheduled job",
+		family: "compute",
+		artwork: "scheduled_job",
+		defaultName: "Scheduled job",
+		descriptors: [
+			{ key: "Schedule description", placeholder: "e.g. Every night at 02:00" },
+			{ key: "Job type", placeholder: "e.g. Expire stale sessions" },
+		],
+		operations: [],
+		reactions: { kind: "scheduled_job", labels: labels("Sends", "Triggered", "Running", "Completed", "Failed") },
+	},
+	{
+		kind: "serverless_handler",
+		label: "Serverless handler",
+		family: "compute",
+		artwork: "serverless_handler",
+		defaultName: "Serverless handler",
+		descriptors: [
+			{ key: "Trigger", placeholder: "e.g. HTTP request, storage upload" },
+			{ key: "Runtime description", placeholder: "e.g. Node.js function, 512 MB" },
+		],
+		operations: [],
+		reactions: { kind: "serverless_handler", labels: labels("Calls", "Activated", "Processing", "Returned", "Failed") },
+	},
 ];
 
 const ENTRY_BY_KIND = new Map<string, ComponentCatalogEntry>(COMPONENT_CATALOG.map((entry) => [entry.kind, entry]));
@@ -206,7 +278,7 @@ export function catalogEntryFor(kind: string): ComponentCatalogEntry | undefined
 	return ENTRY_BY_KIND.get(kind);
 }
 
-export function isClientTrafficKind(value: string): value is ClientTrafficKind {
+export function isCatalogKind(value: string): value is CatalogKind {
 	return ENTRY_BY_KIND.has(value);
 }
 

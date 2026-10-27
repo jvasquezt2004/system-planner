@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { CLIENT_TRAFFIC_KINDS } from "./component-catalog";
+import { CATALOG_KINDS, CLIENT_TRAFFIC_KINDS } from "./component-catalog";
 import {
 	addSystemComponent,
 	addSystemConnection,
@@ -20,7 +20,7 @@ function everyKind(): SystemDesign {
 
 describe("client and traffic Components in the shared System design", () => {
 	test("every catalog kind is an accepted Component kind alongside the original two", () => {
-		expect([...SYSTEM_COMPONENT_KINDS]).toEqual(["generic", "database", ...CLIENT_TRAFFIC_KINDS]);
+		expect([...SYSTEM_COMPONENT_KINDS]).toEqual(["generic", "database", ...CATALOG_KINDS]);
 	});
 
 	test("each new Component gets its kind's default name and keeps optional branding and descriptive properties", () => {

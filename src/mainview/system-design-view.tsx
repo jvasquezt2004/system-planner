@@ -45,7 +45,7 @@ import {
 	componentKindLabel,
 	descriptorKeysFor,
 	descriptorValue,
-	isClientTrafficKind,
+	isCatalogKind,
 	mergeFreeProperties,
 	withDescriptorValue,
 	type ComponentFamily,
@@ -849,7 +849,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
 										{componentKindLabel(component.kind).toUpperCase()}
 									</text>
-									{isClientTrafficKind(component.kind) && (
+									{isCatalogKind(component.kind) && (
 										<ComponentArtwork artwork={component.kind} x={SYSTEM_COMPONENT_SIZE.width - 38} y={12} />
 									)}
 									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>

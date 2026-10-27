@@ -111,6 +111,23 @@ describe("system overview rendering", () => {
 		expect(html).toContain('aria-label="API gateway: Node 7"');
 	});
 
+	test("each compute kind draws its own labelled artwork on the card", () => {
+		const kinds = ["application", "api", "worker", "scheduled_job", "serverless_handler"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">SCHEDULED JOB<");
+		expect(html).toContain(">SERVERLESS HANDLER<");
+		expect(html).toContain('aria-label="Serverless handler: Node 4"');
+	});
+
 	test("the original generic and database Components draw no catalog artwork", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
