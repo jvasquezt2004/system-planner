@@ -1,16 +1,23 @@
 # Projects and reliable autosave
 
-Each project is a named, locally saved workspace that owns exactly one design.
-The design and its layout are stored together in SQLite; there is no version
-history, branching, or second design per project.
+Each project is a named, locally saved workspace that owns one or more
+independent designs. Each design is its own database, with its own schema,
+layout, Scenarios, and Edge functions, and is stored together with its layout in
+SQLite. There is no version history or branching.
 
 ## Using projects
 
 - The **Projects** panel lists every saved project. The active project is marked
   `open`; click another project to switch to it.
-- **New project** creates and immediately opens a separate, empty design.
+- **New project** creates and immediately opens a separate project with one
+  empty design.
+- The **Design** menu in the header lists the open project's designs. Click one
+  to show it; **New design…** adds an empty design and opens it, and **Rename
+  current design…** renames the one shown. Names are unique within a project.
+  Each design keeps its own saved state, and Undo and Redo apply to the design
+  shown.
 - Switching projects replaces the canvas and table list with that project's
-  design. No table, column, or layout from another project is reused.
+  first design. No table, column, or layout from another project is reused.
 - The application reopens the most recently updated project on a fresh start.
   Reopening restores the latest saved design, not an earlier save or the
   previous session's undo stack.

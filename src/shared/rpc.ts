@@ -10,10 +10,12 @@ import type {
 	AddColumnAction,
 	AddRelationshipAction,
 	AddTableAction,
+	CreateDesignAction,
 	CreateEdgeFunctionAction,
 	CreateScenarioAction,
 	DisplayedSqlPreview,
 	MoveTableAction,
+	OpenDesignAction,
 	RemovalPlan,
 	RemovalTarget,
 	RemoveColumnAction,
@@ -22,6 +24,7 @@ import type {
 	RemoveRelationshipAction,
 	RemoveScenarioAction,
 	RemoveTableAction,
+	RenameDesignAction,
 	RenameEdgeFunctionAction,
 	RenameScenarioAction,
 	RenameTableAction,
@@ -74,6 +77,9 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { projectId: string };
 				response: WorkspaceState;
 			};
+			createDesign: { params: CreateDesignAction; response: WorkspaceState };
+			openDesign: { params: OpenDesignAction; response: WorkspaceState };
+			renameDesign: { params: RenameDesignAction; response: WorkspaceState };
 			createScenario: { params: CreateScenarioAction; response: WorkspaceState };
 			renameScenario: { params: RenameScenarioAction; response: WorkspaceState };
 			removeScenario: { params: RemoveScenarioAction; response: WorkspaceState };
