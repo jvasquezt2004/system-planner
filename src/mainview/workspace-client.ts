@@ -255,6 +255,10 @@ export const workspaceClient = {
 	removeSystemService(serviceId: string): Promise<WorkspaceState> {
 		return rpc.request.removeSystemService({ serviceId });
 	},
+	/** Presentation only: saved outside Project history. */
+	setSystemServiceCollapsed(serviceId: string, collapsed: boolean): Promise<WorkspaceState> {
+		return rpc.request.setSystemServiceCollapsed({ serviceId, collapsed });
+	},
 	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan> {
 		return rpc.request.describeSystemServiceRemoval({ serviceId });
 	},

@@ -113,7 +113,9 @@ import {
 	removeSystemService,
 	resizeSystemGroup,
 	resizeSystemService,
+	setSystemServiceCollapsed,
 	systemDesignContent,
+	withSystemPresentation,
 	type SystemComponent,
 	type SystemContent,
 	updateSystemComponent,
@@ -135,6 +137,7 @@ import {
 	type RemoveSystemServiceAction,
 	type ResizeSystemGroupAction,
 	type ResizeSystemServiceAction,
+	type SetSystemServiceCollapsedAction,
 	type UpdateSystemGroupAction,
 	type SetActiveViewAction,
 	type SetSystemViewportAction,
@@ -273,6 +276,11 @@ export interface DesignWorkspace {
 	resizeSystemService(action: ResizeSystemServiceAction): Promise<WorkspaceState>;
 	/** Releases owned Components to system scope and deletes Connections that end at the Service. */
 	removeSystemService(action: RemoveSystemServiceAction): Promise<WorkspaceState>;
+	/**
+	 * Shows a Service collapsed or expanded. This is view presentation saved with the System design, so it
+	 * never enters Project history and Undo does not reverse it.
+	 */
+	setSystemServiceCollapsed(action: SetSystemServiceCollapsedAction): Promise<WorkspaceState>;
 	/** Lists what removing the Service releases and deletes, before anything changes. */
 	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan;
 	/** Groups organize Components, Services, and child Groups. Each edit is one Project-history action. */
@@ -957,7 +965,7 @@ export async function createDesignWorkspace(
 		const walkthroughsChanged = JSON.stringify(current.walkthroughs ?? []) !== JSON.stringify(target.walkthroughs);
 		if (!designChanged && !scenariosChanged && !edgeFunctionsChanged && !systemChanged && !walkthroughsChanged) return current;
 		const nextSystemDesign: SystemDesign | null = systemChanged && current.systemDesign
-			? { ...structuredClone(target.systemDesign), viewport: current.systemDesign.viewport }
+			? withSystemPresentation(structuredClone(target.systemDesign), current.systemDesign)
 			: current.systemDesign ?? null;
 
 		const schemaChanged = designChanged && structural;
@@ -1767,7 +1775,7 @@ export async function createDesignWorkspace(
 					&& targetSystem !== undefined
 					&& JSON.stringify(systemDesignContent(current.systemDesign)) !== JSON.stringify(targetSystem);
 				const nextSystem: SystemDesign | null = systemChanged && current.systemDesign
-					? { ...structuredClone(targetSystem!), viewport: current.systemDesign.viewport }
+					? withSystemPresentation(structuredClone(targetSystem!), current.systemDesign)
 					: current.systemDesign ?? null;
 				const nextRevision = state.revision + 1;
 				const nextDocumentRevision = ++documentRevision;
@@ -2469,6 +2477,15 @@ export async function createDesignWorkspace(
 						action: attributed(action, { name: `Remove service “${removed.name}”` }),
 					};
 				});
+			});
+		},
+		setSystemServiceCollapsed(action) {
+			return runTask(async () => {
+				const { projectId, designId } = requireOpenProject();
+				const current = state.systemDesign!;
+				const next = setSystemServiceCollapsed(current, action.serviceId, action.collapsed);
+				if (next === current) return state;
+				return persistSystemDesign(projectId, designId, next);
 			});
 		},
 		describeSystemServiceRemoval(serviceId) {

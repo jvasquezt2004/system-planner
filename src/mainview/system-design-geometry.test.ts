@@ -8,13 +8,17 @@ import {
 	moveSystemComponent,
 	moveSystemGroup,
 	openSpotNear,
+	SYSTEM_SERVICE_COLLAPSED_SIZE,
+	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
 import { sampleCubicBezier } from "../shared/architecture-proof";
 import {
 	clampZoom,
 	connectionGeometries,
+	drawnEndpointRect,
 	groupFrameAround,
+	internalConnectionCount,
 	movedBeyondThreshold,
 	playbackRoutes,
 	previewScene,
@@ -199,3 +203,73 @@ describe("system design Group geometry", () => {
 	});
 });
 
+/** Two Components of one Service, both reaching the same outside Component, and one internal Connection. */
+function collapsibleDesign(): SystemDesign {
+	let design = createEmptySystemDesign();
+	design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+	design = addSystemComponent(design, { id: "worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+	design = addSystemComponent(design, { id: "cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+	design = addSystemComponent(design, { id: "queue", position: { x: 600, y: 60 } });
+	design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+	design = addSystemConnection(design, { id: "fills", sourceId: "cache", targetId: "queue", label: "Fills" });
+	design = addSystemConnection(design, { id: "warms", sourceId: "worker", targetId: "cache", label: "Warms" });
+	return design;
+}
+
+describe("system design collapsed Service geometry", () => {
+	test("a collapsed Service draws its owned Components' Connections from its boundary, keeping each Connection's identity and endpoints", () => {
+		const design = setSystemServiceCollapsed(collapsibleDesign(), "orders", true);
+		const geometries = connectionGeometries(design);
+		const reads = geometries.find((geometry) => geometry.connection.id === "reads")!;
+
+		expect(reads.connection).toMatchObject({ sourceId: "worker", targetId: "queue" });
+		// The start sits on the collapsed boundary's right edge; a parallel slot may shift it along that edge.
+		expect(reads.start.x).toBe(SYSTEM_SERVICE_COLLAPSED_SIZE.width);
+		expect(reads.start.y).toBeGreaterThan(0);
+		expect(reads.start.y).toBeLessThan(SYSTEM_SERVICE_COLLAPSED_SIZE.height);
+		expect(drawnEndpointRect(design, "worker")).toEqual({ x: 0, y: 0, ...SYSTEM_SERVICE_COLLAPSED_SIZE });
+		expect(drawnEndpointRect(design, "orders")).toEqual({ x: 0, y: 0, ...SYSTEM_SERVICE_COLLAPSED_SIZE });
+		expect(design.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+	});
+
+	test("a Connection that stays inside a collapsed Service has no drawn path, and the Service states how many there are", () => {
+		const design = setSystemServiceCollapsed(collapsibleDesign(), "orders", true);
+		expect(connectionGeometries(design).map((geometry) => geometry.connection.id).sort()).toEqual(["fills", "reads"]);
+		expect(internalConnectionCount(design, "orders")).toBe(1);
+		expect(internalConnectionCount(setSystemServiceCollapsed(design, "orders", false), "orders")).toBe(0);
+		expect(connectionGeometries(setSystemServiceCollapsed(design, "orders", false)).map((geometry) => geometry.connection.id).sort())
+			.toEqual(["fills", "reads", "warms"]);
+	});
+
+	test("parallel Connections projected onto one collapsed boundary remain separate paths and selectable label points", () => {
+		const design = setSystemServiceCollapsed(collapsibleDesign(), "orders", true);
+		const geometries = connectionGeometries(design);
+		const reads = geometries.find((geometry) => geometry.connection.id === "reads")!;
+		const fills = geometries.find((geometry) => geometry.connection.id === "fills")!;
+
+		expect(reads.pathString).not.toBe(fills.pathString);
+		expect(reads.labelPoint).not.toEqual(fills.labelPoint);
+		expect(reads.connection.label).toBe("Reads");
+		expect(fills.connection.label).toBe("Fills");
+	});
+
+	test("a Connection authored between Services stays at service level when expanded, and is not moved onto a Component", () => {
+		let design = addSystemService(collapsibleDesign(), { id: "billing", name: "Billing", position: { x: 700, y: 300 } });
+		design = addSystemConnection(design, { id: "charges", sourceId: "orders", targetId: "billing", label: "Charges" });
+
+		const expanded = connectionGeometries(design).find((geometry) => geometry.connection.id === "charges")!;
+		expect(expanded.connection).toMatchObject({ sourceId: "orders", targetId: "billing" });
+		expect(expanded.start).toEqual({ x: 420, y: 140 });
+
+		const collapsed = connectionGeometries(setSystemServiceCollapsed(design, "orders", true))
+			.find((geometry) => geometry.connection.id === "charges")!;
+		expect(collapsed.start).toEqual({ x: SYSTEM_SERVICE_COLLAPSED_SIZE.width, y: SYSTEM_SERVICE_COLLAPSED_SIZE.height / 2 });
+	});
+
+	test("a dragged collapsed Service carries its projected Connections along", () => {
+		const design = setSystemServiceCollapsed(collapsibleDesign(), "orders", true);
+		const moved = connectionGeometries(design, new Map([["orders", { x: 100, y: 0 }]]))
+			.find((geometry) => geometry.connection.id === "reads")!;
+		expect(moved.start.x).toBe(100 + SYSTEM_SERVICE_COLLAPSED_SIZE.width);
+	});
+});

@@ -6,6 +6,7 @@ import {
 	componentsLinkedToDesign,
 	SYSTEM_COMPONENT_KINDS,
 	SYSTEM_COMPONENT_SIZE,
+	SYSTEM_SERVICE_COLLAPSED_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
 	describeSystemComponentRemoval,
 	describeSystemServiceRemoval,
@@ -14,6 +15,8 @@ import {
 	findSystemConnection,
 	findSystemGroup,
 	findSystemService,
+	isComponentHiddenByCollapse,
+	isSystemServiceCollapsed,
 	openServiceSpotNear,
 	openSpotNear,
 	systemGroupsContaining,
@@ -35,6 +38,7 @@ import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-
 import {
 	connectionGeometries,
 	groupFrameAround,
+	internalConnectionCount,
 	labelWidth,
 	movedBeyondThreshold,
 	playbackRoutes,
@@ -384,6 +388,20 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		onApply(() => client.addSystemConnection({ id, sourceId, targetId: endpointId, label: DEFAULT_SYSTEM_CONNECTION_LABEL }));
 	}
 
+	/**
+	 * Shows a Service collapsed or expanded. This is view presentation saved with
+	 * the design, so it stays out of Undo. A Component that the collapse hides
+	 * leaves the selection and any pending Connection.
+	 */
+	function setServiceCollapsed(serviceId: string, collapsed: boolean) {
+		const hidden = collapsed
+			? design!.components.filter((component) => component.serviceId === serviceId).map((component) => component.id)
+			: [];
+		if (selection?.kind === "component" && hidden.includes(selection.id)) setSelection(null);
+		if (connectingFrom && hidden.includes(connectingFrom)) setConnectingFrom(undefined);
+		onLayout(() => client.setSystemServiceCollapsed(serviceId, collapsed));
+	}
+
 	function visibleCenter(): CanvasPoint {
 		const rect = containerRef.current?.getBoundingClientRect();
 		return screenToWorld({ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 }, latestViewport.current);
@@ -550,13 +568,21 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						{scene.services.map((service) => {
 							const selected = selection?.kind === "service" && selection.id === service.id;
 							const linking = connectingFrom === service.id;
-							const traced = highlight?.endpointIds.includes(service.id) ?? false;
-							const reaction = frame?.reactions[service.id];
-							const { width, height } = service.size;
+							const collapsed = isSystemServiceCollapsed(scene, service.id);
+							// A collapsed Service speaks for the Components it hides: they are traced and react on its boundary.
+							const owned = collapsed ? scene.components.filter((component) => component.serviceId === service.id) : [];
+							const traced = (highlight?.endpointIds.includes(service.id) ?? false)
+								|| owned.some((component) => highlight?.endpointIds.includes(component.id));
+							const reaction = frame?.reactions[service.id]
+								?? owned.map((component) => frame?.reactions[component.id]).find((item) => item !== undefined);
+							const { width, height } = collapsed ? SYSTEM_SERVICE_COLLAPSED_SIZE : service.size;
+							const internal = collapsed ? internalConnectionCount(scene, service.id) : 0;
+							const summary = `${owned.length} ${owned.length === 1 ? "component" : "components"}${internal > 0 ? ` · ${internal} internal` : ""}`;
 							return (
 								<g
 									key={service.id}
 									data-service-id={service.id}
+									data-collapsed={collapsed ? "true" : "false"}
 									transform={`translate(${service.position.x} ${service.position.y})`}
 									role="button"
 									tabIndex={0}
@@ -590,23 +616,30 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										}}
 									/>
 									<text x={16} y={24} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
-										SERVICE
+										{collapsed ? "SERVICE · COLLAPSED" : "SERVICE"}
 									</text>
 									<text x={16} y={46} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
-										{truncateLabel(service.name, 32)}
+										{truncateLabel(service.name, collapsed ? 22 : 32)}
 									</text>
-									<rect
-										data-testid="service-resize-handle"
-										x={width - 14}
-										y={height - 14}
-										width={10}
-										height={10}
-										rx={2}
-										className="cursor-nwse-resize"
-										style={{ fill: selected ? "var(--color-pencil)" : "var(--color-rule-strong)" }}
-										onPointerDown={(event) => handleResizePointerDown(event, service)}
-										onClick={(event) => event.stopPropagation()}
-									/>
+									{collapsed && (
+										<text x={16} y={66} fontSize={11.5} data-testid="collapsed-service-summary" style={{ fill: "var(--color-ink-2)" }}>
+											{summary}
+										</text>
+									)}
+									{!collapsed && (
+										<rect
+											data-testid="service-resize-handle"
+											x={width - 14}
+											y={height - 14}
+											width={10}
+											height={10}
+											rx={2}
+											className="cursor-nwse-resize"
+											style={{ fill: selected ? "var(--color-pencil)" : "var(--color-rule-strong)" }}
+											onPointerDown={(event) => handleResizePointerDown(event, service)}
+											onClick={(event) => event.stopPropagation()}
+										/>
+									)}
 								</g>
 							);
 						})}
@@ -730,7 +763,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							);
 						})}
 						{frame?.message && <WalkthroughMessageDot message={frame.message} />}
-						{scene.components.map((component) => {
+						{scene.components.filter((component) => !isComponentHiddenByCollapse(scene, component.id)).map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
 							const linking = connectingFrom === component.id;
 							const traced = highlight?.endpointIds.includes(component.id) ?? false;
@@ -953,6 +986,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onSelectComponent={(id) => setSelection({ kind: "component", id })}
 							onSelectConnection={(id) => setSelection({ kind: "connection", id })}
 							onRequestRemove={() => openServiceRemoval(selectedService.id)}
+							collapsed={isSystemServiceCollapsed(design, selectedService.id)}
+							onSetCollapsed={(collapsed) => setServiceCollapsed(selectedService.id, collapsed)}
 						/>
 					)}
 					{selectedGroup && (
@@ -1369,6 +1404,8 @@ function ServiceInspector({
 	onSelectComponent,
 	onSelectConnection,
 	onRequestRemove,
+	collapsed,
+	onSetCollapsed,
 }: {
 	service: SystemService;
 	design: SystemDesign;
@@ -1378,6 +1415,8 @@ function ServiceInspector({
 	onSelectComponent: (id: string) => void;
 	onSelectConnection: (id: string) => void;
 	onRequestRemove: () => void;
+	collapsed: boolean;
+	onSetCollapsed: (collapsed: boolean) => void;
 }) {
 	const [name, setName] = useState(service.name);
 	const owned = design.components.filter((component) => component.serviceId === service.id);
@@ -1416,6 +1455,9 @@ function ServiceInspector({
 				/>
 			</label>
 			<GroupMembership design={design} id={service.id} />
+			<Button type="button" variant="outline" size="sm" className="self-start" onClick={() => onSetCollapsed(!collapsed)}>
+				{collapsed ? "Expand service" : "Collapse service"}
+			</Button>
 			<div className="flex flex-col gap-1.5">
 				<span className="text-ink-3">Owns ({owned.length})</span>
 				{owned.length === 0 && <p className="text-ink-3">No components yet. Assign one below or from a component’s Owner field.</p>}

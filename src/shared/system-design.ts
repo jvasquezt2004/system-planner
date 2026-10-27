@@ -94,10 +94,19 @@ export type SystemDesign = {
 	connections: SystemConnection[];
 	/** Presentation only: saved outside Project content history. */
 	viewport: CanvasViewport;
+	/**
+	 * Presentation only: the Services drawn collapsed in the overview. A collapsed
+	 * Service hides the Components it owns and projects their Connections onto its
+	 * boundary. Every Component, Connection, and endpoint stays as authored.
+	 */
+	collapsedServiceIds: string[];
 };
 
-/** The System design content that Undo, Revert, and the Assistant change; viewport is navigation. */
-export type SystemContent = Omit<SystemDesign, "viewport">;
+/**
+ * The System design content that Undo, Revert, and the Assistant change. The
+ * viewport and collapsed Services are navigation and presentation.
+ */
+export type SystemContent = Omit<SystemDesign, "viewport" | "collapsedServiceIds">;
 
 export type SystemViewName = "system" | "database";
 
@@ -109,12 +118,21 @@ export const SYSTEM_PROPERTY_LIMIT = 40;
 export const SYSTEM_COMPONENT_SIZE = { width: 180, height: 84 } as const;
 export const SYSTEM_SERVICE_DEFAULT_SIZE: SystemServiceSize = { width: 420, height: 280 };
 export const SYSTEM_SERVICE_MIN_SIZE: SystemServiceSize = { width: 240, height: 160 };
+/** The boundary a collapsed Service draws in place of its expanded frame. Its position is unchanged. */
+export const SYSTEM_SERVICE_COLLAPSED_SIZE: SystemServiceSize = { width: 210, height: 84 };
 export const SYSTEM_GROUP_DEFAULT_SIZE: SystemServiceSize = { width: 360, height: 240 };
 export const SYSTEM_GROUP_MIN_SIZE: SystemServiceSize = { width: 160, height: 120 };
 export const SYSTEM_DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
 export function createEmptySystemDesign(): SystemDesign {
-	return { services: [], groups: [], components: [], connections: [], viewport: { ...SYSTEM_DEFAULT_VIEWPORT } };
+	return {
+		services: [],
+		groups: [],
+		components: [],
+		connections: [],
+		viewport: { ...SYSTEM_DEFAULT_VIEWPORT },
+		collapsedServiceIds: [],
+	};
 }
 
 /**
@@ -137,6 +155,7 @@ export function createMigratedSystemDesign(databaseDesignId: string, componentId
 		}],
 		connections: [],
 		viewport: { ...SYSTEM_DEFAULT_VIEWPORT },
+		collapsedServiceIds: [],
 	};
 }
 
@@ -283,6 +302,57 @@ export function resizeSystemService(design: SystemDesign, serviceId: string, siz
 	return replaceService(design, { ...current, size: next });
 }
 
+/**
+ * Shows the Service collapsed or expanded. This is view presentation only: the
+ * Components, Connections, and endpoints are unchanged, and the caller saves it
+ * outside Project history.
+ */
+export function setSystemServiceCollapsed(design: SystemDesign, serviceId: string, collapsed: boolean): SystemDesign {
+	requireSystemService(design, serviceId);
+	const isCollapsed = design.collapsedServiceIds.includes(serviceId);
+	if (isCollapsed === collapsed) return design;
+	return {
+		...design,
+		collapsedServiceIds: collapsed
+			? [...design.collapsedServiceIds, serviceId]
+			: design.collapsedServiceIds.filter((id) => id !== serviceId),
+	};
+}
+
+export function isSystemServiceCollapsed(design: Pick<SystemDesign, "collapsedServiceIds">, serviceId: string): boolean {
+	return design.collapsedServiceIds.includes(serviceId);
+}
+
+/**
+ * The endpoint an identity is drawn on. A Component owned by a collapsed Service
+ * is drawn on that Service's boundary; every other identity is its own endpoint.
+ * The Connection keeps its actual endpoint ids; only its drawn endpoints change.
+ */
+export function visibleEndpointOf(design: SystemDesign, endpointId: string): string {
+	const component = findSystemComponent(design, endpointId);
+	if (!component || component.serviceId === null) return endpointId;
+	return design.collapsedServiceIds.includes(component.serviceId) ? component.serviceId : endpointId;
+}
+
+/** Whether the Component is hidden because its owning Service is collapsed. */
+export function isComponentHiddenByCollapse(design: SystemDesign, componentId: string): boolean {
+	const component = findSystemComponent(design, componentId);
+	return component !== undefined && visibleEndpointOf(design, componentId) !== componentId;
+}
+
+/**
+ * Keeps the presentation of the open design when content is restored. Only
+ * collapsed Services that still exist stay collapsed.
+ */
+export function withSystemPresentation(content: SystemContent, presentation: Pick<SystemDesign, "viewport" | "collapsedServiceIds">): SystemDesign {
+	const serviceIds = new Set(content.services.map((service) => service.id));
+	return {
+		...content,
+		viewport: presentation.viewport,
+		collapsedServiceIds: presentation.collapsedServiceIds.filter((id) => serviceIds.has(id)),
+	};
+}
+
 /** Lists what removing the Service releases and which Connections it deletes, before anything changes. */
 export function describeSystemServiceRemoval(design: SystemDesign, serviceId: string): SystemServiceRemovalPlan {
 	const service = requireSystemService(design, serviceId);
@@ -309,6 +379,7 @@ export function removeSystemService(design: SystemDesign, serviceId: string): Sy
 		...design,
 		services: design.services.filter((service) => service.id !== serviceId),
 		groups: pruneSystemGroupMemberships(design.groups, serviceId),
+		collapsedServiceIds: design.collapsedServiceIds.filter((id) => id !== serviceId),
 		components: design.components.map((component) => (
 			component.serviceId === serviceId ? { ...component, serviceId: null } : component
 		)),
@@ -570,11 +641,16 @@ export function removeSystemConnection(design: SystemDesign, connectionId: strin
  * direction. Each one gets a distinct offset centered on zero, so parallel
  * curves never coincide. A reversed Connection needs its own slot: the curve
  * for A to B with an offset equals the curve for B to A with the same offset.
+ * `drawnEndpointOf` maps each endpoint to the one it is drawn on, so Connections
+ * projected onto the same boundary still get distinct offsets.
  */
-export function systemConnectionRouteOffsets(design: SystemDesign): Map<string, number> {
+export function systemConnectionRouteOffsets(
+	design: SystemDesign,
+	drawnEndpointOf: (endpointId: string) => string = (endpointId) => endpointId,
+): Map<string, number> {
 	const groups = new Map<string, SystemConnection[]>();
 	for (const connection of design.connections) {
-		const [a, b] = [connection.sourceId, connection.targetId].sort();
+		const [a, b] = [drawnEndpointOf(connection.sourceId), drawnEndpointOf(connection.targetId)].sort();
 		const key = `${a}\u0000${b}`;
 		groups.set(key, [...(groups.get(key) ?? []), connection]);
 	}
@@ -697,6 +773,10 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 		});
 	}
 	const viewport = isRecord(value.viewport) ? value.viewport : SYSTEM_DEFAULT_VIEWPORT;
+	// Documents saved before collapsing existed have no collapsed Services. A stale id is dropped, not an error.
+	const collapsedServiceIds = Array.isArray(value.collapsedServiceIds)
+		? [...new Set(value.collapsedServiceIds.filter((id): id is string => typeof id === "string" && serviceIds.has(id)))]
+		: [];
 	return {
 		services,
 		groups,
@@ -707,10 +787,11 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			y: finiteOr(viewport.y, 0),
 			zoom: finiteOr(viewport.zoom, 1),
 		},
+		collapsedServiceIds,
 	};
 }
 
-/** Keeps only the content that Undo and Revert restore; viewport is navigation. */
+/** Keeps only the content that Undo and Revert restore; viewport and collapsed Services are presentation. */
 export function systemDesignContent(design: SystemDesign): SystemContent {
 	return { services: design.services, groups: design.groups, components: design.components, connections: design.connections };
 }
@@ -946,6 +1027,8 @@ export type UpdateSystemServiceAction = SystemAttribution & { serviceId: string;
 export type MoveSystemServiceAction = SystemAttribution & { serviceId: string; x: number; y: number };
 export type ResizeSystemServiceAction = SystemAttribution & { serviceId: string; width: number; height: number };
 export type RemoveSystemServiceAction = SystemAttribution & { serviceId: string };
+/** Presentation only: saved outside Project history, so it has no assistant attribution or undo name. */
+export type SetSystemServiceCollapsedAction = { serviceId: string; collapsed: boolean };
 export type AddSystemGroupAction = SystemAttribution & {
 	id?: string;
 	name?: string;
