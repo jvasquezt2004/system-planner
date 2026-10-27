@@ -4,6 +4,8 @@ import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
 	AddSystemComponentAction,
 	AddSystemServiceAction,
+	CreateSystemDatabaseDesignAction,
+	LinkSystemDatabaseAction,
 	SystemComponentChanges,
 	SystemComponentRemovalPlan,
 	SystemConnectionChanges,
@@ -278,6 +280,12 @@ export const workspaceClient = {
 	},
 	setActiveView(view: SystemViewName): Promise<WorkspaceState> {
 		return rpc.request.setActiveView({ view });
+	},
+	linkSystemDatabase(componentId: string, designId: string | null): Promise<WorkspaceState> {
+		return rpc.request.linkSystemDatabase({ componentId, designId } satisfies LinkSystemDatabaseAction);
+	},
+	createSystemDatabaseDesign(componentId: string, name?: string): Promise<WorkspaceState> {
+		return rpc.request.createSystemDatabaseDesign({ componentId, name } satisfies CreateSystemDatabaseDesignAction);
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });

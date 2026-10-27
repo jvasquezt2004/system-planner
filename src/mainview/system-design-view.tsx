@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowRight, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
-import type { CanvasPoint, CanvasViewport, WorkspaceState } from "../shared/design";
+import type { CanvasPoint, CanvasViewport, DatabaseDesignSummary, WorkspaceState } from "../shared/design";
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
+	componentsLinkedToDesign,
 	SYSTEM_COMPONENT_KINDS,
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
@@ -82,7 +83,8 @@ export type SystemDesignViewProps = {
 	onApply: (action: () => Promise<WorkspaceState>) => void;
 	/** Runs a navigation or layout save without the busy state. */
 	onLayout: (action: () => Promise<WorkspaceState>) => void;
-	onOpenDatabase: () => void;
+	/** Opens the linked database Design's workspace. */
+	onOpenDatabase: (designId: string) => void;
 };
 
 /**
@@ -94,6 +96,7 @@ export type SystemDesignViewProps = {
  */
 export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatabase }: SystemDesignViewProps) {
 	const design = state.systemDesign ?? null;
+	const designs = state.designs ?? [];
 	const containerRef = useRef<HTMLDivElement>(null);
 	const [viewport, setViewport] = useState<CanvasViewport>(design?.viewport ?? { x: 0, y: 0, zoom: 1 });
 	const [selection, setSelection] = useState<Selection>(null);
@@ -559,8 +562,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										{truncateLabel(detail, 28)}
 									</text>
 									{component.kind === "database" && component.designId && (
-										<text x={SYSTEM_COMPONENT_SIZE.width - 14} y={22} textAnchor="end" fontSize={10} style={{ fill: "var(--color-pencil)" }}>
-											LINKED
+										<text x={SYSTEM_COMPONENT_SIZE.width - 14} y={22} textAnchor="end" fontSize={10} style={{ fill: "var(--color-pencil)" }} data-testid="schema-link-badge">
+											{componentsLinkedToDesign(design, component.designId).length > 1 ? "SHARED" : "LINKED"}
 										</text>
 									)}
 									{owner !== undefined && (
@@ -638,6 +641,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							key={selectedComponent.id}
 							component={selectedComponent}
 							design={design}
+							designs={designs}
 							onClose={() => setSelection(null)}
 							onApply={onApply}
 							client={client}
@@ -777,6 +781,7 @@ function SaveLine({ save }: { save: WorkspaceState["systemSave"] }) {
 function ComponentInspector({
 	component,
 	design,
+	designs,
 	client,
 	onApply,
 	onClose,
@@ -786,12 +791,13 @@ function ComponentInspector({
 }: {
 	component: SystemComponent;
 	design: SystemDesign;
+	designs: DatabaseDesignSummary[];
 	client: Client;
 	onApply: (action: () => Promise<WorkspaceState>) => void;
 	onClose: () => void;
 	onSelectConnection: (id: string) => void;
 	onRequestRemove: () => void;
-	onOpenDatabase: () => void;
+	onOpenDatabase: (designId: string) => void;
 }) {
 	const [name, setName] = useState(component.name);
 	const [technology, setTechnology] = useState(component.technology ?? "");
@@ -848,6 +854,7 @@ function ComponentInspector({
 				<select
 					aria-label="Component kind"
 					value={component.kind}
+					disabled={component.designId !== undefined}
 					onChange={(event) => onApply(() => client.updateSystemComponent(component.id, { kind: event.target.value as SystemComponentKind }))}
 					className="h-8 rounded-md border border-input bg-paper-raised px-2"
 				>
@@ -930,19 +937,14 @@ function ComponentInspector({
 				))}
 			</div>
 			{component.kind === "database" && (
-				<div className="rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2">
-					{component.designId ? (
-						<>
-							<p>Linked to this Project’s database design.</p>
-							<Button type="button" size="sm" variant="outline" className="mt-2" onClick={onOpenDatabase}>
-								<ArrowRight className="size-3.5" />
-								Open database workspace
-							</Button>
-						</>
-					) : (
-						<p>Conceptual: not linked to a database design yet.</p>
-					)}
-				</div>
+				<DatabaseLinkSection
+					component={component}
+					design={design}
+					designs={designs}
+					client={client}
+					onApply={onApply}
+					onOpenDatabase={onOpenDatabase}
+				/>
 			)}
 			<div className="flex flex-col gap-1">
 				<span className="text-ink-3">Connections ({related.length})</span>
@@ -962,6 +964,86 @@ function ComponentInspector({
 				<Trash2 className="size-3.5" />
 				Remove component
 			</Button>
+		</div>
+	);
+}
+
+/**
+ * Links a Database component to a database Design. A conceptual component can
+ * create a Design or link an existing one; a linked component can open the
+ * database workspace or unlink. Several components may link one Design: a
+ * Shared schema, which the note names.
+ */
+function DatabaseLinkSection({
+	component,
+	design,
+	designs,
+	client,
+	onApply,
+	onOpenDatabase,
+}: {
+	component: SystemComponent;
+	design: SystemDesign;
+	designs: DatabaseDesignSummary[];
+	client: Client;
+	onApply: (action: () => Promise<WorkspaceState>) => void;
+	onOpenDatabase: (designId: string) => void;
+}) {
+	const linkedDesignId = component.designId;
+	if (linkedDesignId === undefined) {
+		return (
+			<div className="flex flex-col gap-2 rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2" data-testid="database-link">
+				<p>Conceptual: not linked to a database design yet.</p>
+				<Button type="button" size="sm" variant="outline" className="self-start" onClick={() => onApply(() => client.createSystemDatabaseDesign(component.id))}>
+					<Plus className="size-3.5" />
+					Create database design
+				</Button>
+				{designs.length > 0 && (
+					<label className="flex flex-col gap-1">
+						<span className="text-ink-3">Or link an existing design</span>
+						<select
+							aria-label="Link an existing design"
+							value=""
+							onChange={(event) => {
+								if (event.target.value) onApply(() => client.linkSystemDatabase(component.id, event.target.value));
+							}}
+							className="h-8 rounded-md border border-input bg-paper-raised px-2"
+						>
+							<option value="">Choose a design…</option>
+							{designs.map((item) => (
+								<option key={item.id} value={item.id}>{item.name}</option>
+							))}
+						</select>
+					</label>
+				)}
+			</div>
+		);
+	}
+	const linked = designs.find((item) => item.id === linkedDesignId);
+	const others = componentsLinkedToDesign(design, linkedDesignId).filter((item) => item.id !== component.id);
+	return (
+		<div className="flex flex-col gap-2 rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2" data-testid="database-link">
+			{linked ? (
+				<p>Linked to design “{linked.name}”.</p>
+			) : (
+				<p>The linked design is missing from this Project. Unlink it to choose another.</p>
+			)}
+			{others.length > 0 && (
+				<p data-testid="shared-schema-note">
+					Shared schema with {others.map((item) => item.name).join(", ")}. Schema edits apply to every linked component.
+				</p>
+			)}
+			<div className="flex flex-wrap gap-1.5">
+				{linked && (
+					<Button type="button" size="sm" variant="outline" onClick={() => onOpenDatabase(linkedDesignId)}>
+						<ArrowRight className="size-3.5" />
+						Open database workspace
+					</Button>
+				)}
+				<Button type="button" size="sm" variant="ghost" onClick={() => onApply(() => client.linkSystemDatabase(component.id, null))}>
+					Unlink
+				</Button>
+			</div>
 		</div>
 	);
 }

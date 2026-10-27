@@ -44,6 +44,8 @@ import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
 	AddSystemServiceAction,
+	CreateSystemDatabaseDesignAction,
+	LinkSystemDatabaseAction,
 	MoveSystemComponentAction,
 	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
@@ -142,6 +144,9 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeSystemConnection: async (action: RemoveSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemConnection(action),
 		setSystemViewport: async (action: SetSystemViewportAction): Promise<WorkspaceState> => (await deps.workspace).setSystemViewport(action),
 		setActiveView: async (action: SetActiveViewAction): Promise<WorkspaceState> => (await deps.workspace).setActiveView(action),
+		linkSystemDatabase: async (action: LinkSystemDatabaseAction): Promise<WorkspaceState> => (await deps.workspace).linkSystemDatabase(action),
+		createSystemDatabaseDesign: async (action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState> =>
+			(await deps.workspace).createSystemDatabaseDesign(action),
 		copySqlPreview: async ({ preview }: { preview: DisplayedSqlPreview }): Promise<SqlPreviewCopyResult> => {
 			(await deps.workspace).requireActiveDesign(preview.designId);
 			return deps.sqlPreviewActions.copy(preview);

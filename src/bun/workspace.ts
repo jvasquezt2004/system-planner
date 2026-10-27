@@ -109,6 +109,7 @@ import {
 	removeSystemService,
 	resizeSystemService,
 	systemDesignContent,
+	type SystemComponent,
 	type SystemContent,
 	updateSystemComponent,
 	updateSystemConnection,
@@ -116,6 +117,8 @@ import {
 	type AddSystemComponentAction,
 	type AddSystemConnectionAction,
 	type AddSystemServiceAction,
+	type CreateSystemDatabaseDesignAction,
+	type LinkSystemDatabaseAction,
 	type MoveSystemComponentAction,
 	type MoveSystemServiceAction,
 	type RemoveSystemComponentAction,
@@ -249,6 +252,17 @@ export interface DesignWorkspace {
 	setSystemViewport(action: SetSystemViewportAction): Promise<WorkspaceState>;
 	/** Records the view to reopen for this Project. Navigation stays outside Project history. */
 	setActiveView(action: SetActiveViewAction): Promise<WorkspaceState>;
+	/**
+	 * Links a Database component to a Design of the Project, or unlinks it with
+	 * `null`. Several Database components may name one Design: a Shared schema.
+	 * The Design itself, its Scenarios, and its Edge functions are never changed.
+	 */
+	linkSystemDatabase(action: LinkSystemDatabaseAction): Promise<WorkspaceState>;
+	/**
+	 * Creates a database Design in the Project for a conceptual Database component
+	 * and links it. The new Design becomes the active one; the overview stays open.
+	 */
+	createSystemDatabaseDesign(action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
 
@@ -1034,6 +1048,7 @@ export async function createDesignWorkspace(
 							savedAt: edgeFunctionDocument.savedAt,
 							designId,
 						},
+			// Switching designs keeps the overview and its save status, which activation would otherwise drop.
 			...(options.openingProject
 				? {
 						systemDesign: systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign(),
@@ -1042,7 +1057,11 @@ export async function createDesignWorkspace(
 							: { status: "idle" as const },
 						activeView: systemRecord?.lastView ?? "system",
 					}
-				: {}),
+				: {
+						systemDesign: state.systemDesign,
+						systemSave: state.systemSave,
+						activeView: state.activeView,
+					}),
 		});
 		if (design.tables.length > 0) {
 			const requestId = ++previewRequestId;
@@ -2399,6 +2418,51 @@ export async function createDesignWorkspace(
 				return state;
 			});
 		},
+		linkSystemDatabase(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenProject();
+				const designs = store.listDesigns(projectId);
+				const target = action.designId === null ? null : designs.find((design) => design.id === action.designId);
+				if (action.designId !== null && !target) throw new Error("That design could not be found in this project.");
+				return applySystemDesignChange((design) => {
+					const component = requireDatabaseComponent(design, action.componentId);
+					const next = updateSystemComponent(design, component.id, { designId: action.designId ?? undefined });
+					return {
+						next,
+						action: {
+							name: target
+								? `Link “${component.name}” to “${target.name}”`
+								: `Unlink “${component.name}” from its design`,
+						},
+					};
+				});
+			});
+		},
+		createSystemDatabaseDesign(action) {
+			return runTask(async () => {
+				const { projectId } = requireOpenProject();
+				const project = state.project!;
+				const component = requireDatabaseComponent(state.systemDesign!, action.componentId);
+				if (component.designId !== undefined) {
+					throw new Error("This database component is already linked to a design. Unlink it first.");
+				}
+				const existing = store.listDesigns(projectId);
+				const name = action.name !== undefined && action.name.trim().length > 0
+					? requireDesignName(action.name, existing)
+					: nextDefaultDesignName(existing);
+				const designId = createId();
+				await store.createDesign(projectId, designId, name, createEmptyDesign(), {
+					revision: 1,
+					documentRevision: 1,
+					savedAt: now(),
+				});
+				await activateDesign(project, designId);
+				return applySystemDesignChange((design) => {
+					const next = updateSystemComponent(design, component.id, { designId });
+					return { next, action: { name: `Link “${component.name}” to “${name}”` } };
+				});
+			});
+		},
 		async close() {
 			invalidatePreviewWork();
 			await disposeActiveScenarioRun();
@@ -2415,6 +2479,14 @@ export async function createDesignWorkspace(
 	}
 
 	return workspace;
+}
+
+/** A Component that can link to a database design: it must be a Database component. */
+function requireDatabaseComponent(design: SystemDesign, componentId: string): SystemComponent {
+	const component = findSystemComponent(design, componentId);
+	if (!component) throw new Error("That Component could not be found.");
+	if (component.kind !== "database") throw new Error("Only a Database component can link to a database design.");
+	return component;
 }
 
 /** A design with no content yet, placed like a new Project's first design. */

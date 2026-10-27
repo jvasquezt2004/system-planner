@@ -26,6 +26,7 @@ import { SCENARIO_RUN_TIMEOUT_MS, runAllScenarios, type RunAllResult } from "../
 import { createScenarioRunDriver, type ScenarioRunDriver } from "./scenario-run-driver";
 import { createAssistantScenarioRunBridge } from "./assistant-scenario-run-bridge";
 import { relationshipsForTable } from "../shared/relationships";
+import { componentsLinkedToDesign } from "../shared/system-design";
 import { Button } from "@/components/ui/button";
 import {
 	Dialog,
@@ -637,6 +638,9 @@ export function App({
 		<main className="flex h-screen flex-col overflow-hidden bg-paper text-ink">
 			<Masthead
 				state={state}
+				schemaLinks={state.systemDesign && state.activeDesignId
+					? componentsLinkedToDesign(state.systemDesign, state.activeDesignId).map((component) => component.name)
+					: []}
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
@@ -808,9 +812,12 @@ export function App({
 								client={workspaceClient}
 								onApply={run}
 								onLayout={applyLayout}
-								onOpenDatabase={() => {
+								onOpenDatabase={(designId) => {
 									setView("canvas");
-									void applyLayout(() => workspaceClient.setActiveView("database"));
+									void run(async () => {
+										await workspaceClient.openDesign(designId);
+										return workspaceClient.setActiveView("database");
+									});
 								}}
 							/>
 						)}
@@ -960,6 +967,7 @@ export function App({
  */
 export function Masthead({
 	state,
+	schemaLinks,
 	busy,
 	onOpenProject,
 	onNewProject,
@@ -972,6 +980,8 @@ export function Masthead({
 	onViewChange,
 }: {
 	state: WorkspaceState;
+	/** Components of the System design that link the active Design: more than one is a Shared schema. */
+	schemaLinks: string[];
 	busy: boolean;
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
@@ -1094,6 +1104,15 @@ export function Masthead({
 							</DropdownMenuContent>
 						</DropdownMenu>
 					</>
+				)}
+				{project && schemaLinks.length > 1 && (
+					<span
+						className="kicker shrink-0 text-pencil!"
+						data-testid="shared-schema-indicator"
+						title={`Shared schema: ${schemaLinks.join(", ")}`}
+					>
+						Shared schema · {schemaLinks.length}
+					</span>
 				)}
 				{project && (
 					<span className="figures hidden shrink-0 font-mono text-[11px] text-ink-3 md:inline" data-testid="schema-revision">
