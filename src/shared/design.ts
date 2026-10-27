@@ -1,3 +1,4 @@
+import type { SystemDesign, SystemViewName } from "./system-design";
 /**
  * Domain vocabulary shared by the Bun main process and the React view.
  * See GLOSSARY.md: Project, Design, Sandbox, Table card, SQL preview.
@@ -458,6 +459,12 @@ export type WorkspaceState = {
 	undoActionName?: string;
 	/** Name of the action Redo will reapply, when one exists. */
 	redoActionName?: string;
+	/** The Project's System design; null until a Project is open. */
+	systemDesign?: SystemDesign | null;
+	/** Save status of the System design document, kept apart from the database Design. */
+	systemSave?: SaveState;
+	/** The view opened for this Project: the system overview or the database workspace. */
+	activeView?: SystemViewName;
 };
 
 /** How the displayed SQL relates to sandbox validation for the current draft. */

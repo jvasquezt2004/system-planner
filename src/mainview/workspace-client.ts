@@ -2,6 +2,13 @@ import { defineElectrobunRPC } from "electrobun/rpc";
 import { Electroview } from "electrobun/view";
 import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
+	AddSystemComponentAction,
+	SystemComponentChanges,
+	SystemComponentRemovalPlan,
+	SystemConnectionChanges,
+	SystemViewName,
+} from "../shared/system-design";
+import type {
 	CanvasPoint,
 	CanvasViewport,
 	ColumnChanges,
@@ -210,6 +217,36 @@ export const workspaceClient = {
 	},
 	setViewport(designId: string, viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport({ ...viewport, designId });
+	},
+	addSystemComponent(component: AddSystemComponentAction): Promise<WorkspaceState> {
+		return rpc.request.addSystemComponent(component);
+	},
+	updateSystemComponent(componentId: string, changes: SystemComponentChanges): Promise<WorkspaceState> {
+		return rpc.request.updateSystemComponent({ componentId, changes });
+	},
+	moveSystemComponent(componentId: string, point: CanvasPoint): Promise<WorkspaceState> {
+		return rpc.request.moveSystemComponent({ componentId, x: point.x, y: point.y });
+	},
+	removeSystemComponent(componentId: string): Promise<WorkspaceState> {
+		return rpc.request.removeSystemComponent({ componentId });
+	},
+	describeSystemComponentRemoval(componentId: string): Promise<SystemComponentRemovalPlan> {
+		return rpc.request.describeSystemComponentRemoval({ componentId });
+	},
+	addSystemConnection(connection: { id: string; sourceId: string; targetId: string; label?: string }): Promise<WorkspaceState> {
+		return rpc.request.addSystemConnection(connection);
+	},
+	updateSystemConnection(connectionId: string, changes: SystemConnectionChanges): Promise<WorkspaceState> {
+		return rpc.request.updateSystemConnection({ connectionId, changes });
+	},
+	removeSystemConnection(connectionId: string): Promise<WorkspaceState> {
+		return rpc.request.removeSystemConnection({ connectionId });
+	},
+	setSystemViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
+		return rpc.request.setSystemViewport(viewport);
+	},
+	setActiveView(view: SystemViewName): Promise<WorkspaceState> {
+		return rpc.request.setActiveView({ view });
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });

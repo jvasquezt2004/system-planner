@@ -37,6 +37,18 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import type { SchemaCodeSnapshot } from "../shared/schema-code";
+import type {
+	AddSystemComponentAction,
+	AddSystemConnectionAction,
+	MoveSystemComponentAction,
+	RemoveSystemComponentAction,
+	RemoveSystemConnectionAction,
+	SetActiveViewAction,
+	SetSystemViewportAction,
+	SystemComponentRemovalPlan,
+	UpdateSystemComponentAction,
+	UpdateSystemConnectionAction,
+} from "../shared/system-design";
 import type { SqlPreviewActions } from "./sql-preview";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
@@ -100,6 +112,17 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeRelationship: async (action: RemoveRelationshipAction): Promise<WorkspaceState> => (await deps.workspace).removeRelationship(action),
 		describeRemoval: async (target: RemovalTarget): Promise<RemovalPlan> => (await deps.workspace).describeRemoval(target),
 		setViewport: async (action: SetViewportAction): Promise<WorkspaceState> => (await deps.workspace).setViewport(action),
+		addSystemComponent: async (action: AddSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).addSystemComponent(action),
+		updateSystemComponent: async (action: UpdateSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemComponent(action),
+		moveSystemComponent: async (action: MoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemComponent(action),
+		removeSystemComponent: async (action: RemoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemComponent(action),
+		describeSystemComponentRemoval: async ({ componentId }: { componentId: string }): Promise<SystemComponentRemovalPlan> =>
+			(await deps.workspace).describeSystemComponentRemoval(componentId),
+		addSystemConnection: async (action: AddSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).addSystemConnection(action),
+		updateSystemConnection: async (action: UpdateSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemConnection(action),
+		removeSystemConnection: async (action: RemoveSystemConnectionAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemConnection(action),
+		setSystemViewport: async (action: SetSystemViewportAction): Promise<WorkspaceState> => (await deps.workspace).setSystemViewport(action),
+		setActiveView: async (action: SetActiveViewAction): Promise<WorkspaceState> => (await deps.workspace).setActiveView(action),
 		copySqlPreview: async ({ preview }: { preview: DisplayedSqlPreview }): Promise<SqlPreviewCopyResult> => {
 			(await deps.workspace).requireActiveDesign(preview.designId);
 			return deps.sqlPreviewActions.copy(preview);
