@@ -742,6 +742,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				properties: Type.Optional(Type.Array(Type.Object({ key: Type.String(), value: Type.String() }), { description: "Descriptive properties; replaces the Component's list" })),
 				icon: Type.Optional(Type.Union(CUSTOM_ICONS.map((icon) => Type.Literal(icon)), { description: "Custom components only" })),
 				label: Type.Optional(Type.String({ description: "Connection label describing the interaction" })),
+				interactionType: Type.Optional(Type.String({ description: "Connection interaction type, such as Synchronous request or Event" })),
 				protocol: Type.Optional(Type.String()),
 				ownerServiceId: Type.Optional(Type.Union([Type.String(), Type.Null()], { description: "Service that owns the Component; null releases it to system scope" })),
 				linkedDesignId: Type.Optional(Type.Union([Type.String(), Type.Null()], { description: "Database component only: a design id from read_system_design; null unlinks it" })),
