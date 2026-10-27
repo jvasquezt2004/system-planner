@@ -96,7 +96,7 @@ export function SqlPreviewView({
 	}, [target, designAccepted, draftRevision, design]);
 	const ormSnapshot: SchemaCodeSnapshot | null =
 		target !== "sql" && ormCode?.status === "generated" && ormCode.ok
-			? { target, revision: ormCode.revision, code: ormCode.code }
+			? { target, revision: ormCode.revision, code: ormCode.code, designId: sql.designId }
 			: null;
 	const available = target === "sql" ? preview !== null : ormSnapshot !== null;
 
