@@ -7,6 +7,7 @@ import {
 	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
+	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
 import { Dialog } from "@/components/ui/dialog";
@@ -93,6 +94,47 @@ describe("system overview rendering", () => {
 		expect(shared.match(/>SHARED</g)).toHaveLength(2);
 		expect(shared).not.toContain(">LINKED<");
 	});
+
+	test("each client and traffic kind draws its own labelled artwork on the card", () => {
+		const kinds = ["person", "browser", "mobile_app", "external_system", "dns", "cdn", "load_balancer", "api_gateway", "proxy"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-component-id="${kind}" data-kind="${kind}"`);
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">LOAD BALANCER<");
+		expect(html).toContain('aria-label="API gateway: Node 7"');
+	});
+
+	test("each compute kind draws its own labelled artwork on the card", () => {
+		const kinds = ["application", "api", "worker", "scheduled_job", "serverless_handler"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">SCHEDULED JOB<");
+		expect(html).toContain(">SERVERLESS HANDLER<");
+		expect(html).toContain('aria-label="Serverless handler: Node 4"');
+	});
+
+	test("the original generic and database Components draw no catalog artwork", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
+		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+	});
 });
 
 /** The summary sits inside the confirmation dialog, which needs its context to render. */
@@ -136,5 +178,44 @@ describe("removal confirmation", () => {
 		const unreferenced: PendingRemoval = { kind: "connection", plan: { connectionId: "reply", connectionLabel: "Reply" }, walkthroughSteps: [] };
 		const plain = renderSummary(unreferenced);
 		expect(plain).not.toContain("Affected Walkthrough steps");
+	});
+});
+
+describe("system overview collapsed Services", () => {
+	function collapsibleOverview(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 600, y: 60 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "fills", sourceId: "cache", targetId: "queue", label: "Fills" });
+		design = addSystemConnection(design, { id: "warms", sourceId: "worker", targetId: "cache", label: "Warms" });
+		return design;
+	}
+
+	test("a collapsed Service hides the Components it owns, says what they contain, and keeps its projected Connections drawn", () => {
+		const html = render(setSystemServiceCollapsed(collapsibleOverview(), "orders", true));
+		expect(html).toContain('data-service-id="orders"');
+		expect(html).toContain('data-collapsed="true"');
+		expect(html).toContain("SERVICE · COLLAPSED");
+		expect(html).toContain("2 components · 1 internal");
+		expect(html).not.toContain('data-component-id="worker"');
+		expect(html).not.toContain('data-component-id="cache"');
+		expect(html).toContain('data-component-id="queue"');
+		expect(html).toContain('data-connection-id="reads"');
+		expect(html).toContain('data-connection-id="fills"');
+		expect(html).not.toContain('data-connection-id="warms"');
+		expect(html.match(/data-testid="service-resize-handle"/g)).toBeNull();
+	});
+
+	test("expanding a Service draws its Components and Connections again with its resize handle", () => {
+		const collapsed = setSystemServiceCollapsed(collapsibleOverview(), "orders", true);
+		const expanded = render(setSystemServiceCollapsed(collapsed, "orders", false));
+		expect(expanded).toContain('data-collapsed="false"');
+		expect(expanded).toContain('data-component-id="worker"');
+		expect(expanded).toContain('data-component-id="cache"');
+		expect(expanded).toContain('data-connection-id="warms"');
+		expect(expanded.match(/data-testid="service-resize-handle"/g)).toHaveLength(1);
 	});
 });

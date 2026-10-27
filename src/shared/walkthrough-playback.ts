@@ -84,6 +84,8 @@ export type PlaybackReaction = {
 	phase: "depart" | "arrive" | "outcome";
 	/** 0 to 1. Reduced motion holds every visible reaction at 1. */
 	intensity: number;
+	/** The step's operation, carried to the destination so its kind preset can name it. */
+	operation?: string;
 };
 
 export type PlaybackFrame = {
@@ -268,12 +270,14 @@ export function deriveWalkthroughFrame(
 					role: "destination",
 					phase: "arrive",
 					intensity: reducedMotion ? 1 : (local - arrivalLocal) / span,
+					operation: step.operation,
 				}]
 				: [step.targetId, {
 					action: step.action === "process" || step.action === "succeed" || step.action === "fail" ? step.action : "receive",
 					role: "destination",
 					phase: "outcome",
 					intensity: 1,
+					operation: step.operation,
 				}]);
 		}
 		for (const [endpointId, reaction] of candidates) {

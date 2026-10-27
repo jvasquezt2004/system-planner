@@ -485,3 +485,78 @@ describe("Walkthrough workspace", () => {
 		expect(walkthroughsOf(workspace)).toEqual([]);
 	});
 });
+
+describe("client and traffic Components in a Project", () => {
+	test("all nine kinds are created, edited, connected, saved, reopened, and played in a named Walkthrough with operations", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Cached catalog" });
+		const kinds = [
+			["person", "Shopper"],
+			["browser", "Web app"],
+			["mobile_app", "Mobile app"],
+			["external_system", "Payments"],
+			["dns", "Public DNS"],
+			["cdn", "Edge cache"],
+			["load_balancer", "Balancer"],
+			["api_gateway", "Gateway"],
+			["proxy", "Egress proxy"],
+		] as const;
+		for (const [index, [kind, name]] of kinds.entries()) {
+			await first.addSystemComponent({ id: kind, kind, name, x: index * 220, y: 0 });
+		}
+		await first.updateSystemComponent({
+			componentId: "dns",
+			changes: {
+				technology: "Route 53",
+				properties: [{ key: "Zone", value: "example.com" }, { key: "Record description", value: "A record to the balancer" }],
+			},
+		});
+		await first.updateSystemComponent({ componentId: "mobile_app", changes: { name: "Mobile client", properties: [{ key: "Platform", value: "iOS" }] } });
+		await first.addSystemConnection({ id: "lookup", sourceId: "browser", targetId: "dns", label: "Resolve" });
+		await first.addSystemConnection({ id: "fetch", sourceId: "browser", targetId: "cdn", label: "Request asset" });
+		await first.addSystemConnection({ id: "miss", sourceId: "cdn", targetId: "load_balancer", label: "Origin fetch" });
+		await first.addSystemConnection({ id: "call", sourceId: "mobile_app", targetId: "api_gateway", label: "API call" });
+		await first.addSystemConnection({ id: "egress", sourceId: "proxy", targetId: "external_system", label: "Outbound call" });
+		await first.createWalkthrough({ id: "w-cached", name: "Cached asset" });
+		await first.addWalkthroughStep({ id: "s-lookup", walkthroughId: "w-cached", connectionId: "lookup" });
+		await first.addWalkthroughStep({ id: "s-hit", walkthroughId: "w-cached", connectionId: "fetch", action: "succeed" });
+		await first.updateWalkthroughStep({ walkthroughId: "w-cached", stepId: "s-hit", changes: { operation: "cache hit" } });
+		await first.addWalkthroughStep({ id: "s-miss", walkthroughId: "w-cached", connectionId: "miss", action: "send" });
+		await first.updateWalkthroughStep({ walkthroughId: "w-cached", stepId: "s-miss", changes: { operation: "cache miss" } });
+		await first.addWalkthroughStep({ id: "s-limit", walkthroughId: "w-cached", connectionId: "call", action: "fail" });
+		await first.updateWalkthroughStep({ walkthroughId: "w-cached", stepId: "s-limit", changes: { operation: "rate limited" } });
+		expect(first.getState().walkthroughSave?.status).toBe("saved");
+		expect(first.getState().undoActionName).toBe("Edit step “API call”");
+		const before = { design: first.getState().systemDesign, walkthroughs: walkthroughsOf(first) };
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		expect(reopened.getState().systemDesign).toEqual(before.design);
+		expect(walkthroughsOf(reopened)).toEqual(before.walkthroughs);
+		expect(reopened.getState().systemDesign!.components.map((component) => component.kind)).toEqual(kinds.map(([kind]) => kind));
+		expect(reopened.getState().systemDesign!.components.find((component) => component.id === "dns")).toMatchObject({
+			technology: "Route 53",
+			properties: [{ key: "Zone", value: "example.com" }, { key: "Record description", value: "A record to the balancer" }],
+		});
+		expect(reopened.getState().systemDesign!.components.find((component) => component.id === "mobile_app")?.name).toBe("Mobile client");
+		const walkthrough = walkthroughsOf(reopened).find((item) => item.id === "w-cached")!;
+		const steps = walkthroughSteps(walkthrough);
+		expect(steps.map((step) => step.operation)).toEqual([undefined, "cache hit", "cache miss", "rate limited"]);
+		for (const step of steps) expect(walkthroughStepStatus(step, reopened.getState().systemDesign!)).toEqual({ status: "ok" });
+		expect(compileWalkthroughPlayback(walkthrough, reopened.getState().systemDesign!).ok).toBe(true);
+	});
+
+	test("a client or traffic Component's kind change and its added step are each one undoable Project action", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Kinds" });
+		await workspace.addSystemComponent({ id: "edge", kind: "cdn", name: "Edge", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "origin", name: "Origin", x: 300, y: 0 });
+		await workspace.addSystemConnection({ id: "serve", sourceId: "edge", targetId: "origin", label: "Fetch" });
+		await workspace.updateSystemComponent({ componentId: "edge", changes: { kind: "proxy" } });
+		expect(workspace.getState().systemDesign!.components.find((component) => component.id === "edge")?.kind).toBe("proxy");
+		await workspace.undo({ designId: activeDesign(workspace) });
+		expect(workspace.getState().systemDesign!.components.find((component) => component.id === "edge")?.kind).toBe("cdn");
+	});
+});
