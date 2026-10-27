@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { Database } from "bun:sqlite";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -6,6 +6,9 @@ import { dirname, join } from "node:path";
 import type { Design, WorkspaceState } from "../shared/design";
 import { openDesignStore, type DesignStore } from "./store";
 import { createDesignWorkspace, type DesignWorkspace, type DesignWorkspaceOptions } from "./workspace";
+
+// Each test starts real PGlite sandboxes, which take several seconds under load.
+setDefaultTimeout(30_000);
 
 /**
  * Behavior of several database Designs inside one Project, against real SQLite

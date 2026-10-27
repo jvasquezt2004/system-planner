@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, Network, PenTool, Plus, Redo2, ScrollText, Undo2, X, Zap, Server } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, Network, PenTool, Plus, Redo2, ScrollText, Undo2, Workflow, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import {
 	getLastAppliedSandbox,
@@ -62,12 +62,13 @@ import { TriggersView } from "./triggers-view";
 import { FunctionsView } from "./functions-view";
 import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
+import { SystemDesignView } from "./system-design-view";
 import { ArchitectureProofView } from "./architecture-proof";
 
 type RunAllOperation = { projectId: string; designId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
-type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers" | "architecture";
+type WorkspaceView = "system" | "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers" | "architecture";
 type AssistantCodeTarget = { kind: "scenario" | "edge-function" | "function-body"; id: string };
 
 export function App({
@@ -84,7 +85,10 @@ export function App({
 	const [selectedColumnId, setSelectedColumnId] = useState<string | null>(null);
 	const [selectedRelationshipId, setSelectedRelationshipId] = useState<string | null>(null);
 	const [relating, setRelating] = useState(false);
-	const [view, setView] = useState<WorkspaceView>(() => new URLSearchParams(window.location.search).has("proofReportUrl") ? "architecture" : "canvas");
+	const [view, setView] = useState<WorkspaceView>(() => {
+		if (new URLSearchParams(window.location.search).has("proofReportUrl")) return "architecture";
+		return initialState?.activeView === "system" ? "system" : "canvas";
+	});
 	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
 	const [designDialog, setDesignDialog] = useState<DesignDialogState | null>(null);
@@ -144,6 +148,7 @@ export function App({
 		const nextProjectId = next.project?.id ?? null;
 		const nextDesignId = next.activeDesignId ?? null;
 		const nextTargetKey = `${nextProjectId ?? ""}\u0000${nextDesignId ?? ""}`;
+		const previousProjectId = projectIdRef.current;
 		if (targetKeyRef.current !== nextTargetKey) {
 			targetKeyRef.current = nextTargetKey;
 			targetVersion.current += 1;
@@ -157,6 +162,8 @@ export function App({
 			setSelectedRelationshipId(null);
 			setRelating(false);
 			setAssistantCodeTarget(null);
+			// Opening a Project shows its saved view; switching designs keeps the view in place.
+			if (next.project && nextProjectId !== previousProjectId) setView(next.activeView === "database" ? "canvas" : "system");
 		}
 		setState(next);
 		scenarioStateRef.current = next;
@@ -642,7 +649,11 @@ export function App({
 				onUndo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.undo(designId)); }}
 				onRedo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.redo(designId)); }}
 				view={view}
-				onViewChange={setView}
+				onViewChange={(next) => {
+					setView(next);
+					if (next === "architecture" || !state.project) return;
+					void applyLayout(() => workspaceClient.setActiveView(next === "system" ? "system" : "database"));
+				}}
 			/>
 
 			{error && (
@@ -789,6 +800,19 @@ export function App({
 						)}
 						{view === "architecture" && (
 							<ArchitectureProofView key={state.project.id} />
+						)}
+						{view === "system" && (
+							<SystemDesignView
+								key={state.project.id}
+								state={state}
+								client={workspaceClient}
+								onApply={run}
+								onLayout={applyLayout}
+								onOpenDatabase={() => {
+									setView("canvas");
+									void applyLayout(() => workspaceClient.setActiveView("database"));
+								}}
+							/>
 						)}
 						</div>
 					{state.project && (
@@ -1142,6 +1166,7 @@ export function Masthead({
 					disabled={!project}
 					onValueChange={(next) => {
 						if (
+							next === "system" ||
 							next === "canvas" ||
 							next === "sql" ||
 							next === "scenarios" ||
@@ -1155,10 +1180,20 @@ export function Masthead({
 					className="shrink-0"
 				>
 					<ToggleGroupItem
+						value="system"
+						data-testid="view-system"
+						title="System overview"
+						aria-label="System overview"
+						className="h-7 px-2.5 xl:px-3"
+					>
+						<Workflow className="size-3.5 shrink-0" />
+						<span className="hidden xl:inline">Overview</span>
+					</ToggleGroupItem>
+					<ToggleGroupItem
 						value="canvas"
 						data-testid="view-canvas"
-						title="Canvas"
-						aria-label="Canvas"
+						title="Database canvas"
+						aria-label="Database canvas"
 						className="h-7 px-2.5 xl:px-3"
 					>
 						<PenTool className="size-3.5 shrink-0" />

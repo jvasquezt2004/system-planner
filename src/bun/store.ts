@@ -2,6 +2,12 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type { DatabaseDesignRecord, DatabaseDesignSummary, Design, EdgeFunction, ProjectSummary } from "../shared/design";
+import {
+	createEmptySystemDesign,
+	createMigratedSystemDesign,
+	type SystemDesign,
+	type SystemViewName,
+} from "../shared/system-design";
 
 /**
  * A write of one stored design document. `revision` counts structural schema
@@ -41,14 +47,27 @@ export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 		design?: { design: Design; save: DesignSave };
 		scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
 		edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+		systemDesign?: { systemDesign: SystemDesign; save: DesignSave };
 	}): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
+	loadSystemDesign(projectId: string): SystemDesignRecord | null;
+	saveSystemDesign(projectId: string, document: SystemDesign, save: DesignSave): void | Promise<void>;
+	saveLastView(projectId: string, view: SystemViewName): void;
 	listDesigns(projectId: string): DatabaseDesignSummary[];
 	loadDesign(designId: string): DatabaseDesignRecord | null;
 	close(): void;
 }
 
 export type ScenarioSave = { revision: number; savedAt: number };
+
+/** The stored System design of a Project, with its last-used view. */
+export type SystemDesignRecord = {
+	document: unknown;
+	revision: number;
+	documentRevision: number;
+	savedAt: number;
+	lastView: SystemViewName;
+};
 
 export interface StoredScenario {
 	id: string;
@@ -166,6 +185,15 @@ const SCHEMA = `
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS system_designs (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		document TEXT NOT NULL,
+		revision INTEGER NOT NULL,
+		document_revision INTEGER NOT NULL,
+		last_view TEXT NOT NULL DEFAULT 'system',
+		updated_at INTEGER NOT NULL
+	);
 `;
 
 /**
@@ -266,6 +294,7 @@ export function openDesignStore(
 	);
 
 	migrateDocumentRevision(database);
+	migrateSystemDesigns(database);
 
 	const listProjects = database.query<{ id: string; name: string }, []>(
 		`SELECT id, name FROM projects ORDER BY updated_at DESC, name ASC`,
@@ -285,6 +314,10 @@ export function openDesignStore(
 	const insertDesign = database.query(
 		`INSERT INTO designs (id, project_id, name, revision, document_revision, document, updated_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+	);
+	const insertSystemDesign = database.query(
+		`INSERT INTO system_designs (project_id, document, revision, document_revision, last_view, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
 	);
 	const updateDesignByIdAndProject = database.query(
 		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
@@ -316,6 +349,14 @@ export function openDesignStore(
 				save.revision,
 				save.documentRevision,
 				JSON.stringify(design),
+				save.savedAt,
+			);
+			insertSystemDesign.run(
+				project.id,
+				JSON.stringify(createEmptySystemDesign()),
+				save.revision,
+				save.documentRevision,
+				"system",
 				save.savedAt,
 			);
 		},
@@ -350,6 +391,20 @@ export function openDesignStore(
 			touchProject.run(savedAt, projectId);
 		},
 	);
+	const selectSystemDesign = database.query<{
+		document: string;
+		revision: number;
+		document_revision: number;
+		last_view: string;
+		updated_at: number;
+	}, [string]>(
+		`SELECT document, revision, document_revision, last_view, updated_at FROM system_designs WHERE project_id = ?`,
+	);
+	const updateSystemDesign = database.query(
+		`UPDATE system_designs SET document = ?, revision = ?, document_revision = ?, updated_at = ?
+		 WHERE project_id = ? AND document_revision < ?`,
+	);
+	const updateLastView = database.query(`UPDATE system_designs SET last_view = ? WHERE project_id = ?`);
 
 	const saveDesignTransaction = database.transaction(
 		(projectId: string, design: Design, save: DesignSave, designId: string) => {
@@ -376,6 +431,7 @@ export function openDesignStore(
 			design?: { design: Design; save: DesignSave };
 			scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
 			edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+			systemDesign?: { systemDesign: SystemDesign; save: DesignSave };
 		}) => {
 			if (!selectDesignByIdAndProject.get(input.designId, input.projectId)) {
 				throw new Error(`Database design "${input.designId}" does not belong to project "${input.projectId}".`);
@@ -411,7 +467,23 @@ export function openDesignStore(
 				upsertEdgeFunctionRevision.run(input.projectId, input.designId, save.revision, save.savedAt);
 				touchProject.run(save.savedAt, input.projectId);
 			}
+			if (input.systemDesign) {
+				const { systemDesign, save } = input.systemDesign;
+				writeSystemDesign(input.projectId, systemDesign, save);
+			}
 		},
+	);
+
+	function writeSystemDesign(projectId: string, systemDesign: SystemDesign, save: DesignSave) {
+		const result = updateSystemDesign.run(
+			JSON.stringify(systemDesign), save.revision, save.documentRevision, save.savedAt,
+			projectId, save.documentRevision,
+		);
+		if (result.changes === 0) throw new Error("Stale System design revision during save.");
+		touchProject.run(save.savedAt, projectId);
+	}
+	const saveSystemDesignTransaction = database.transaction(
+		(projectId: string, systemDesign: SystemDesign, save: DesignSave) => writeSystemDesign(projectId, systemDesign, save),
 	);
 
 
@@ -448,6 +520,23 @@ export function openDesignStore(
 		},
 		listDesigns(projectId) {
 			return listDesignsQuery.all(projectId);
+		},
+		loadSystemDesign(projectId) {
+			const row = selectSystemDesign.get(projectId);
+			if (!row) return null;
+			return {
+				document: JSON.parse(row.document) as unknown,
+				revision: row.revision,
+				documentRevision: row.document_revision,
+				savedAt: row.updated_at,
+				lastView: row.last_view === "database" ? "database" : "system",
+			};
+		},
+		saveSystemDesign(projectId, document, save) {
+			saveSystemDesignTransaction(projectId, document, save);
+		},
+		saveLastView(projectId, view) {
+			updateLastView.run(view, projectId);
 		},
 		loadDesign(designId) {
 			const row = selectDesignById.get(designId);
@@ -648,6 +737,39 @@ function migrateToExplicitDesignIdentity(database: Database, options?: OpenDesig
 	});
 
 	runMigration();
+}
+
+/**
+ * Gives every Project without a System design the overview it needs. A migrated
+ * Project keeps its database as the one system-scope Database component and
+ * opens its database view first; the single transaction leaves the original
+ * data untouched if any step fails.
+ */
+function migrateSystemDesigns(database: Database) {
+	const projectsWithoutSystemDesign = database.query<{ id: string; design_id: string; revision: number; document_revision: number; saved_at: number }, []>(`
+		SELECT projects.id, designs.id AS design_id, designs.revision, designs.document_revision, designs.updated_at AS saved_at
+		FROM projects
+		JOIN designs ON designs.project_id = projects.id
+		WHERE projects.id NOT IN (SELECT project_id FROM system_designs)
+		  AND designs.rowid = (SELECT MIN(rowid) FROM designs WHERE project_id = projects.id)
+	`).all();
+	if (projectsWithoutSystemDesign.length === 0) return;
+	const insert = database.query(
+		`INSERT INTO system_designs (project_id, document, revision, document_revision, last_view, updated_at)
+		 VALUES (?, ?, ?, ?, 'database', ?)`,
+	);
+	database.transaction(() => {
+		for (const row of projectsWithoutSystemDesign) {
+			const componentId = crypto.randomUUID();
+			insert.run(
+				row.id,
+				JSON.stringify(createMigratedSystemDesign(row.design_id, componentId)),
+				row.revision,
+				row.document_revision,
+				row.saved_at,
+			);
+		}
+	})();
 }
 
 /**

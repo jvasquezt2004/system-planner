@@ -1,10 +1,13 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createDesignWorkspace } from "./workspace";
+
+// Each test starts real PGlite sandboxes, which take several seconds under load.
+setDefaultTimeout(30_000);
 
 /**
  * Assistant turns act on the Design they start on. Switching the open Design
