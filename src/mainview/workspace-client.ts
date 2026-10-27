@@ -2,6 +2,11 @@ import { defineElectrobunRPC } from "electrobun/rpc";
 import { Electroview } from "electrobun/view";
 import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
+	AddWalkthroughStepAction,
+	CreateWalkthroughAction,
+	WalkthroughStepChanges,
+} from "../shared/walkthrough";
+import type {
 	AddSystemComponentAction,
 	SystemComponentChanges,
 	SystemComponentRemovalPlan,
@@ -247,6 +252,33 @@ export const workspaceClient = {
 	},
 	setActiveView(view: SystemViewName): Promise<WorkspaceState> {
 		return rpc.request.setActiveView({ view });
+	},
+	createWalkthrough(action: CreateWalkthroughAction): Promise<WorkspaceState> {
+		return rpc.request.createWalkthrough(action);
+	},
+	renameWalkthrough(walkthroughId: string, name: string): Promise<WorkspaceState> {
+		return rpc.request.renameWalkthrough({ walkthroughId, name });
+	},
+	removeWalkthrough(walkthroughId: string): Promise<WorkspaceState> {
+		return rpc.request.removeWalkthrough({ walkthroughId });
+	},
+	moveWalkthrough(walkthroughId: string, toIndex: number): Promise<WorkspaceState> {
+		return rpc.request.moveWalkthrough({ walkthroughId, toIndex });
+	},
+	addWalkthroughStep(step: AddWalkthroughStepAction): Promise<WorkspaceState> {
+		return rpc.request.addWalkthroughStep(step);
+	},
+	updateWalkthroughStep(walkthroughId: string, stepId: string, changes: WalkthroughStepChanges): Promise<WorkspaceState> {
+		return rpc.request.updateWalkthroughStep({ walkthroughId, stepId, changes });
+	},
+	moveWalkthroughStep(walkthroughId: string, stepId: string, toIndex: number): Promise<WorkspaceState> {
+		return rpc.request.moveWalkthroughStep({ walkthroughId, stepId, toIndex });
+	},
+	removeWalkthroughStep(walkthroughId: string, stepId: string): Promise<WorkspaceState> {
+		return rpc.request.removeWalkthroughStep({ walkthroughId, stepId });
+	},
+	repairWalkthroughStep(walkthroughId: string, stepId: string, connectionId: string): Promise<WorkspaceState> {
+		return rpc.request.repairWalkthroughStep({ walkthroughId, stepId, connectionId });
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });
