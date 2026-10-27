@@ -57,8 +57,9 @@ import type {
 	AppRPCSchema,
 	SchemaCodeExportRequest,
 	SqlPreviewExportRequest,
+	SystemDesignPngExportRequest,
 	SystemDesignSvgExportRequest,
-	SystemDesignSvgExportResult,
+	SystemDesignExportResult,
 } from "../shared/rpc";
 import type { SchemaCodeSnapshot } from "../shared/schema-code";
 import type { ProjectTransferResult } from "../shared/project-portability";
@@ -79,7 +80,25 @@ const pendingSqlExports = new Map<
 
 const pendingProjectTransfers = new Map<string, (result: ProjectTransferResult) => void>();
 
-const pendingSystemDesignSvgExports = new Map<string, (result: SystemDesignSvgExportResult) => void>();
+const pendingSystemDesignSvgExports = new Map<string, (result: SystemDesignExportResult) => void>();
+const pendingSystemDesignPngExports = new Map<string, (result: SystemDesignExportResult) => void>();
+
+/** Opens the picker for a begun System design export and resolves with its outcome from the Bun side. */
+async function awaitSystemDesignExport(
+	pending: Map<string, (result: SystemDesignExportResult) => void>,
+	requestId: string,
+	openPicker: () => unknown,
+): Promise<SystemDesignExportResult> {
+	const { promise, resolve } = Promise.withResolvers<SystemDesignExportResult>();
+	pending.set(requestId, resolve);
+	try {
+		await openPicker();
+	} catch (cause) {
+		pending.delete(requestId);
+		return { status: "failed", error: errorMessage(cause) };
+	}
+	return promise;
+}
 
 const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 	// Autosave plus sandbox validation can take longer than the 1s default.
@@ -106,6 +125,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 				const resolve = pendingSystemDesignSvgExports.get(requestId);
 				if (!resolve) return;
 				pendingSystemDesignSvgExports.delete(requestId);
+				resolve(result);
+			},
+			systemDesignPngExportCompleted({ requestId, result }) {
+				const resolve = pendingSystemDesignPngExports.get(requestId);
+				if (!resolve) return;
+				pendingSystemDesignPngExports.delete(requestId);
 				resolve(result);
 			},
 			assistantEvent({ conversationId, event }) {
@@ -404,17 +429,18 @@ export const workspaceClient = {
 		});
 	},
 	/** Writes a System design SVG built from one snapshot to a new file in a folder the designer picks. */
-	async exportSystemDesignSvg(request: SystemDesignSvgExportRequest): Promise<SystemDesignSvgExportResult> {
+	async exportSystemDesignSvg(request: SystemDesignSvgExportRequest): Promise<SystemDesignExportResult> {
 		const { requestId } = await rpc.request.beginSystemDesignSvgExport(request);
-		const { promise, resolve } = Promise.withResolvers<SystemDesignSvgExportResult>();
-		pendingSystemDesignSvgExports.set(requestId, resolve);
-		try {
-			await rpc.send.chooseSystemDesignSvgExportDirectory({ requestId });
-		} catch (cause) {
-			pendingSystemDesignSvgExports.delete(requestId);
-			return { status: "failed", error: errorMessage(cause) };
-		}
-		return promise;
+		return awaitSystemDesignExport(pendingSystemDesignSvgExports, requestId, () =>
+			rpc.send.chooseSystemDesignSvgExportDirectory({ requestId }),
+		);
+	},
+	/** Writes a System design PNG rasterized from one snapshot to a new file in a folder the designer picks. */
+	async exportSystemDesignPng(request: SystemDesignPngExportRequest): Promise<SystemDesignExportResult> {
+		const { requestId } = await rpc.request.beginSystemDesignPngExport(request);
+		return awaitSystemDesignExport(pendingSystemDesignPngExports, requestId, () =>
+			rpc.send.chooseSystemDesignPngExportDirectory({ requestId }),
+		);
 	},
 	/** Creates a new Project from a file the designer picks, and opens it. */
 	async importProject(): Promise<ProjectTransferResult> {

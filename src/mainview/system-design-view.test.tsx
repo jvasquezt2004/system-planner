@@ -34,6 +34,10 @@ function exportButton(html: string): string {
 	return html.match(/<button[^>]*data-testid="export-system-svg"[^>]*>/)?.[0] ?? "";
 }
 
+function pngButton(html: string): string {
+	return html.match(/<button[^>]*data-testid="export-system-png"[^>]*>/)?.[0] ?? "";
+}
+
 describe("system overview SVG export", () => {
 	test("the toolbar offers Export SVG, and it is unavailable for an empty System design", () => {
 		const empty = render(createEmptySystemDesign());
@@ -44,6 +48,17 @@ describe("system overview SVG export", () => {
 		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
 		const drawn = render(design);
 		expect(exportButton(drawn)).not.toContain(' disabled=""');
+	});
+
+	test("the toolbar offers Export PNG beside Export SVG, unavailable for an empty System design", () => {
+		const empty = render(createEmptySystemDesign());
+		expect(empty).toContain('data-testid="export-system-png"');
+		expect(pngButton(empty)).toContain(' disabled=""');
+
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		const drawn = render(design);
+		expect(pngButton(drawn)).not.toContain(' disabled=""');
 	});
 });
 

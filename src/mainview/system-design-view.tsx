@@ -129,7 +129,7 @@ type Drag = {
 };
 type Pan = { pointerStart: CanvasPoint; viewportStart: CanvasViewport; moved: boolean };
 /** The outcome of the last SVG export, shown until the next one starts. */
-type SvgExportStatus = { tone: "saved" | "cancelled" | "failed"; message: string };
+type DiagramExportStatus = { tone: "saved" | "cancelled" | "failed"; message: string };
 /** A removal waiting for confirmation. `walkthroughSteps` are the steps it would leave dangling. */
 export type PendingRemoval =
 	| { kind: "component"; plan: SystemComponentRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] }
@@ -173,7 +173,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const [drag, setDrag] = useState<Drag | null>(null);
 	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
-	const [svgExport, setSvgExport] = useState<SvgExportStatus | null>(null);
+	const [diagramExport, setDiagramExport] = useState<DiagramExportStatus | null>(null);
 	const [walkthroughSelection, setWalkthroughSelection] = useState<WalkthroughSelection | null>(null);
 	/** Optional: center the overview on each step's interaction. Manual pan or zoom turns it off. */
 	const [followCamera, setFollowCamera] = useState(false);
@@ -305,28 +305,39 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	/**
-	 * Writes the presented view as a standalone SVG. The drawing is built from a copy
-	 * taken before the first await, so an edit made while the picker is open cannot
-	 * change what is written. The renderer and font load only when exporting, so the
-	 * overview's own bundle does not carry them.
+	 * Writes the presented view as a standalone SVG or a PNG of the same drawing. Both
+	 * are built from a copy taken before the first await, so an edit made while the
+	 * picker is open cannot change what is written. The PNG is rasterized before the
+	 * picker opens, so a rasterizing failure never leaves a picker or a partial file.
+	 * The renderer, font, and rasterizer load only when exporting.
 	 */
-	async function exportSvg() {
+	async function exportDiagram(format: "svg" | "png") {
 		const snapshot = structuredClone(design!);
 		const projectName = state.project?.name ?? "System design";
-		setSvgExport(null);
+		const label = format.toUpperCase();
+		setDiagramExport(null);
 		try {
 			const [{ embeddedFontFaceCss, systemDesignSvg }, fontDataUrl] = await Promise.all([
 				import("./system-design-svg"),
 				systemDesignSvgFontDataUrl(),
 			]);
 			const svg = systemDesignSvg(snapshot, { title: projectName, fontFaceCss: embeddedFontFaceCss(fontDataUrl) });
-			const result = await client.exportSystemDesignSvg({ svg, projectName });
-			if (result.status === "saved") setSvgExport({ tone: "saved", message: `Exported the System design to ${result.path}` });
-			else if (result.status === "cancelled") setSvgExport({ tone: "cancelled", message: "SVG export cancelled." });
-			else setSvgExport({ tone: "failed", message: `SVG export failed: ${result.error}` });
+			const result =
+				format === "svg"
+					? await client.exportSystemDesignSvg({ svg, projectName })
+					: await exportPngFromSvg(svg, projectName);
+			if (result.status === "saved") setDiagramExport({ tone: "saved", message: `Exported the System design to ${result.path}` });
+			else if (result.status === "cancelled") setDiagramExport({ tone: "cancelled", message: `${label} export cancelled.` });
+			else setDiagramExport({ tone: "failed", message: `${label} export failed: ${result.error}` });
 		} catch (cause) {
-			setSvgExport({ tone: "failed", message: `SVG export failed: ${errorMessage(cause)}` });
+			setDiagramExport({ tone: "failed", message: `${label} export failed: ${errorMessage(cause)}` });
 		}
+	}
+
+	async function exportPngFromSvg(svg: string, projectName: string) {
+		const { bytesToBase64, rasterizeSystemDesignSvg } = await import("./system-design-png");
+		const png = bytesToBase64(await rasterizeSystemDesignSvg(svg));
+		return client.exportSystemDesignPng({ png, projectName });
 	}
 
 	function pointerInContainer(event: { clientX: number; clientY: number }): CanvasPoint {
@@ -1198,9 +1209,13 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					>
 						Walkthroughs
 					</Button>
-					<Button type="button" size="sm" variant="outline" onClick={() => void exportSvg()} disabled={!hasItems} data-testid="export-system-svg">
+					<Button type="button" size="sm" variant="outline" onClick={() => void exportDiagram("svg")} disabled={!hasItems} data-testid="export-system-svg">
 						<Download className="size-3.5" />
 						Export SVG
+					</Button>
+					<Button type="button" size="sm" variant="outline" onClick={() => void exportDiagram("png")} disabled={!hasItems} data-testid="export-system-png">
+						<Download className="size-3.5" />
+						Export PNG
 					</Button>
 					<span className="mx-1 h-5 w-px bg-rule-soft" aria-hidden="true" />
 					<Button type="button" size="icon" variant="ghost" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.2)} className="size-7">
@@ -1216,16 +1231,16 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 
 				<SaveLine save={state.systemSave} />
 
-				{svgExport && (
+				{diagramExport && (
 					<p
-						role={svgExport.tone === "failed" ? "alert" : "status"}
-						data-testid="system-svg-export-status"
+						role={diagramExport.tone === "failed" ? "alert" : "status"}
+						data-testid="system-diagram-export-status"
 						className={cn(
 							"absolute bottom-12 right-4 max-w-[60%] break-all rounded-md px-3 py-1.5 text-[12px]",
-							svgExport.tone === "failed" ? "bg-proof-red-wash text-proof-red" : "bg-paper-raised/95 text-ink-2 shadow-xs",
+							diagramExport.tone === "failed" ? "bg-proof-red-wash text-proof-red" : "bg-paper-raised/95 text-ink-2 shadow-xs",
 						)}
 					>
-						{svgExport.message}
+						{diagramExport.message}
 					</p>
 				)}
 

@@ -5,10 +5,11 @@ import { dirname, join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { ScenarioRun, SqlPreviewExportResult } from "../shared/design";
 import type { ProjectTransferResult } from "../shared/project-portability";
-import type { AppRPCSchema, SystemDesignSvgExportResult } from "../shared/rpc";
+import type { AppRPCSchema, SystemDesignExportResult } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createProjectTransferActions } from "./project-transfer";
 import { createSystemDesignSvgExports } from "./system-design-svg-export";
+import { createSystemDesignPngExports } from "./system-design-png-export";
 import { createDesignWorkspace } from "./workspace";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createRpcRequestHandlers } from "./rpc-handlers";
@@ -146,11 +147,32 @@ const projectTransfers = createProjectTransferActions({
 });
 
 /** System design SVG exports waiting for the view to start the folder picker, by request id. */
-const pendingSystemDesignSvgExports = new Map<string, () => Promise<SystemDesignSvgExportResult>>();
+const pendingSystemDesignSvgExports = new Map<string, () => Promise<SystemDesignExportResult>>();
 const systemDesignSvgExports = createSystemDesignSvgExports({
 	chooseExportDirectory: chooseExportFolder,
 	now: () => new Date(),
 });
+
+/** System design PNG exports waiting for the view to start the folder picker, by request id. */
+const pendingSystemDesignPngExports = new Map<string, () => Promise<SystemDesignExportResult>>();
+const systemDesignPngExports = createSystemDesignPngExports({
+	chooseExportDirectory: chooseExportFolder,
+	now: () => new Date(),
+});
+
+/** Runs a begun System design export once its picker has been opened, and reports the outcome to the view. */
+function runSystemDesignExport(
+	pending: Map<string, () => Promise<SystemDesignExportResult>>,
+	requestId: string,
+	report: (result: SystemDesignExportResult) => void,
+) {
+	const runExport = pending.get(requestId);
+	if (!runExport) return;
+	pending.delete(requestId);
+	void runExport()
+		.catch((cause: unknown): SystemDesignExportResult => ({ status: "failed", error: cause instanceof Error ? cause.message : String(cause) }))
+		.then(report);
+}
 
 /** Runs a begun Project transfer once its picker has been opened, and reports the outcome to the view. */
 function runProjectTransfer(requestId: string) {
@@ -176,6 +198,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			pendingProjectTransfers,
 			systemDesignSvgExports,
 			pendingSystemDesignSvgExports,
+			systemDesignPngExports,
+			pendingSystemDesignPngExports,
 		}),
 		messages: {
 			// Start the native picker from a message, not an awaited RPC request.
@@ -189,16 +213,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			},
 			chooseProjectExportDirectory: ({ requestId }) => runProjectTransfer(requestId),
 			chooseProjectImportFile: ({ requestId }) => runProjectTransfer(requestId),
-			chooseSystemDesignSvgExportDirectory: ({ requestId }) => {
-				const runExport = pendingSystemDesignSvgExports.get(requestId);
-				if (!runExport) return;
-				pendingSystemDesignSvgExports.delete(requestId);
-				void runExport()
-					.catch((cause: unknown): SystemDesignSvgExportResult => ({ status: "failed", error: cause instanceof Error ? cause.message : String(cause) }))
-					.then((result) => {
-						rpc.send.systemDesignSvgExportCompleted({ requestId, result });
-					});
-			},
+			chooseSystemDesignSvgExportDirectory: ({ requestId }) => runSystemDesignExport(pendingSystemDesignSvgExports, requestId, (result) => {
+				rpc.send.systemDesignSvgExportCompleted({ requestId, result });
+			}),
+			chooseSystemDesignPngExportDirectory: ({ requestId }) => runSystemDesignExport(pendingSystemDesignPngExports, requestId, (result) => {
+				rpc.send.systemDesignPngExportCompleted({ requestId, result });
+			}),
 			assistantScenarioRunCompleted: ({ requestId, run, error }) =>
 				completePendingAssistantScenarioRun(requestId, run, error),
 		},

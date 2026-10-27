@@ -108,7 +108,12 @@ export type SystemDesignSvgExportRequest = Readonly<{
 	svg: string;
 	projectName: string;
 }>;
-export type SystemDesignSvgExportResult =
+/** A PNG rasterized from the same snapshot's SVG; `png` is the file's bytes, base64-encoded for the RPC bridge. */
+export type SystemDesignPngExportRequest = Readonly<{
+	png: string;
+	projectName: string;
+}>;
+export type SystemDesignExportResult =
 	| { status: "saved"; path: string }
 	| { status: "cancelled" }
 	| { status: "failed"; error: string };
@@ -286,6 +291,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: SystemDesignSvgExportRequest;
 				response: { requestId: string };
 			};
+			/** Starts the folder picker for a System design PNG; the outcome arrives as systemDesignPngExportCompleted. */
+			beginSystemDesignPngExport: {
+				params: SystemDesignPngExportRequest;
+				response: { requestId: string };
+			};
 			listAssistantConversations: { params: { projectId: string }; response: AssistantConversation[] };
 			getAssistantConversation: { params: { conversationId: string }; response: AssistantConversationRecord | null };
 			createAssistantConversation: { params: { projectId: string }; response: AssistantConversation };
@@ -317,6 +327,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			chooseProjectExportDirectory: { requestId: string };
 			chooseProjectImportFile: { requestId: string };
 			chooseSystemDesignSvgExportDirectory: { requestId: string };
+			chooseSystemDesignPngExportDirectory: { requestId: string };
 			assistantScenarioRunCompleted: { requestId: string; designId?: string; run: ScenarioRun | null; error?: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };
@@ -327,7 +338,8 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		messages: {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
-			systemDesignSvgExportCompleted: { requestId: string; result: SystemDesignSvgExportResult };
+			systemDesignSvgExportCompleted: { requestId: string; result: SystemDesignExportResult };
+			systemDesignPngExportCompleted: { requestId: string; result: SystemDesignExportResult };
 			projectTransferCompleted: { requestId: string; result: ProjectTransferResult };
 			assistantScenarioRunRequest: { requestId: string; projectId: string; designId: string; scenario: Scenario };
 			assistantScenarioRunCancel: { requestId: string };
