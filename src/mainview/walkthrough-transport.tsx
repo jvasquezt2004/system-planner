@@ -1,18 +1,28 @@
-import { Pause, Play, RotateCcw, SkipBack, SkipForward } from "lucide-react";
+import { Pause, Play, RotateCcw, SkipBack, SkipForward, Camera } from "lucide-react";
 import { PLAYBACK_SPEEDS, type PlaybackSpeed } from "../shared/walkthrough-playback";
 import type { WalkthroughPlaybackControls } from "./use-walkthrough-playback";
 import { Button } from "@/components/ui/button";
 
 /**
- * Play/Pause, step, restart, step selection, and speed for one Walkthrough.
- * Playback is unavailable while a step needs repair; the reasons are listed.
+ * Play/Pause, step, restart, time scrubbing, step selection, speed, and optional
+ * camera following for one Walkthrough. Playback is unavailable while a step
+ * needs repair; the reasons are listed.
  */
-export function WalkthroughTransport({ controls }: { controls: WalkthroughPlaybackControls }) {
+export function WalkthroughTransport({
+	controls,
+	follow,
+}: {
+	controls: WalkthroughPlaybackControls;
+	/** Whether the overview camera centers each step as it starts. Manual pan or zoom turns it off. */
+	follow?: { enabled: boolean; onChange: (enabled: boolean) => void };
+}) {
 	const { problems, timeline, active } = controls;
 	const canPlay = problems.length === 0 && timeline !== null;
 	const playing = active?.playing ?? false;
 	const stepIndex = active?.frame.stepIndex ?? 0;
 	const finished = active?.frame.complete ?? false;
+	const totalMs = timeline?.totalMs ?? 0;
+	const timeMs = active?.frame.timeMs ?? 0;
 
 	return (
 		<section aria-label="Playback" className="flex flex-col gap-2 rounded-md border border-rule-soft p-3">
@@ -68,6 +78,21 @@ export function WalkthroughTransport({ controls }: { controls: WalkthroughPlayba
 				</Button>
 			</div>
 
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Time</span>
+				<input
+					type="range"
+					aria-label="Playback time"
+					min={0}
+					max={totalMs}
+					step={10}
+					value={timeMs}
+					disabled={!canPlay}
+					onChange={(event) => controls.seekTime(Number(event.target.value))}
+					className="w-full accent-pencil disabled:opacity-50"
+				/>
+			</label>
+
 			<div className="grid grid-cols-[1fr_auto] gap-2">
 				<label className="flex min-w-0 flex-col gap-1">
 					<span className="text-ink-3">Playback step</span>
@@ -100,6 +125,21 @@ export function WalkthroughTransport({ controls }: { controls: WalkthroughPlayba
 					</select>
 				</label>
 			</div>
+
+			{follow && (
+				<Button
+					type="button"
+					size="sm"
+					variant={follow.enabled ? "pencil" : "outline"}
+					aria-pressed={follow.enabled}
+					disabled={!canPlay}
+					onClick={() => follow.onChange(!follow.enabled)}
+					className="self-start"
+				>
+					<Camera className="size-3.5" />
+					Follow camera
+				</Button>
+			)}
 
 			<p className="text-[11.5px] text-ink-3" aria-live="polite">
 				{active

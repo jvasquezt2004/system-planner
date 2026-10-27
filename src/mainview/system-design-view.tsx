@@ -34,6 +34,7 @@ import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrou
 import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
+	followViewport,
 	groupFrameAround,
 	labelWidth,
 	movedBeyondThreshold,
@@ -121,6 +122,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
 	const [walkthroughSelection, setWalkthroughSelection] = useState<WalkthroughSelection | null>(null);
+	/** Optional: center the overview on each step's interaction. Manual pan or zoom turns it off. */
+	const [followCamera, setFollowCamera] = useState(false);
 	const pan = useRef<Pan | null>(null);
 	const interacting = useRef(false);
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -151,6 +154,18 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	// Playback runs on the drawn scene, so a dragged Component's route moves with the message.
 	const playback = useWalkthroughPlayback({ walkthrough: selectedWalkthrough, design: scene, routes, reducedMotion });
 	const frame = playback.active?.frame ?? null;
+	const activeStepIndex = frame?.stepIndex ?? null;
+
+	// Follow centers the canvas once when a step starts or the clock seeks to a different step.
+	// Routes are not a dependency, so dragging a Component does not keep moving the camera.
+	useEffect(() => {
+		const container = containerRef.current;
+		if (!followCamera || !frame || !container) return;
+		const route = routes.get(frame.step.connectionId);
+		if (!route) return;
+		const rect = container.getBoundingClientRect();
+		setLocalViewport(followViewport(latestViewport.current, route, { width: rect.width, height: rect.height }));
+	}, [followCamera, activeStepIndex]);
 
 	if (!design || !scene) {
 		return (
@@ -192,6 +207,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	function handleWheel(event: React.WheelEvent<HTMLDivElement>) {
 		const point = pointerInContainer(event);
 		const factor = Math.exp(-event.deltaY * 0.0015);
+		setFollowCamera(false);
 		scheduleViewportSave(zoomAroundPoint(latestViewport.current, point, latestViewport.current.zoom * factor));
 	}
 
@@ -223,6 +239,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			const moved = active.moved || movedBeyondThreshold(active.pointerStart, point);
 			pan.current = { ...active, moved };
 			if (!moved) return;
+			setFollowCamera(false);
 			setLocalViewport({
 				...active.viewportStart,
 				x: active.viewportStart.x + (point.x - active.pointerStart.x),
@@ -432,6 +449,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	function zoomBy(factor: number) {
+		setFollowCamera(false);
 		const rect = containerRef.current?.getBoundingClientRect();
 		const center = { x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 };
 		scheduleViewportSave(zoomAroundPoint(latestViewport.current, center, latestViewport.current.zoom * factor));
@@ -480,6 +498,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					selection={walkthroughSelection}
 					onSelect={setWalkthroughSelection}
 					playback={playback}
+					followCamera={{ enabled: followCamera, onChange: setFollowCamera }}
 					onClose={() => {
 						setWalkthroughsOpen(false);
 						setWalkthroughSelection(null);
