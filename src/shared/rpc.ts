@@ -62,6 +62,7 @@ import type {
 	RemoveSystemConnectionAction,
 	RemoveSystemGroupAction,
 	RemoveSystemServiceAction,
+	SetSystemFocusAction,
 	SetSystemServiceCollapsedAction,
 	ResizeSystemGroupAction,
 	ResizeSystemServiceAction,
@@ -205,6 +206,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			resizeSystemService: { params: ResizeSystemServiceAction; response: WorkspaceState };
 			removeSystemService: { params: RemoveSystemServiceAction; response: WorkspaceState };
 			setSystemServiceCollapsed: { params: SetSystemServiceCollapsedAction; response: WorkspaceState };
+			setSystemFocus: { params: SetSystemFocusAction; response: WorkspaceState };
 			describeSystemServiceRemoval: {
 				params: { serviceId: string };
 				response: SystemServiceRemovalPlan & WalkthroughRemovalImpact;

@@ -102,13 +102,21 @@ export type SystemDesign = {
 	 * boundary. Every Component, Connection, and endpoint stays as authored.
 	 */
 	collapsedServiceIds: string[];
+	/**
+	 * Presentation only: the Service whose focused view was open, or null for the
+	 * overview. Focus shows the same identities as the overview, so it never changes
+	 * ownership, content, or what Undo reverses.
+	 */
+	focusedServiceId: string | null;
+	/** Presentation only: the camera the focused view was last left at. */
+	focusViewport: CanvasViewport;
 };
 
 /**
  * The System design content that Undo, Revert, and the Assistant change. The
- * viewport and collapsed Services are navigation and presentation.
+ * viewport, collapsed Services, and focus are navigation and presentation.
  */
-export type SystemContent = Omit<SystemDesign, "viewport" | "collapsedServiceIds">;
+export type SystemContent = Omit<SystemDesign, "viewport" | "collapsedServiceIds" | "focusedServiceId" | "focusViewport">;
 
 export type SystemViewName = "system" | "database";
 
@@ -134,6 +142,8 @@ export function createEmptySystemDesign(): SystemDesign {
 		connections: [],
 		viewport: { ...SYSTEM_DEFAULT_VIEWPORT },
 		collapsedServiceIds: [],
+		focusedServiceId: null,
+		focusViewport: { ...SYSTEM_DEFAULT_VIEWPORT },
 	};
 }
 
@@ -158,6 +168,8 @@ export function createMigratedSystemDesign(databaseDesignId: string, componentId
 		connections: [],
 		viewport: { ...SYSTEM_DEFAULT_VIEWPORT },
 		collapsedServiceIds: [],
+		focusedServiceId: null,
+		focusViewport: { ...SYSTEM_DEFAULT_VIEWPORT },
 	};
 }
 
@@ -348,15 +360,93 @@ export function isComponentHiddenByCollapse(design: SystemDesign, componentId: s
 }
 
 /**
- * Keeps the presentation of the open design when content is restored. Only
- * collapsed Services that still exist stay collapsed.
+ * Opens the focused view of one Service, or returns to the overview when
+ * `serviceId` is null. The focused view has its own camera, so returning to the
+ * overview leaves the overview camera as it was. Presentation only.
  */
-export function withSystemPresentation(content: SystemContent, presentation: Pick<SystemDesign, "viewport" | "collapsedServiceIds">): SystemDesign {
+export function setSystemFocus(design: SystemDesign, serviceId: string | null, viewport?: CanvasViewport): SystemDesign {
+	if (serviceId !== null) requireSystemService(design, serviceId);
+	const focusViewport = viewport ? { ...viewport } : design.focusViewport;
+	if (design.focusedServiceId === serviceId && sameJson(focusViewport, design.focusViewport)) return design;
+	return { ...design, focusedServiceId: serviceId, focusViewport };
+}
+
+/**
+ * The projection a focused Service view draws: the Service expanded with the
+ * Components it owns, plus the external endpoints of the Connections that reach
+ * the Service or those Components. External endpoints keep their ids and
+ * positions and are context only: they are not owned by the focused Service, and
+ * Connections between two external endpoints are left out. Edits made in the
+ * view go to the real design, so the same Component is what the overview shows.
+ */
+export type SystemServiceFocus = {
+	/** A design the overview's drawing code can draw. It is derived, never saved. */
+	scene: SystemDesign;
+	/** Endpoints outside the focused Service, shown only because their Connections reach it. */
+	contextIds: ReadonlySet<string>;
+};
+
+export function systemServiceFocus(design: SystemDesign, serviceId: string): SystemServiceFocus {
+	const service = requireSystemService(design, serviceId);
+	const owned = design.components.filter((component) => component.serviceId === serviceId);
+	const inside = new Set<string>([serviceId, ...owned.map((component) => component.id)]);
+	const connections = design.connections.filter(
+		(connection) => inside.has(connection.sourceId) || inside.has(connection.targetId),
+	);
+	const contextIds = new Set<string>();
+	for (const connection of connections) {
+		for (const endpointId of [connection.sourceId, connection.targetId]) {
+			if (!inside.has(endpointId)) contextIds.add(endpointId);
+		}
+	}
+
+	const services: SystemService[] = [{ ...service, size: { ...service.size } }];
+	const components: SystemComponent[] = owned.map((component) => ({ ...component }));
+	for (const endpointId of contextIds) {
+		const external = findSystemService(design, endpointId);
+		if (external) {
+			// An outside Service is a compact boundary. Its own Components show only when a Connection reaches them.
+			services.push({ ...external, size: { ...SYSTEM_SERVICE_COLLAPSED_SIZE } });
+			continue;
+		}
+		// Drawn outside the focused boundary, so no owner is projected onto it. The overview still shows the real owner.
+		const component = findSystemComponent(design, endpointId);
+		if (component) components.push({ ...component, serviceId: null });
+	}
+
+	return {
+		scene: {
+			services,
+			groups: [],
+			components,
+			connections: connections.map((connection) => ({ ...connection })),
+			viewport: design.viewport,
+			collapsedServiceIds: [],
+			focusedServiceId: serviceId,
+			focusViewport: design.focusViewport,
+		},
+		contextIds,
+	};
+}
+
+/**
+ * Keeps the presentation of the open design when content is restored. Only
+ * collapsed Services that still exist stay collapsed, and focus stays only while
+ * its Service exists.
+ */
+export function withSystemPresentation(
+	content: SystemContent,
+	presentation: Pick<SystemDesign, "viewport" | "collapsedServiceIds" | "focusedServiceId" | "focusViewport">,
+): SystemDesign {
 	const serviceIds = new Set(content.services.map((service) => service.id));
 	return {
 		...content,
 		viewport: presentation.viewport,
 		collapsedServiceIds: presentation.collapsedServiceIds.filter((id) => serviceIds.has(id)),
+		focusedServiceId: presentation.focusedServiceId !== null && serviceIds.has(presentation.focusedServiceId)
+			? presentation.focusedServiceId
+			: null,
+		focusViewport: presentation.focusViewport,
 	};
 }
 
@@ -387,6 +477,7 @@ export function removeSystemService(design: SystemDesign, serviceId: string): Sy
 		services: design.services.filter((service) => service.id !== serviceId),
 		groups: pruneSystemGroupMemberships(design.groups, serviceId),
 		collapsedServiceIds: design.collapsedServiceIds.filter((id) => id !== serviceId),
+		focusedServiceId: design.focusedServiceId === serviceId ? null : design.focusedServiceId,
 		components: design.components.map((component) => (
 			component.serviceId === serviceId ? { ...component, serviceId: null } : component
 		)),
@@ -789,6 +880,11 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 	const collapsedServiceIds = Array.isArray(value.collapsedServiceIds)
 		? [...new Set(value.collapsedServiceIds.filter((id): id is string => typeof id === "string" && serviceIds.has(id)))]
 		: [];
+	// Documents saved before focus existed open the overview. A focus on a Service that no longer exists is dropped.
+	const focusedServiceId = typeof value.focusedServiceId === "string" && serviceIds.has(value.focusedServiceId)
+		? value.focusedServiceId
+		: null;
+	const focusViewport = isRecord(value.focusViewport) ? value.focusViewport : viewport;
 	return {
 		services,
 		groups,
@@ -800,10 +896,16 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 			zoom: finiteOr(viewport.zoom, 1),
 		},
 		collapsedServiceIds,
+		focusedServiceId,
+		focusViewport: {
+			x: finiteOr(focusViewport.x, 0),
+			y: finiteOr(focusViewport.y, 0),
+			zoom: finiteOr(focusViewport.zoom, 1),
+		},
 	};
 }
 
-/** Keeps only the content that Undo and Revert restore; viewport and collapsed Services are presentation. */
+/** Keeps only the content that Undo and Revert restore; viewport, collapsed Services, and focus are presentation. */
 export function systemDesignContent(design: SystemDesign): SystemContent {
 	return { services: design.services, groups: design.groups, components: design.components, connections: design.connections };
 }
@@ -1041,6 +1143,8 @@ export type ResizeSystemServiceAction = SystemAttribution & { serviceId: string;
 export type RemoveSystemServiceAction = SystemAttribution & { serviceId: string };
 /** Presentation only: saved outside Project history, so it has no assistant attribution or undo name. */
 export type SetSystemServiceCollapsedAction = { serviceId: string; collapsed: boolean };
+/** Presentation only: opens a Service's focused view (with its last camera) or returns to the overview when serviceId is null. */
+export type SetSystemFocusAction = { serviceId: string | null; viewport?: CanvasViewport };
 export type AddSystemGroupAction = SystemAttribution & {
 	id?: string;
 	name?: string;

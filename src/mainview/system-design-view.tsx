@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, BoxSelect, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, BoxSelect, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
 import {
 	DropdownMenu,
 	DropdownMenuContent,
@@ -30,6 +30,7 @@ import {
 	openServiceSpotNear,
 	openSpotNear,
 	systemGroupsContaining,
+	systemServiceFocus,
 	type SystemComponent,
 	type SystemComponentKind,
 	type SystemComponentRemovalPlan,
@@ -67,6 +68,7 @@ import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrou
 import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
+	fitViewport,
 	followViewport,
 	groupFrameAround,
 	internalConnectionCount,
@@ -76,6 +78,7 @@ import {
 	previewScene,
 	resizedGroupSize,
 	resizedServiceSize,
+	sceneBounds,
 	screenToWorld,
 	truncateLabel,
 	zoomAroundPoint,
@@ -148,7 +151,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const design = state.systemDesign ?? null;
 	const designs = state.designs ?? [];
 	const containerRef = useRef<HTMLDivElement>(null);
-	const [viewport, setViewport] = useState<CanvasViewport>(design?.viewport ?? { x: 0, y: 0, zoom: 1 });
+	/** The Service whose focused view is open, or null for the overview. */
+	const focusedServiceId = design?.focusedServiceId ?? null;
+	/** The saved camera of the view on screen: the focused view's own camera, or the overview's. */
+	const savedViewport = design ? (focusedServiceId ? design.focusViewport : design.viewport) : null;
+	const [viewport, setViewport] = useState<CanvasViewport>(savedViewport ?? { x: 0, y: 0, zoom: 1 });
 	const [selection, setSelection] = useState<Selection>(null);
 	const [connectingFrom, setConnectingFrom] = useState<string | null | undefined>(undefined);
 	/** The members chosen so far for a new Group, or null when not choosing. */
@@ -162,6 +169,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const pan = useRef<Pan | null>(null);
 	const interacting = useRef(false);
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+	/** The camera waiting to be saved, with the view it was moved in: the overview (null) or a focused Service. */
+	const pendingCamera = useRef<{ serviceId: string | null } | null>(null);
 	const latestViewport = useRef(viewport);
 	/** Updates the viewport at once, so back-to-back wheel events build on each other. */
 	function setLocalViewport(next: CanvasViewport) {
@@ -171,15 +180,21 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 
 	// Server state replaces the local viewport only when no pan or zoom is in progress.
 	useEffect(() => {
-		if (!interacting.current && design) setLocalViewport(design.viewport);
-	}, [design?.viewport]);
+		if (!interacting.current && savedViewport) setLocalViewport(savedViewport);
+	}, [savedViewport]);
 
 	useEffect(() => () => {
 		if (saveTimer.current) clearTimeout(saveTimer.current);
 	}, []);
 
-	// The drawn scene is the saved design with any gesture in progress applied.
-	const scene = useMemo(() => (design ? previewScene(design, drag?.scene ?? null) : null), [design, drag]);
+	// The focused view is a projection of the same design: its Service, owned Components, and outside endpoints of their Connections.
+	const focus = useMemo(
+		() => (design && focusedServiceId && findSystemService(design, focusedServiceId) ? systemServiceFocus(design, focusedServiceId) : null),
+		[design, focusedServiceId],
+	);
+	// The drawn scene is what is shown, with any gesture in progress applied.
+	const shown = focus?.scene ?? design;
+	const scene = useMemo(() => (shown ? previewScene(shown, drag?.scene ?? null) : null), [shown, drag]);
 	const geometries = useMemo(() => (scene ? connectionGeometries(scene) : []), [scene]);
 	const routes = useMemo(() => playbackRoutes(geometries), [geometries]);
 	const reducedMotion = usePrefersReducedMotion();
@@ -187,7 +202,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		? findWalkthrough(state.walkthroughs ?? [], walkthroughSelection.walkthroughId) ?? null
 		: null;
 	// Playback runs on the drawn scene, so a dragged Component's route moves with the message.
-	const playback = useWalkthroughPlayback({ walkthrough: selectedWalkthrough, design: scene, routes, reducedMotion });
+	// Playback compiles against the whole overview, so a Walkthrough is valid in any focused view. Routes come from the drawn
+	// scene: a step whose Connection the focused view does not show has no message to draw, and its reactions still play.
+	const playback = useWalkthroughPlayback({ walkthrough: selectedWalkthrough, design, routes, reducedMotion });
 	const frame = playback.active?.frame ?? null;
 	const activeStepIndex = frame?.stepIndex ?? null;
 
@@ -222,16 +239,58 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			? selectedWalkthroughHighlight(state.walkthroughs ?? [], design, walkthroughSelection.walkthroughId, walkthroughSelection.stepId)
 			: null;
 
+	/** Saves the waiting camera to the view it was moved in. Navigation is presentation, so it does not enter Undo. */
+	function flushCamera() {
+		if (saveTimer.current) clearTimeout(saveTimer.current);
+		saveTimer.current = null;
+		interacting.current = false;
+		const pending = pendingCamera.current;
+		pendingCamera.current = null;
+		if (!pending) return;
+		const current = latestViewport.current;
+		onLayout(() => (pending.serviceId === null
+			? client.setSystemViewport(current)
+			: client.setSystemFocus(pending.serviceId, current)));
+	}
+
 	function scheduleViewportSave(next: CanvasViewport) {
+		// A camera moved in another view saves first, so it can never land on this one.
+		if (pendingCamera.current && pendingCamera.current.serviceId !== focusedServiceId) flushCamera();
 		interacting.current = true;
 		if (saveTimer.current) clearTimeout(saveTimer.current);
-		saveTimer.current = setTimeout(() => {
-			saveTimer.current = null;
-			interacting.current = false;
-			const current = latestViewport.current;
-			onLayout(() => client.setSystemViewport(current));
-		}, SAVE_DEBOUNCE_MS);
+		pendingCamera.current = { serviceId: focusedServiceId };
+		saveTimer.current = setTimeout(flushCamera, SAVE_DEBOUNCE_MS);
 		setLocalViewport(next);
+	}
+
+	/**
+	 * Opens the focused view of one Service, framed so it and the outside endpoints
+	 * of its Connections are visible. The Service's content is not copied: the
+	 * view draws the same identities the overview draws.
+	 */
+	function focusService(serviceId: string) {
+		const projected = systemServiceFocus(design!, serviceId).scene;
+		const bounds = sceneBounds(projected);
+		if (!bounds) return;
+		const rect = containerRef.current?.getBoundingClientRect();
+		const camera = fitViewport(bounds, { width: rect?.width ?? 800, height: rect?.height ?? 600 });
+		flushCamera();
+		setConnectingFrom(undefined);
+		setGrouping(null);
+		setFollowCamera(false);
+		setSelection(selectionInScene(selection, projected));
+		setLocalViewport(camera);
+		onLayout(() => client.setSystemFocus(serviceId, camera));
+	}
+
+	/** Returns to the overview with its own camera. The focused view's camera is saved first. */
+	function leaveFocus() {
+		flushCamera();
+		setConnectingFrom(undefined);
+		setGrouping(null);
+		setFollowCamera(false);
+		setLocalViewport(design!.viewport);
+		onLayout(() => client.setSystemFocus(null));
 	}
 
 	function pointerInContainer(event: { clientX: number; clientY: number }): CanvasPoint {
@@ -455,11 +514,16 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		return screenToWorld({ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 }, latestViewport.current);
 	}
 
+	/** In a focused view a new Component is owned by the focused Service and placed at its center. */
 	function addComponent(kind: SystemComponentKind = "generic") {
-		const spot = openSpotNear(design!, visibleCenter());
+		const focused = focusedServiceId ? findSystemService(design!, focusedServiceId) : undefined;
+		const center = focused
+			? { x: focused.position.x + focused.size.width / 2, y: focused.position.y + focused.size.height / 2 }
+			: visibleCenter();
+		const spot = openSpotNear(design!, center);
 		const id = crypto.randomUUID();
 		setSelection({ kind: "component", id });
-		onApply(() => client.addSystemComponent({ id, kind, x: spot.x, y: spot.y }));
+		onApply(() => client.addSystemComponent({ id, kind, x: spot.x, y: spot.y, serviceId: focused?.id ?? null }));
 	}
 
 	function addService() {
@@ -551,8 +615,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	const hasItems = design.components.length > 0 || design.services.length > 0 || design.groups.length > 0;
-	const endpointCount = design.components.length + design.services.length;
-	const memberCount = endpointCount + design.groups.length;
+	// Counts come from what is drawn: a focused view has fewer endpoints, and it has no Groups to enclose.
+	const endpointCount = scene.components.length + scene.services.length;
+	const memberCount = endpointCount + scene.groups.length;
 
 	return (
 		<div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
@@ -638,6 +703,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const selected = selection?.kind === "service" && selection.id === service.id;
 							const linking = connectingFrom === service.id;
 							const collapsed = isSystemServiceCollapsed(scene, service.id);
+							// An outside Service in a focused view is a compact context boundary, not a frame with contents.
+							const context = focus?.contextIds.has(service.id) ?? false;
 							// A collapsed Service speaks for the Components it hides: they are traced and react on its boundary.
 							const owned = collapsed ? scene.components.filter((component) => component.serviceId === service.id) : [];
 							const traced = (highlight?.endpointIds.includes(service.id) ?? false)
@@ -647,11 +714,13 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const { width, height } = collapsed ? SYSTEM_SERVICE_COLLAPSED_SIZE : service.size;
 							const internal = collapsed ? internalConnectionCount(scene, service.id) : 0;
 							const summary = `${owned.length} ${owned.length === 1 ? "component" : "components"}${internal > 0 ? ` · ${internal} internal` : ""}`;
+							const compact = collapsed || context;
 							return (
 								<g
 									key={service.id}
 									data-service-id={service.id}
 									data-collapsed={collapsed ? "true" : "false"}
+									data-context={context ? "true" : undefined}
 									transform={`translate(${service.position.x} ${service.position.y})`}
 									role="button"
 									tabIndex={0}
@@ -685,17 +754,44 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										}}
 									/>
 									<text x={16} y={24} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
-										{collapsed ? "SERVICE · COLLAPSED" : "SERVICE"}
+										{context ? "SERVICE · OUTSIDE" : collapsed ? "SERVICE · COLLAPSED" : "SERVICE"}
 									</text>
 									<text x={16} y={46} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
-										{truncateLabel(service.name, collapsed ? 22 : 32)}
+										{truncateLabel(service.name, compact ? 22 : 32)}
 									</text>
 									{collapsed && (
 										<text x={16} y={66} fontSize={11.5} data-testid="collapsed-service-summary" style={{ fill: "var(--color-ink-2)" }}>
 											{summary}
 										</text>
 									)}
-									{!collapsed && (
+									{!focus && (
+										<g
+											data-testid="service-focus-button"
+											role="button"
+											tabIndex={0}
+											aria-label={`Focus ${service.name}`}
+											transform={`translate(${width - 70} 10)`}
+											className="cursor-pointer"
+											onPointerDown={(event) => event.stopPropagation()}
+											onClick={(event) => {
+												event.stopPropagation();
+												focusService(service.id);
+											}}
+											onKeyDown={(event) => {
+												if (event.key === "Enter" || event.key === " ") {
+													event.preventDefault();
+													event.stopPropagation();
+													focusService(service.id);
+												}
+											}}
+										>
+											<rect width={58} height={20} rx={10} style={{ fill: "var(--color-paper-raised)", stroke: "var(--color-rule-strong)" }} />
+											<text x={29} y={10} textAnchor="middle" dominantBaseline="central" fontSize={10} letterSpacing={1} style={{ fill: "var(--color-ink-2)" }}>
+												FOCUS
+											</text>
+										</g>
+									)}
+									{!compact && (
 										<rect
 											data-testid="service-resize-handle"
 											x={width - 14}
@@ -841,16 +937,21 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							// The header keeps the kind label clear of the artwork, and a linked Database's badge clear of both.
 							const schemaBadged = component.kind === "database" && component.designId !== undefined;
 							const artworkX = SYSTEM_COMPONENT_SIZE.width - 38 - (schemaBadged ? SCHEMA_BADGE_ROOM : 0);
-							const kindLabel = componentKindLabel(component.kind).toUpperCase();
+							// An endpoint outside the focused Service is context: dashed, and labelled, so it is not mistaken for owned.
+							const context = focus?.contextIds.has(component.id) ?? false;
+							const kindLabel = `${componentKindLabel(component.kind).toUpperCase()}${context ? " · OUTSIDE" : ""}`;
 							const kindHeaderText = isCatalogKind(component.kind)
 								? truncateLabel(kindLabel, Math.max(1, Math.floor((artworkX - 22) / KIND_HEADER_CHARACTER_WIDTH)))
 								: kindLabel;
-							const owner = component.serviceId === null ? undefined : serviceNames.get(component.serviceId);
+							// The owner is the real one, even where a focused view draws the Component outside its Service.
+							const ownerId = findSystemComponent(design, component.id)?.serviceId ?? null;
+							const owner = ownerId === null ? undefined : serviceNames.get(ownerId);
 							return (
 								<g
 									key={component.id}
 									data-component-id={component.id}
 									data-kind={component.kind}
+									data-context={context ? "true" : undefined}
 									data-service-id={component.serviceId ?? undefined}
 									transform={`translate(${component.position.x} ${component.position.y})`}
 									role="button"
@@ -884,6 +985,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										width={SYSTEM_COMPONENT_SIZE.width}
 										height={SYSTEM_COMPONENT_SIZE.height}
 										rx={10}
+										strokeDasharray={context ? "5 4" : undefined}
 										style={{
 											fill: "var(--color-paper-raised)",
 											stroke: selected || linking || traced ? "var(--color-pencil)" : "var(--color-rule-strong)",
@@ -928,11 +1030,27 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					</div>
 				)}
 
-				<div className="absolute left-4 top-4 flex flex-wrap items-center gap-1.5 rounded-md border border-rule-soft bg-paper-raised/95 p-1.5 shadow-xs">
-					<Button type="button" size="sm" variant="outline" onClick={addService}>
-						<Frame className="size-3.5" />
-						Add service
-					</Button>
+				<div className="absolute left-4 top-4 flex max-w-[calc(100%-2rem)] flex-wrap items-center gap-1.5 rounded-md border border-rule-soft bg-paper-raised/95 p-1.5 shadow-xs">
+					{focus ? (
+						<>
+							<Button type="button" size="sm" variant="outline" onClick={leaveFocus} data-testid="system-focus-back">
+								<ArrowLeft className="size-3.5" />
+								Overview
+							</Button>
+							<span
+								data-testid="system-focus-name"
+								className="max-w-[180px] truncate px-1 text-[12.5px] font-medium text-ink"
+								title={serviceNames.get(focusedServiceId!)}
+							>
+								{serviceNames.get(focusedServiceId!)}
+							</span>
+						</>
+					) : (
+						<Button type="button" size="sm" variant="outline" onClick={addService}>
+							<Frame className="size-3.5" />
+							Add service
+						</Button>
+					)}
 					<DropdownMenu>
 						<DropdownMenuTrigger asChild>
 							<Button type="button" size="sm" variant="outline">
@@ -969,20 +1087,23 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						<Link2 className="size-3.5" />
 						{connectingFrom === undefined ? "Connect" : connectingFrom === null ? "Choose source" : "Choose target"}
 					</Button>
-					<Button
-						type="button"
-						size="sm"
-						variant={grouping !== null ? "pencil" : "outline"}
-						aria-pressed={grouping !== null}
-						onClick={() => {
-							setConnectingFrom(undefined);
-							setGrouping(grouping === null ? [] : null);
-						}}
-						disabled={memberCount === 0}
-					>
-						<BoxSelect className="size-3.5" />
-						Group
-					</Button>
+					{/* Groups are drawn and edited in the overview; the focused view shows only one Service and its context. */}
+					{!focus && (
+						<Button
+							type="button"
+							size="sm"
+							variant={grouping !== null ? "pencil" : "outline"}
+							aria-pressed={grouping !== null}
+							onClick={() => {
+								setConnectingFrom(undefined);
+								setGrouping(grouping === null ? [] : null);
+							}}
+							disabled={memberCount === 0}
+						>
+							<BoxSelect className="size-3.5" />
+							Group
+						</Button>
+					)}
 					<Button
 						type="button"
 						size="sm"
@@ -1084,6 +1205,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onRequestRemove={() => openServiceRemoval(selectedService.id)}
 							collapsed={isSystemServiceCollapsed(design, selectedService.id)}
 							onSetCollapsed={(collapsed) => setServiceCollapsed(selectedService.id, collapsed)}
+							focused={focusedServiceId === selectedService.id}
+							onFocus={() => focusService(selectedService.id)}
 						/>
 					)}
 					{selectedGroup && (
@@ -1129,6 +1252,15 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			</Dialog>
 		</div>
 	);
+}
+
+/** Keeps a selection only while the drawn scene still shows it. Groups are not drawn in a focused view. */
+function selectionInScene(selection: Selection, scene: SystemDesign): Selection {
+	if (!selection) return null;
+	if (selection.kind === "component") return scene.components.some((item) => item.id === selection.id) ? selection : null;
+	if (selection.kind === "service") return scene.services.some((item) => item.id === selection.id) ? selection : null;
+	if (selection.kind === "connection") return scene.connections.some((item) => item.id === selection.id) ? selection : null;
+	return null;
 }
 
 /** The Service or Component a drag is moving, updated from the pointer's offset since the press. */
@@ -1562,6 +1694,8 @@ function ServiceInspector({
 	onRequestRemove,
 	collapsed,
 	onSetCollapsed,
+	focused,
+	onFocus,
 }: {
 	service: SystemService;
 	design: SystemDesign;
@@ -1573,6 +1707,9 @@ function ServiceInspector({
 	onRequestRemove: () => void;
 	collapsed: boolean;
 	onSetCollapsed: (collapsed: boolean) => void;
+	/** Whether the focused view of this Service is open. */
+	focused: boolean;
+	onFocus: () => void;
 }) {
 	const [name, setName] = useState(service.name);
 	const owned = design.components.filter((component) => component.serviceId === service.id);
@@ -1611,9 +1748,17 @@ function ServiceInspector({
 				/>
 			</label>
 			<GroupMembership design={design} id={service.id} />
-			<Button type="button" variant="outline" size="sm" className="self-start" onClick={() => onSetCollapsed(!collapsed)}>
-				{collapsed ? "Expand service" : "Collapse service"}
-			</Button>
+			{!focused && (
+				<Button type="button" variant="outline" size="sm" className="self-start" onClick={onFocus}>
+					Focus service
+				</Button>
+			)}
+			{/* A focused Service is always drawn expanded, so the collapse control is for the overview only. */}
+			{!focused && (
+				<Button type="button" variant="outline" size="sm" className="self-start" onClick={() => onSetCollapsed(!collapsed)}>
+					{collapsed ? "Expand service" : "Collapse service"}
+				</Button>
+			)}
 			<div className="flex flex-col gap-1.5">
 				<span className="text-ink-3">Owns ({owned.length})</span>
 				{owned.length === 0 && <p className="text-ink-3">No components yet. Assign one below or from a component’s Owner field.</p>}
