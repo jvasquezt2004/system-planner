@@ -44,6 +44,8 @@ import {
 import {
 	COMPONENT_CATALOG,
 	COMPONENT_FAMILY_LABELS,
+	CUSTOM_ICONS,
+	CUSTOM_ICON_LABELS,
 	catalogEntryFor,
 	componentKindLabel,
 	descriptorKeysFor,
@@ -52,6 +54,7 @@ import {
 	mergeFreeProperties,
 	withDescriptorValue,
 	type ComponentFamily,
+	type CustomIcon,
 } from "../shared/component-catalog";
 import { ComponentArtwork } from "./component-artwork";
 import type { workspaceClient } from "./workspace-client";
@@ -894,7 +897,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
 										{kindHeaderText}
 									</text>
-									{isCatalogKind(component.kind) && <ComponentArtwork artwork={component.kind} x={artworkX} y={8} />}
+									{isCatalogKind(component.kind) && <ComponentArtwork artwork={component.kind} x={artworkX} y={8} icon={component.icon} />}
 									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(component.name, 22)}
 									</text>
@@ -1352,6 +1355,21 @@ function ComponentInspector({
 					))}
 				</select>
 			</label>
+			{component.kind === "custom" && (
+				<label className="flex flex-col gap-1">
+					<span className="text-ink-3">Icon or shape</span>
+					<select
+						aria-label="Custom icon or shape"
+						value={component.icon ?? "rectangle"}
+						onChange={(event) => onApply(() => client.updateSystemComponent(component.id, { icon: event.target.value as CustomIcon }))}
+						className="h-8 rounded-md border border-input bg-paper-raised px-2"
+					>
+						{CUSTOM_ICONS.map((icon) => (
+							<option key={icon} value={icon}>{CUSTOM_ICON_LABELS[icon]}</option>
+						))}
+					</select>
+				</label>
+			)}
 			<label className="flex flex-col gap-1">
 				<span className="text-ink-3">Owner</span>
 				<select

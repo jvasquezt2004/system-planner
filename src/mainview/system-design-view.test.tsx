@@ -251,3 +251,42 @@ describe("system overview collapsed Services", () => {
 		expect(expanded.match(/data-testid="service-resize-handle"/g)).toHaveLength(1);
 	});
 });
+
+describe("supporting and Custom Component rendering", () => {
+	test("each supporting kind draws its own labelled artwork on the card", () => {
+		const kinds = ["identity_provider", "secrets_store", "configuration", "observability"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain('aria-label="Identity provider: Node 0"');
+		expect(html).toContain(">SECRETS STORE<");
+	});
+
+	test("a Custom Component draws its chosen icon or shape, and the rectangle when none is chosen", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "plain", kind: "custom", name: "Plain", position: { x: 0, y: 0 } });
+		const defaulted = render(design);
+		expect(defaulted).toContain('data-artwork="custom"');
+		expect(defaulted).toContain('data-icon="rectangle"');
+
+		design = addSystemComponent(design, { id: "chosen", kind: "custom", name: "Chosen", icon: "cylinder", position: { x: 220, y: 0 } });
+		const html = render(design);
+		expect(html).toContain('data-icon="cylinder"');
+		expect(html).toContain(">CUSTOM<");
+		expect(html).toContain('aria-label="Custom: Chosen"');
+	});
+
+	test("the original generic Component still draws no artwork and no icon", () => {
+		const design = addSystemComponent(createEmptySystemDesign(), { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
+		const html = render(design);
+		expect(html).not.toContain('data-testid="component-artwork"');
+		expect(html).not.toContain("data-icon=");
+	});
+});
