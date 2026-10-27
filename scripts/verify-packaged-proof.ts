@@ -45,6 +45,16 @@ async function main() {
 		if (!existsSync(installedLauncher)) throw new Error(`Packaged application was not installed at ${installedLauncher}`);
 		launcher = installedLauncher;
 	}
+	if (process.platform === "win32") {
+		const setup = files.find((file) => /schema.?designer-setup\.exe$/i.test(file));
+		if (!setup) throw new Error(`No packaged Windows setup executable found under ${buildDir}`);
+		const installer = Bun.spawn([setup, "/S"], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
+		await installer.exited;
+		if (installer.exitCode !== 0) throw new Error(`Packaged Windows installer exited ${installer.exitCode}`);
+		const installedLauncher = join(process.env.LOCALAPPDATA ?? "", "com.dbplanner.schema-designer", "stable", "app", "bin", "launcher.exe");
+		if (!existsSync(installedLauncher)) throw new Error(`Packaged application was not installed at ${installedLauncher}`);
+		launcher = installedLauncher;
+	}
 	const command = process.platform === "linux" && !process.env.DISPLAY
 		? ["xvfb-run", "-a", launcher]
 		: [launcher];
