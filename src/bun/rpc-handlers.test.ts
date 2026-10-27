@@ -10,9 +10,40 @@ import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 import type { SqlPreviewActions } from "./sql-preview";
 import type { ProjectTransferActions } from "./project-transfer";
+import type { SystemDesignSvgExports } from "./system-design-svg-export";
 import type { ScenarioRun, WorkspaceState } from "../shared/design";
+import type { SystemDesignSvgExportResult } from "../shared/rpc";
 
 describe("RPC request handlers", () => {
+	test("beginSystemDesignSvgExport requires an open Project and passes the drawn SVG to the export when its picker runs", async () => {
+		const workspaceWith = (project: unknown) => ({ getState: () => ({ project }) }) as unknown as DesignWorkspace;
+		const forwarded: unknown[] = [];
+		const pending = new Map<string, () => Promise<SystemDesignSvgExportResult>>();
+		const svgExports = {
+			export: async (request: unknown) => {
+				forwarded.push(request);
+				return { status: "cancelled" as const };
+			},
+		};
+		const handlersFor = (project: unknown) => createRpcRequestHandlers({
+			workspace: workspaceWith(project),
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+			projectTransfers: {} as ProjectTransferActions,
+			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: svgExports,
+			pendingSystemDesignSvgExports: pending,
+		});
+
+		await expect(handlersFor(null).beginSystemDesignSvgExport({ svg: "<svg/>", projectName: "Shop" })).rejects.toThrow("Open a project");
+
+		const { requestId } = await handlersFor({ id: "p1", name: "Shop" }).beginSystemDesignSvgExport({ svg: "<svg/>", projectName: "Shop" });
+		expect(pending.has(requestId)).toBe(true);
+		expect(await pending.get(requestId)!()).toEqual({ status: "cancelled" });
+		expect(forwarded).toEqual([{ svg: "<svg/>", projectName: "Shop" }]);
+	});
+
 	test("finishScenarioRun forwards the complete action including expectations and reason", async () => {
 		let forwardedAction: unknown = null;
 		const fakeWorkspace = {
@@ -29,6 +60,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		const expectations: ScenarioRun["expectations"] = [
@@ -101,6 +134,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.addTable({ designId: "d-1", name: "Users", position: { x: 100, y: 200 } });
@@ -167,6 +202,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.addSystemGroup({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
@@ -208,6 +245,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.addSystemService({ id: "orders", name: "Orders", x: 40, y: 40 });
@@ -250,6 +289,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.linkSystemDatabase({ componentId: "replica", designId: "design-orders" });
@@ -286,6 +327,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.createWalkthrough({ id: "w-1", name: "Cached read" });
@@ -345,6 +388,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await handlers.undo({ designId: "d-1" });
@@ -397,6 +442,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: pendingSqlExports as never,
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		const stalePreview = { status: "current", revision: 1, draftRevision: 1, sql: "CREATE TABLE a ();", designId: "old-design" } as const;
@@ -445,6 +492,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		const result = await handlers.sendAssistantMessage({
@@ -480,6 +529,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await expect(
@@ -522,6 +573,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		expect(await handlers.continueAssistantTurn({ conversationId: "conv-1" })).toEqual({ started: true });
@@ -547,6 +600,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await expect(failingHandlers.continueAssistantTurn({ conversationId: "conv-1" })).rejects.toThrow("This Assistant turn is not waiting to continue.");
@@ -599,6 +654,8 @@ describe("RPC request handlers", () => {
 			pendingSqlExports: new Map(),
 			projectTransfers: {} as ProjectTransferActions,
 			pendingProjectTransfers: new Map(),
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		// 1. sendAssistantMessage must resolve promptly before the model stream gate opens
@@ -665,6 +722,8 @@ describe("Project transfer request handlers", () => {
 				},
 			},
 			pendingProjectTransfers: pendingProjectTransfers as never,
+			systemDesignSvgExports: {} as SystemDesignSvgExports,
+			pendingSystemDesignSvgExports: new Map(),
 		});
 
 		await expect(handlers.beginProjectExport()).rejects.toThrow("Open a project before exporting it.");
