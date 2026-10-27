@@ -86,6 +86,8 @@ import type {
 	UpdateWalkthroughStepAction,
 } from "../shared/walkthrough";
 import type { SqlPreviewActions } from "./sql-preview";
+import type { ProjectTransferActions } from "./project-transfer";
+import type { ProjectTransferResult } from "../shared/project-portability";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 
@@ -94,6 +96,8 @@ export type RpcHandlerDependencies = {
 	assistant: Promise<AssistantRuntime> | AssistantRuntime;
 	sqlPreviewActions: SqlPreviewActions;
 	pendingSqlExports: Map<string, () => Promise<SqlPreviewExportResult>>;
+	projectTransfers: ProjectTransferActions;
+	pendingProjectTransfers: Map<string, () => Promise<ProjectTransferResult>>;
 };
 
 export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
@@ -101,6 +105,17 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		getWorkspaceState: async (): Promise<WorkspaceState> => (await deps.workspace).getState(),
 		createProject: async (action: { name: string }): Promise<WorkspaceState> => (await deps.workspace).createProject(action),
 		openProject: async (action: { projectId: string }): Promise<WorkspaceState> => (await deps.workspace).openProject(action),
+		beginProjectExport: async (): Promise<{ requestId: string }> => {
+			if (!(await deps.workspace).getState().project) throw new Error("Open a project before exporting it.");
+			const requestId = crypto.randomUUID();
+			deps.pendingProjectTransfers.set(requestId, () => deps.projectTransfers.exportProject());
+			return { requestId };
+		},
+		beginProjectImport: async (): Promise<{ requestId: string }> => {
+			const requestId = crypto.randomUUID();
+			deps.pendingProjectTransfers.set(requestId, () => deps.projectTransfers.importProject());
+			return { requestId };
+		},
 		createDesign: async (action: CreateDesignAction): Promise<WorkspaceState> => (await deps.workspace).createDesign(action),
 		openDesign: async (action: OpenDesignAction): Promise<WorkspaceState> => (await deps.workspace).openDesign(action),
 		renameDesign: async (action: RenameDesignAction): Promise<WorkspaceState> => (await deps.workspace).renameDesign(action),

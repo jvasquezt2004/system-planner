@@ -150,7 +150,8 @@ function requireFileName(
 	return fileName;
 }
 
-async function writeNewFile(path: string, contents: string): Promise<void> {
+/** Writes a file that does not exist yet; an existing file is never overwritten. */
+export async function writeNewFile(path: string, contents: string): Promise<void> {
 	let file: FileHandle | null = null;
 	let created = false;
 	try {

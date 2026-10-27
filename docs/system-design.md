@@ -231,3 +231,4 @@ smaller feature. Behavioral simulation and animated HTML export follow separatel
 - [Revert Assistant changes across project artifacts together](adr/0008-assistant-turn-revert-spans-project-artifacts.md)
 - [Scope existing database execution to each database Design](adr/0009-scope-database-execution-to-each-design.md)
 - [Drive SVG playback from one authored timeline](adr/0010-drive-svg-playback-from-one-authored-timeline.md)
+- [Export and import portable Projects as new Projects](adr/0012-portable-project-export-and-import.md)

@@ -56,6 +56,8 @@ function renderMasthead(state: WorkspaceState, schemaLinks: string[] = []) {
 			busy={false}
 			onOpenProject={() => {}}
 			onNewProject={() => {}}
+			onExportProject={() => {}}
+			onImportProject={() => {}}
 			onOpenDesign={() => {}}
 			onNewDesign={() => {}}
 			onRenameDesign={() => {}}

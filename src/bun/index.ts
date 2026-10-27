@@ -4,8 +4,10 @@ import { defineElectrobunRPC } from "electrobun/rpc";
 import { dirname, join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { ScenarioRun, SqlPreviewExportResult } from "../shared/design";
+import type { ProjectTransferResult } from "../shared/project-portability";
 import type { AppRPCSchema } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
+import { createProjectTransferActions } from "./project-transfer";
 import { createDesignWorkspace } from "./workspace";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createRpcRequestHandlers } from "./rpc-handlers";
@@ -104,22 +106,55 @@ const assistantPromise = workspacePromise.then((workspace) =>
 	}),
 );
 
+// Electrobun has a native folder picker but no native save dialog, so exports
+// write a new file into a folder the designer picks.
+async function chooseExportFolder(): Promise<string | null> {
+	const [directory] = await Utils.openFileDialog({
+		startingFolder: Utils.paths.documents,
+		allowedFileTypes: "*",
+		canChooseFiles: false,
+		canChooseDirectory: true,
+		allowsMultipleSelection: false,
+	});
+	return directory ?? null;
+}
+
 /** Exports waiting for the view to start the folder picker, by request id. */
 const pendingSqlExports = new Map<string, () => Promise<SqlPreviewExportResult>>();
 const sqlPreviewActions = createSqlPreviewActions({
 	writeClipboardText: Utils.clipboardWriteText,
-	// Electrobun has a native folder picker but no native save dialog.
-	chooseExportDirectory: async () => {
-		const [directory] = await Utils.openFileDialog({
+	chooseExportDirectory: chooseExportFolder,
+});
+
+/** Project exports and imports waiting for the view to start a picker, by request id. */
+const pendingProjectTransfers = new Map<string, () => Promise<ProjectTransferResult>>();
+const projectTransfers = createProjectTransferActions({
+	workspace: workspacePromise,
+	chooseExportDirectory: chooseExportFolder,
+	chooseImportFile: async () => {
+		const [file] = await Utils.openFileDialog({
 			startingFolder: Utils.paths.documents,
 			allowedFileTypes: "*",
-			canChooseFiles: false,
-			canChooseDirectory: true,
+			canChooseFiles: true,
+			canChooseDirectory: false,
 			allowsMultipleSelection: false,
 		});
-		return directory ?? null;
+		return file ?? null;
 	},
+	now: () => new Date(),
 });
+
+/** Runs a begun Project transfer once its picker has been opened, and reports the outcome to the view. */
+function runProjectTransfer(requestId: string) {
+	const run = pendingProjectTransfers.get(requestId);
+	if (!run) return;
+	pendingProjectTransfers.delete(requestId);
+	void run()
+		.catch((cause: unknown): ProjectTransferResult => ({ status: "failed", error: cause instanceof Error ? cause.message : String(cause) }))
+		.then((result) => {
+			rpc.send.projectTransferCompleted({ requestId, result });
+		});
+}
 
 const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 	maxRequestTime: 60_000,
@@ -129,6 +164,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			assistant: assistantPromise,
 			sqlPreviewActions,
 			pendingSqlExports,
+			projectTransfers,
+			pendingProjectTransfers,
 		}),
 		messages: {
 			// Start the native picker from a message, not an awaited RPC request.
@@ -140,6 +177,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 					rpc.send.sqlPreviewExportCompleted({ requestId, result });
 				});
 			},
+			chooseProjectExportDirectory: ({ requestId }) => runProjectTransfer(requestId),
+			chooseProjectImportFile: ({ requestId }) => runProjectTransfer(requestId),
 			assistantScenarioRunCompleted: ({ requestId, run, error }) =>
 				completePendingAssistantScenarioRun(requestId, run, error),
 		},
