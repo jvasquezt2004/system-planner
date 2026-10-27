@@ -94,30 +94,43 @@ import {
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemService,
 	createEmptySystemDesign,
 	describeSystemComponentRemoval,
+	describeSystemServiceRemoval,
 	findSystemComponent,
 	findSystemConnection,
+	findSystemService,
 	moveSystemComponent,
+	moveSystemService,
 	normalizeSystemDesign,
 	removeSystemComponent,
 	removeSystemConnection,
+	removeSystemService,
+	resizeSystemService,
 	systemDesignContent,
 	type SystemContent,
 	updateSystemComponent,
 	updateSystemConnection,
+	updateSystemService,
 	type AddSystemComponentAction,
 	type AddSystemConnectionAction,
+	type AddSystemServiceAction,
 	type MoveSystemComponentAction,
+	type MoveSystemServiceAction,
 	type RemoveSystemComponentAction,
 	type RemoveSystemConnectionAction,
+	type RemoveSystemServiceAction,
+	type ResizeSystemServiceAction,
 	type SetActiveViewAction,
 	type SetSystemViewportAction,
 	type SystemAttribution,
 	type SystemComponentRemovalPlan,
 	type SystemDesign,
+	type SystemServiceRemovalPlan,
 	type UpdateSystemComponentAction,
 	type UpdateSystemConnectionAction,
+	type UpdateSystemServiceAction,
 } from "../shared/system-design";
 
 export type DesignWorkspaceOptions = {
@@ -214,6 +227,15 @@ export interface DesignWorkspace {
 	requireActiveDesign(designId: string | undefined): void;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	/** System design edits. Each one is a single Project-history action. */
+	addSystemService(action: AddSystemServiceAction): Promise<WorkspaceState>;
+	updateSystemService(action: UpdateSystemServiceAction): Promise<WorkspaceState>;
+	/** Moves the boundary and the Components it owns together. */
+	moveSystemService(action: MoveSystemServiceAction): Promise<WorkspaceState>;
+	resizeSystemService(action: ResizeSystemServiceAction): Promise<WorkspaceState>;
+	/** Releases owned Components to system scope and deletes Connections that end at the Service. */
+	removeSystemService(action: RemoveSystemServiceAction): Promise<WorkspaceState>;
+	/** Lists what removing the Service releases and deletes, before anything changes. */
+	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan;
 	addSystemComponent(action: AddSystemComponentAction): Promise<WorkspaceState>;
 	updateSystemComponent(action: UpdateSystemComponentAction): Promise<WorkspaceState>;
 	moveSystemComponent(action: MoveSystemComponentAction): Promise<WorkspaceState>;
@@ -280,7 +302,7 @@ export async function createDesignWorkspace(
 		edgeFunctions: EdgeFunction[],
 		systemDesign: SystemDesign | null = state.systemDesign ?? null,
 	): ProjectContent {
-		const system = systemDesign ? systemDesignContent(systemDesign) : { components: [], connections: [] };
+		const system = systemDesign ? systemDesignContent(systemDesign) : { services: [], components: [], connections: [] };
 		return structuredClone({ design: { ...design, viewport: DEFAULT_VIEWPORT }, scenarios, edgeFunctions, systemDesign: system });
 	}
 
@@ -2219,6 +2241,15 @@ export async function createDesignWorkspace(
 					const next = updateSystemComponent(design, action.componentId, action.changes);
 					const after = findSystemComponent(next, action.componentId);
 					if (!after || !before) throw new Error("That Component could not be found.");
+					if (after.serviceId !== before.serviceId) {
+						const owner = after.serviceId === null ? null : findSystemService(next, after.serviceId);
+						return {
+							next,
+							action: attributed(action, owner
+								? { name: `Assign “${after.name}” to “${owner.name}”` }
+								: { name: `Release “${after.name}” to system scope` }),
+						};
+					}
 					const renamed = after.name !== before.name;
 					return {
 						next,
@@ -2228,6 +2259,62 @@ export async function createDesignWorkspace(
 					};
 				});
 			});
+		},
+		addSystemService(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applySystemDesignChange((design) => {
+					const next = addSystemService(design, { id, name: action.name, position: { x: action.x, y: action.y } });
+					const added = findSystemService(next, id)!;
+					return { next, action: attributed(action, { name: `Add service “${added.name}”` }) };
+				});
+			});
+		},
+		updateSystemService(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = updateSystemService(design, action.serviceId, action.changes);
+					const after = findSystemService(next, action.serviceId);
+					if (!after) throw new Error("That Service could not be found.");
+					return { next, action: attributed(action, { name: `Rename service to “${after.name}”` }) };
+				});
+			});
+		},
+		moveSystemService(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = moveSystemService(design, action.serviceId, { x: action.x, y: action.y });
+					const moved = findSystemService(next, action.serviceId);
+					if (!moved) throw new Error("That Service could not be found.");
+					return { next, action: attributed(action, { name: `Move service “${moved.name}”` }) };
+				});
+			});
+		},
+		resizeSystemService(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = resizeSystemService(design, action.serviceId, { width: action.width, height: action.height });
+					const resized = findSystemService(next, action.serviceId);
+					if (!resized) throw new Error("That Service could not be found.");
+					return { next, action: attributed(action, { name: `Resize service “${resized.name}”` }) };
+				});
+			});
+		},
+		removeSystemService(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const removed = findSystemService(design, action.serviceId);
+					if (!removed) throw new Error("That Service could not be found.");
+					return {
+						next: removeSystemService(design, action.serviceId),
+						action: attributed(action, { name: `Remove service “${removed.name}”` }),
+					};
+				});
+			});
+		},
+		describeSystemServiceRemoval(serviceId) {
+			requireOpenProject();
+			return describeSystemServiceRemoval(state.systemDesign!, serviceId);
 		},
 		moveSystemComponent(action) {
 			return runTask(async () => {

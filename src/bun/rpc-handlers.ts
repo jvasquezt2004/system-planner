@@ -43,14 +43,20 @@ import type { SchemaCodeSnapshot } from "../shared/schema-code";
 import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
+	AddSystemServiceAction,
 	MoveSystemComponentAction,
+	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
 	RemoveSystemConnectionAction,
+	RemoveSystemServiceAction,
+	ResizeSystemServiceAction,
 	SetActiveViewAction,
 	SetSystemViewportAction,
 	SystemComponentRemovalPlan,
+	SystemServiceRemovalPlan,
 	UpdateSystemComponentAction,
 	UpdateSystemConnectionAction,
+	UpdateSystemServiceAction,
 } from "../shared/system-design";
 import type { SqlPreviewActions } from "./sql-preview";
 import type { DesignWorkspace } from "./workspace";
@@ -118,6 +124,13 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeRelationship: async (action: RemoveRelationshipAction): Promise<WorkspaceState> => (await deps.workspace).removeRelationship(action),
 		describeRemoval: async (target: RemovalTarget): Promise<RemovalPlan> => (await deps.workspace).describeRemoval(target),
 		setViewport: async (action: SetViewportAction): Promise<WorkspaceState> => (await deps.workspace).setViewport(action),
+		addSystemService: async (action: AddSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).addSystemService(action),
+		updateSystemService: async (action: UpdateSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemService(action),
+		moveSystemService: async (action: MoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemService(action),
+		resizeSystemService: async (action: ResizeSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).resizeSystemService(action),
+		removeSystemService: async (action: RemoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemService(action),
+		describeSystemServiceRemoval: async ({ serviceId }: { serviceId: string }): Promise<SystemServiceRemovalPlan> =>
+			(await deps.workspace).describeSystemServiceRemoval(serviceId),
 		addSystemComponent: async (action: AddSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).addSystemComponent(action),
 		updateSystemComponent: async (action: UpdateSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemComponent(action),
 		moveSystemComponent: async (action: MoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemComponent(action),

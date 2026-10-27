@@ -1,13 +1,15 @@
 import type { CanvasPoint, CanvasViewport } from "./design";
 
 /**
- * The authoritative System design of one Project: generic Components and the
- * directed, labeled Connections between them. Services, Groups, Walkthroughs,
- * and kind-specific catalogs are added by later tickets; this model holds only
- * what the basic overview edits.
+ * The authoritative System design of one Project: Services that own Components,
+ * generic and database Components at system scope or inside a Service, and the
+ * directed, labeled Connections between Components and Services. Groups,
+ * Walkthroughs, and kind-specific catalogs are added by later tickets.
  *
- * Component and Connection `id`s are stable identities. Renames, moves, and
- * edits keep them, and a Connection always names its actual endpoints.
+ * Component, Service, and Connection `id`s are stable identities. Component and
+ * Service ids share one namespace, so a Connection endpoint names exactly one
+ * item. A Component has at most one owning Service (`serviceId`). Ownership
+ * changes only through explicit actions; a Component's position never assigns it.
  */
 
 export type SystemComponentKind = "generic" | "database";
@@ -26,6 +28,12 @@ export type SystemComponent = {
 	properties: SystemComponentProperty[];
 	position: CanvasPoint;
 	/**
+	 * The Service that owns this Component, or null for system scope: a shared or
+	 * independent resource. Placing a Component inside a Service boundary does not
+	 * assign it.
+	 */
+	serviceId: string | null;
+	/**
 	 * The linked database Design for a Database component. Several Database
 	 * components may name the same Design. Omitted when the component is
 	 * conceptual.
@@ -33,15 +41,34 @@ export type SystemComponent = {
 	designId?: string;
 };
 
+export type SystemServiceSize = {
+	width: number;
+	height: number;
+};
+
+/** A named expanded boundary that owns the Components whose `serviceId` names it. */
+export type SystemService = {
+	id: string;
+	name: string;
+	/** The top-left corner of the boundary, in canvas space. */
+	position: CanvasPoint;
+	size: SystemServiceSize;
+};
+
 export type SystemConnection = {
 	id: string;
+	/** A Component or Service id. */
 	sourceId: string;
+	/** A Component or Service id. */
 	targetId: string;
 	label: string;
+	/** Optional interaction type, such as "Synchronous request" or "Event". */
+	interactionType?: string;
 	protocol?: string;
 };
 
 export type SystemDesign = {
+	services: SystemService[];
 	components: SystemComponent[];
 	connections: SystemConnection[];
 	/** Presentation only: saved outside Project content history. */
@@ -59,10 +86,12 @@ export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;
 export const SYSTEM_PROPERTY_LIMIT = 40;
 export const SYSTEM_COMPONENT_SIZE = { width: 180, height: 84 } as const;
+export const SYSTEM_SERVICE_DEFAULT_SIZE: SystemServiceSize = { width: 420, height: 280 };
+export const SYSTEM_SERVICE_MIN_SIZE: SystemServiceSize = { width: 240, height: 160 };
 export const SYSTEM_DEFAULT_VIEWPORT: CanvasViewport = { x: 0, y: 0, zoom: 1 };
 
 export function createEmptySystemDesign(): SystemDesign {
-	return { components: [], connections: [], viewport: { ...SYSTEM_DEFAULT_VIEWPORT } };
+	return { services: [], components: [], connections: [], viewport: { ...SYSTEM_DEFAULT_VIEWPORT } };
 }
 
 /**
@@ -72,12 +101,14 @@ export function createEmptySystemDesign(): SystemDesign {
  */
 export function createMigratedSystemDesign(databaseDesignId: string, componentId: string, name = "Database"): SystemDesign {
 	return {
+		services: [],
 		components: [{
 			id: componentId,
 			kind: "database",
 			name,
 			properties: [],
 			position: { x: 120, y: 120 },
+			serviceId: null,
 			designId: databaseDesignId,
 		}],
 		connections: [],
@@ -94,19 +125,31 @@ export type SystemComponentInput = {
 	properties?: SystemComponentProperty[];
 	position: CanvasPoint;
 	designId?: string;
+	/** The owning Service. Omitted or null places the Component at system scope. */
+	serviceId?: string | null;
 };
 
-export type SystemComponentChanges = Partial<Pick<SystemComponent, "kind" | "name" | "technology" | "description" | "properties" | "designId">>;
+export type SystemComponentChanges = Partial<Pick<SystemComponent, "kind" | "name" | "technology" | "description" | "properties" | "designId" | "serviceId">>;
+
+export type SystemServiceInput = {
+	id: string;
+	name?: string;
+	position: CanvasPoint;
+	size?: SystemServiceSize;
+};
+
+export type SystemServiceChanges = Partial<Pick<SystemService, "name">>;
 
 export type SystemConnectionInput = {
 	id: string;
 	sourceId: string;
 	targetId: string;
 	label?: string;
+	interactionType?: string;
 	protocol?: string;
 };
 
-export type SystemConnectionChanges = Partial<Pick<SystemConnection, "sourceId" | "targetId" | "label" | "protocol">>;
+export type SystemConnectionChanges = Partial<Pick<SystemConnection, "sourceId" | "targetId" | "label" | "interactionType" | "protocol">>;
 
 /** A Connection that a removal would delete because one of its endpoints is removed. */
 export type AffectedSystemConnection = {
@@ -122,6 +165,19 @@ export type SystemComponentRemovalPlan = {
 	connections: AffectedSystemConnection[];
 };
 
+export type SystemServiceRemovalPlan = {
+	serviceId: string;
+	serviceName: string;
+	/** Components the removal releases to system scope. They keep their positions and Connections. */
+	releasedComponents: { id: string; name: string }[];
+	/** Connections whose actual endpoint is this Service. Removing the Service deletes them. */
+	connections: AffectedSystemConnection[];
+};
+
+export function findSystemService(design: SystemDesign, serviceId: string): SystemService | undefined {
+	return design.services.find((service) => service.id === serviceId);
+}
+
 export function findSystemComponent(design: SystemDesign, componentId: string): SystemComponent | undefined {
 	return design.components.find((component) => component.id === componentId);
 }
@@ -130,15 +186,100 @@ export function findSystemConnection(design: SystemDesign, connectionId: string)
 	return design.connections.find((connection) => connection.id === connectionId);
 }
 
+export function addSystemService(design: SystemDesign, input: SystemServiceInput): SystemDesign {
+	requireIdentity(input.id, "Service id");
+	if (findSystemService(design, input.id)) throw new Error(`Service "${input.id}" already exists.`);
+	requireUnusedId(design, input.id);
+	const service: SystemService = {
+		id: input.id,
+		name: requireSystemName(input.name ?? nextDefaultName("Service", design.services.map((item) => item.name)), "Service name"),
+		position: requirePosition(input.position, "Service position"),
+		size: normalizeServiceSize(input.size ?? SYSTEM_SERVICE_DEFAULT_SIZE),
+	};
+	return { ...design, services: [...design.services, service] };
+}
+
+export function updateSystemService(design: SystemDesign, serviceId: string, changes: SystemServiceChanges): SystemDesign {
+	const current = requireSystemService(design, serviceId);
+	if (changes.name === undefined) return design;
+	const name = requireSystemName(changes.name, "Service name");
+	if (name === current.name) return design;
+	return replaceService(design, { ...current, name });
+}
+
+/**
+ * Moves a Service boundary together with the Components it owns, keeping their
+ * offsets. Ownership is unchanged. Each member moves once.
+ */
+export function moveSystemService(design: SystemDesign, serviceId: string, position: CanvasPoint): SystemDesign {
+	const current = requireSystemService(design, serviceId);
+	const next = requirePosition(position, "Service position");
+	const dx = next.x - current.position.x;
+	const dy = next.y - current.position.y;
+	if (dx === 0 && dy === 0) return design;
+	return {
+		...design,
+		services: design.services.map((service) => (service.id === serviceId ? { ...service, position: next } : service)),
+		components: design.components.map((component) => (
+			component.serviceId === serviceId
+				? { ...component, position: requirePosition({ x: component.position.x + dx, y: component.position.y + dy }) }
+				: component
+		)),
+	};
+}
+
+export function resizeSystemService(design: SystemDesign, serviceId: string, size: SystemServiceSize): SystemDesign {
+	const current = requireSystemService(design, serviceId);
+	const next = normalizeServiceSize(size);
+	if (current.size.width === next.width && current.size.height === next.height) return design;
+	return replaceService(design, { ...current, size: next });
+}
+
+/** Lists what removing the Service releases and which Connections it deletes, before anything changes. */
+export function describeSystemServiceRemoval(design: SystemDesign, serviceId: string): SystemServiceRemovalPlan {
+	const service = requireSystemService(design, serviceId);
+	return {
+		serviceId,
+		serviceName: service.name,
+		releasedComponents: design.components
+			.filter((component) => component.serviceId === serviceId)
+			.map(({ id, name }) => ({ id, name })),
+		connections: design.connections
+			.filter((connection) => connection.sourceId === serviceId || connection.targetId === serviceId)
+			.map(({ id, label, sourceId, targetId }) => ({ id, label, sourceId, targetId })),
+	};
+}
+
+/**
+ * Removes the Service boundary. Its owned Components become system-scope
+ * resources, keeping their positions and Connections. Connections whose actual
+ * endpoint is the Service are deleted; Component-to-Component Connections stay.
+ */
+export function removeSystemService(design: SystemDesign, serviceId: string): SystemDesign {
+	requireSystemService(design, serviceId);
+	return {
+		...design,
+		services: design.services.filter((service) => service.id !== serviceId),
+		components: design.components.map((component) => (
+			component.serviceId === serviceId ? { ...component, serviceId: null } : component
+		)),
+		connections: design.connections.filter(
+			(connection) => connection.sourceId !== serviceId && connection.targetId !== serviceId,
+		),
+	};
+}
+
 export function addSystemComponent(design: SystemDesign, input: SystemComponentInput): SystemDesign {
 	requireIdentity(input.id, "Component id");
 	if (findSystemComponent(design, input.id)) throw new Error(`Component "${input.id}" already exists.`);
+	requireUnusedId(design, input.id);
 	const component: SystemComponent = {
 		id: input.id,
 		kind: requireKind(input.kind ?? "generic"),
 		name: requireSystemName(input.name ?? defaultComponentName(design, input.kind ?? "generic"), "Component name"),
 		properties: normalizeProperties(input.properties ?? []),
 		position: requirePosition(input.position),
+		serviceId: requireOwnerService(design, input.serviceId),
 		...optionalText("technology", input.technology),
 		...optionalText("description", input.description),
 		...optionalDesignId(input.designId),
@@ -158,6 +299,7 @@ export function updateSystemComponent(design: SystemDesign, componentId: string,
 		delete next.designId;
 		Object.assign(next, optionalDesignId(changes.designId));
 	}
+	if ("serviceId" in changes) next.serviceId = requireOwnerService(design, changes.serviceId);
 	if (sameJson(current, next)) return design;
 	return replaceComponent(design, next);
 }
@@ -202,6 +344,7 @@ export function addSystemConnection(design: SystemDesign, input: SystemConnectio
 		sourceId: input.sourceId,
 		targetId: input.targetId,
 		label: requireSystemName(input.label ?? DEFAULT_SYSTEM_CONNECTION_LABEL, "Connection label", SYSTEM_CONNECTION_LABEL_LIMIT),
+		...optionalText("interactionType", input.interactionType),
 		...optionalText("protocol", input.protocol),
 	};
 	return { ...design, connections: [...design.connections, connection] };
@@ -216,6 +359,7 @@ export function updateSystemConnection(design: SystemDesign, connectionId: strin
 	if (changes.label !== undefined) {
 		next.label = requireSystemName(changes.label, "Connection label", SYSTEM_CONNECTION_LABEL_LIMIT);
 	}
+	if ("interactionType" in changes) setOptionalText(next, "interactionType", changes.interactionType);
 	if ("protocol" in changes) setOptionalText(next, "protocol", changes.protocol);
 	if (sameJson(current, next)) return design;
 	return {
@@ -230,7 +374,7 @@ export function removeSystemConnection(design: SystemDesign, connectionId: strin
 }
 
 /**
- * Route offsets for Connections that join the same two Components, in either
+ * Route offsets for Connections that join the same two endpoints, in either
  * direction. Each one gets a distinct offset centered on zero, so parallel
  * curves never coincide. A reversed Connection needs its own slot: the curve
  * for A to B with an offset equals the curve for B to A with the same offset.
@@ -254,30 +398,58 @@ export function systemConnectionRouteOffsets(design: SystemDesign): Map<string, 
 /**
  * Validates a System design loaded from storage. Malformed or dangling
  * identities are rejected so the workspace never edits a corrupt document.
+ * Documents saved before Services existed load with no Services and every
+ * Component at system scope.
  */
 export function normalizeSystemDesign(value: unknown): SystemDesign {
 	if (!isRecord(value) || !Array.isArray(value.components) || !Array.isArray(value.connections)) {
 		throw new Error("The saved System design is malformed.");
 	}
+	const rawServices = value.services ?? [];
+	if (!Array.isArray(rawServices)) throw new Error("The saved System design is malformed.");
+
+	const services: SystemService[] = [];
+	const serviceIds = new Set<string>();
+	for (const item of rawServices) {
+		if (!isRecord(item)) throw new Error("A saved Service is malformed.");
+		const id = requireIdentity(item.id, "Service id");
+		if (serviceIds.has(id)) throw new Error(`Service "${id}" is duplicated.`);
+		serviceIds.add(id);
+		services.push({
+			id,
+			name: requireSystemName(item.name, "Service name"),
+			position: requirePosition(item.position as CanvasPoint, "Service position"),
+			size: normalizeServiceSize(isRecord(item.size) ? (item.size as unknown as SystemServiceSize) : SYSTEM_SERVICE_DEFAULT_SIZE),
+		});
+	}
+
+	const components: SystemComponent[] = [];
 	const componentIds = new Set<string>();
-	let design: SystemDesign = createEmptySystemDesign();
 	for (const item of value.components) {
 		if (!isRecord(item)) throw new Error("A saved Component is malformed.");
 		const id = requireIdentity(item.id, "Component id");
 		if (componentIds.has(id)) throw new Error(`Component "${id}" is duplicated.`);
+		if (serviceIds.has(id)) throw new Error(`Component "${id}" uses the id of a Service.`);
 		componentIds.add(id);
-		const component: SystemComponent = {
+		const serviceId = typeof item.serviceId === "string" ? item.serviceId : null;
+		if (serviceId !== null && !serviceIds.has(serviceId)) {
+			throw new Error(`Component "${id}" belongs to a Service that does not exist.`);
+		}
+		components.push({
 			id,
 			kind: requireKind(item.kind),
 			name: requireSystemName(item.name, "Component name"),
 			properties: normalizeProperties(Array.isArray(item.properties) ? item.properties : []),
 			position: requirePosition(item.position as CanvasPoint),
+			serviceId,
 			...optionalText("technology", typeof item.technology === "string" ? item.technology : undefined),
 			...optionalText("description", typeof item.description === "string" ? item.description : undefined),
 			...optionalDesignId(typeof item.designId === "string" ? item.designId : undefined),
-		};
-		design = { ...design, components: [...design.components, component] };
+		});
 	}
+
+	const endpointIds = new Set([...componentIds, ...serviceIds]);
+	const connections: SystemConnection[] = [];
 	const connectionIds = new Set<string>();
 	for (const item of value.connections) {
 		if (!isRecord(item)) throw new Error("A saved Connection is malformed.");
@@ -286,22 +458,24 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 		connectionIds.add(id);
 		const sourceId = requireIdentity(item.sourceId, "Connection source");
 		const targetId = requireIdentity(item.targetId, "Connection target");
-		if (!componentIds.has(sourceId) || !componentIds.has(targetId)) {
+		if (!endpointIds.has(sourceId) || !endpointIds.has(targetId)) {
 			throw new Error(`Connection "${id}" refers to a Component that does not exist.`);
 		}
 		if (sourceId === targetId) throw new Error(`Connection "${id}" must join two different Components.`);
-		const connection: SystemConnection = {
+		connections.push({
 			id,
 			sourceId,
 			targetId,
 			label: requireSystemName(item.label, "Connection label", SYSTEM_CONNECTION_LABEL_LIMIT),
+			...optionalText("interactionType", typeof item.interactionType === "string" ? item.interactionType : undefined),
 			...optionalText("protocol", typeof item.protocol === "string" ? item.protocol : undefined),
-		};
-		design = { ...design, connections: [...design.connections, connection] };
+		});
 	}
 	const viewport = isRecord(value.viewport) ? value.viewport : SYSTEM_DEFAULT_VIEWPORT;
 	return {
-		...design,
+		services,
+		components,
+		connections,
 		viewport: {
 			x: finiteOr(viewport.x, 0),
 			y: finiteOr(viewport.y, 0),
@@ -312,7 +486,7 @@ export function normalizeSystemDesign(value: unknown): SystemDesign {
 
 /** Keeps only the content that Undo and Revert restore; viewport is navigation. */
 export function systemDesignContent(design: SystemDesign): SystemContent {
-	return { components: design.components, connections: design.connections };
+	return { services: design.services, components: design.components, connections: design.connections };
 }
 
 function replaceComponent(design: SystemDesign, next: SystemComponent): SystemDesign {
@@ -320,6 +494,19 @@ function replaceComponent(design: SystemDesign, next: SystemComponent): SystemDe
 		...design,
 		components: design.components.map((component) => (component.id === next.id ? next : component)),
 	};
+}
+
+function replaceService(design: SystemDesign, next: SystemService): SystemDesign {
+	return {
+		...design,
+		services: design.services.map((service) => (service.id === next.id ? next : service)),
+	};
+}
+
+function requireSystemService(design: SystemDesign, serviceId: string): SystemService {
+	const service = findSystemService(design, serviceId);
+	if (!service) throw new Error("That Service could not be found.");
+	return service;
 }
 
 function requireSystemComponent(design: SystemDesign, componentId: string): SystemComponent {
@@ -334,19 +521,39 @@ function requireSystemConnection(design: SystemDesign, connectionId: string): Sy
 	return connection;
 }
 
+function isEndpoint(design: SystemDesign, id: string): boolean {
+	return findSystemComponent(design, id) !== undefined || findSystemService(design, id) !== undefined;
+}
+
 function requireDistinctEndpoints(design: SystemDesign, sourceId: string, targetId: string) {
-	if (!findSystemComponent(design, sourceId)) throw new Error("The Connection source Component could not be found.");
-	if (!findSystemComponent(design, targetId)) throw new Error("The Connection target Component could not be found.");
+	if (!isEndpoint(design, sourceId)) throw new Error("The Connection source Component could not be found.");
+	if (!isEndpoint(design, targetId)) throw new Error("The Connection target Component could not be found.");
 	if (sourceId === targetId) throw new Error("A Connection must join two different Components.");
 }
 
+/** Component and Service ids share one namespace, so a Connection endpoint is never ambiguous. */
+function requireUnusedId(design: SystemDesign, id: string) {
+	if (findSystemService(design, id)) throw new Error(`"${id}" is already used by a Service.`);
+	if (findSystemComponent(design, id)) throw new Error(`"${id}" is already used by a Component.`);
+}
+
+/** Services own Components; a Component names at most one owning Service, or none for system scope. */
+function requireOwnerService(design: SystemDesign, serviceId: string | null | undefined): string | null {
+	if (serviceId === undefined || serviceId === null) return null;
+	if (!findSystemService(design, serviceId)) throw new Error("That Service could not be found.");
+	return serviceId;
+}
+
 function defaultComponentName(design: SystemDesign, kind: SystemComponentKind): string {
-	const base = kind === "database" ? "Database" : "Component";
-	const names = new Set(design.components.map((component) => component.name));
-	if (!names.has(base)) return base;
+	return nextDefaultName(kind === "database" ? "Database" : "Component", design.components.map((component) => component.name));
+}
+
+function nextDefaultName(base: string, names: string[]): string {
+	const taken = new Set(names);
+	if (!taken.has(base)) return base;
 	for (let index = 2; ; index += 1) {
 		const candidate = `${base} ${index}`;
-		if (!names.has(candidate)) return candidate;
+		if (!taken.has(candidate)) return candidate;
 	}
 }
 
@@ -370,9 +577,18 @@ function requireSystemName(value: unknown, label: string, limit = SYSTEM_COMPONE
 	return trimmed;
 }
 
-function requirePosition(point: CanvasPoint): CanvasPoint {
-	if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error("Component position must be finite.");
+function requirePosition(point: CanvasPoint, label = "Component position"): CanvasPoint {
+	if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) throw new Error(`${label} must be finite.`);
 	return { x: Math.round(point.x * 100) / 100, y: Math.round(point.y * 100) / 100 };
+}
+
+/** Sizes are whole pixels and never smaller than the minimum boundary that keeps its header readable. */
+function normalizeServiceSize(size: SystemServiceSize): SystemServiceSize {
+	if (!size || !Number.isFinite(size.width) || !Number.isFinite(size.height)) throw new Error("Service size must be finite.");
+	return {
+		width: Math.max(SYSTEM_SERVICE_MIN_SIZE.width, Math.round(size.width)),
+		height: Math.max(SYSTEM_SERVICE_MIN_SIZE.height, Math.round(size.height)),
+	};
 }
 
 function normalizeProperties(values: unknown[]): SystemComponentProperty[] {
@@ -388,12 +604,12 @@ function normalizeProperties(values: unknown[]): SystemComponentProperty[] {
 	});
 }
 
-function optionalText(key: "technology" | "description" | "protocol", value: string | undefined) {
+function optionalText(key: "technology" | "description" | "interactionType" | "protocol", value: string | undefined) {
 	const trimmed = value?.trim();
 	return trimmed ? { [key]: trimmed.slice(0, 500) } : {};
 }
 
-function setOptionalText(target: Record<string, unknown>, key: "technology" | "description" | "protocol", value: unknown) {
+function setOptionalText(target: Record<string, unknown>, key: "technology" | "description" | "interactionType" | "protocol", value: unknown) {
 	delete target[key];
 	if (typeof value === "string") Object.assign(target, optionalText(key, value));
 }
@@ -421,6 +637,11 @@ function sameJson(a: unknown, b: unknown): boolean {
  */
 export type SystemAttribution = { assistantTurnId?: string };
 
+export type AddSystemServiceAction = SystemAttribution & { id?: string; name?: string; x: number; y: number };
+export type UpdateSystemServiceAction = SystemAttribution & { serviceId: string; changes: SystemServiceChanges };
+export type MoveSystemServiceAction = SystemAttribution & { serviceId: string; x: number; y: number };
+export type ResizeSystemServiceAction = SystemAttribution & { serviceId: string; width: number; height: number };
+export type RemoveSystemServiceAction = SystemAttribution & { serviceId: string };
 export type AddSystemComponentAction = Omit<SystemComponentInput, "position"> & SystemAttribution & { x: number; y: number };
 export type UpdateSystemComponentAction = SystemAttribution & { componentId: string; changes: SystemComponentChanges };
 export type MoveSystemComponentAction = SystemAttribution & { componentId: string; x: number; y: number };
@@ -445,10 +666,36 @@ export function openSpotNear(design: SystemDesign, center: CanvasPoint): CanvasP
 	return { x: Math.round(center.x), y: Math.round(center.y) };
 }
 
+/** A free top-left spot for a new Service boundary of the default size, clear of other Services. */
+export function openServiceSpotNear(design: SystemDesign, center: CanvasPoint): CanvasPoint {
+	const step = 40;
+	const size = SYSTEM_SERVICE_DEFAULT_SIZE;
+	const origin = { x: Math.round(center.x - size.width / 2), y: Math.round(center.y - size.height / 2) };
+	for (let ring = 0; ring < 20; ring += 1) {
+		for (let dx = -ring; dx <= ring; dx += 1) {
+			for (const dy of [-ring, ring]) {
+				const candidate = { x: Math.round(origin.x + dx * step), y: Math.round(origin.y + dy * step) };
+				if (serviceSpotIsFree(design, candidate, size)) return candidate;
+			}
+		}
+	}
+	return origin;
+}
+
 function isFree(design: SystemDesign, point: CanvasPoint): boolean {
 	return design.components.every((component) => {
 		const dx = Math.abs(component.position.x - point.x);
 		const dy = Math.abs(component.position.y - point.y);
 		return dx >= SYSTEM_COMPONENT_SIZE.width + 16 || dy >= SYSTEM_COMPONENT_SIZE.height + 16;
 	});
+}
+
+function serviceSpotIsFree(design: SystemDesign, point: CanvasPoint, size: SystemServiceSize): boolean {
+	const gap = 16;
+	return design.services.every((service) => (
+		service.position.x + service.size.width + gap <= point.x
+		|| point.x + size.width + gap <= service.position.x
+		|| service.position.y + service.size.height + gap <= point.y
+		|| point.y + size.height + gap <= service.position.y
+	));
 }
