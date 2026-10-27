@@ -47,7 +47,7 @@ function routesFor(design: SystemDesign): Map<string, PlaybackRoute> {
 	const routes = new Map<string, PlaybackRoute>();
 	for (const connection of design.connections) {
 		const route = computeConnectionPath(rects.get(connection.sourceId)!, rects.get(connection.targetId)!, 0);
-		routes.set(connection.id, { start: route.start, cp1: route.cp1, cp2: route.cp2, end: route.end });
+		routes.set(connection.id, { segments: [route] });
 	}
 	return routes;
 }

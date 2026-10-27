@@ -297,3 +297,46 @@ describe("Project-wide content history", () => {
 		expect(requireTable(undoneService.design, "Orders")).toBeDefined();
 	});
 });
+
+describe("Connection route history", () => {
+	test("each completed route edit is one named Project action, and Undo steps back through them without merging", async () => {
+		const { workspace } = await openClockedWorkspace();
+		await workspace.createProject({ name: "Routes" });
+		await workspace.addSystemComponent({ id: "client", name: "Client", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "api", name: "API", x: 320, y: 0 });
+		await workspace.addSystemConnection({ id: "reads", sourceId: "client", targetId: "api", label: "Reads" });
+
+		const bent = await workspace.updateSystemConnection({ connectionId: "reads", changes: { bendPoints: [{ x: 160, y: -80 }] } });
+		expect(bent.undoActionName).toBe("Reroute connection “Reads”");
+		const rerouted = await workspace.updateSystemConnection({
+			connectionId: "reads",
+			changes: { bendPoints: [{ x: 200, y: -60 }], fromSide: "top" },
+		});
+		expect(rerouted.undoActionName).toBe("Reroute connection “Reads”");
+		expect(rerouted.systemDesign?.connections[0]).toMatchObject({ bendPoints: [{ x: 200, y: -60 }], fromSide: "top" });
+
+		const undoneSecond = await workspace.undo({ designId: designId(workspace) });
+		expect(undoneSecond.systemDesign?.connections[0]!.bendPoints).toEqual([{ x: 160, y: -80 }]);
+		expect(undoneSecond.systemDesign?.connections[0]!.fromSide).toBeUndefined();
+		expect(undoneSecond.undoActionName).toBe("Reroute connection “Reads”");
+
+		const undoneFirst = await workspace.undo({ designId: designId(workspace) });
+		expect(undoneFirst.systemDesign?.connections[0]!.bendPoints).toBeUndefined();
+		expect(undoneFirst.undoActionName).toBe("Add connection “Reads”");
+	});
+
+	test("a route edit does not merge with a label edit made just before it, so each keeps its own name", async () => {
+		const { workspace } = await openClockedWorkspace();
+		await workspace.createProject({ name: "Routes" });
+		await workspace.addSystemComponent({ id: "client", name: "Client", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "api", name: "API", x: 320, y: 0 });
+		await workspace.addSystemConnection({ id: "reads", sourceId: "client", targetId: "api", label: "Reads" });
+		await workspace.updateSystemConnection({ connectionId: "reads", changes: { label: "Loads" } });
+		const rerouted = await workspace.updateSystemConnection({ connectionId: "reads", changes: { labelOffset: { x: 12, y: -8 } } });
+		expect(rerouted.undoActionName).toBe("Reroute connection “Loads”");
+		const undone = await workspace.undo({ designId: designId(workspace) });
+		expect(undone.systemDesign?.connections[0]!.labelOffset).toBeUndefined();
+		expect(undone.systemDesign?.connections[0]!.label).toBe("Loads");
+		expect(undone.undoActionName).toBe("Edit connection “Loads”");
+	});
+});

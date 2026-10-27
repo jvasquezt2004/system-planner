@@ -1,5 +1,5 @@
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, type CanvasPoint, type CanvasViewport } from "../shared/design";
-import { computeConnectionPath, sampleCubicBezier, type ProofPoint, type ProofRect } from "../shared/architecture-proof";
+import { pathStringOf, routeConnectionPath, samplePath, type ProofCubic, type ProofPoint, type ProofRect } from "../shared/architecture-proof";
 import type { PlaybackRoute } from "../shared/walkthrough-playback";
 import {
 	SYSTEM_COMPONENT_SIZE,
@@ -29,7 +29,11 @@ export type SceneDrag =
 	| { mode: "service"; id: string; position: CanvasPoint }
 	| { mode: "resize"; id: string; size: SystemServiceSize }
 	| { mode: "group"; id: string; position: CanvasPoint }
-	| { mode: "group-resize"; id: string; size: SystemServiceSize };
+	| { mode: "group-resize"; id: string; size: SystemServiceSize }
+	/** Moves one bend point of a Connection. `id` is the Connection id. */
+	| { mode: "bend"; id: string; index: number; point: CanvasPoint }
+	/** Moves a Connection's label. `id` is the Connection id, and `offset` is the label's offset from the route. */
+	| { mode: "label"; id: string; offset: CanvasPoint };
 
 /**
  * The design as it will look once the drag is saved. Moving a Service carries
@@ -38,6 +42,18 @@ export type SceneDrag =
  */
 export function previewScene(design: SystemDesign, drag: SceneDrag | null): SystemDesign {
 	if (!drag) return design;
+	if (drag.mode === "bend" || drag.mode === "label") {
+		return {
+			...design,
+			connections: design.connections.map((connection) => {
+				if (connection.id !== drag.id) return connection;
+				if (drag.mode === "label") return { ...connection, labelOffset: drag.offset };
+				const bends = connection.bendPoints ?? [];
+				if (drag.index >= bends.length) return connection;
+				return { ...connection, bendPoints: bends.map((point, index) => (index === drag.index ? drag.point : point)) };
+			}),
+		};
+	}
 	if (drag.mode === "group") {
 		return findSystemGroup(design, drag.id) ? moveSystemGroup(design, drag.id, drag.position) : design;
 	}
@@ -149,7 +165,9 @@ export function zoomAroundPoint(viewport: CanvasViewport, screenPoint: CanvasPoi
  * stay as they are.
  */
 export function followViewport(viewport: CanvasViewport, route: PlaybackRoute, size: { width: number; height: number }): CanvasViewport {
-	const midpoint = { x: (route.start.x + route.end.x) / 2, y: (route.start.y + route.end.y) / 2 };
+	const first = route.segments[0]!.start;
+	const last = route.segments[route.segments.length - 1]!.end;
+	const midpoint = { x: (first.x + last.x) / 2, y: (first.y + last.y) / 2 };
 	return {
 		x: size.width / 2 - midpoint.x * viewport.zoom,
 		y: size.height / 2 - midpoint.y * viewport.zoom,
@@ -198,12 +216,16 @@ export function fitViewport(bounds: ProofRect, size: { width: number; height: nu
 
 export type ConnectionGeometry = {
 	connection: SystemConnection;
+	/** The drawn route as SVG path data. Painting and hit-testing both use it. */
 	pathString: string;
+	/** The route's cubic pieces, one per leg. Message motion samples these same pieces. */
+	segments: ProofCubic[];
+	/** Where the route leaves its source endpoint, and where it arrives at its target endpoint. */
 	start: ProofPoint;
-	cp1: ProofPoint;
-	cp2: ProofPoint;
 	end: ProofPoint;
-	/** The midpoint of the curve, where the label sits. */
+	/** Where each bend point is drawn, in order. These equal the Connection's authored bend points. */
+	bendPoints: ProofPoint[];
+	/** The midpoint of the route plus the label offset, where the label sits. */
 	labelPoint: ProofPoint;
 };
 
@@ -255,27 +277,55 @@ export function connectionGeometries(design: SystemDesign, positions?: Map<strin
 		const source = drawnEndpointRect(design, connection.sourceId, positions);
 		const target = drawnEndpointRect(design, connection.targetId, positions);
 		if (!source || !target) continue;
-		const route = computeConnectionPath(source, target, offsets.get(connection.id) ?? 0);
-		const labelPoint = sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, 0.5);
+		const segments = routeConnectionPath(source, target, offsets.get(connection.id) ?? 0, routeHintsOf(connection));
+		const midpoint = samplePath(segments, 0.5);
+		const offset = connection.labelOffset ?? { x: 0, y: 0 };
 		result.push({
 			connection,
-			pathString: route.pathString,
-			start: route.start,
-			cp1: route.cp1,
-			cp2: route.cp2,
-			end: route.end,
-			labelPoint,
+			pathString: pathStringOf(segments),
+			segments,
+			start: segments[0]!.start,
+			end: segments[segments.length - 1]!.end,
+			bendPoints: segments.slice(0, -1).map((segment) => segment.end),
+			labelPoint: { x: midpoint.x + offset.x, y: midpoint.y + offset.y },
 		});
 	}
 	return result;
 }
 
-/** The curve each drawn Connection follows, keyed by Connection id, for sampling a walkthrough message along it. */
+function routeHintsOf(connection: SystemConnection) {
+	return { fromSide: connection.fromSide, toSide: connection.toSide, bendPoints: connection.bendPoints };
+}
+
+/**
+ * Where a new bend point goes for one drawn Connection: at the midpoint of its
+ * longest leg, so the route bends where there is room. `index` is its place in
+ * the Connection's bend list.
+ */
+export function bendInsertionFor(geometry: ConnectionGeometry): { index: number; point: CanvasPoint } {
+	const anchors = [geometry.segments[0]!.start, ...geometry.bendPoints, geometry.segments[geometry.segments.length - 1]!.end];
+	let longest = 0;
+	let longestLength = -1;
+	for (let index = 0; index < anchors.length - 1; index++) {
+		const from = anchors[index]!;
+		const to = anchors[index + 1]!;
+		const length = Math.hypot(to.x - from.x, to.y - from.y);
+		if (length > longestLength) {
+			longest = index;
+			longestLength = length;
+		}
+	}
+	const from = anchors[longest]!;
+	const to = anchors[longest + 1]!;
+	return {
+		index: longest,
+		point: { x: Math.round((from.x + to.x) / 2), y: Math.round((from.y + to.y) / 2) },
+	};
+}
+
+/** The route each drawn Connection follows, keyed by Connection id, for sampling a walkthrough message along it. */
 export function playbackRoutes(geometries: ConnectionGeometry[]): Map<string, PlaybackRoute> {
-	return new Map(geometries.map((geometry) => [
-		geometry.connection.id,
-		{ start: geometry.start, cp1: geometry.cp1, cp2: geometry.cp2, end: geometry.end },
-	]));
+	return new Map(geometries.map((geometry) => [geometry.connection.id, { segments: geometry.segments }]));
 }
 
 /** Estimates the width of a connection label pill from its text. */

@@ -13,6 +13,8 @@ import type { CanvasPoint, CanvasViewport, DatabaseDesignSummary, WorkspaceState
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
 	componentsLinkedToDesign,
+	SYSTEM_CONNECTION_BEND_LIMIT,
+	SYSTEM_CONNECTION_SIDES,
 	SYSTEM_COMPONENT_KINDS,
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_COLLAPSED_SIZE,
@@ -36,6 +38,7 @@ import {
 	type SystemComponentRemovalPlan,
 	type SystemConnectionRemovalPlan,
 	type SystemConnection,
+	type SystemConnectionSide,
 	type SystemDesign,
 	type SystemGroup,
 	type SystemService,
@@ -71,6 +74,7 @@ import { hiddenActivityStep, strongestReaction } from "../shared/walkthrough-pla
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
 import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
+	bendInsertionFor,
 	connectionGeometries,
 	fitViewport,
 	followViewport,
@@ -98,6 +102,7 @@ import {
 	DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
@@ -376,7 +381,13 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		} else if (gesture.mode === "group-resize") {
 			const { id, size } = gesture;
 			onApply(() => client.resizeSystemGroup(id, size));
-		} else {
+		} else if (gesture.mode === "bend" || gesture.mode === "label") {
+			// The whole gesture saves once, from the connection as the preview shows it.
+			const after = findSystemConnection(previewScene(design!, gesture), gesture.id);
+			if (!after) return;
+			const changes = gesture.mode === "bend" ? { bendPoints: after.bendPoints ?? [] } : { labelOffset: after.labelOffset ?? null };
+			onApply(() => client.updateSystemConnection(gesture.id, changes));
+		} else if (gesture.mode === "resize") {
 			const { id, size } = gesture;
 			onApply(() => client.resizeSystemService(id, size));
 		}
@@ -420,6 +431,23 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		event.stopPropagation();
 		if (event.button !== 0 || connectingFrom !== undefined) return;
 		startDrag(event, { mode: "group-resize", id: group.id, size: group.size }, group.position, group.size);
+	}
+
+	/** A bend point is dragged from its authored position, so the handle stays under the pointer as the route bends. */
+	function handleBendPointerDown(event: React.PointerEvent<SVGCircleElement>, connection: SystemConnection, index: number) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		const point = connection.bendPoints?.[index];
+		if (!point) return;
+		startDrag(event, { mode: "bend", id: connection.id, index, point }, point, SYSTEM_SERVICE_MIN_SIZE);
+	}
+
+	/** Only a selected Connection's label moves, so a press on an unselected label still just selects it. */
+	function handleLabelPointerDown(event: React.PointerEvent<SVGGElement>, connection: SystemConnection) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		const offset = connection.labelOffset ?? { x: 0, y: 0 };
+		startDrag(event, { mode: "label", id: connection.id, offset }, offset, SYSTEM_SERVICE_MIN_SIZE);
 	}
 
 	function handleComponentClick(component: SystemComponent) {
@@ -821,7 +849,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 								</g>
 							);
 						})}
-						{geometries.map(({ connection, pathString, labelPoint }) => {
+						{geometries.map(({ connection, pathString, labelPoint, bendPoints }) => {
 							const selected = selection?.kind === "connection" && selection.id === connection.id;
 							const traced = highlight?.connectionId === connection.id;
 							const width = labelWidth(connection.label);
@@ -852,7 +880,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<g
 										transform={`translate(${labelPoint.x} ${labelPoint.y})`}
 										pointerEvents="all"
-										onPointerDown={(event) => event.stopPropagation()}
+										onPointerDown={(event) => (selected ? handleLabelPointerDown(event, connection) : event.stopPropagation())}
 										onClick={(event) => {
 											event.stopPropagation();
 											setSelection({ kind: "connection", id: connection.id });
@@ -874,6 +902,19 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 											{truncateLabel(connection.label, 26)}
 										</text>
 									</g>
+									{selected && bendPoints.map((point, index) => (
+										<circle
+											key={index}
+											data-bend-handle={connection.id}
+											cx={point.x}
+											cy={point.y}
+											r={5}
+											className="cursor-move"
+											onPointerDown={(event) => handleBendPointerDown(event, connection, index)}
+											onClick={(event) => event.stopPropagation()}
+											style={{ fill: "var(--color-paper-raised)", stroke: "var(--color-pencil)", strokeWidth: 1.5 }}
+										/>
+									))}
 								</g>
 							);
 						})}
@@ -1284,6 +1325,12 @@ function sceneAfterPointer(drag: Drag, dx: number, dy: number): SceneDrag {
 	}
 	if (scene.mode === "group-resize") {
 		return { mode: "group-resize", id: scene.id, size: resizedGroupSize(drag.originSize, dx, dy) };
+	}
+	if (scene.mode === "bend") {
+		return { ...scene, point: { x: Math.round(drag.origin.x + dx), y: Math.round(drag.origin.y + dy) } };
+	}
+	if (scene.mode === "label") {
+		return { ...scene, offset: { x: Math.round(drag.origin.x + dx), y: Math.round(drag.origin.y + dy) } };
 	}
 	const position = { x: Math.round(drag.origin.x + dx), y: Math.round(drag.origin.y + dy) };
 	if (scene.mode === "component") return { mode: "component", id: scene.id, position };
@@ -1997,6 +2044,41 @@ function endpointName(design: SystemDesign, endpointId: string): string {
 	return findSystemComponent(design, endpointId)?.name ?? findSystemService(design, endpointId)?.name ?? "Missing";
 }
 
+const SIDE_LABELS: Record<SystemConnectionSide, string> = {
+	auto: "Automatic",
+	top: "Top",
+	right: "Right",
+	bottom: "Bottom",
+	left: "Left",
+};
+
+function SideChoice({ label, value, onChange }: { label: string; value: SystemConnectionSide; onChange: (side: SystemConnectionSide) => void }) {
+	return (
+		<div className="flex items-center justify-between gap-2">
+			<span className="text-ink-3">{label}</span>
+			<Select value={value} onValueChange={(next) => onChange(next as SystemConnectionSide)}>
+				<SelectTrigger aria-label={`${label} side`} className="w-32">
+					<SelectValue />
+				</SelectTrigger>
+				<SelectContent>
+					{SYSTEM_CONNECTION_SIDES.map((side) => (
+						<SelectItem key={side} value={side}>{SIDE_LABELS[side]}</SelectItem>
+					))}
+				</SelectContent>
+			</Select>
+		</div>
+	);
+}
+
+/** Adds a bend point at the middle of the Connection's longest leg, so it can be dragged into shape on the canvas. */
+function addBendPoint(connection: SystemConnection, design: SystemDesign, client: Client, onApply: (action: () => Promise<WorkspaceState>) => void) {
+	const geometry = connectionGeometries(design).find((item) => item.connection.id === connection.id);
+	if (!geometry) return;
+	const { index, point } = bendInsertionFor(geometry);
+	const bends = connection.bendPoints ?? [];
+	onApply(() => client.updateSystemConnection(connection.id, { bendPoints: [...bends.slice(0, index), point, ...bends.slice(index)] }));
+}
+
 function ConnectionInspector({
 	connection,
 	design,
@@ -2017,6 +2099,8 @@ function ConnectionInspector({
 	const [protocol, setProtocol] = useState(connection.protocol ?? "");
 	const source = endpointName(design, connection.sourceId);
 	const target = endpointName(design, connection.targetId);
+	const bends = connection.bendPoints ?? [];
+	const hasRouteEdits = connection.fromSide !== undefined || connection.toSide !== undefined || bends.length > 0 || connection.labelOffset !== undefined;
 
 	function commitLabel() {
 		const trimmed = label.trim();
@@ -2075,6 +2159,57 @@ function ConnectionInspector({
 				<span className="text-ink-3">Protocol (optional)</span>
 				<Input value={protocol} maxLength={500} placeholder="e.g. HTTPS, AMQP" onChange={(event) => setProtocol(event.target.value)} onBlur={commitProtocol} />
 			</label>
+			<div className="flex flex-col gap-2 border-t border-rule pt-3">
+				<span className="kicker">Route</span>
+				<SideChoice
+					label="Leaves from"
+					value={connection.fromSide ?? "auto"}
+					onChange={(side) => onApply(() => client.updateSystemConnection(connection.id, { fromSide: side }))}
+				/>
+				<SideChoice
+					label="Arrives at"
+					value={connection.toSide ?? "auto"}
+					onChange={(side) => onApply(() => client.updateSystemConnection(connection.id, { toSide: side }))}
+				/>
+				<div className="flex items-center justify-between">
+					<span className="text-ink-3">Bend points ({bends.length})</span>
+					<Button
+						type="button"
+						variant="ghost"
+						size="sm"
+						disabled={bends.length >= SYSTEM_CONNECTION_BEND_LIMIT}
+						onClick={() => addBendPoint(connection, design, client, onApply)}
+					>
+						Add bend point
+					</Button>
+				</div>
+				{bends.map((point, index) => (
+					<div key={index} className="flex items-center justify-between gap-2 rounded-sm bg-paper-tint px-2 py-1">
+						<span className="text-ink-2">Bend {index + 1} · {Math.round(point.x)}, {Math.round(point.y)}</span>
+						<Button
+							type="button"
+							size="icon"
+							variant="ghost"
+							aria-label={`Remove bend ${index + 1}`}
+							className="size-6"
+							onClick={() => onApply(() => client.updateSystemConnection(connection.id, { bendPoints: bends.filter((_, other) => other !== index) }))}
+						>
+							<X className="size-3" />
+						</Button>
+					</div>
+				))}
+				<p className="text-[12px] text-ink-3">Drag a bend point or the label on the canvas to shape the route.</p>
+				<Button
+					type="button"
+					variant="ghost"
+					size="sm"
+					className="self-start"
+					disabled={!hasRouteEdits}
+					onClick={() => onApply(() => client.updateSystemConnection(connection.id, { fromSide: null, toSide: null, bendPoints: [], labelOffset: null }))}
+				>
+					Reset route
+				</Button>
+			</div>
 			<Button type="button" variant="strike" size="sm" className="self-start" onClick={onRemove}>
 				<Trash2 className="size-3.5" />
 				Remove connection

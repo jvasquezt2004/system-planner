@@ -3,9 +3,13 @@ import {
 	createDefaultProofArchitecture,
 	moveGroupDeduplicated,
 	computeConnectionPath,
+	pathStringOf,
+	routeConnectionPath,
+	samplePath,
 	scheduleWalkthrough,
 	getPlaybackFrame,
 	getEndpointAnchor,
+	sideAnchor,
 } from "./architecture-proof";
 
 describe("architecture proof model and invariants", () => {
@@ -194,5 +198,79 @@ describe("architecture proof model and invariants", () => {
 		expect(reducedFrame.activeParticles.length).toBe(0);
 		expect(reducedFrame.highlightedConnectionIds).toEqual(normalFrame.highlightedConnectionIds);
 		expect(reducedFrame.activeStep?.id).toBe(normalFrame.activeStep?.id);
+	});
+});
+
+describe("routed Connection paths", () => {
+	const source = { x: 0, y: 0, width: 180, height: 84 };
+	const target = { x: 400, y: 0, width: 180, height: 84 };
+
+	test("without hints the route is the automatic curve, so existing Connections draw as they did", () => {
+		const automatic = computeConnectionPath(source, target, -1.2);
+		const [piece] = routeConnectionPath(source, target, -1.2);
+		expect(piece).toEqual({ start: automatic.start, cp1: automatic.cp1, cp2: automatic.cp2, end: automatic.end });
+		expect(pathStringOf([piece!])).toBe(automatic.pathString);
+	});
+
+	test("a manual side attaches to the midpoint of that side of the endpoint", () => {
+		expect(routeConnectionPath(source, target, 0, { fromSide: "top" })[0]!.start).toEqual({ x: 90, y: 0 });
+		expect(sideAnchor(target, "bottom")).toEqual({ x: 490, y: 84 });
+		const pieces = routeConnectionPath(source, target, 0, { toSide: "bottom" });
+		expect(pieces[pieces.length - 1]!.end).toEqual({ x: 490, y: 84 });
+	});
+
+	test("bend points split the route into one piece per leg, and the path passes exactly through each one", () => {
+		const bends = [{ x: 200, y: -120 }, { x: 300, y: 200 }];
+		const pieces = routeConnectionPath(source, target, 0, { bendPoints: bends });
+		expect(pieces).toHaveLength(3);
+		expect(pieces[0]!.end).toEqual(bends[0]!);
+		expect(pieces[1]!.start).toEqual(bends[0]!);
+		expect(pieces[1]!.end).toEqual(bends[1]!);
+		expect(pieces[2]!.start).toEqual(bends[1]!);
+		const path = pathStringOf(pieces);
+		expect(path.startsWith("M 90.0 0.0 C ")).toBe(true);
+		expect(path).toContain("200.0 -120.0");
+		expect(path).toContain("300.0 200.0");
+	});
+
+	test("sampling a routed path is continuous across its pieces and lands on both ends", () => {
+		const pieces = routeConnectionPath(source, target, 0, { bendPoints: [{ x: 200, y: -120 }, { x: 300, y: 200 }] });
+		let previous = samplePath(pieces, 0);
+		expect(previous).toEqual(pieces[0]!.start);
+		let largestStep = 0;
+		for (let step = 1; step <= 400; step++) {
+			const point = samplePath(pieces, step / 400);
+			largestStep = Math.max(largestStep, Math.hypot(point.x - previous.x, point.y - previous.y));
+			previous = point;
+		}
+		expect(largestStep).toBeLessThan(10);
+		expect(samplePath(pieces, 1)).toEqual(pieces[pieces.length - 1]!.end);
+	});
+
+	test("parallel routes through the same bend points keep distinct paths while their bends stay exact", () => {
+		const bends = [{ x: 200, y: -120 }];
+		const upper = routeConnectionPath(source, target, -0.5, { bendPoints: bends });
+		const lower = routeConnectionPath(source, target, 0.5, { bendPoints: bends });
+		expect(pathStringOf(upper)).not.toBe(pathStringOf(lower));
+		expect(upper[0]!.end).toEqual(bends[0]!);
+		expect(lower[0]!.end).toEqual(bends[0]!);
+	});
+
+	test("the technical-proof fixture's duplicate-endpoint Connections route apart, and a bent one still reaches its endpoints", () => {
+		const arch = createDefaultProofArchitecture();
+		const post = arch.connections.find((connection) => connection.id === "conn-upload-post")!;
+		const poll = arch.connections.find((connection) => connection.id === "conn-upload-poll")!;
+		const from = getEndpointAnchor(arch, post.sourceId).rect;
+		const to = getEndpointAnchor(arch, post.targetId).rect;
+
+		const postPath = routeConnectionPath(from, to, post.routeOffset ?? 0);
+		const pollPath = routeConnectionPath(from, to, poll.routeOffset ?? 0);
+		expect(pathStringOf(postPath)).not.toBe(pathStringOf(pollPath));
+
+		const bend = { x: from.x + from.width / 2, y: from.y - 60 };
+		const bent = routeConnectionPath(from, to, post.routeOffset ?? 0, { bendPoints: [bend] });
+		expect(samplePath(bent, 0)).toEqual(bent[0]!.start);
+		expect(samplePath(bent, 1)).toEqual(bent[bent.length - 1]!.end);
+		expect(bent[0]!.end).toEqual(bend);
 	});
 });

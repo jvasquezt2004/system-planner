@@ -6,14 +6,16 @@ import {
 	addSystemService,
 	createEmptySystemDesign,
 	moveSystemComponent,
+	updateSystemConnection,
 	moveSystemGroup,
 	openSpotNear,
 	SYSTEM_SERVICE_COLLAPSED_SIZE,
 	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
-import { sampleCubicBezier } from "../shared/architecture-proof";
+import { samplePath } from "../shared/architecture-proof";
 import {
+	bendInsertionFor,
 	clampZoom,
 	connectionGeometries,
 	drawnEndpointRect,
@@ -32,6 +34,80 @@ import {
 	sceneBounds,
 } from "./system-design-geometry";
 import { systemServiceFocus } from "../shared/system-design";
+
+describe("system design Connection routes", () => {
+	function routedDesign(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "a", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "b", position: { x: 320, y: 0 } });
+		return addSystemConnection(design, { id: "ab", sourceId: "a", targetId: "b", label: "Calls" });
+	}
+
+	test("a manual side keeps its attachment point while the far endpoint moves, and the route follows the move", () => {
+		const design = updateSystemConnection(routedDesign(), "ab", { fromSide: "top" });
+		const before = connectionGeometries(design)[0]!;
+		expect(before.start).toEqual({ x: 90, y: 0 });
+
+		const after = connectionGeometries(moveSystemComponent(design, "b", { x: 320, y: 240 }))[0]!;
+		expect(after.start).toEqual({ x: 90, y: 0 });
+		expect(after.end).not.toEqual(before.end);
+		expect(after.connection.id).toBe("ab");
+	});
+
+	test("a bend point is drawn where it is authored, and the route passes through it", () => {
+		const design = updateSystemConnection(routedDesign(), "ab", { bendPoints: [{ x: 250, y: -120 }] });
+		const geometry = connectionGeometries(design)[0]!;
+		expect(geometry.bendPoints).toEqual([{ x: 250, y: -120 }]);
+		expect(geometry.segments).toHaveLength(2);
+		expect(geometry.segments[0]!.end).toEqual({ x: 250, y: -120 });
+		expect(geometry.segments[1]!.start).toEqual({ x: 250, y: -120 });
+		expect(geometry.pathString).toContain("250.0 -120.0");
+	});
+
+	test("dragging one bend point previews only that point, keeps the Connection id, and saves the whole bend list", () => {
+		const design = updateSystemConnection(routedDesign(), "ab", { bendPoints: [{ x: 100, y: -60 }, { x: 220, y: -60 }] });
+		const dragged = previewScene(design, { mode: "bend", id: "ab", index: 1, point: { x: 230, y: 40 } });
+		expect(dragged.connections[0]!.id).toBe("ab");
+		expect(dragged.connections[0]!.bendPoints).toEqual([{ x: 100, y: -60 }, { x: 230, y: 40 }]);
+		expect(design.connections[0]!.bendPoints).toEqual([{ x: 100, y: -60 }, { x: 220, y: -60 }]);
+	});
+
+	test("a label offset moves the label from the route's midpoint and leaves the path itself unchanged", () => {
+		const base = connectionGeometries(routedDesign())[0]!;
+		const moved = connectionGeometries(previewScene(routedDesign(), { mode: "label", id: "ab", offset: { x: 20, y: -30 } }))[0]!;
+		expect(moved.labelPoint).toEqual({ x: base.labelPoint.x + 20, y: base.labelPoint.y - 30 });
+		expect(moved.pathString).toBe(base.pathString);
+	});
+
+	test("parallel Connections through the same bend points keep distinct paths and label points, and their bends stay exact", () => {
+		let design = addSystemConnection(routedDesign(), { id: "retries", sourceId: "a", targetId: "b", label: "Retries" });
+		design = updateSystemConnection(design, "ab", { bendPoints: [{ x: 160, y: -100 }] });
+		design = updateSystemConnection(design, "retries", { bendPoints: [{ x: 160, y: -100 }] });
+		const [first, second] = connectionGeometries(design);
+		expect(first!.pathString).not.toBe(second!.pathString);
+		expect(first!.labelPoint).not.toEqual(second!.labelPoint);
+		expect(first!.bendPoints).toEqual([{ x: 160, y: -100 }]);
+		expect(second!.bendPoints).toEqual([{ x: 160, y: -100 }]);
+	});
+
+	test("a new bend point goes in the middle of the longest leg, at the place that keeps the route in order", () => {
+		expect(bendInsertionFor(connectionGeometries(routedDesign())[0]!)).toEqual({ index: 0, point: { x: 250, y: 42 } });
+
+		const bent = updateSystemConnection(routedDesign(), "ab", { bendPoints: [{ x: 100, y: -80 }, { x: 300, y: -80 }] });
+		expect(bendInsertionFor(connectionGeometries(bent)[0]!)).toEqual({ index: 1, point: { x: 200, y: -80 } });
+	});
+
+	test("a saved route plays along the same pieces the overview draws, and the label stays offset from the route", () => {
+		const design = updateSystemConnection(routedDesign(), "ab", { bendPoints: [{ x: 250, y: -120 }], labelOffset: { x: 10, y: 10 } });
+		const geometry = connectionGeometries(design)[0]!;
+		const route = playbackRoutes([geometry]).get("ab")!;
+		expect(samplePath(route.segments, 0)).toEqual(geometry.start);
+		expect(samplePath(route.segments, 1)).toEqual(geometry.end);
+		const midpoint = samplePath(route.segments, 0.5);
+		expect(midpoint.x).toBeCloseTo(geometry.labelPoint.x - 10, 6);
+		expect(midpoint.y).toBeCloseTo(geometry.labelPoint.y - 10, 6);
+	});
+});
 
 describe("system design overview geometry", () => {
 	test("zoom keeps the canvas point under the pointer fixed", () => {
@@ -136,7 +212,7 @@ function ownedServiceDesign(): SystemDesign {
 
 describe("Walkthrough camera follow", () => {
 	test("follow centers the midpoint of the active route on the canvas at the zoom the author set", () => {
-		const route = { start: { x: 100, y: 200 }, cp1: { x: 200, y: 200 }, cp2: { x: 400, y: 200 }, end: { x: 500, y: 200 } };
+		const route = { segments: [{ start: { x: 100, y: 200 }, cp1: { x: 200, y: 200 }, cp2: { x: 400, y: 200 }, end: { x: 500, y: 200 } }] };
 		const viewport = followViewport({ x: 40, y: -90, zoom: 2 }, route, { width: 800, height: 600 });
 
 		// The midpoint (300, 200) lands on the screen centre (400, 300) at zoom 2.
@@ -144,7 +220,7 @@ describe("Walkthrough camera follow", () => {
 	});
 
 	test("follow leaves a route that already sits at the centre where it is", () => {
-		const route = { start: { x: 0, y: 0 }, cp1: { x: 0, y: 0 }, cp2: { x: 0, y: 0 }, end: { x: 800, y: 600 } };
+		const route = { segments: [{ start: { x: 0, y: 0 }, cp1: { x: 0, y: 0 }, cp2: { x: 0, y: 0 }, end: { x: 800, y: 600 } }] };
 		expect(followViewport({ x: 0, y: 0, zoom: 1 }, route, { width: 800, height: 600 })).toEqual({ x: 0, y: 0, zoom: 1 });
 	});
 });
@@ -158,9 +234,9 @@ describe("Walkthrough playback routes", () => {
 
 		const geometry = connectionGeometries(design)[0]!;
 		const route = playbackRoutes([geometry]).get("ab")!;
-		expect(route.start).toEqual(geometry.start);
-		expect(route.end).toEqual(geometry.end);
-		expect(sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, 0.5)).toEqual(geometry.labelPoint);
+		expect(route.segments[0]!.start).toEqual(geometry.start);
+		expect(route.segments[0]!.end).toEqual(geometry.end);
+		expect(samplePath(route.segments, 0.5)).toEqual({ x: geometry.labelPoint.x, y: geometry.labelPoint.y });
 	});
 
 	test("moving a Component changes the route its playback follows, not the rest of the design's routes", () => {
@@ -173,7 +249,7 @@ describe("Walkthrough playback routes", () => {
 
 		const before = playbackRoutes(connectionGeometries(design));
 		const after = playbackRoutes(connectionGeometries(moveSystemComponent(design, "b", { x: 320, y: 200 })));
-		expect(after.get("ab")!.end).not.toEqual(before.get("ab")!.end);
+		expect(after.get("ab")!.segments[0]!.end).not.toEqual(before.get("ab")!.segments[0]!.end);
 		expect(after.get("ac")).toEqual(before.get("ac"));
 	});
 });
