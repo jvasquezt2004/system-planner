@@ -57,6 +57,19 @@ and animation implementation remain open.
 | Supporting capabilities | Observability | Logs, metrics, traces, alert purpose | Receive telemetry, record, alert |
 | Custom | Custom | Chosen icon/shape and descriptive annotations | Shared send/receive/process/succeed/fail presets |
 
+## Reaction registry contract
+
+Walkthrough playback reads reactions through `src/shared/component-reactions.ts`.
+Each kind maps to a preset that supplies the visible wording for the five shared
+actions. Kinds without a preset use the generic wording. Artwork and wording can
+change per kind without changing the authored timeline, which stays the same for
+every kind (ADR-0010).
+
+- `reactionPresetFor(kind)` resolves the preset for a kind, falling back to generic.
+- Kind-specific presets (#136–#139) add an entry to `KIND_REACTION_PRESETS`.
+- Presets style reactions only. A preset cannot change durations, arrival time,
+  the route, or the step order.
+
 ## Technology variations
 
 The catalog treats technology names as optional refinements of a kind,
