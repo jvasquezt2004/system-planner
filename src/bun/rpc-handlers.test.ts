@@ -103,22 +103,24 @@ describe("RPC request handlers", () => {
 
 		await handlers.beginScenarioRun({ scenarioId: "s1", designId: "d-1" });
 		expect(capturedCalls.beginScenarioRun).toEqual({ scenarioId: "s1", designId: "d-1" });
-		await handlers.addColumn({ tableId: "t1", name: "email", type: "text" });
-		expect(capturedCalls.addColumn).toEqual({ tableId: "t1", name: "email", type: "text" });
+		await handlers.addColumn({ designId: "d-1", tableId: "t1", name: "email", type: "text" });
+		expect(capturedCalls.addColumn).toEqual({ designId: "d-1", tableId: "t1", name: "email", type: "text" });
 
-		await handlers.updateColumn({ tableId: "t1", columnId: "c1", changes: { name: "email_address" } });
-		expect(capturedCalls.updateColumn).toEqual({ tableId: "t1", columnId: "c1", changes: { name: "email_address" } });
+		await handlers.updateColumn({ designId: "d-1", tableId: "t1", columnId: "c1", changes: { name: "email_address" } });
+		expect(capturedCalls.updateColumn).toEqual({ designId: "d-1", tableId: "t1", columnId: "c1", changes: { name: "email_address" } });
 
-		await handlers.removeColumn({ tableId: "t1", columnId: "c1", confirmed: true });
-		expect(capturedCalls.removeColumn).toEqual({ tableId: "t1", columnId: "c1", confirmed: true });
+		await handlers.removeColumn({ designId: "d-1", tableId: "t1", columnId: "c1", confirmed: true });
+		expect(capturedCalls.removeColumn).toEqual({ designId: "d-1", tableId: "t1", columnId: "c1", confirmed: true });
 
 		await handlers.addRelationship({
+			designId: "d-1",
 			referencingTableId: "t2",
 			referencedTableId: "t1",
 			cardinality: "one-to-many",
 			junctionPosition: { x: 50, y: 50 },
 		});
 		expect(capturedCalls.addRelationship).toEqual({
+			designId: "d-1",
 			referencingTableId: "t2",
 			referencedTableId: "t1",
 			cardinality: "one-to-many",
@@ -126,11 +128,13 @@ describe("RPC request handlers", () => {
 		});
 
 		await handlers.updateRelationship({
+			designId: "d-1",
 			relationshipId: "r1",
 			required: true,
 			cardinality: "one-to-one",
 		});
 		expect(capturedCalls.updateRelationship).toEqual({
+			designId: "d-1",
 			relationshipId: "r1",
 			required: true,
 			cardinality: "one-to-one",

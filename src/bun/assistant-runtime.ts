@@ -959,8 +959,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				const functions = (design.functions ?? []).map((fn) => fn.id === input.id ? { ...fn, body: after } : fn);
 				state = await workspace.applyAssistantDesign(
 					{ ...design, functions },
-					turnIds.get(conversationId),
 					target.designId,
+					turnIds.get(conversationId),
 				);
 			}
 			assertTargetState(state, target, "The project or Design changed before the code write completed.");

@@ -65,7 +65,7 @@ describe("Assistant pi agent runtime", () => {
 		expect(saved?.title).toBe("What is in the design?");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["users", "posts"]);
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: false });
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 	});
 	test("folds real pi events into the same visible transcript as saved messages", async () => {
@@ -127,7 +127,7 @@ describe("Assistant pi agent runtime", () => {
 		const second = await workspace.createProject({ name: "Other project" });
 		if (!second.project) throw new Error("Expected the second project to be open.");
 		const secondProjectId = second.project.id;
-		await workspace.addTable({ name: "only_in_other_project" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "only_in_other_project" });
 		await workspace.openProject({ projectId: conversationProjectId });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -213,7 +213,7 @@ describe("Assistant pi agent runtime", () => {
 		expect(scripted.state.callCount).toBe(2);
 		expect(workspace.getState().design?.tables).toEqual([]);
 		expect(workspace.getState().design?.relationships).toEqual([]);
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 	});
 	test("rejects replaying an old destructive confirmation after the project changes", async () => {
@@ -285,8 +285,8 @@ describe("Assistant pi agent runtime", () => {
 			fauxAssistantMessage([fauxText("I have the updated context.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Read this project.", "scripted-model", "low");
-		await workspace.createScenario({ name: "review scenario" });
-		await workspace.createEdgeFunction({ name: "notify_change" });
+		await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "review scenario" });
+		await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "notify_change" });
 		await runtime.sendMessage(conversation.id, "What changed?", "scripted-model", "high");
 
 		expect(requests).toHaveLength(3);
@@ -320,7 +320,7 @@ describe("Assistant pi agent runtime", () => {
 				requestCount += 1;
 				if (requestCount === 2 && !insertedManualEdit) {
 					insertedManualEdit = true;
-					await workspace.addTable({ name: "manual_table" });
+					await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_table" });
 				}
 				return models.streamSimple(model, context, options);
 			},
@@ -335,7 +335,7 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "Create two tables.", "scripted-model");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_first", "manual_table", "assistant_second"]);
 
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["manual_table"]);
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: true });
 	});
@@ -384,13 +384,13 @@ describe("Assistant pi agent runtime", () => {
 				const realStore = openDesignStore(path);
 				return {
 					...realStore,
-					async saveDesign(projectId, design, save) {
+					async saveDesign(projectId, design, save, designId) {
 						if (blockNextTargetSave && projectId === targetProjectId) {
 							blockNextTargetSave = false;
 							saveStarted.resolve();
 							await saveGate.promise;
 						}
-						realStore.saveDesign(projectId, design, save);
+						realStore.saveDesign(projectId, design, save, designId);
 					},
 				};
 			},
@@ -401,7 +401,7 @@ describe("Assistant pi agent runtime", () => {
 		targetProjectId = target.project.id;
 		const other = await workspace.createProject({ name: "Other project" });
 		if (!other.project) throw new Error("Expected other project.");
-		await workspace.addTable({ name: "private_other_table" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "private_other_table" });
 		await workspace.openProject({ projectId: targetProjectId });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -522,7 +522,7 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "Drop users.", "scripted-model");
 		const firstPlan = runtime.loadConversation(conversation.id)!.messages.find(({ role }) => role === "toolResult")!;
 		const toolCallId = (firstPlan.payload as { toolCallId: string }).toolCallId;
-		await workspace.addTable({ name: "unrelated" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "unrelated" });
 
 		const refreshed = await runtime.confirmDdlDrop(conversation.id, toolCallId);
 
@@ -576,11 +576,11 @@ describe("Assistant pi agent runtime", () => {
 		workspaces.push(workspace);
 		const state = await workspace.createProject({ name: "Code tools" });
 		if (!state.project) throw new Error("Expected the project to be open.");
-		await workspace.addTable({ name: "Books" });
-		const scenario = await workspace.createScenario({ name: "Original scenario" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
+		const scenario = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Original scenario" });
 		const scenarioId = scenario.scenarios[0]?.id;
 		if (!scenarioId) throw new Error("Expected a saved Scenario.");
-		const edge = await workspace.createEdgeFunction({ name: "original_handler" });
+		const edge = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "original_handler" });
 		const edgeId = edge.edgeFunctions[0]?.id;
 		if (!edgeId) throw new Error("Expected a saved Edge function.");
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -761,7 +761,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const state = await workspace.createProject({ name: "Function undo" });
 		if (!state.project) throw new Error("Expected the project to be open.");
 		const functionId = "turn-function";
-		await workspace.updateFunctions({ functions: [{
+		await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!, functions: [{
 			id: functionId,
 			name: "turn_function",
 			arguments: [],
@@ -790,10 +790,10 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 1");
-		await workspace.redo();
+		await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 	});
@@ -1141,7 +1141,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			fauxAssistantMessage([fauxText("Created the project changes.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Create the project changes.", "scripted-model");
-		await workspace.setViewport({ x: 140, y: -35, zoom: 1.4 });
+		await workspace.setViewport({ designId: workspace.getState().activeDesignId!, x: 140, y: -35, zoom: 1.4 });
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
 		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["assistant_scenario"]);
@@ -1193,7 +1193,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		]);
 		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
-		await workspace.addTable({ name: "hand_table" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "hand_table" });
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		await runtime.revertTurn(conversation.id);
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["hand_table"]);
@@ -1623,8 +1623,8 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		workspaces.push(workspace);
 		const state = await workspace.createProject({ name: "Stale DDL" });
 		if (!state.project) throw new Error("Expected the project to be open.");
-		await workspace.addTable({ name: "authors" });
-		await workspace.addTable({ name: "categories" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "authors" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "categories" });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
 		const models = createModels();
@@ -1644,8 +1644,8 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 
 		// Designer modifies authors and creates an independent table logs:
 		const authorsTable = workspace.getState().design!.tables.find((t) => t.name === "authors")!;
-		await workspace.addColumn({ tableId: authorsTable.id, name: "bio", type: "text" });
-		await workspace.addTable({ name: "logs" });
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: authorsTable.id, name: "bio", type: "text" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "logs" });
 
 		// Turn 2: Assistant tries to alter authors without re-reading -> rejected as stale.
 		scripted.setResponses([
@@ -1668,7 +1668,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("Added description to categories.")]),
 		]);
-		await workspace.addTable({ name: "reviews" }); // independent manual edit
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "reviews" }); // independent manual edit
 		await runtime.sendMessage(conversation.id, "Re-read and alter categories.", "scripted-model");
 		const finalTables = workspace.getState().design!.tables.map((t) => t.name);
 		expect(finalTables).toContain("authors");
@@ -1687,9 +1687,9 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		workspaces.push(workspace);
 		const state = await workspace.createProject({ name: "Stale Source" });
 		if (!state.project) throw new Error("Expected the project to be open.");
-		const s1State = await workspace.createScenario({ name: "Scenario 1" });
+		const s1State = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario 1" });
 		const s1 = s1State.scenarios[0]!;
-		await workspace.createScenario({ name: "Scenario 2" });
+		await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario 2" });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
 		const models = createModels();
@@ -1706,7 +1706,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		await runtime.sendMessage(conversation.id, "Read.", "scripted-model");
 
 		// Designer manually edits Scenario 1
-		await workspace.updateScenarioSource({ scenarioId: s1.id, source: "console.log('hand edit');" });
+		await workspace.updateScenarioSource({ designId: workspace.getState().activeDesignId!, scenarioId: s1.id, source: "console.log('hand edit');" });
 
 		// Assistant tries to write to Scenario 1
 		scripted.setResponses([
@@ -1748,10 +1748,11 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 
 		// Designer manually adds child_table and a foreign key referencing parent_table
-		const afterParent = await workspace.addTable({ name: "child_table" });
+		const afterParent = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "child_table" });
 		const parentTable = afterParent.design!.tables.find((t) => t.name === "parent_table")!;
 		const childTable = afterParent.design!.tables.find((t) => t.name === "child_table")!;
 		await workspace.addRelationship({
+			designId: workspace.getState().activeDesignId!,
 			referencingTableId: childTable.id,
 			referencedTableId: parentTable.id,
 			cardinality: "one-to-many",
@@ -1793,7 +1794,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 
 		const scenario = workspace.getState().scenarios.find((s) => s.name === "assistant_flow")!;
-		await workspace.updateScenarioSource({ scenarioId: scenario.id, source: "console.log('manual edit');" });
+		await workspace.updateScenarioSource({ designId: workspace.getState().activeDesignId!, scenarioId: scenario.id, source: "console.log('manual edit');" });
 
 		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(
 			/Cannot revert Assistant turn due to conflicting items: Scenario "assistant_flow" was modified after this turn/,
@@ -1852,9 +1853,9 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		// SQLite database was rolled back and still contains t1, s1, e1:
 		const loadedProject = store.loadProject(state.project.id);
 		expect(loadedProject!.design.tables.map((t) => t.name)).toEqual(["t1"]);
-		const loadedScenarios = store.loadScenarios(state.project.id);
+		const loadedScenarios = store.loadScenarios(state.project.id, state.activeDesignId!);
 		expect(loadedScenarios.scenarios.map((s) => s.name)).toEqual(["s1"]);
-		const loadedEdge = store.loadEdgeFunctions(state.project.id);
+		const loadedEdge = store.loadEdgeFunctions(state.project.id, state.activeDesignId!);
 		expect(loadedEdge.edgeFunctions.map((e) => e.name)).toEqual(["e1"]);
 
 		// When persistence succeeds, revert finishes cleanly
@@ -1897,7 +1898,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 
 		const reverting = runtime.revertTurn(conversation.id);
 		await entered;
-		await workspace.addTable({ name: "manual_during_restore" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_during_restore" });
 		release();
 		await reverting;
 
@@ -1939,7 +1940,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["kept_live"]);
 
 		// Designer adds an independent manual table
-		await workspace.addTable({ name: "hand_table" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "hand_table" });
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 
 		// Revert removes kept_live and keeps hand_table
@@ -1968,7 +1969,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			if (!probeFired && event.design?.tables.some((t) => t.name === "assistant_table")) {
 				probeFired = true;
 				queueMicrotask(() => {
-					void workspace.addTable({ name: "manual_during_tool" }).then(() => resolveManual());
+					void workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_during_tool" }).then(() => resolveManual());
 				});
 			}
 		});
@@ -2021,6 +2022,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 
 		const fn = workspace.getState().design!.functions![0]!;
 		await workspace.updateFunctions({
+			designId: workspace.getState().activeDesignId!,
 			functions: [{ ...fn, body: "SELECT 2;" }],
 		});
 
@@ -2040,9 +2042,9 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const state = await workspace.createProject({ name: "Preserve Metadata" });
 		if (!state.project) throw new Error("Expected the project to be open.");
 
-		const tableState = await workspace.addTable({ name: "users" });
+		const tableState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "users" });
 		const usersTable = tableState.design!.tables[0]!;
-		await workspace.addColumn({ tableId: usersTable.id, name: "email", type: "text" });
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: usersTable.id, name: "email", type: "text" });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
 		const models = createModels();
@@ -2062,14 +2064,17 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const updatedUsers = workspace.getState().design!.tables.find((t) => t.name === "users")!;
 		const emailCol = updatedUsers.columns.find((c) => c.name === "email")!;
 		await workspace.updateIndexes({
+			designId: workspace.getState().activeDesignId!,
 			tableId: updatedUsers.id,
 			indexes: [{ id: "idx-1", name: "idx_users_email", method: "btree", keys: [{ columnId: emailCol.id }], unique: false }],
 		});
 		await workspace.updateUniqueConstraints({
+			designId: workspace.getState().activeDesignId!,
 			tableId: updatedUsers.id,
 			uniqueConstraints: [{ id: "uc-1", name: "uc_users_email", columnIds: [emailCol.id] }],
 		});
 		await workspace.updatePolicies({
+			designId: workspace.getState().activeDesignId!,
 			tableId: updatedUsers.id,
 			rowLevelSecurity: true,
 			policies: [{ id: "pol-1", name: "allow_select", command: "SELECT", roles: ["public"], mode: "permissive", using: "true", withCheck: "" }],
@@ -2092,7 +2097,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const state = await workspace.createProject({ name: "Dep Val" });
 		if (!state.project) throw new Error("Expected the project to be open.");
 
-		await workspace.addTable({ name: "base_table" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "base_table" });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
 		const models = createModels();
@@ -2113,6 +2118,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const astTable = curDesign.tables.find((t) => t.name === "assistant_source")!;
 		const baseTable = curDesign.tables.find((t) => t.name === "base_table")!;
 		await workspace.addRelationship({
+			designId: workspace.getState().activeDesignId!,
 			referencingTableId: astTable.id,
 			referencedTableId: baseTable.id,
 			cardinality: "one-to-many",
@@ -2152,7 +2158,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["ast_t"]);
 		expect(workspace.getState().scenarios.map((s) => s.name)).toEqual(["ast_s"]);
 
-		store.saveScenarios(state.project.id, [{ id: "other", name: "other", source: "" }], { revision: 999, savedAt: Date.now() });
+		store.saveScenarios(state.project.id, [{ id: "other", name: "other", source: "" }], { revision: 999, savedAt: Date.now() }, state.activeDesignId!);
 
 		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(/Stale scenario revision/);
 
@@ -2169,8 +2175,8 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const state = await workspace.createProject({ name: "Alter Dep" });
 		if (!state.project) throw new Error("Expected the project to be open.");
 
-		await workspace.addTable({ name: "users" });
-		await workspace.addTable({ name: "orders" });
+		await workspace.addTable({ designId: state.activeDesignId!, name: "users" });
+		await workspace.addTable({ designId: state.activeDesignId!, name: "orders" });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
 		const models = createModels();
@@ -2186,7 +2192,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		await runtime.sendMessage(conversation.id, "Read.", "scripted-model");
 
 		const usersTable = workspace.getState().design!.tables.find((t) => t.name === "users")!;
-		await workspace.addColumn({ tableId: usersTable.id, name: "bio", type: "text" });
+		await workspace.addColumn({ designId: state.activeDesignId!, tableId: usersTable.id, name: "bio", type: "text" });
 
 		scripted.setResponses([
 			fauxAssistantMessage([

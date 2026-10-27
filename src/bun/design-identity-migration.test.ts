@@ -222,13 +222,13 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 			expect(projectRecord!.design.viewport).toEqual({ x: 10, y: 20, zoom: 1.5 });
 
 			// Scenarios carry the designId
-			const scenarioDoc = store.loadScenarios("proj-legacy-1");
+			const scenarioDoc = store.loadScenarios("proj-legacy-1", firstAssignedDesignId);
 			expect(scenarioDoc.scenarios).toHaveLength(1);
 			expect(scenarioDoc.scenarios[0].name).toBe("User Flow");
 			expect(scenarioDoc.designId).toBe(firstAssignedDesignId);
 
 			// Edge functions carry the designId
-			const edgeFuncDoc = store.loadEdgeFunctions("proj-legacy-1");
+			const edgeFuncDoc = store.loadEdgeFunctions("proj-legacy-1", firstAssignedDesignId);
 			expect(edgeFuncDoc.edgeFunctions).toHaveLength(1);
 			expect(edgeFuncDoc.edgeFunctions[0].name).toBe("webhook");
 			expect(edgeFuncDoc.designId).toBe(firstAssignedDesignId);
@@ -321,7 +321,7 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 		}
 	});
 
-	test("workspace exposes additive explicit-target actions and compatibility path", async () => {
+	test("workspace requires explicit target actions", async () => {
 		const dir = createTempDir();
 		const dbPath = join(dir, "workspace.sqlite");
 
@@ -334,19 +334,12 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 		expect(typeof state.activeDesignId).toBe("string");
 		const designId = state.activeDesignId!;
 
-		// Legacy action without designId works as before
-		const stateAfterLegacy = await workspace.addTable({ name: "legacy_table" });
-		expect(stateAfterLegacy.design?.tables.some((t) => t.name === "legacy_table")).toBe(true);
-		expect(stateAfterLegacy.save).toMatchObject({ status: "saved", designId });
-		expect(stateAfterLegacy.sql).toMatchObject({ designId });
-
-		// Additive action with explicit designId matching active design works
-		const stateAfterExplicit = await workspace.addTable({
-			designId,
-			name: "explicit_table",
-		});
+		await expect(workspace.addTable({ name: "missing_target" } as never)).rejects.toThrow(/design ID is required/i);
+		await expect(workspace.addTable({ designId: "", name: "empty_target" })).rejects.toThrow(/design ID is required/i);
+		const stateAfterExplicit = await workspace.addTable({ designId, name: "explicit_table" });
 		expect(stateAfterExplicit.design?.tables.some((t) => t.name === "explicit_table")).toBe(true);
 		expect(stateAfterExplicit.save).toMatchObject({ status: "saved", designId });
+		expect(stateAfterExplicit.sql).toMatchObject({ designId });
 
 		// Action with mismatched/unknown designId is rejected
 		await expect(
@@ -539,9 +532,9 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 			expect(record!.design.tables[0].name).toBe("early_table");
 
 			// Verify scenarios and edge functions queries still work cleanly on migrated DB
-			const scenarios = store.loadScenarios("early-proj");
+			const scenarios = store.loadScenarios("early-proj", record!.designId);
 			expect(scenarios.scenarios).toHaveLength(0);
-			const edgeFunctions = store.loadEdgeFunctions("early-proj");
+			const edgeFunctions = store.loadEdgeFunctions("early-proj", record!.designId);
 			expect(edgeFunctions.edgeFunctions).toHaveLength(0);
 		} finally {
 			store.close();
@@ -634,12 +627,12 @@ describe("ticket #119: explicit design identity and legacy compatibility", () =>
 			expect(record!.designId).toBe("design-primary");
 			expect(record!.design.tables[0].name).toBe("primary_table");
 
-			// Compatibility save without designId must update only the primary design
+			// Explicitly target the primary Design; the secondary Design stays unchanged.
 			const updatedPrimary: Design = {
 				...primaryDesign,
 				viewport: { x: 999, y: 999, zoom: 1 },
 			};
-			store.saveDesign("proj-multi", updatedPrimary, { revision: 2, documentRevision: 2, savedAt: 300 });
+			store.saveDesign("proj-multi", updatedPrimary, { revision: 2, documentRevision: 2, savedAt: 300 }, "design-primary");
 
 			// Verify primary design was updated
 			const reloadedPrimary = store.loadDesign("design-primary");

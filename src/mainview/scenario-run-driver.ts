@@ -1,7 +1,7 @@
 import type { Scenario, ScenarioRun, SandboxApiRequest, SandboxApiResponse, WorkspaceState } from "../shared/design";
 
 export type ScenarioRunClient = {
-	beginScenarioRun(action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }>;
+	beginScenarioRun(action: { scenarioId: string; designId: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: {
 		runId: string;
@@ -133,6 +133,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 	return {
 		async run(scenario, onStarted) {
 			if (disposed || active || !isCurrent()) return null;
+			if (!scenario.designId) throw new Error("A database design ID is required to run a Scenario.");
 			const token = options.getToken?.();
 			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
 			const run: ActiveRun = {
@@ -154,7 +155,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 			try {
 				const begun = await options.workspace.beginScenarioRun({
 					scenarioId: scenario.id,
-					...(scenario.designId ? { designId: scenario.designId } : {}),
+					designId: scenario.designId,
 				});
 				run.runId = begun.runId;
 				if (run.cancelled || active !== run || !isCurrent(run) || begun.state.project?.id == null) {

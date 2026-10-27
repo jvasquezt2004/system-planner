@@ -221,17 +221,17 @@ describe("PostgreSQL indexes and pgvector", () => {
 		const workspace = await createDesignWorkspace({ databasePath });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Feature model" });
-		const created = await workspace.addTable({ name: "Records" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Records" });
 		const tableId = created.design!.tables[0].id;
 		const index = { id: "name_idx", method: "btree" as const, keys: [{ columnId: created.design!.tables[0].columns[0].id, order: "desc" as const }] };
-		await workspace.updateIndexes({ tableId, indexes: [index] });
+		await workspace.updateIndexes({ designId: workspace.getState().activeDesignId!, tableId, indexes: [index] });
 		expect(workspace.getState().design?.tables[0].indexes).toEqual([index]);
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables[0].indexes ?? []).toEqual([]);
-		await workspace.redo();
+		await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables[0].indexes).toEqual([index]);
 		const enumType = { id: "record-state", name: "RecordState", labels: ["new", "saved"] };
-		await workspace.updateEnumTypes({ enumTypes: [enumType] });
+		await workspace.updateEnumTypes({ designId: workspace.getState().activeDesignId!, enumTypes: [enumType] });
 		await workspace.close();
 		workspaces.splice(workspaces.indexOf(workspace), 1);
 		const reopened = await createDesignWorkspace({ databasePath });
@@ -246,15 +246,15 @@ describe("PostgreSQL indexes and pgvector", () => {
 		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Removal dependencies" });
-		const created = await workspace.addTable({ name: "Records" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Records" });
 		const table = created.design!.tables[0];
 		const id = table.columns[0].id;
-		const titleState = await workspace.addColumn({ tableId: table.id, name: "title" });
+		const titleState = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "title" });
 		const title = titleState.design!.tables[0].columns.find((column) => column.name === "title")!;
-		const localeState = await workspace.addColumn({ tableId: table.id, name: "locale" });
+		const localeState = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "locale" });
 		const locale = localeState.design!.tables[0].columns.find((column) => column.name === "locale")!;
-		await workspace.updateColumn({ tableId: table.id, columnId: title.id, changes: { primaryKey: true, nullable: false } });
-		await workspace.updateIndexes({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId: title.id, changes: { primaryKey: true, nullable: false } });
+		await workspace.updateIndexes({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			indexes: [{
 				id: "multi",
@@ -264,18 +264,18 @@ describe("PostgreSQL indexes and pgvector", () => {
 				includeColumnIds: [locale.id],
 			}],
 		});
-		await workspace.updateUniqueConstraints({ tableId: table.id, uniqueConstraints: [{ id: "unique", columnIds: [id, title.id] }] });
-		const plan = workspace.describeRemoval({ kind: "column", tableId: table.id, columnId: id });
+		await workspace.updateUniqueConstraints({ designId: workspace.getState().activeDesignId!, tableId: table.id, uniqueConstraints: [{ id: "unique", columnIds: [id, title.id] }] });
+		const plan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!, kind: "column", tableId: table.id, columnId: id });
 		expect(plan.indexes).toEqual([{ table: "Records", indexId: "multi", name: "multi_idx", removedKeys: 1, removedIncludes: 0 }]);
 		expect(plan.uniqueConstraints).toHaveLength(1);
-		await expect(workspace.removeColumn({ tableId: table.id, columnId: id })).rejects.toThrow(/index multi_idx/);
-		const removed = await workspace.removeColumn({ tableId: table.id, columnId: id, confirmed: true });
+		await expect(workspace.removeColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId: id })).rejects.toThrow(/index multi_idx/);
+		const removed = await workspace.removeColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId: id, confirmed: true });
 		expect(removed.design?.tables[0].indexes?.[0].keys).toEqual([{ columnId: title.id }]);
 		expect(removed.design?.tables[0].uniqueConstraints).toEqual([]);
-		const tablePlan = workspace.describeRemoval({ kind: "table", tableId: table.id });
+		const tablePlan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!, kind: "table", tableId: table.id });
 		expect(tablePlan.indexes).toHaveLength(1);
 		expect(tablePlan.uniqueConstraints).toEqual([]);
-		await expect(workspace.removeTable({ tableId: table.id })).rejects.toThrow(/schema item/);
+		await expect(workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: table.id })).rejects.toThrow(/schema item/);
 	}, 30_000);
 
 	test("blocks removal of enum types used by columns", async () => {
@@ -284,14 +284,14 @@ describe("PostgreSQL indexes and pgvector", () => {
 		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Enum safety" });
-		const created = await workspace.addTable({ name: "Records" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Records" });
 		const table = created.design!.tables[0];
 		const enumType = { id: "status", name: "Status", labels: ["open", "closed"] };
-		await workspace.updateEnumTypes({ enumTypes: [enumType] });
-		const withColumn = await workspace.addColumn({ tableId: table.id, name: "state", type: "enum" });
+		await workspace.updateEnumTypes({ designId: workspace.getState().activeDesignId!, enumTypes: [enumType] });
+		const withColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "state", type: "enum" });
 		const column = withColumn.design!.tables[0].columns.find((candidate) => candidate.name === "state")!;
-		await workspace.updateColumn({ tableId: table.id, columnId: column.id, changes: { enumTypeId: enumType.id } });
-		await expect(workspace.updateEnumTypes({ enumTypes: [] })).rejects.toThrow(/Records.state/);
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId: column.id, changes: { enumTypeId: enumType.id } });
+		await expect(workspace.updateEnumTypes({ designId: workspace.getState().activeDesignId!, enumTypes: [] })).rejects.toThrow(/Records.state/);
 		expect(workspace.getState().design?.enumTypes).toEqual([enumType]);
 	}, 30_000);
 
@@ -383,25 +383,25 @@ describe("PostgreSQL indexes and pgvector", () => {
 		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Action validation" });
-		const created = await workspace.addTable({ name: "Records" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Records" });
 		const table = created.design!.tables[0];
 		const revision = workspace.getState().revision;
-		await workspace.updateIndexes({ tableId: table.id, indexes: [] });
-		await workspace.updateUniqueConstraints({ tableId: table.id, uniqueConstraints: [] });
-		await workspace.updateEnumTypes({ enumTypes: [] });
+		await workspace.updateIndexes({ designId: workspace.getState().activeDesignId!, tableId: table.id, indexes: [] });
+		await workspace.updateUniqueConstraints({ designId: workspace.getState().activeDesignId!, tableId: table.id, uniqueConstraints: [] });
+		await workspace.updateEnumTypes({ designId: workspace.getState().activeDesignId!, enumTypes: [] });
 		expect(workspace.getState().revision).toBe(revision);
-		await expect(workspace.updateIndexes({
+		await expect(workspace.updateIndexes({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			indexes: [{ id: "bad", method: "btree", keys: [{ columnId: "missing" }] }],
 		})).rejects.toThrow(/could not be found/);
-		await expect(workspace.updateUniqueConstraints({
+		await expect(workspace.updateUniqueConstraints({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			uniqueConstraints: [{
 				id: "bad",
 				columnIds: ["missing", "also-missing"],
 			}],
 		})).rejects.toThrow(/could not be found/);
-		await expect(workspace.updateEnumTypes({
+		await expect(workspace.updateEnumTypes({ designId: workspace.getState().activeDesignId!,
 			enumTypes: [{ id: "invalid", name: "  ", labels: ["value"] }],
 		})).rejects.toThrow(/Enum type name is required/);
 	}, 30_000);

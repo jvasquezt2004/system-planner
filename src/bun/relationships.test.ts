@@ -95,8 +95,8 @@ function requireRelationship(
 
 async function addAuthorsAndBooks(workspace: DesignWorkspace) {
 	await workspace.createProject({ name: "Publishing" });
-	const withAuthors = await workspace.addTable({ name: "Authors" });
-	const withBooks = await workspace.addTable({ name: "Books" });
+	const withAuthors = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
+	const withBooks = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 	return {
 		authorsTable: requireTable(requireDesign(withAuthors), "Authors"),
 		booksTable: requireTable(requireDesign(withBooks), "Books"),
@@ -108,7 +108,7 @@ describe("one-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
@@ -198,11 +198,11 @@ describe("one-to-many relationships", () => {
 	test("never overwrites an existing column when the generated name is taken", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Publishing" });
-		const withAuthors = await workspace.addTable({ name: "Authors" });
+		const withAuthors = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 		const authorsTable = requireTable(requireDesign(withAuthors), "Authors");
-		const withBooks = await workspace.addTable({ name: "Books" });
+		const withBooks = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const booksTable = requireTable(requireDesign(withBooks), "Books");
-		const withExisting = await workspace.addColumn({
+		const withExisting = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			name: "author_id",
 			type: "text",
@@ -212,7 +212,7 @@ describe("one-to-many relationships", () => {
 			"author_id",
 		);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
@@ -232,12 +232,12 @@ describe("one-to-many relationships", () => {
 	test("names the generated column after a referenced table that is already singular", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "University" });
-		const withCampus = await workspace.addTable({ name: "Campus" });
+		const withCampus = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Campus" });
 		const campusTable = requireTable(requireDesign(withCampus), "Campus");
-		const withStudents = await workspace.addTable({ name: "Students" });
+		const withStudents = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
 		const studentsTable = requireTable(requireDesign(withStudents), "Students");
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: studentsTable.id,
 			referencedTableId: campusTable.id,
 		});
@@ -251,18 +251,18 @@ describe("one-to-many relationships", () => {
 	test("keeps references required by default and lets the designer make one optional", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Offices" });
-		const withCountries = await workspace.addTable({ name: "Countries" });
+		const withCountries = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Countries" });
 		const countriesTable = requireTable(requireDesign(withCountries), "Countries");
 		// A text key without identity, so updating a referenced key is observable.
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: countriesTable.id,
 			columnId: requireColumn(countriesTable, "id").id,
 			changes: { name: "code", type: "text", nullable: false },
 		});
-		const withOffices = await workspace.addTable({ name: "Offices" });
+		const withOffices = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Offices" });
 		const officesTable = requireTable(requireDesign(withOffices), "Offices");
 
-		let state = await workspace.addRelationship({
+		let state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: officesTable.id,
 			referencedTableId: countriesTable.id,
 		});
@@ -295,7 +295,7 @@ describe("one-to-many relationships", () => {
 		}
 
 		// Turning Required off makes the relationship-owned column nullable.
-		const optional = await workspace.updateRelationship({
+		const optional = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			required: false,
 		});
@@ -329,7 +329,7 @@ describe("one-to-many relationships", () => {
 		}
 
 		// The column editor and the relationship control express one setting.
-		const nullableFromColumnEditor = await workspace.updateColumn({
+		const nullableFromColumnEditor = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: officesTable.id,
 			columnId: countryCode.id,
 			changes: { nullable: false },
@@ -337,7 +337,7 @@ describe("one-to-many relationships", () => {
 		expect(requireCurrentSql(nullableFromColumnEditor)).toContain(
 			'"country_code" text NOT NULL',
 		);
-		const requiredAgain = await workspace.updateRelationship({
+		const requiredAgain = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			required: true,
 		});
@@ -350,16 +350,16 @@ describe("one-to-many relationships", () => {
 	test("keeps separate author and editor references distinct across renames and reopening", async () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 		await workspace.createProject({ name: "Editing" });
-		const withAuthors = await workspace.addTable({ name: "Authors" });
+		const withAuthors = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 		const authorsTable = requireTable(requireDesign(withAuthors), "Authors");
-		const withBooks = await workspace.addTable({ name: "Books" });
+		const withBooks = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const booksTable = requireTable(requireDesign(withBooks), "Books");
 
-		const firstRelationship = await workspace.addRelationship({
+		const firstRelationship = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
-		const secondRelationship = await workspace.addRelationship({
+		const secondRelationship = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
@@ -384,7 +384,7 @@ describe("one-to-many relationships", () => {
 		if (!authorColumn || !editorColumn) throw new Error("Expected both foreign-key columns.");
 		expect([authorColumn.name, editorColumn.name]).toEqual(["author_id", "author_id_2"]);
 
-		const renamedColumn = await workspace.updateColumn({
+		const renamedColumn = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			columnId: editorColumn.id,
 			changes: { name: "editor_id" },
@@ -393,12 +393,12 @@ describe("one-to-many relationships", () => {
 		expect(
 			requireDesign(renamedColumn).relationships[1].referencingColumnId,
 		).toBe(editorColumn.id);
-		const renamedAuthor = await workspace.renameTable({
+		const renamedAuthor = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			name: "Writers",
 		});
 		expect(requireDesign(renamedAuthor).relationships).toHaveLength(2);
-		const renamedTables = await workspace.renameTable({
+		const renamedTables = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			name: "Novels",
 		});
@@ -441,14 +441,14 @@ describe("one-to-many relationships", () => {
 	test("removes a relationship constraint while retaining its underlying columns", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
 		const relationship = requireDesign(related).relationships[0];
 		const fkColumnId = relationship.referencingColumnId;
 
-		const removed = await workspace.removeRelationship({ relationshipId: relationship.id });
+		const removed = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!, relationshipId: relationship.id });
 		expect(requireDesign(removed).relationships).toEqual([]);
 		const books = requireTable(requireDesign(removed), "Books");
 		expect(books.columns.map((column) => column.id)).toContain(fkColumnId);
@@ -463,7 +463,7 @@ describe("one-to-many relationships", () => {
 	test("reports incompatible key edits instead of silently disconnecting the relationship", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
@@ -471,7 +471,7 @@ describe("one-to-many relationships", () => {
 		const appliedRevision =
 			related.sandbox.status === "applied" ? related.sandbox.revision : 0;
 
-		const mismatched = await workspace.updateColumn({
+		const mismatched = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			columnId: relationship.referencingColumnId,
 			changes: { type: "text" },
@@ -490,7 +490,7 @@ describe("one-to-many relationships", () => {
 
 		// Returning the key to the referenced type makes the same link valid again.
 		for (const type of ["text", "bigint"] as const) {
-			const retyped = await workspace.updateColumn({
+			const retyped = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: booksTable.id,
 				columnId: relationship.referencingColumnId,
 				changes: { type },
@@ -506,15 +506,15 @@ describe("one-to-many relationships", () => {
 	test("lists affected relationships before deleting a referenced table", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
-		await workspace.addTable({ name: "Genres" });
-		const related = await workspace.addRelationship({
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Genres" });
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
 		const relationship = requireDesign(related).relationships[0];
 		const revision = related.revision;
 
-		const plan = workspace.describeRemoval({ kind: "table", tableId: authorsTable.id });
+		const plan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!, kind: "table", tableId: authorsTable.id });
 		expect(plan.target).toBe("Authors");
 		expect(plan.relationships).toEqual([
 			{
@@ -529,14 +529,14 @@ describe("one-to-many relationships", () => {
 		]);
 
 		// Cancelling - simply not confirming - leaves the design untouched.
-		await expect(workspace.removeTable({ tableId: authorsTable.id })).rejects.toThrow(
+		await expect(workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: authorsTable.id })).rejects.toThrow(
 			/confirm/i,
 		);
 		expect(workspace.getState().revision).toBe(revision);
 		expect(requireDesign(workspace.getState()).relationships).toEqual([relationship]);
 		expect(workspace.getState().project?.name).toBe("Publishing");
 
-		const removed = await workspace.removeTable({
+		const removed = await workspace.removeTable({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			confirmed: true,
 		});
@@ -554,15 +554,15 @@ describe("one-to-many relationships", () => {
 	test("lists affected relationships before deleting a participating column", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
 		const relationship = requireDesign(related).relationships[0];
 		const referencedKey = requireColumn(requireTable(requireDesign(related), "Authors"), "id");
-		await workspace.addColumn({ tableId: authorsTable.id, name: "name", type: "text" });
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: authorsTable.id, name: "name", type: "text" });
 
-		const referencedPlan = workspace.describeRemoval({
+		const referencedPlan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!,
 			kind: "column",
 			tableId: authorsTable.id,
 			columnId: referencedKey.id,
@@ -574,14 +574,14 @@ describe("one-to-many relationships", () => {
 
 		const revision = workspace.getState().revision;
 		await expect(
-			workspace.removeColumn({
+			workspace.removeColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: authorsTable.id,
 				columnId: referencedKey.id,
 			}),
 		).rejects.toThrow(/confirm/i);
 		expect(workspace.getState().revision).toBe(revision);
 
-		const removedKey = await workspace.removeColumn({
+		const removedKey = await workspace.removeColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			columnId: referencedKey.id,
 			confirmed: true,
@@ -596,7 +596,7 @@ describe("one-to-many relationships", () => {
 			"author_id",
 		]);
 
-		const referencingPlan = workspace.describeRemoval({
+		const referencingPlan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!,
 			kind: "column",
 			tableId: booksTable.id,
 			columnId: relationship.referencingColumnId,
@@ -608,7 +608,7 @@ describe("one-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const withoutKey = await workspace.updateColumn({
+		const withoutKey = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			columnId: requireColumn(authorsTable, "id").id,
 			changes: { primaryKey: false },
@@ -617,7 +617,7 @@ describe("one-to-many relationships", () => {
 		const revision = withoutKey.revision;
 
 		await expect(
-			workspace.addRelationship({
+			workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 				referencingTableId: booksTable.id,
 				referencedTableId: authorsTable.id,
 			}),
@@ -627,18 +627,18 @@ describe("one-to-many relationships", () => {
 		expect(requireTable(requireDesign(workspace.getState()), "Books").columns).toHaveLength(1);
 
 		// An existing relationship stays visible as a validation error.
-		const restored = await workspace.updateColumn({
+		const restored = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			columnId: requireColumn(authorsTable, "id").id,
 			changes: { primaryKey: true },
 		});
 		expect(restored.sql.status).toBe("current");
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
 		const relationship = requireDesign(related).relationships[0];
-		const demoted = await workspace.updateColumn({
+		const demoted = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			columnId: requireColumn(requireTable(requireDesign(related), "Authors"), "id").id,
 			changes: { primaryKey: false },

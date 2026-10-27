@@ -87,8 +87,8 @@ function requireRelationship(
 
 async function addAuthorsAndBooks(workspace: DesignWorkspace) {
 	await workspace.createProject({ name: "Publishing" });
-	const withAuthors = await workspace.addTable({ name: "Authors" });
-	const withBooks = await workspace.addTable({ name: "Books" });
+	const withAuthors = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
+	const withBooks = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 	return {
 		authorsTable: requireTable(requireDesign(withAuthors), "Authors"),
 		booksTable: requireTable(requireDesign(withBooks), "Books"),
@@ -100,7 +100,7 @@ describe("one-to-one relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
@@ -187,7 +187,7 @@ describe("one-to-one relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
@@ -195,7 +195,7 @@ describe("one-to-one relationships", () => {
 		const relationship = requireDesign(related).relationships[0];
 		expect(requireCurrentSql(related)).toContain('"author_id" bigint NOT NULL');
 
-		const optional = await workspace.updateRelationship({
+		const optional = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			required: false,
 		});
@@ -237,7 +237,7 @@ describe("one-to-one relationships", () => {
 		}
 
 		// The column editor and the relationship control still express one setting.
-		const requiredAgain = await workspace.updateRelationship({
+		const requiredAgain = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			required: true,
 		});
@@ -251,7 +251,7 @@ describe("one-to-one relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 		});
@@ -259,7 +259,7 @@ describe("one-to-one relationships", () => {
 		expect(relationship.cardinality).toBe("one-to-many");
 		expect(requireCurrentSql(related)).not.toContain("UNIQUE (\"author_id\")");
 
-		const oneToOne = await workspace.updateRelationship({
+		const oneToOne = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			cardinality: "one-to-one",
 		});
@@ -273,7 +273,7 @@ describe("one-to-one relationships", () => {
 			)?.unique,
 		).toBe(true);
 
-		const manyAgain = await workspace.updateRelationship({
+		const manyAgain = await workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: relationship.id,
 			cardinality: "one-to-many",
 		});
@@ -288,7 +288,7 @@ describe("one-to-one relationships", () => {
 		).toBe(false);
 
 		await expect(
-			workspace.updateRelationship({
+			workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 				relationshipId: relationship.id,
 				cardinality: "one-to-zero" as never,
 			}),
@@ -299,14 +299,14 @@ describe("one-to-one relationships", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
 		});
 		const relationship = requireDesign(related).relationships[0];
 
-		const renamedColumn = await workspace.updateColumn({
+		const renamedColumn = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			columnId: relationship.referencingColumnId,
 			changes: { name: "writer_id" },
@@ -314,7 +314,7 @@ describe("one-to-one relationships", () => {
 		expect(requireDesign(renamedColumn).relationships).toEqual([
 			{ ...relationship, cardinality: "one-to-one" },
 		]);
-		const renamedTable = await workspace.renameTable({
+		const renamedTable = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			name: "Writers",
 		});
@@ -357,14 +357,14 @@ describe("one-to-one relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
 
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
 		});
 		const relationship = requireDesign(related).relationships[0];
 
-		const removed = await workspace.removeRelationship({ relationshipId: relationship.id });
+		const removed = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!, relationshipId: relationship.id });
 		expect(requireDesign(removed).relationships).toEqual([]);
 		expect(
 			requireTable(requireDesign(removed), "Books").columns.map((column) => column.name),
@@ -379,7 +379,7 @@ describe("one-to-one relationships", () => {
 		).toBe(false);
 
 		// An independently configured unique column keeps its constraint.
-		const withOwnUniqueColumn = await workspace.updateColumn({
+		const withOwnUniqueColumn = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			columnId: relationship.referencingColumnId,
 			changes: { unique: true },
@@ -388,7 +388,7 @@ describe("one-to-one relationships", () => {
 		expect(withUniqueSql).toContain('"author_id" bigint NOT NULL UNIQUE');
 		// The relationship no longer needs to contribute uniqueness.
 		expect(withUniqueSql).not.toContain("Books_author_id_key");
-		const linkedAgain = await workspace.addRelationship({
+		const linkedAgain = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
@@ -401,7 +401,7 @@ describe("one-to-one relationships", () => {
 			)?.unique,
 		).toBe(true);
 
-		const removedAgain = await workspace.removeRelationship({
+		const removedAgain = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: secondRelationship.id,
 		});
 		const keptSql = requireCurrentSql(removedAgain);
@@ -419,7 +419,7 @@ describe("one-to-one relationships", () => {
 	test("extends deletion safeguards to the one-to-one uniqueness constraint", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { authorsTable, booksTable } = await addAuthorsAndBooks(workspace);
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: authorsTable.id,
 			cardinality: "one-to-one",
@@ -435,13 +435,13 @@ describe("one-to-one relationships", () => {
 			referencedColumn: "id",
 			constraints: ["foreign-key", "unique"],
 		};
-		const tablePlan = workspace.describeRemoval({
+		const tablePlan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!,
 			kind: "table",
 			tableId: authorsTable.id,
 		});
 		expect(tablePlan.target).toBe("Authors");
 		expect(tablePlan.relationships).toEqual([expectedAffected]);
-		const columnPlan = workspace.describeRemoval({
+		const columnPlan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!,
 			kind: "column",
 			tableId: booksTable.id,
 			columnId: relationship.referencingColumnId,
@@ -451,14 +451,14 @@ describe("one-to-one relationships", () => {
 		// Cancelling leaves both constraints and columns untouched.
 		const revision = related.revision;
 		await expect(
-			workspace.removeTable({ tableId: authorsTable.id }),
+			workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: authorsTable.id }),
 		).rejects.toThrow(/confirm/i);
 		expect(workspace.getState().revision).toBe(revision);
 		expect(requireDesign(workspace.getState()).relationships).toEqual([relationship]);
 
 		// A confirmed removal drops the relationship-owned constraints only; the
 		// referencing column survives without uniqueness.
-		const removedTable = await workspace.removeTable({
+		const removedTable = await workspace.removeTable({ designId: workspace.getState().activeDesignId!,
 			tableId: authorsTable.id,
 			confirmed: true,
 		});
@@ -479,7 +479,7 @@ describe("one-to-one relationships", () => {
 
 		// A column whose uniqueness is configured independently is not part of the
 		// relationship, and its constraint survives relationship removal.
-		const withIndependentUnique = await workspace.updateColumn({
+		const withIndependentUnique = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: booksTable.id,
 			columnId: requireColumn(requireTable(requireDesign(removedTable), "Books"), "author_id")
 				.id,
@@ -489,16 +489,16 @@ describe("one-to-one relationships", () => {
 			'"author_id" bigint NOT NULL UNIQUE',
 		);
 
-		const people = await workspace.addTable({ name: "People" });
+		const people = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "People" });
 		const peopleTable = requireTable(requireDesign(people), "People");
-		const linkedPeople = await workspace.addRelationship({
+		const linkedPeople = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: booksTable.id,
 			referencedTableId: peopleTable.id,
 			cardinality: "one-to-one",
 		});
 		const peopleRelationship = requireDesign(linkedPeople).relationships[0];
 		expect(
-			workspace.describeRemoval({ kind: "table", tableId: peopleTable.id })
+			workspace.describeRemoval({ designId: workspace.getState().activeDesignId!, kind: "table", tableId: peopleTable.id })
 				.relationships,
 		).toEqual([
 			{
@@ -512,7 +512,7 @@ describe("one-to-one relationships", () => {
 			},
 		]);
 
-		const independentRemove = await workspace.removeTable({
+		const independentRemove = await workspace.removeTable({ designId: workspace.getState().activeDesignId!,
 			tableId: peopleTable.id,
 			confirmed: true,
 		});

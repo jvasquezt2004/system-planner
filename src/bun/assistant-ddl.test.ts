@@ -395,11 +395,11 @@ describe("assistant DDL translator", () => {
 
 	test("preserves relationship-owned one-to-one uniqueness through unrelated ALTER", async () => {
 		const workspace = await openWorkspace();
-		const accountsState = await workspace.addTable({ name: "accounts" });
-		const profilesState = await workspace.addTable({ name: "profiles" });
+		const accountsState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "accounts" });
+		const profilesState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "profiles" });
 		const accounts = accountsState.design!.tables.find(({ name }) => name === "accounts")!;
 		const profiles = profilesState.design!.tables.find(({ name }) => name === "profiles")!;
-		await workspace.addRelationship({ referencingTableId: profiles.id, referencedTableId: accounts.id, cardinality: "one-to-one" });
+		await workspace.addRelationship({ designId: workspace.getState().activeDesignId!, referencingTableId: profiles.id, referencedTableId: accounts.id, cardinality: "one-to-one" });
 		const originalRelationship = workspace.getState().design!.relationships.find(({ referencingTableId }) => referencingTableId === profiles.id)!;
 		const localColumn = workspace.getState().design!.tables.find(({ id }) => id === profiles.id)!.columns.find(({ id }) => id === originalRelationship.referencingColumnId)!;
 
@@ -415,11 +415,11 @@ describe("assistant DDL translator", () => {
 
 	test("preserves relationship-owned junction uniqueness through unrelated ALTER", async () => {
 		const workspace = await openWorkspace();
-		const aState = await workspace.addTable({ name: "a" });
-		const bState = await workspace.addTable({ name: "b" });
+		const aState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "a" });
+		const bState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "b" });
 		const a = aState.design!.tables.find(({ name }) => name === "a")!;
 		const b = bState.design!.tables.find(({ name }) => name === "b")!;
-		await workspace.addRelationship({ referencingTableId: a.id, referencedTableId: b.id, cardinality: "many-to-many" });
+		await workspace.addRelationship({ designId: workspace.getState().activeDesignId!, referencingTableId: a.id, referencedTableId: b.id, cardinality: "many-to-many" });
 		const designBefore = workspace.getState().design!;
 		const association = designBefore.manyToManyRelationships[0]!;
 		const junction = designBefore.tables.find(({ id }) => id === association.junctionTableId)!;
@@ -438,9 +438,9 @@ describe("assistant DDL translator", () => {
 
 	test("places unrelated tables to the right of existing cards", async () => {
 		const workspace = await openWorkspace();
-		const created = await workspace.addTable({ name: "far_card" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "far_card" });
 		const farCard = created.design!.tables.find(({ name }) => name === "far_card")!;
-		await workspace.moveTable({ tableId: farCard.id, position: { x: 1700, y: 600 } });
+		await workspace.moveTable({ designId: workspace.getState().activeDesignId!, tableId: farCard.id, position: { x: 1700, y: 600 } });
 
 		await applyAssistantDdl(workspace, "CREATE TABLE unrelated (id integer PRIMARY KEY);");
 

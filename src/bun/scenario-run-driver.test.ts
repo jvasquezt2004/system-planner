@@ -21,19 +21,21 @@ async function fixture(sources: string[]) {
 	const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 	workspaces.push(workspace);
 	await workspace.createProject({ name: "Run driver fixture" });
-	const added = await workspace.addTable({ name: "Books" });
+	const designId = workspace.getState().activeDesignId;
+	if (!designId) throw new Error("Expected an active Design.");
+	const added = await workspace.addTable({ designId, name: "Books" });
 	const table = added.design?.tables[0];
 	if (!table) throw new Error("Expected Books table.");
-	await workspace.addColumn({ tableId: table.id, name: "title", type: "text" });
+	await workspace.addColumn({ designId, tableId: table.id, name: "title", type: "text" });
 	const scenarios: Scenario[] = [];
 	for (let index = 0; index < sources.length; index += 1) {
-		const created = await workspace.createScenario({ name: `Scenario ${index + 1}` });
+		const created = await workspace.createScenario({ designId, name: `Scenario ${index + 1}` });
 		const scenario = created.scenarios[created.scenarios.length - 1];
 		if (!scenario) throw new Error("Expected saved Scenario.");
-		const updated = await workspace.updateScenarioSource({ scenarioId: scenario.id, source: sources[index] ?? "" });
+		const updated = await workspace.updateScenarioSource({ designId, scenarioId: scenario.id, source: sources[index] ?? "" });
 		scenarios.push(updated.scenarios.find(({ id }) => id === scenario.id) ?? scenario);
 	}
-	return { workspace, scenarios };
+	return { workspace, scenarios, designId };
 }
 
 function driverFor(workspace: DesignWorkspace, timeoutMs = 30_000) {
@@ -77,10 +79,12 @@ describe("Scenario run driver", () => {
 		const { workspace, scenarios } = await fixture([
 			'const result = await supabase.functions.invoke("add-book", { body: { title: "from edge" } }); expect(result).returnsDataEqual({ id: 1, title: "from edge" });',
 		]);
-		const created = await workspace.createEdgeFunction({ name: "add-book" });
+		const designId = workspace.getState().activeDesignId!;
+		const created = await workspace.createEdgeFunction({ designId, name: "add-book" });
 		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "add-book");
 		if (!edgeFunction) throw new Error("Expected the saved Edge function.");
 		await workspace.updateEdgeFunctionSource({
+			designId,
 			edgeFunctionId: edgeFunction.id,
 			source: `import { createClient } from "jsr:@supabase/supabase-js@2";
 Deno.serve(async (request) => {
@@ -128,10 +132,12 @@ expect(two).returnsDataEqual(["second user's book"]);
 expect(anon).returnsDataEqual([]);
 expect(service).returnsDataEqual(["first user's book", "second user's book"]);`,
 		]);
+		const designId = workspace.getState().activeDesignId!;
 		const table = workspace.getState().design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
-		await workspace.addColumn({ tableId: table.id, name: "owner_id", type: "uuid" });
+		await workspace.addColumn({ designId, tableId: table.id, name: "owner_id", type: "uuid" });
 		await workspace.updatePolicies({
+			designId,
 			tableId: table.id,
 			rowLevelSecurity: true,
 			policies: [{
@@ -145,12 +151,13 @@ expect(service).returnsDataEqual(["first user's book", "second user's book"]);`,
 			}],
 		});
 		for (const [name, forwardAuthorization] of [["visible-books", true], ["without-forwarding", false]] as const) {
-			const created = await workspace.createEdgeFunction({ name });
+			const created = await workspace.createEdgeFunction({ designId, name });
 			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
 			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
 			await workspace.updateEdgeFunctionSource({
+				designId,
 				edgeFunctionId: edgeFunction.id,
-				source: `import { createClient } from "jsr:@supabase/supabase-js@2";
+				source: `
 Deno.serve(async (request) => {
 	const client = createClient(
 		Deno.env.get("SUPABASE_URL")!,
@@ -170,6 +177,7 @@ Deno.serve(async (request) => {
 			{ title: "second user's book", owner_id: "22222222-2222-4222-8222-222222222222" },
 		]);`;
 		const savedScenario = await workspace.updateScenarioSource({
+			designId,
 			scenarioId: scenarios[0]!.id,
 			source: `${seed}\n${scenarios[0]!.source}`,
 		});
@@ -206,10 +214,11 @@ Deno.serve(async () => {
 	return Response.json({ ok: true });
 });`],
 		] as const) {
-			const created = await workspace.createEdgeFunction({ name });
+			const designId = workspace.getState().activeDesignId!;
+			const created = await workspace.createEdgeFunction({ designId, name });
 			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
 			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
-			await workspace.updateEdgeFunctionSource({ edgeFunctionId: edgeFunction.id, source });
+			await workspace.updateEdgeFunctionSource({ designId, edgeFunctionId: edgeFunction.id, source });
 		}
 		const driver = driverFor(workspace);
 		try {
@@ -236,25 +245,30 @@ Deno.serve(async () => {
 			'for (const name of ["jsr-form", "npm-form", "esm-form", "bare-form"]) { const result = await supabase.functions.invoke(name); expect(result).returnsDataEqual({ name }); } const network = await supabase.functions.invoke("network-check"); expect(network).returnsDataEqual({ fetch: "undefined", WebSocket: "undefined", XMLHttpRequest: "undefined" }); const refused = await supabase.functions.invoke("bad-import"); expect(refused).fails();',
 		]);
 		for (const [name, specifier] of imports) {
-			const created = await workspace.createEdgeFunction({ name });
+			const designId = workspace.getState().activeDesignId!;
+			const created = await workspace.createEdgeFunction({ designId, name });
 			const edgeFunction = created.edgeFunctions.find((candidate) => candidate.name === name);
 			if (!edgeFunction) throw new Error(`Expected saved Edge function ${name}.`);
 			await workspace.updateEdgeFunctionSource({
+				designId,
 				edgeFunctionId: edgeFunction.id,
 				source: `import { createClient } from "${specifier}"; Deno.serve(() => Response.json({ name: "${name}" }));`,
 			});
 		}
-		const network = await workspace.createEdgeFunction({ name: "network-check" });
+		const designId = workspace.getState().activeDesignId!;
+		const network = await workspace.createEdgeFunction({ designId, name: "network-check" });
 		const networkFunction = network.edgeFunctions.find(({ name }) => name === "network-check");
 		if (!networkFunction) throw new Error("Expected saved Edge function network-check.");
 		await workspace.updateEdgeFunctionSource({
+			designId,
 			edgeFunctionId: networkFunction.id,
 			source: `Deno.serve(() => Response.json({ fetch: typeof fetch, WebSocket: typeof WebSocket, XMLHttpRequest: typeof XMLHttpRequest }));`,
 		});
-		const bad = await workspace.createEdgeFunction({ name: "bad-import" });
+		const bad = await workspace.createEdgeFunction({ designId, name: "bad-import" });
 		const badFunction = bad.edgeFunctions.find(({ name }) => name === "bad-import");
 		if (!badFunction) throw new Error("Expected saved Edge function bad-import.");
 		await workspace.updateEdgeFunctionSource({
+			designId,
 			edgeFunctionId: badFunction.id,
 			source: `import "node:fs"; console.log("must not execute"); Deno.serve(() => Response.json({ ok: true }));`,
 		});
@@ -273,10 +287,12 @@ Deno.serve(async () => {
 		const { workspace, scenarios } = await fixture([
 			'await supabase.functions.invoke("wait-forever");',
 		]);
-		const created = await workspace.createEdgeFunction({ name: "wait-forever" });
+		const designId = workspace.getState().activeDesignId!;
+		const created = await workspace.createEdgeFunction({ designId, name: "wait-forever" });
 		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "wait-forever");
 		if (!edgeFunction) throw new Error("Expected saved Edge function.");
 		await workspace.updateEdgeFunctionSource({
+			designId,
 			edgeFunctionId: edgeFunction.id,
 			source: `import { createClient } from "jsr:@supabase/supabase-js@2";
 Deno.serve(async () => {
@@ -323,10 +339,12 @@ Deno.serve(async () => {
 		const { workspace, scenarios } = await fixture([
 			'await supabase.functions.invoke("wait-forever");',
 		]);
-		const created = await workspace.createEdgeFunction({ name: "wait-forever" });
+		const designId = workspace.getState().activeDesignId!;
+		const created = await workspace.createEdgeFunction({ designId, name: "wait-forever" });
 		const edgeFunction = created.edgeFunctions.find(({ name }) => name === "wait-forever");
 		if (!edgeFunction) throw new Error("Expected saved Edge function.");
 		await workspace.updateEdgeFunctionSource({
+			designId,
 			edgeFunctionId: edgeFunction.id,
 			source: `Deno.serve(async () => {
 	await new Promise(() => {});
@@ -488,7 +506,7 @@ Deno.serve(async () => {
 		try {
 			const result = await driver.run(scenarios[0]!);
 			expect(result).toMatchObject({ status: "errored", reason: "timed out" });
-			const next = await workspace.beginScenarioRun({ scenarioId: scenarios[0]!.id });
+			const next = await workspace.beginScenarioRun({ scenarioId: scenarios[0]!.id, designId: scenarios[0]!.designId! });
 			await workspace.finishScenarioRun({ runId: next.runId, status: "passed", console: [] });
 		} finally {
 			driver.dispose();

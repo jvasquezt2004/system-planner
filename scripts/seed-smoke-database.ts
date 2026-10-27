@@ -8,7 +8,9 @@ if (!databasePath) {
 
 const workspace = await createDesignWorkspace({ databasePath });
 await workspace.createProject({ name: "Smoke Library" });
-const state = await workspace.addTable({ name: "Books" });
+const designId = workspace.getState().activeDesignId;
+if (!designId) throw new Error("Expected an active Design.");
+const state = await workspace.addTable({ designId, name: "Books" });
 console.log(
 	JSON.stringify({
 		project: state.project?.name,
