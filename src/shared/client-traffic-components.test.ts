@@ -19,8 +19,8 @@ function everyKind(): SystemDesign {
 }
 
 describe("client and traffic Components in the shared System design", () => {
-	test("every catalog kind is an accepted Component kind alongside the original two", () => {
-		expect([...SYSTEM_COMPONENT_KINDS]).toEqual(["generic", "database", ...CATALOG_KINDS]);
+	test("every catalog kind is an accepted Component kind alongside the generic Component, each listed once", () => {
+		expect([...SYSTEM_COMPONENT_KINDS]).toEqual(["generic", ...CATALOG_KINDS]);
 	});
 
 	test("each new Component gets its kind's default name and keeps optional branding and descriptive properties", () => {

@@ -125,15 +125,47 @@ describe("system overview rendering", () => {
 		}
 		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
 		expect(html).toContain(">SCHEDULED JOB<");
-		expect(html).toContain(">SERVERLESS HANDLER<");
+		expect(html).toContain(">SERVERLESS HAND…<");
 		expect(html).toContain('aria-label="Serverless handler: Node 4"');
 	});
 
-	test("the original generic and database Components draw no catalog artwork", () => {
+	test("each data and messaging kind draws its own labelled artwork, and a long kind label stops before the artwork", () => {
+		const kinds = ["database", "cache", "object_storage_bucket", "file_storage", "search_index", "queue", "topic", "event_bus", "event_stream"] as const;
+		let design = createEmptySystemDesign();
+		kinds.forEach((kind, index) => {
+			design = addSystemComponent(design, { id: kind, kind, name: `Node ${index}`, position: { x: index * 220, y: 0 } });
+		});
+
+		const html = render(design);
+		for (const kind of kinds) {
+			expect(html).toContain(`data-component-id="${kind}" data-kind="${kind}"`);
+			expect(html).toContain(`data-artwork="${kind}"`);
+		}
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
+		expect(html).toContain(">OBJECT-STORAGE…<");
+		expect(html).toContain(">EVENT STREAM<");
+		expect(html).toContain('aria-label="Object-storage bucket: Node 2"');
+	});
+
+	test("a linked Database keeps its badge and moves its artwork left of the badge", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "primary", kind: "database", name: "Primary", position: { x: 0, y: 0 }, designId: "design-orders" });
+		const html = render(design);
+		expect(html).toContain('data-artwork="database"');
+		expect(html).toContain('transform="translate(86 8)"');
+		expect(html).toContain(">DATABASE<");
+		expect(html).toContain(">LINKED<");
+	});
+
+	test("the original generic Component draws no catalog artwork, while an unlinked Database draws its own", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
-		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
 		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+
+		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
+		const html = render(design);
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(1);
+		expect(html).toContain('data-artwork="database"');
 	});
 });
 

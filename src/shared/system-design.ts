@@ -16,8 +16,8 @@ import { CATALOG_KINDS, componentDefaultNameStem, type CatalogKind } from "./com
  * never changes ownership.
  */
 
-/** "generic" and "database" are the original kinds; the rest are registered in the catalog. */
-export type SystemComponentKind = "generic" | "database" | CatalogKind;
+/** "generic" is the one original kind; every other kind is registered in the catalog. */
+export type SystemComponentKind = "generic" | CatalogKind;
 
 export type SystemComponentProperty = {
 	key: string;
@@ -112,7 +112,7 @@ export type SystemContent = Omit<SystemDesign, "viewport" | "collapsedServiceIds
 
 export type SystemViewName = "system" | "database";
 
-export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database", ...CATALOG_KINDS];
+export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", ...CATALOG_KINDS];
 export const DEFAULT_SYSTEM_CONNECTION_LABEL = "Interaction";
 export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;

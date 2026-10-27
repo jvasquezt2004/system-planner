@@ -64,7 +64,7 @@ import {
 } from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
-import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
+import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
 	followViewport,
@@ -121,6 +121,10 @@ const SAVE_DEBOUNCE_MS = 400;
 /** Height of a Group frame's header, where its name sits and where it can be dragged from. */
 const GROUP_HEADER_HEIGHT = 40;
 const ARROW_ID = "system-design-arrow";
+/** Room the linked-schema badge takes beside a Database card's header, so its artwork moves left of it. */
+const SCHEMA_BADGE_ROOM = 56;
+/** Approximate advance of one upper-case header character at 10px with letter spacing. */
+const KIND_HEADER_CHARACTER_WIDTH = 7.4;
 
 export type SystemDesignViewProps = {
 	state: WorkspaceState;
@@ -834,6 +838,13 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const traced = highlight?.endpointIds.includes(component.id) ?? false;
 							const reaction = frame?.reactions[component.id];
 							const detail = component.technology ?? component.description ?? "";
+							// The header keeps the kind label clear of the artwork, and a linked Database's badge clear of both.
+							const schemaBadged = component.kind === "database" && component.designId !== undefined;
+							const artworkX = SYSTEM_COMPONENT_SIZE.width - 38 - (schemaBadged ? SCHEMA_BADGE_ROOM : 0);
+							const kindLabel = componentKindLabel(component.kind).toUpperCase();
+							const kindHeaderText = isCatalogKind(component.kind)
+								? truncateLabel(kindLabel, Math.max(1, Math.floor((artworkX - 22) / KIND_HEADER_CHARACTER_WIDTH)))
+								: kindLabel;
 							const owner = component.serviceId === null ? undefined : serviceNames.get(component.serviceId);
 							return (
 								<g
@@ -879,12 +890,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										}}
 										strokeWidth={selected || linking || traced ? 2 : 1.25}
 									/>
+									{reaction && <ReceptionItem reaction={reaction} kind={component.kind} width={SYSTEM_COMPONENT_SIZE.width} height={SYSTEM_COMPONENT_SIZE.height} />}
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
-										{componentKindLabel(component.kind).toUpperCase()}
+										{kindHeaderText}
 									</text>
-									{isCatalogKind(component.kind) && (
-										<ComponentArtwork artwork={component.kind} x={SYSTEM_COMPONENT_SIZE.width - 38} y={12} />
-									)}
+									{isCatalogKind(component.kind) && <ComponentArtwork artwork={component.kind} x={artworkX} y={8} />}
 									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(component.name, 22)}
 									</text>
