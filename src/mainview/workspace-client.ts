@@ -57,6 +57,8 @@ import type {
 	AppRPCSchema,
 	SchemaCodeExportRequest,
 	SqlPreviewExportRequest,
+	SystemDesignSvgExportRequest,
+	SystemDesignSvgExportResult,
 } from "../shared/rpc";
 import type { SchemaCodeSnapshot } from "../shared/schema-code";
 import type { ProjectTransferResult } from "../shared/project-portability";
@@ -77,6 +79,8 @@ const pendingSqlExports = new Map<
 
 const pendingProjectTransfers = new Map<string, (result: ProjectTransferResult) => void>();
 
+const pendingSystemDesignSvgExports = new Map<string, (result: SystemDesignSvgExportResult) => void>();
+
 const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 	// Autosave plus sandbox validation can take longer than the 1s default.
 	maxRequestTime: 60_000,
@@ -96,6 +100,12 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 				const resolve = pendingProjectTransfers.get(requestId);
 				if (!resolve) return;
 				pendingProjectTransfers.delete(requestId);
+				resolve(result);
+			},
+			systemDesignSvgExportCompleted({ requestId, result }) {
+				const resolve = pendingSystemDesignSvgExports.get(requestId);
+				if (!resolve) return;
+				pendingSystemDesignSvgExports.delete(requestId);
 				resolve(result);
 			},
 			assistantEvent({ conversationId, event }) {
@@ -392,6 +402,19 @@ export const workspaceClient = {
 		return awaitProjectTransfer(requestId, async () => {
 			await rpc.send.chooseProjectExportDirectory({ requestId });
 		});
+	},
+	/** Writes a System design SVG built from one snapshot to a new file in a folder the designer picks. */
+	async exportSystemDesignSvg(request: SystemDesignSvgExportRequest): Promise<SystemDesignSvgExportResult> {
+		const { requestId } = await rpc.request.beginSystemDesignSvgExport(request);
+		const { promise, resolve } = Promise.withResolvers<SystemDesignSvgExportResult>();
+		pendingSystemDesignSvgExports.set(requestId, resolve);
+		try {
+			await rpc.send.chooseSystemDesignSvgExportDirectory({ requestId });
+		} catch (cause) {
+			pendingSystemDesignSvgExports.delete(requestId);
+			return { status: "failed", error: errorMessage(cause) };
+		}
+		return promise;
 	},
 	/** Creates a new Project from a file the designer picks, and opens it. */
 	async importProject(): Promise<ProjectTransferResult> {

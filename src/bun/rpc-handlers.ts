@@ -89,6 +89,8 @@ import type {
 import type { SqlPreviewActions } from "./sql-preview";
 import type { ProjectTransferActions } from "./project-transfer";
 import type { ProjectTransferResult } from "../shared/project-portability";
+import type { SystemDesignSvgExportRequest, SystemDesignSvgExportResult } from "../shared/rpc";
+import type { SystemDesignSvgExports } from "./system-design-svg-export";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 
@@ -99,6 +101,8 @@ export type RpcHandlerDependencies = {
 	pendingSqlExports: Map<string, () => Promise<SqlPreviewExportResult>>;
 	projectTransfers: ProjectTransferActions;
 	pendingProjectTransfers: Map<string, () => Promise<ProjectTransferResult>>;
+	systemDesignSvgExports: SystemDesignSvgExports;
+	pendingSystemDesignSvgExports: Map<string, () => Promise<SystemDesignSvgExportResult>>;
 };
 
 export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
@@ -225,6 +229,13 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 			(await deps.workspace).requireActiveDesign(preview.designId);
 			const requestId = crypto.randomUUID();
 			deps.pendingSqlExports.set(requestId, () => deps.sqlPreviewActions.export(preview, fileName));
+			return { requestId };
+		},
+		/** The SVG is built in the view from one System design snapshot, so this request carries exactly what the designer saw. */
+		beginSystemDesignSvgExport: async ({ svg, projectName }: SystemDesignSvgExportRequest): Promise<{ requestId: string }> => {
+			if (!(await deps.workspace).getState().project) throw new Error("Open a project before exporting its System design.");
+			const requestId = crypto.randomUUID();
+			deps.pendingSystemDesignSvgExports.set(requestId, () => deps.systemDesignSvgExports.export({ svg, projectName }));
 			return { requestId };
 		},
 		copySchemaCode: async ({ snapshot }: { snapshot: SchemaCodeSnapshot }): Promise<SqlPreviewCopyResult> => {

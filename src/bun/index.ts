@@ -5,9 +5,10 @@ import { dirname, join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 import type { ScenarioRun, SqlPreviewExportResult } from "../shared/design";
 import type { ProjectTransferResult } from "../shared/project-portability";
-import type { AppRPCSchema } from "../shared/rpc";
+import type { AppRPCSchema, SystemDesignSvgExportResult } from "../shared/rpc";
 import { createSqlPreviewActions } from "./sql-preview";
 import { createProjectTransferActions } from "./project-transfer";
+import { createSystemDesignSvgExports } from "./system-design-svg-export";
 import { createDesignWorkspace } from "./workspace";
 import { createAssistantRuntime } from "./assistant-runtime";
 import { createRpcRequestHandlers } from "./rpc-handlers";
@@ -144,6 +145,13 @@ const projectTransfers = createProjectTransferActions({
 	now: () => new Date(),
 });
 
+/** System design SVG exports waiting for the view to start the folder picker, by request id. */
+const pendingSystemDesignSvgExports = new Map<string, () => Promise<SystemDesignSvgExportResult>>();
+const systemDesignSvgExports = createSystemDesignSvgExports({
+	chooseExportDirectory: chooseExportFolder,
+	now: () => new Date(),
+});
+
 /** Runs a begun Project transfer once its picker has been opened, and reports the outcome to the view. */
 function runProjectTransfer(requestId: string) {
 	const run = pendingProjectTransfers.get(requestId);
@@ -166,6 +174,8 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			pendingSqlExports,
 			projectTransfers,
 			pendingProjectTransfers,
+			systemDesignSvgExports,
+			pendingSystemDesignSvgExports,
 		}),
 		messages: {
 			// Start the native picker from a message, not an awaited RPC request.
@@ -179,6 +189,16 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			},
 			chooseProjectExportDirectory: ({ requestId }) => runProjectTransfer(requestId),
 			chooseProjectImportFile: ({ requestId }) => runProjectTransfer(requestId),
+			chooseSystemDesignSvgExportDirectory: ({ requestId }) => {
+				const runExport = pendingSystemDesignSvgExports.get(requestId);
+				if (!runExport) return;
+				pendingSystemDesignSvgExports.delete(requestId);
+				void runExport()
+					.catch((cause: unknown): SystemDesignSvgExportResult => ({ status: "failed", error: cause instanceof Error ? cause.message : String(cause) }))
+					.then((result) => {
+						rpc.send.systemDesignSvgExportCompleted({ requestId, result });
+					});
+			},
 			assistantScenarioRunCompleted: ({ requestId, run, error }) =>
 				completePendingAssistantScenarioRun(requestId, run, error),
 		},
