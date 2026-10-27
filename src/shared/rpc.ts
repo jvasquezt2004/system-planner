@@ -68,6 +68,17 @@ import type {
 	UpdateSystemConnectionAction,
 	UpdateSystemServiceAction,
 } from "./system-design";
+import type {
+	AddWalkthroughStepAction,
+	CreateWalkthroughAction,
+	MoveWalkthroughAction,
+	MoveWalkthroughStepAction,
+	RemoveWalkthroughAction,
+	RemoveWalkthroughStepAction,
+	RenameWalkthroughAction,
+	RepairWalkthroughStepAction,
+	UpdateWalkthroughStepAction,
+} from "./walkthrough";
 export type SqlPreviewExportRequest = Readonly<{
 	preview: DisplayedSqlPreview;
 	fileName: string;
@@ -192,6 +203,15 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			setActiveView: { params: SetActiveViewAction; response: WorkspaceState };
 			linkSystemDatabase: { params: LinkSystemDatabaseAction; response: WorkspaceState };
 			createSystemDatabaseDesign: { params: CreateSystemDatabaseDesignAction; response: WorkspaceState };
+			createWalkthrough: { params: CreateWalkthroughAction; response: WorkspaceState };
+			renameWalkthrough: { params: RenameWalkthroughAction; response: WorkspaceState };
+			removeWalkthrough: { params: RemoveWalkthroughAction; response: WorkspaceState };
+			moveWalkthrough: { params: MoveWalkthroughAction; response: WorkspaceState };
+			addWalkthroughStep: { params: AddWalkthroughStepAction; response: WorkspaceState };
+			updateWalkthroughStep: { params: UpdateWalkthroughStepAction; response: WorkspaceState };
+			moveWalkthroughStep: { params: MoveWalkthroughStepAction; response: WorkspaceState };
+			removeWalkthroughStep: { params: RemoveWalkthroughStepAction; response: WorkspaceState };
+			repairWalkthroughStep: { params: RepairWalkthroughStepAction; response: WorkspaceState };
 			copySqlPreview: {
 				params: { preview: DisplayedSqlPreview };
 				response: SqlPreviewCopyResult;

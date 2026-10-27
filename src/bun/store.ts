@@ -8,6 +8,7 @@ import {
 	type SystemDesign,
 	type SystemViewName,
 } from "../shared/system-design";
+import type { Walkthrough } from "../shared/walkthrough";
 
 /**
  * A write of one stored design document. `revision` counts structural schema
@@ -48,17 +49,28 @@ export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 		scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
 		edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
 		systemDesign?: { systemDesign: SystemDesign; save: DesignSave };
+		walkthroughs?: { walkthroughs: Walkthrough[]; save: ScenarioSave };
 	}): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	loadSystemDesign(projectId: string): SystemDesignRecord | null;
 	saveSystemDesign(projectId: string, document: SystemDesign, save: DesignSave): void | Promise<void>;
 	saveLastView(projectId: string, view: SystemViewName): void;
+	/** The Project's Walkthroughs, or null when none have been saved yet. */
+	loadWalkthroughs(projectId: string): WalkthroughDocumentRecord | null;
+	saveWalkthroughs(projectId: string, walkthroughs: Walkthrough[], save: ScenarioSave): void | Promise<void>;
 	listDesigns(projectId: string): DatabaseDesignSummary[];
 	loadDesign(designId: string): DatabaseDesignRecord | null;
 	close(): void;
 }
 
 export type ScenarioSave = { revision: number; savedAt: number };
+
+/** The stored Walkthroughs of a Project. The document is validated by the Walkthrough model on load. */
+export type WalkthroughDocumentRecord = {
+	document: unknown;
+	revision: number;
+	savedAt: number;
+};
 
 /** The stored System design of a Project, with its last-used view. */
 export type SystemDesignRecord = {
@@ -192,6 +204,13 @@ const SCHEMA = `
 		revision INTEGER NOT NULL,
 		document_revision INTEGER NOT NULL,
 		last_view TEXT NOT NULL DEFAULT 'system',
+		updated_at INTEGER NOT NULL
+	);
+
+	CREATE TABLE IF NOT EXISTS walkthrough_documents (
+		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+		document TEXT NOT NULL,
+		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
 `;
@@ -432,6 +451,7 @@ export function openDesignStore(
 			scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
 			edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
 			systemDesign?: { systemDesign: SystemDesign; save: DesignSave };
+			walkthroughs?: { walkthroughs: Walkthrough[]; save: ScenarioSave };
 		}) => {
 			if (!selectDesignByIdAndProject.get(input.designId, input.projectId)) {
 				throw new Error(`Database design "${input.designId}" does not belong to project "${input.projectId}".`);
@@ -471,6 +491,10 @@ export function openDesignStore(
 				const { systemDesign, save } = input.systemDesign;
 				writeSystemDesign(input.projectId, systemDesign, save);
 			}
+			if (input.walkthroughs) {
+				const { walkthroughs, save } = input.walkthroughs;
+				writeWalkthroughs(input.projectId, walkthroughs, save);
+			}
 		},
 	);
 
@@ -484,6 +508,24 @@ export function openDesignStore(
 	}
 	const saveSystemDesignTransaction = database.transaction(
 		(projectId: string, systemDesign: SystemDesign, save: DesignSave) => writeSystemDesign(projectId, systemDesign, save),
+	);
+
+	const selectWalkthroughs = database.query<{ document: string; revision: number; updated_at: number }, [string]>(
+		`SELECT document, revision, updated_at FROM walkthrough_documents WHERE project_id = ?`,
+	);
+	const upsertWalkthroughs = database.query(
+		`INSERT INTO walkthrough_documents (project_id, document, revision, updated_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(project_id) DO UPDATE SET document = excluded.document, revision = excluded.revision, updated_at = excluded.updated_at
+		 WHERE walkthrough_documents.revision < excluded.revision`,
+	);
+
+	function writeWalkthroughs(projectId: string, walkthroughs: Walkthrough[], save: ScenarioSave) {
+		const result = upsertWalkthroughs.run(projectId, JSON.stringify(walkthroughs), save.revision, save.savedAt);
+		if (result.changes === 0) throw new Error("Stale Walkthrough revision during save.");
+		touchProject.run(save.savedAt, projectId);
+	}
+	const saveWalkthroughsTransaction = database.transaction(
+		(projectId: string, walkthroughs: Walkthrough[], save: ScenarioSave) => writeWalkthroughs(projectId, walkthroughs, save),
 	);
 
 
@@ -537,6 +579,18 @@ export function openDesignStore(
 		},
 		saveLastView(projectId, view) {
 			updateLastView.run(view, projectId);
+		},
+		loadWalkthroughs(projectId) {
+			const row = selectWalkthroughs.get(projectId);
+			if (!row) return null;
+			return {
+				document: JSON.parse(row.document) as unknown,
+				revision: row.revision,
+				savedAt: row.updated_at,
+			};
+		},
+		saveWalkthroughs(projectId, walkthroughs, save) {
+			saveWalkthroughsTransaction(projectId, walkthroughs, save);
 		},
 		loadDesign(designId) {
 			const row = selectDesignById.get(designId);

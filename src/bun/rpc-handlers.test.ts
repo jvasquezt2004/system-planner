@@ -208,6 +208,65 @@ describe("RPC request handlers", () => {
 		expect(captured.createSystemDatabaseDesign).toEqual({ componentId: "primary", name: "Orders schema" });
 	});
 
+	test("Walkthrough requests forward their complete parameter objects to the workspace", async () => {
+		const calls: Array<{ method: string; action: unknown }> = [];
+		const record = (method: string) => async (action: unknown) => {
+			calls.push({ method, action });
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			createWalkthrough: record("createWalkthrough"),
+			renameWalkthrough: record("renameWalkthrough"),
+			removeWalkthrough: record("removeWalkthrough"),
+			moveWalkthrough: record("moveWalkthrough"),
+			addWalkthroughStep: record("addWalkthroughStep"),
+			updateWalkthroughStep: record("updateWalkthroughStep"),
+			moveWalkthroughStep: record("moveWalkthroughStep"),
+			removeWalkthroughStep: record("removeWalkthroughStep"),
+			repairWalkthroughStep: record("repairWalkthroughStep"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.createWalkthrough({ id: "w-1", name: "Cached read" });
+		await handlers.renameWalkthrough({ walkthroughId: "w-1", name: "Upload" });
+		await handlers.moveWalkthrough({ walkthroughId: "w-1", toIndex: 2 });
+		await handlers.addWalkthroughStep({
+			id: "s-1",
+			walkthroughId: "w-1",
+			connectionId: "c-1",
+			title: "Send",
+			action: "send",
+			durationMs: 500,
+			examplePayload: "{}",
+		});
+		await handlers.updateWalkthroughStep({ walkthroughId: "w-1", stepId: "s-1", changes: { durationMs: null, operation: "" } });
+		await handlers.moveWalkthroughStep({ walkthroughId: "w-1", stepId: "s-1", toIndex: 0 });
+		await handlers.removeWalkthroughStep({ walkthroughId: "w-1", stepId: "s-1" });
+		await handlers.repairWalkthroughStep({ walkthroughId: "w-1", stepId: "s-2", connectionId: "c-2" });
+		await handlers.removeWalkthrough({ walkthroughId: "w-1" });
+
+		expect(calls).toEqual([
+			{ method: "createWalkthrough", action: { id: "w-1", name: "Cached read" } },
+			{ method: "renameWalkthrough", action: { walkthroughId: "w-1", name: "Upload" } },
+			{ method: "moveWalkthrough", action: { walkthroughId: "w-1", toIndex: 2 } },
+			{
+				method: "addWalkthroughStep",
+				action: { id: "s-1", walkthroughId: "w-1", connectionId: "c-1", title: "Send", action: "send", durationMs: 500, examplePayload: "{}" },
+			},
+			{ method: "updateWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-1", changes: { durationMs: null, operation: "" } } },
+			{ method: "moveWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-1", toIndex: 0 } },
+			{ method: "removeWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-1" } },
+			{ method: "repairWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-2", connectionId: "c-2" } },
+			{ method: "removeWalkthrough", action: { walkthroughId: "w-1" } },
+		]);
+	});
+
 	test("undo, redo, layout, and routine requests forward the explicit designId to the workspace", async () => {
 		const captured: Array<{ method: string; args: unknown[] }> = [];
 		const record = (method: string) => async (...args: unknown[]) => {

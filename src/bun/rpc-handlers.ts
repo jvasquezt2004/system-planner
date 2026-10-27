@@ -60,6 +60,17 @@ import type {
 	UpdateSystemConnectionAction,
 	UpdateSystemServiceAction,
 } from "../shared/system-design";
+import type {
+	AddWalkthroughStepAction,
+	CreateWalkthroughAction,
+	MoveWalkthroughAction,
+	MoveWalkthroughStepAction,
+	RemoveWalkthroughAction,
+	RemoveWalkthroughStepAction,
+	RenameWalkthroughAction,
+	RepairWalkthroughStepAction,
+	UpdateWalkthroughStepAction,
+} from "../shared/walkthrough";
 import type { SqlPreviewActions } from "./sql-preview";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
@@ -147,6 +158,15 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		linkSystemDatabase: async (action: LinkSystemDatabaseAction): Promise<WorkspaceState> => (await deps.workspace).linkSystemDatabase(action),
 		createSystemDatabaseDesign: async (action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState> =>
 			(await deps.workspace).createSystemDatabaseDesign(action),
+		createWalkthrough: async (action: CreateWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).createWalkthrough(action),
+		renameWalkthrough: async (action: RenameWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).renameWalkthrough(action),
+		removeWalkthrough: async (action: RemoveWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthrough(action),
+		moveWalkthrough: async (action: MoveWalkthroughAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthrough(action),
+		addWalkthroughStep: async (action: AddWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).addWalkthroughStep(action),
+		updateWalkthroughStep: async (action: UpdateWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).updateWalkthroughStep(action),
+		moveWalkthroughStep: async (action: MoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughStep(action),
+		removeWalkthroughStep: async (action: RemoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthroughStep(action),
+		repairWalkthroughStep: async (action: RepairWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).repairWalkthroughStep(action),
 		copySqlPreview: async ({ preview }: { preview: DisplayedSqlPreview }): Promise<SqlPreviewCopyResult> => {
 			(await deps.workspace).requireActiveDesign(preview.designId);
 			return deps.sqlPreviewActions.copy(preview);

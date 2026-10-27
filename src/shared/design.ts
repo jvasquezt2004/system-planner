@@ -1,4 +1,5 @@
 import type { SystemDesign, SystemViewName } from "./system-design";
+import type { Walkthrough } from "./walkthrough";
 /**
  * Domain vocabulary shared by the Bun main process and the React view.
  * See GLOSSARY.md: Project, Design, Sandbox, Table card, SQL preview.
@@ -467,6 +468,10 @@ export type WorkspaceState = {
 	systemSave?: SaveState;
 	/** The view opened for this Project: the system overview or the database workspace. */
 	activeView?: SystemViewName;
+	/** The Project's saved Walkthroughs, in their display order. Empty until a Project is open. */
+	walkthroughs?: Walkthrough[];
+	/** Save status of the Walkthrough document, kept apart from the System design and database Design. */
+	walkthroughSave?: SaveState;
 };
 
 /** How the displayed SQL relates to sandbox validation for the current draft. */
