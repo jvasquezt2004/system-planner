@@ -232,6 +232,7 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	}
 	const statements: Node[] = parsed.stmts ?? [];
 	if (!state.project || !state.design || !state.activeDesignId) throw new Error("Cannot apply assistant DDL without an open database Design.");
+	const designId = state.activeDesignId;
 	if (options.readDesign) {
 		checkDdlRelevantContent(options.readDesign, state.design, statements);
 	}
@@ -333,7 +334,7 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 					if (ref) { const relationship = resolveReference(design, table, c, ref, createId); design.relationships.push(relationship); }
 				} else if (cmd.subtype === "AT_DropColumn") {
 					const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
-					const removal = removalPlan(design, { kind: "column", tableId: table.id, columnId: target.id });
+					const removal = removalPlan(design, { kind: "column", tableId: table.id, columnId: target.id, designId });
 					pendingRemovals.push({ kind: "column", targetId: `column:${table.name}.${target.name}`, removal });
 					const relationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
 						const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
@@ -385,7 +386,7 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 				const name = nodeName(last<Node>(parts)) ?? object?.String?.sval ?? object?.relname;
 				const table = design.tables.find(({ name: tableName }) => tableName === name);
 				if (!table) unsupported(`table ${name} does not exist`);
-				const removal = removalPlan(design, { kind: "table", tableId: table.id });
+				const removal = removalPlan(design, { kind: "table", tableId: table.id, designId });
 				pendingRemovals.push({ kind: "table", targetId: `table:${table.name}`, removal });
 				const removedRelationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
 					const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
@@ -555,7 +556,7 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	}
 	return {
 		status: "applied",
-		state: await workspace.applyAssistantDesign(design, options.assistantTurnId, state.activeDesignId),
+		state: await workspace.applyAssistantDesign(design, designId, options.assistantTurnId),
 		statements: appliedStatements,
 	};
 }

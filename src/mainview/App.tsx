@@ -278,10 +278,11 @@ export function App({
 		});
 	}, []);
 	const runScenario = useCallback(
-		(scenario: Scenario) => scenarioRunDriver.current?.run({
-			...scenario,
-			designId: scenario.designId ?? designIdRef.current ?? undefined,
-		}) ?? Promise.resolve(null),
+		(scenario: Scenario) => {
+			const designId = designIdRef.current;
+			if (!designId) return Promise.resolve(null);
+			return scenarioRunDriver.current?.run({ ...scenario, designId }) ?? Promise.resolve(null);
+		},
 		[],
 	);
 	const runSingleScenario = useCallback(async (scenario: Scenario) => {
@@ -332,7 +333,7 @@ export function App({
 		};
 		const snapshot = state.scenarios.map((scenario) => ({
 			...scenario,
-			designId: scenario.designId ?? currentDesignId,
+			designId: currentDesignId,
 		}));
 		runAllOperation.current = operation;
 		setRunAllActive(true);
@@ -436,6 +437,7 @@ export function App({
 				setError(null);
 				try {
 					const next = await workspaceClient.addRelationship(
+						designIdRef.current!,
 						referencingTableId,
 						referencedTableId,
 						cardinality,
@@ -469,14 +471,14 @@ export function App({
 
 	const handleSetRelationshipRequired = useCallback(
 		(relationshipId: string, required: boolean) => {
-			void run(() => workspaceClient.updateRelationship(relationshipId, { required }));
+			void run(() => workspaceClient.updateRelationship(designIdRef.current!, relationshipId, { required }));
 		},
 		[run],
 	);
 
 	const handleSetRelationshipCardinality = useCallback(
 		(relationshipId: string, cardinality: RelationshipCardinality) => {
-			void run(() => workspaceClient.updateRelationship(relationshipId, { cardinality }));
+			void run(() => workspaceClient.updateRelationship(designIdRef.current!, relationshipId, { cardinality }));
 		},
 		[run],
 	);
@@ -484,7 +486,7 @@ export function App({
 	const handleRemoveRelationship = useCallback(
 		(relationshipId: string) => {
 			setSelectedRelationshipId(null);
-			void run(() => workspaceClient.removeRelationship(relationshipId));
+			void run(() => workspaceClient.removeRelationship(designIdRef.current!, relationshipId));
 		},
 		[run],
 	);
@@ -507,12 +509,12 @@ export function App({
 		setSelectedRelationshipId(null);
 		setSelectedColumnId(null);
 		if (target.kind === "function") {
-			void run(() => workspaceClient.removeFunction({ functionId: target.functionId, confirmed: true }));
+			void run(() => workspaceClient.removeFunction({ functionId: target.functionId, confirmed: true, designId: target.designId }));
 		} else if (target.kind === "table") {
 			setSelectedTableId(null);
-			void run(() => workspaceClient.removeTable(target.tableId, true));
+			void run(() => workspaceClient.removeTable(target.designId, target.tableId, true));
 		} else {
-			void run(() => workspaceClient.removeColumn(target.tableId, target.columnId, true));
+			void run(() => workspaceClient.removeColumn(target.designId, target.tableId, target.columnId, true));
 		}
 	}, [pendingRemoval, run]);
 
@@ -521,7 +523,7 @@ export function App({
 			setBusy(true);
 			setError(null);
 			try {
-				const next = await workspaceClient.addTable(name, position);
+				const next = await workspaceClient.addTable(designIdRef.current!, name, position);
 				setState(next);
 				const created = next.design?.tables[next.design.tables.length - 1];
 				if (created) {
@@ -543,7 +545,7 @@ export function App({
 			setBusy(true);
 			setError(null);
 			try {
-				const next = await workspaceClient.addColumn(selectedTableId);
+				const next = await workspaceClient.addColumn(designIdRef.current!, selectedTableId);
 				setState(next);
 				const table = next.design?.tables.find(
 					(candidate) => candidate.id === selectedTableId,
@@ -561,29 +563,29 @@ export function App({
 	const handleApplyColumn = useCallback(
 		(columnId: string, changes: ColumnChanges) => {
 			if (!selectedTableId) return;
-			void run(() => workspaceClient.updateColumn(selectedTableId, columnId, changes));
+			void run(() => workspaceClient.updateColumn(designIdRef.current!, selectedTableId, columnId, changes));
 		},
 		[run, selectedTableId],
 	);
 
 	const handleRemoveColumn = useCallback(
 		(columnId: string) => {
-			if (!selectedTableId) return;
-			void requestRemoval({ kind: "column", tableId: selectedTableId, columnId });
+			if (!selectedTableId || !state?.activeDesignId) return;
+			void requestRemoval({ kind: "column", tableId: selectedTableId, columnId, designId: state.activeDesignId });
 		},
-		[requestRemoval, selectedTableId],
+		[requestRemoval, selectedTableId, state?.activeDesignId],
 	);
 
 	const handleMoveTable = useCallback(
 		(tableId: string, position: CanvasPoint) => {
-			void applyLayout(() => workspaceClient.moveTable(tableId, position));
+			void applyLayout(() => workspaceClient.moveTable(designIdRef.current!, tableId, position));
 		},
 		[applyLayout],
 	);
 
 	const handleViewportChange = useCallback(
 		(viewport: CanvasViewport) => {
-			void applyLayout(() => workspaceClient.setViewport(viewport));
+			void applyLayout(() => workspaceClient.setViewport(designIdRef.current!, viewport));
 		},
 		[applyLayout],
 	);
@@ -620,8 +622,8 @@ export function App({
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
-				onUndo={() => void run(() => workspaceClient.undo())}
-				onRedo={() => void run(() => workspaceClient.redo())}
+				onUndo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.undo(designId)); }}
+				onRedo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.redo(designId)); }}
 				view={view}
 				onViewChange={setView}
 			/>
@@ -687,8 +689,8 @@ export function App({
 								functions={state.design.functions ?? []}
 								initialSelectedId={assistantCodeTarget?.kind === "function-body" ? assistantCodeTarget.id : null}
 								busy={busy}
-								onSave={(functions) => void run(() => workspaceClient.updateFunctions(functions))}
-								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId })}
+								onSave={(functions) => void run(() => workspaceClient.updateFunctions(state.activeDesignId!, functions))}
+								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId, designId: state.activeDesignId! })}
 							/>
 						)}
 						{view === "triggers" && (
@@ -698,10 +700,11 @@ export function App({
 								tables={state.design.tables}
 								functions={state.design.functions ?? []}
 								busy={busy}
-								onSave={(triggers) => void run(() => workspaceClient.updateTriggers(triggers))}
+								onSave={(triggers) => void run(() => workspaceClient.updateTriggers(state.activeDesignId!, triggers))}
 								onRemove={(triggerId) =>
 									void run(() =>
 										workspaceClient.updateTriggers(
+											state.activeDesignId!,
 											(state.design?.triggers ?? []).filter((trigger) => trigger.id !== triggerId),
 										),
 									)
@@ -835,27 +838,27 @@ export function App({
 									sql={state.sql}
 									busy={busy}
 									onRename={(name) =>
-										void run(() => workspaceClient.renameTable(selectedTable.id, name))
+										void run(() => workspaceClient.renameTable(state.activeDesignId!, selectedTable.id, name))
 									}
 									onRemove={() =>
-										void requestRemoval({ kind: "table", tableId: selectedTable.id })
+										void requestRemoval({ kind: "table", tableId: selectedTable.id, designId: state.activeDesignId! })
 									}
 									onSelectColumn={setSelectedColumnId}
 									onAddColumn={handleAddColumn}
 									onApplyColumn={handleApplyColumn}
 									onUpdateIndexes={(indexes) =>
-										void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))
+										void run(() => workspaceClient.updateIndexes(state.activeDesignId!, selectedTable.id, indexes))
 									}
 									onUpdateEnumTypes={(enumTypes) =>
-										void run(() => workspaceClient.updateEnumTypes(enumTypes))
+										void run(() => workspaceClient.updateEnumTypes(state.activeDesignId!, enumTypes))
 									}
 									onUpdateUniqueConstraints={(uniqueConstraints) =>
 										void run(() =>
-											workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints),
+											workspaceClient.updateUniqueConstraints(state.activeDesignId!, selectedTable.id, uniqueConstraints),
 										)
 									}
 									onUpdatePolicies={(rowLevelSecurity, policies) =>
-										void run(() => workspaceClient.updatePolicies(selectedTable.id, rowLevelSecurity, policies))
+										void run(() => workspaceClient.updatePolicies(state.activeDesignId!, selectedTable.id, rowLevelSecurity, policies))
 									}
 									onRemoveColumn={handleRemoveColumn}
 									onSelectRelationship={handleSelectRelationship}
@@ -863,7 +866,7 @@ export function App({
 									onSetRelationshipCardinality={handleSetRelationshipCardinality}
 									onSetReferentialAction={(relationshipId, action, value) =>
 									void run(() =>
-										workspaceClient.updateRelationship(relationshipId, {
+										workspaceClient.updateRelationship(state.activeDesignId!, relationshipId, {
 											[action]: value,
 										}),
 									)

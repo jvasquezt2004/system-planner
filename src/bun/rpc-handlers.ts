@@ -61,7 +61,7 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		renameEdgeFunction: async (action: RenameEdgeFunctionAction): Promise<WorkspaceState> => (await deps.workspace).renameEdgeFunction(action),
 		removeEdgeFunction: async (action: RemoveEdgeFunctionAction): Promise<WorkspaceState> => (await deps.workspace).removeEdgeFunction(action),
 		updateEdgeFunctionSource: async (action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState> => (await deps.workspace).updateEdgeFunctionSource(action),
-		beginScenarioRun: async (action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }> =>
+		beginScenarioRun: async (action: { scenarioId: string; designId: string }): Promise<{ runId: string; state: WorkspaceState }> =>
 			(await deps.workspace).beginScenarioRun(action),
 		handleSandboxApiRequest: async (action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse> =>
 			(await deps.workspace).handleSandboxApiRequest(action),
@@ -72,8 +72,8 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 			expectations?: ScenarioRun["expectations"];
 			reason?: "exception" | "stopped" | "timed out";
 		}): Promise<WorkspaceState> => (await deps.workspace).finishScenarioRun(action),
-		undo: async (action: { designId?: string } = {}): Promise<WorkspaceState> => (await deps.workspace).undo(action),
-		redo: async (action: { designId?: string } = {}): Promise<WorkspaceState> => (await deps.workspace).redo(action),
+		undo: async (action: { designId: string }): Promise<WorkspaceState> => (await deps.workspace).undo(action),
+		redo: async (action: { designId: string }): Promise<WorkspaceState> => (await deps.workspace).redo(action),
 		addTable: async (action: AddTableAction): Promise<WorkspaceState> =>
 			(await deps.workspace).addTable(action),
 		renameTable: async (action: RenameTableAction): Promise<WorkspaceState> =>

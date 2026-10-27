@@ -62,9 +62,9 @@ function createDelayedStore(
 	const store = openDesignStore(databasePath);
 	return {
 		...store,
-		async saveDesign(projectId, design, save) {
+		async saveDesign(projectId, design, save, designId) {
 			await delay(delayForDocumentRevision(save.documentRevision));
-			store.saveDesign(projectId, design, save);
+			store.saveDesign(projectId, design, save, designId);
 		},
 	};
 }
@@ -77,9 +77,9 @@ function createDelayedScenarioStore(
 	const store = openDesignStore(databasePath);
 	return {
 		...store,
-		async saveScenarios(projectId, scenarios, save) {
+		async saveScenarios(projectId, scenarios, save, designId) {
 			await waitBeforeScenarioSave(projectId, save.revision);
-			store.saveScenarios(projectId, scenarios, save);
+			store.saveScenarios(projectId, scenarios, save, designId);
 		},
 	};
 }
@@ -91,9 +91,9 @@ function createDelayedEdgeFunctionStore(
 	const store = openDesignStore(databasePath);
 	return {
 		...store,
-		async saveEdgeFunctions(projectId, edgeFunctions, save) {
+		async saveEdgeFunctions(projectId, edgeFunctions, save, designId) {
 			await waitBeforeSave(projectId, save.revision);
-			store.saveEdgeFunctions(projectId, edgeFunctions, save);
+			store.saveEdgeFunctions(projectId, edgeFunctions, save, designId);
 		},
 	};
 }
@@ -103,12 +103,12 @@ function createFailingEdgeFunctionStore(databasePath: string): DesignStore {
 	let fail = true;
 	return {
 		...store,
-		saveEdgeFunctions(projectId, edgeFunctions, save) {
+		saveEdgeFunctions(projectId, edgeFunctions, save, designId) {
 			if (fail) {
 				fail = false;
 				throw new Error("SQLite write denied");
 			}
-			store.saveEdgeFunctions(projectId, edgeFunctions, save);
+			store.saveEdgeFunctions(projectId, edgeFunctions, save, designId);
 		},
 	};
 }
@@ -137,7 +137,7 @@ describe("design workspace", () => {
 		expect(created.save.status).toBe("saved");
 		expect(created.sql.status).toBe("empty");
 
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const tables = withTable.design?.tables ?? [];
 		expect(tables).toHaveLength(1);
 		expect(tables[0].name).toBe("Books");
@@ -182,22 +182,22 @@ describe("design workspace", () => {
 		const projectId = project.project?.id;
 		if (!projectId) throw new Error("Expected a created project.");
 
-		const first = await workspace.createScenario({ name: "First" });
+		const first = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "First" });
 		const firstId = first.scenarios[0].id;
-		await workspace.updateScenarioSource({
+		await workspace.updateScenarioSource({ designId: workspace.getState().activeDesignId!,
 			scenarioId: firstId,
 			source: "export const expected = true;",
 		});
-		await workspace.renameScenario({ scenarioId: firstId, name: "Renamed" });
+		await workspace.renameScenario({ designId: workspace.getState().activeDesignId!, scenarioId: firstId, name: "Renamed" });
 		expect(workspace.getState().scenarios).toEqual([
 			{ id: firstId, name: "Renamed", source: "export const expected = true;", designId: project.activeDesignId! },
 		]);
-		await workspace.createScenario({ name: "Second" });
+		await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Second" });
 		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual([
 			"Renamed",
 			"Second",
 		]);
-		await workspace.removeScenario({ scenarioId: firstId });
+		await workspace.removeScenario({ designId: workspace.getState().activeDesignId!, scenarioId: firstId });
 
 		expect(workspace.getState().scenarioSave).toMatchObject({
 			status: "saved",
@@ -210,7 +210,8 @@ describe("design workspace", () => {
 		await closeTestWorkspace(workspace);
 
 		const store = openDesignStore(databasePath);
-		const before = store.loadScenarios(projectId);
+		const designId = project.activeDesignId!;
+		const before = store.loadScenarios(projectId, designId);
 		expect(before).toMatchObject({
 			revision: 5,
 			scenarios: [{ name: "Second", source: "" }],
@@ -219,9 +220,9 @@ describe("design workspace", () => {
 			store.saveScenarios(projectId, [{ id: "stale", name: "Stale", source: "" }], {
 				revision,
 				savedAt: 1,
-			});
+			}, designId);
 		}
-		expect(store.loadScenarios(projectId)).toEqual(before);
+		expect(store.loadScenarios(projectId, designId)).toEqual(before);
 		store.close();
 
 		const reopened = await reopenTestWorkspace(databasePath);
@@ -235,11 +236,11 @@ describe("design workspace", () => {
 	test("marks completed Scenario runs stale when any saved Edge function changes", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Books" });
-		const createdScenario = await workspace.createScenario({ name: "List books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
+		const createdScenario = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "List books" });
 		const scenario = createdScenario.scenarios[0];
 		if (!scenario) throw new Error("Expected a saved Scenario.");
-		const createdFunction = await workspace.createEdgeFunction({ name: "list-books" });
+		const createdFunction = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "list-books" });
 		const edgeFunction = createdFunction.edgeFunctions[0];
 		if (!edgeFunction) throw new Error("Expected a saved Edge function.");
 
@@ -281,25 +282,25 @@ describe("design workspace", () => {
 		const project = await workspace.createProject({ name: "Library" });
 		const projectId = project.project?.id;
 		if (!projectId) throw new Error("Expected a created project.");
-		await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const designState = workspace.getState();
 
-		const created = await workspace.createEdgeFunction({ name: "place-order" });
+		const created = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "place-order" });
 		const edgeFunction = created.edgeFunctions[0];
 		if (!edgeFunction) throw new Error("Expected an Edge function.");
 		expect(edgeFunction).toMatchObject({
 			name: "place-order",
 			source: 'Deno.serve(async (_request) => new Response("OK"));',
 		});
-		await workspace.updateEdgeFunctionSource({
+		await workspace.updateEdgeFunctionSource({ designId: workspace.getState().activeDesignId!,
 			edgeFunctionId: edgeFunction.id,
 			source: "Deno.serve(async () => new Response('placed'));",
 		});
-		await workspace.renameEdgeFunction({ edgeFunctionId: edgeFunction.id, name: "place_order2" });
-		const second = await workspace.createEdgeFunction({ name: "cancel-order" });
+		await workspace.renameEdgeFunction({ designId: workspace.getState().activeDesignId!, edgeFunctionId: edgeFunction.id, name: "place_order2" });
+		const second = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "cancel-order" });
 		const secondId = second.edgeFunctions[1]!.id;
-		await expect(workspace.renameEdgeFunction({ edgeFunctionId: secondId, name: "place_order2" })).rejects.toThrow("already exists");
-		await workspace.removeEdgeFunction({ edgeFunctionId: secondId });
+		await expect(workspace.renameEdgeFunction({ designId: workspace.getState().activeDesignId!, edgeFunctionId: secondId, name: "place_order2" })).rejects.toThrow("already exists");
+		await workspace.removeEdgeFunction({ designId: workspace.getState().activeDesignId!, edgeFunctionId: secondId });
 
 		expect(workspace.getState().edgeFunctions).toEqual([
 			{ id: edgeFunction.id, name: "place_order2", source: "Deno.serve(async () => new Response('placed'));", designId: project.activeDesignId! },
@@ -309,8 +310,8 @@ describe("design workspace", () => {
 		expect(workspace.getState().undoRedo).toEqual(designState.undoRedo);
 		expect(workspace.getState().sandbox).toEqual(designState.sandbox);
 		expect(workspace.getState().sql).toEqual(designState.sql);
-		await expect(workspace.createEdgeFunction({ name: "Not-a-slug" })).rejects.toThrow("lowercase letters, digits, hyphens, or underscores");
-		await expect(workspace.createEdgeFunction({ name: "place_order2" })).rejects.toThrow("already exists");
+		await expect(workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "Not-a-slug" })).rejects.toThrow("lowercase letters, digits, hyphens, or underscores");
+		await expect(workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "place_order2" })).rejects.toThrow("already exists");
 
 		await closeTestWorkspace(workspace);
 		const reopened = await reopenTestWorkspace(databasePath);
@@ -325,11 +326,11 @@ describe("design workspace", () => {
 			openStore: createFailingEdgeFunctionStore,
 		});
 		await workspace.createProject({ name: "Library" });
-		const failed = await workspace.createEdgeFunction({ name: "place-order" });
+		const failed = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "place-order" });
 		expect(failed.edgeFunctionSave).toMatchObject({ status: "failed", error: "SQLite write denied" });
 		const edgeFunction = failed.edgeFunctions[0];
 		if (!edgeFunction) throw new Error("Expected unsaved Edge function draft.");
-		const saved = await workspace.updateEdgeFunctionSource({
+		const saved = await workspace.updateEdgeFunctionSource({ designId: workspace.getState().activeDesignId!,
 			edgeFunctionId: edgeFunction.id,
 			source: "Deno.serve(() => new Response('recovered'));",
 		});
@@ -353,15 +354,15 @@ describe("design workspace", () => {
 		projectAId = projectA.project?.id ?? null;
 		if (!projectAId) throw new Error("Expected Project A to be created.");
 
-		const staleSave = workspace.createEdgeFunction({ name: "older" });
+		const staleSave = workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "older" });
 		await oldSaveStarted.promise;
 		const projectB = await workspace.createProject({ name: "Project B" });
 		const projectBId = projectB.project?.id;
 		if (!projectBId) throw new Error("Expected Project B to be created.");
-		await workspace.createEdgeFunction({ name: "other-project" });
+		await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "other-project" });
 
 		await workspace.openProject({ projectId: projectAId });
-		const latest = await workspace.createEdgeFunction({ name: "newer" });
+		const latest = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "newer" });
 		expect(latest.edgeFunctionSave.status).toBe("saved");
 		releaseOldSave.resolve();
 		await staleSave;
@@ -391,7 +392,7 @@ describe("design workspace", () => {
 		projectId = project.project?.id ?? null;
 		if (!projectId) throw new Error("Expected a created project.");
 
-		const delayedSave = workspace.createEdgeFunction({ name: "late-save" });
+		const delayedSave = workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "late-save" });
 		await saveStarted.promise;
 		await workspace.createProject({ name: "Another project" });
 		await workspace.openProject({ projectId });
@@ -413,12 +414,12 @@ describe("design workspace", () => {
 		const projectA = await workspace.createProject({ name: "Project A" });
 		const projectAId = projectA.project?.id;
 		if (!projectAId) throw new Error("Expected Project A to be created.");
-		const scenarioA = await workspace.createScenario({ name: "Scenario A" });
+		const scenarioA = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario A" });
 
 		const projectB = await workspace.createProject({ name: "Project B" });
 		const projectBId = projectB.project?.id;
 		if (!projectBId) throw new Error("Expected Project B to be created.");
-		const scenarioB = await workspace.createScenario({ name: "Scenario B" });
+		const scenarioB = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario B" });
 
 		await workspace.openProject({ projectId: projectAId });
 		expect(workspace.getState().scenarios).toEqual(scenarioA.scenarios);
@@ -450,13 +451,13 @@ describe("design workspace", () => {
 		const projectA = await workspace.createProject({ name: "Project A" });
 		projectAId = projectA.project?.id ?? null;
 		if (!projectAId) throw new Error("Expected Project A to be created.");
-		const saveFromA = workspace.createScenario({ name: "Scenario A" });
+		const saveFromA = workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario A" });
 		await saveStarted.promise;
 
 		const projectB = await workspace.createProject({ name: "Project B" });
 		const projectBId = projectB.project?.id;
 		if (!projectBId) throw new Error("Expected Project B to be created.");
-		const stateB = await workspace.createScenario({ name: "Scenario B" });
+		const stateB = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario B" });
 		const expectedScenarios = stateB.scenarios;
 		const expectedScenarioSave = stateB.scenarioSave;
 
@@ -489,7 +490,7 @@ describe("design workspace", () => {
 		const projectId = project.project?.id;
 		if (!projectId) throw new Error("Expected a created project.");
 
-		const failed = await workspace.createScenario({ name: "Draft" });
+		const failed = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Draft" });
 		expect(failed.scenarios).toMatchObject([{ name: "Draft", source: "" }]);
 		expect(failed.scenarioSave).toEqual({
 			status: "failed",
@@ -510,7 +511,7 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		await workspace.close();
 		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
 
@@ -547,7 +548,7 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Library" });
-		const state = await workspace.addTable({ name: "Books" });
+		const state = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 
 		expect(state.sql.status).toBe("current");
 		if (state.sql.status !== "current") {
@@ -570,7 +571,7 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Authors" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 		const expected: Design | null = workspace.getState().design;
 		await workspace.close();
 		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
@@ -585,9 +586,9 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		await workspace.createProject({ name: "School" });
-		const state = await workspace.addTable({ name: "Students" });
+		const state = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
 
 		expect(state.projects.map((project) => project.name).sort()).toEqual(["Library", "School"]);
 		const library = state.projects.find((project) => project.name === "Library");
@@ -609,8 +610,8 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Unfinished" });
-		await workspace.addTable({ name: "Books" });
-		const invalidDraft = await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
+		const invalidDraft = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 
 		expect(invalidDraft.design?.tables.map((table) => table.name)).toEqual([
 			"Books",
@@ -640,9 +641,9 @@ describe("design workspace", () => {
 
 		const project = await workspace.createProject({ name: "Rapid" });
 
-		const first = workspace.addTable({ name: "One" });
-		const second = workspace.addTable({ name: "Two" });
-		const third = workspace.addTable({ name: "Three" });
+		const first = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "One" });
+		const second = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Two" });
+		const third = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Three" });
 
 		expect(workspace.getState().save).toEqual({ status: "saving", revision: 4, designId: project.activeDesignId! });
 		await Promise.all([first, second, third]);
@@ -672,19 +673,19 @@ describe("design workspace", () => {
 				const store = openDesignStore(path);
 				return {
 					...store,
-					saveDesign(projectId, design, save) {
+					saveDesign(projectId, design, save, designId) {
 						if (failNextSave) {
 							failNextSave = false;
 							throw new Error("disk full");
 						}
-						store.saveDesign(projectId, design, save);
+						store.saveDesign(projectId, design, save, designId);
 					},
 				};
 			},
 		});
 
 		await workspace.createProject({ name: "Fragile" });
-		const failed = await workspace.addTable({ name: "One" });
+		const failed = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "One" });
 
 		expect(failed.save.status).toBe("failed");
 		if (failed.save.status === "failed") {
@@ -692,7 +693,7 @@ describe("design workspace", () => {
 		}
 		expect(failed.design?.tables.map((table) => table.name)).toEqual(["One"]);
 
-		const recovered = await workspace.addTable({ name: "Two" });
+		const recovered = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Two" });
 		expect(recovered.save).toMatchObject({ status: "saved", revision: 3 });
 		expect(recovered.design?.tables.map((table) => table.name)).toEqual(["One", "Two"]);
 	});
@@ -710,22 +711,22 @@ describe("design workspace", () => {
 				const realStore = store(path);
 				return {
 					...realStore,
-					async saveDesign(projectId, design, save) {
+					async saveDesign(projectId, design, save, designId) {
 						if (gateNextSave) {
 							gateNextSave = false;
 							await firstSaveGate;
 						}
-						realStore.saveDesign(projectId, design, save);
+						realStore.saveDesign(projectId, design, save, designId);
 					},
 				};
 			},
 		});
 
 		const alpha = await workspace.createProject({ name: "Alpha" });
-		const alphaSave = workspace.addTable({ name: "Alpha table" });
+		const alphaSave = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Alpha table" });
 
 		await workspace.createProject({ name: "Beta" });
-		const betaState = await workspace.addTable({ name: "Beta table" });
+		const betaState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Beta table" });
 		expect(betaState.project?.name).toBe("Beta");
 
 		releaseFirstSave();
@@ -745,7 +746,7 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		const state = await workspace.addTable({
+		const state = await workspace.addTable({ designId: workspace.getState().activeDesignId!,
 			name: "Books",
 			position: { x: 320, y: 180 },
 		});
@@ -766,10 +767,10 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(withTable.design?.tables[0]);
 
-		const state = await workspace.renameTable({ tableId: table.id, name: "Volumes" });
+		const state = await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "Volumes" });
 
 		expect(state.design?.tables).toHaveLength(1);
 		expect(state.design?.tables[0]).toMatchObject({ id: table.id, name: "Volumes" });
@@ -805,11 +806,11 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Library" });
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(withTable.design?.tables[0]);
-		const renameToVolumes = workspace.renameTable({ tableId: table.id, name: "Volumes" });
-		const renameToDrafts = workspace.renameTable({ tableId: table.id, name: "Drafts" });
-		const renameBackToVolumes = workspace.renameTable({ tableId: table.id, name: "Volumes" });
+		const renameToVolumes = workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "Volumes" });
+		const renameToDrafts = workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "Drafts" });
+		const renameBackToVolumes = workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "Volumes" });
 
 		const pending = workspace.getState();
 		expect(pending.sql).toMatchObject({
@@ -845,11 +846,11 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Authors" });
-		const added = await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
+		const added = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const books = requireTable(added.design?.tables[1]);
 
-		const state = await workspace.renameTable({ tableId: books.id, name: "Authors" });
+		const state = await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: books.id, name: "Authors" });
 
 		expect(state.save).toMatchObject({ status: "saved", revision: 4 });
 		expect(state.design?.tables.map((table) => table.name)).toEqual(["Authors", "Authors"]);
@@ -871,8 +872,8 @@ describe("design workspace", () => {
 			draftRevision: created.revision,
 			errors: [],
 		});
-		const first = workspace.addTable({ name: "Books" });
-		const second = workspace.addTable({ name: "Books" });
+		const first = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
+		const second = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		await Promise.all([first, second]);
 
 		const blocked = workspace.getState();
@@ -905,9 +906,9 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Library" });
-		const accepted = await workspace.addTable({ name: "Books" });
+		const accepted = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(accepted.design?.tables[0]);
-		const rejected = await workspace.renameTable({
+		const rejected = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			name: "Volumes",
 		});
@@ -975,17 +976,17 @@ describe("design workspace", () => {
 		let projectGate: PreviewGate | null = null;
 		try {
 			await workspace.createProject({ name: "Alpha" });
-			const alpha = await workspace.addTable({ name: "Authors" });
+			const alpha = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 			const author = requireTable(alpha.design?.tables[0]);
 
 			revisionGate = createGate();
 			nextGate = revisionGate;
-			const olderRevision = workspace.renameTable({
+			const olderRevision = workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 				tableId: author.id,
 				name: "Writers",
 			});
 			await revisionGate.started;
-			const latestRevision = await workspace.renameTable({
+			const latestRevision = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 				tableId: author.id,
 				name: "Novelists",
 			});
@@ -1002,13 +1003,13 @@ describe("design workspace", () => {
 
 			projectGate = createGate();
 			nextGate = projectGate;
-			const previousProjectWork = workspace.renameTable({
+			const previousProjectWork = workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 				tableId: author.id,
 				name: "Late Writers",
 			});
 			await projectGate.started;
 			await workspace.createProject({ name: "Beta" });
-			const beta = await workspace.addTable({ name: "Books" });
+			const beta = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 			projectGate.unblock();
 			await previousProjectWork;
 
@@ -1040,14 +1041,14 @@ describe("design workspace", () => {
 			const { workspace, databasePath } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Library" });
-			await workspace.addTable({ name: "Authors" });
-			const added = await workspace.addTable({ name: "Books" });
+			await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
+			const added = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 			const authors = requireTable(added.design?.tables[0]);
 			const books = requireTable(added.design?.tables[1]);
-			const withReviews = await workspace.addTable({ name: "Reviews" });
+			const withReviews = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Reviews" });
 			const reviews = requireTable(withReviews.design?.tables[2]);
 
-			const state = await workspace.removeTable({ tableId: books.id });
+			const state = await workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: books.id });
 
 			expect(state.design?.tables.map((table) => table.id)).toEqual([
 				authors.id,
@@ -1087,9 +1088,9 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		const state = await workspace.addTable({ name: "Books" });
+		const state = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 
-		await expect(workspace.removeTable({ tableId: "missing" })).rejects.toThrow(
+		await expect(workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: "missing" })).rejects.toThrow(
 			"That table could not be found.",
 		);
 		expect(workspace.getState().design).toEqual(state.design);
@@ -1100,11 +1101,11 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(withTable.design?.tables[0]);
 		const key = requireColumn(table, 0);
 
-		const withColumn = await workspace.addColumn({ tableId: table.id });
+		const withColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id });
 		const column = requireColumn(requireTable(withColumn.design?.tables[0]), 1);
 		expect(column).toMatchObject({
 			name: "column",
@@ -1119,7 +1120,7 @@ describe("design workspace", () => {
 		expect(withColumn.revision).toBe(3);
 		expect(withColumn.save).toMatchObject({ status: "saved", revision: 3 });
 
-		const edited = await workspace.updateColumn({
+		const edited = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: column.id,
 			changes: {
@@ -1171,6 +1172,7 @@ describe("design workspace", () => {
 
 		// A rename keeps the column identity and its metadata intact.
 		const renamed = await reopened.updateColumn({
+			designId: reopened.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: column.id,
 			changes: { name: "isbn_13" },
@@ -1187,6 +1189,7 @@ describe("design workspace", () => {
 		expect(renamed.sql.sql).toContain('"isbn_13" text NOT NULL UNIQUE');
 
 		const removed = await reopened.removeColumn({
+			designId: reopened.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: column.id,
 		});
@@ -1198,7 +1201,7 @@ describe("design workspace", () => {
 		expect(removed.sandbox.status).toBe("applied");
 
 		await expect(
-			reopened.removeColumn({ tableId: table.id, columnId: column.id }),
+			reopened.removeColumn({ designId: reopened.getState().activeDesignId!, tableId: table.id, columnId: column.id }),
 		).rejects.toThrow("That column could not be found.");
 	}, 30_000);
 
@@ -1208,7 +1211,7 @@ describe("design workspace", () => {
 			const { workspace } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Types" });
-			const withTable = await workspace.addTable({ name: "Samples" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Samples" });
 			const table = requireTable(withTable.design?.tables[0]);
 
 			// Independent knowledge of what PostgreSQL reports for each type.
@@ -1245,7 +1248,7 @@ describe("design workspace", () => {
 
 			let state = withTable;
 			for (const definition of COLUMN_TYPE_DEFINITIONS.filter((candidate) => candidate.type !== "enum")) {
-				state = await workspace.addColumn({
+				state = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 					tableId: table.id,
 					name: `sample_${definition.type}`,
 					type: definition.type,
@@ -1253,7 +1256,7 @@ describe("design workspace", () => {
 				if (["vector", "halfvec", "sparsevec"].includes(definition.type)) {
 					const columns = requireTable(state.design?.tables[0]).columns;
 					const column = columns[columns.length - 1];
-					state = await workspace.updateColumn({ tableId: table.id, columnId: column.id, changes: { typeParameters: { dimensions: 3 } } });
+					state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId: column.id, changes: { typeParameters: { dimensions: 3 } } });
 				}
 			}
 
@@ -1289,18 +1292,18 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Keys" });
-		const withTable = await workspace.addTable({ name: "Accounts" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Accounts" });
 		const table = requireTable(withTable.design?.tables[0]);
 		const idColumn = requireColumn(table, 0);
 
-		const withCode = await workspace.addColumn({
+		const withCode = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			name: "code",
 			type: "text",
 		});
 		const codeColumn = requireColumn(requireTable(withCode.design?.tables[0]), 1);
 
-		const keyed = await workspace.updateColumn({
+		const keyed = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: codeColumn.id,
 			changes: { primaryKey: true, nullable: false },
@@ -1335,7 +1338,7 @@ describe("design workspace", () => {
 			{ name: "code", primaryKey: true },
 		]);
 
-		const cleared = await workspace.updateColumn({
+		const cleared = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: codeColumn.id,
 			changes: { primaryKey: false },
@@ -1350,7 +1353,7 @@ describe("design workspace", () => {
 		expect(cleared.sql.errors.join(" ")).toContain("exactly one primary key column");
 		expect(cleared.sandbox).toMatchObject({ status: "applied", revision: 4 });
 
-		const contradictory = await workspace.updateColumn({
+		const contradictory = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: codeColumn.id,
 			changes: { primaryKey: true, nullable: true },
@@ -1378,9 +1381,9 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Notes" });
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(withTable.design?.tables[0]);
-		const withColumn = await workspace.addColumn({
+		const withColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			name: "summary",
 		});
@@ -1388,7 +1391,7 @@ describe("design workspace", () => {
 		const before = workspace.getState();
 		const appliesAfterEdit = applies.length;
 
-		const noted = await workspace.updateColumn({
+		const noted = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: column.id,
 			changes: { notes: "Short description of the book" },
@@ -1415,11 +1418,11 @@ describe("design workspace", () => {
 		const { workspace } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Keys" });
-		const withTable = await workspace.addTable({ name: "Books" });
+		const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(withTable.design?.tables[0]);
 		const idColumn = requireColumn(table, 0);
 
-		const integerKey = await workspace.updateColumn({
+		const integerKey = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: idColumn.id,
 			changes: { type: "integer" },
@@ -1429,7 +1432,7 @@ describe("design workspace", () => {
 			identity: true,
 		});
 
-		const uuidKey = await workspace.updateColumn({
+		const uuidKey = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			columnId: idColumn.id,
 			changes: { type: "uuid" },
@@ -1467,16 +1470,16 @@ describe("design workspace", () => {
 			const { workspace } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Constraints" });
-			const withTable = await workspace.addTable({ name: "Books" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 			const table = requireTable(withTable.design?.tables[0]);
-			const withIsbn = await workspace.addColumn({
+			const withIsbn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				name: "isbn",
 				type: "text",
 			});
 			const isbn = requireColumn(requireTable(withIsbn.design?.tables[0]), 1);
-			await workspace.addColumn({ tableId: table.id, name: "subtitle", type: "text" });
-			const state = await workspace.updateColumn({
+			await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "subtitle", type: "text" });
+			const state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: isbn.id,
 				changes: { nullable: false, unique: true },
@@ -1537,9 +1540,9 @@ describe("design workspace", () => {
 			const { workspace, databasePath } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Defaults" });
-			const withTable = await workspace.addTable({ name: "Books" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 			const table = requireTable(withTable.design?.tables[0]);
-			const withColumn = await workspace.addColumn({
+			const withColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				name: "title",
 				type: "text",
@@ -1548,7 +1551,7 @@ describe("design workspace", () => {
 
 			// Quotes, a statement-shaped payload, and a backslash must all stay data.
 			const literal = `O'Reilly; DROP TABLE "Books"; -- \\ ok`;
-			const state = await workspace.updateColumn({
+			const state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: column.id,
 				changes: {
@@ -1611,7 +1614,7 @@ describe("design workspace", () => {
 			const { workspace, databasePath } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Events" });
-			const withTable = await workspace.addTable({ name: "Events" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Events" });
 			const table = requireTable(withTable.design?.tables[0]);
 
 			const types = {
@@ -1627,7 +1630,7 @@ describe("design workspace", () => {
 
 			const columns = new Map<string, string>();
 			for (const [name, type] of Object.entries(types)) {
-				const added = await workspace.addColumn({ tableId: table.id, name, type });
+				const added = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name, type });
 				columns.set(name, requireNamedColumn(requireTable(added.design?.tables[0]), name).id);
 			}
 
@@ -1640,7 +1643,7 @@ describe("design workspace", () => {
 			) {
 				const columnId = columns.get(name);
 				if (!columnId) throw new Error(`Expected column ${name}.`);
-				state = await workspace.updateColumn({ tableId: table.id, columnId, changes });
+				state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, columnId, changes });
 			}
 
 			await applyDefault("amount", {
@@ -1764,7 +1767,7 @@ describe("design workspace", () => {
 			}
 
 			// Removing a default returns the column to having none.
-			const removed = await workspace.updateColumn({
+			const removed = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: requireNamedColumn(
 					requireTable(workspace.getState().design?.tables[0]),
@@ -1832,16 +1835,16 @@ describe("design workspace", () => {
 			const { workspace } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Retyping" });
-			const withTable = await workspace.addTable({ name: "Notes" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Notes" });
 			const table = requireTable(withTable.design?.tables[0]);
-			const withColumn = await workspace.addColumn({
+			const withColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				name: "label",
 				type: "text",
 			});
 			const label = requireNamedColumn(requireTable(withColumn.design?.tables[0]), "label");
 
-			const authored = await workspace.updateColumn({
+			const authored = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: {
@@ -1852,7 +1855,7 @@ describe("design workspace", () => {
 			expect(authored.sandbox).toMatchObject({ status: "applied" });
 			const appliedRevision = authored.sandbox.status === "applied" ? authored.sandbox.revision : 0;
 
-			const retyped = await workspace.updateColumn({
+			const retyped = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: { type: "integer" },
@@ -1871,7 +1874,7 @@ describe("design workspace", () => {
 			expect(retyped.sandbox).toMatchObject({ status: "applied", revision: appliedRevision });
 
 			// Returning to the authored type makes the same default valid again.
-			const restored = await workspace.updateColumn({
+			const restored = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: { type: "text" },
@@ -1879,7 +1882,7 @@ describe("design workspace", () => {
 			expect(restored.sql.status).toBe("current");
 			expect(restored.sandbox.status).toBe("applied");
 
-			const timestampOnText = await workspace.updateColumn({
+			const timestampOnText = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: { default: { kind: "currentTimestamp" } },
@@ -1893,7 +1896,7 @@ describe("design workspace", () => {
 				"current timestamp only applies to timestamp columns",
 			);
 
-			const uuidOnText = await workspace.updateColumn({
+			const uuidOnText = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: { default: { kind: "generateUuid" } },
@@ -1906,7 +1909,7 @@ describe("design workspace", () => {
 				"UUID generation only applies to UUID columns",
 			);
 
-			const cleared = await workspace.updateColumn({
+			const cleared = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: label.id,
 				changes: { default: { kind: "none" } },
@@ -1923,7 +1926,7 @@ describe("design workspace", () => {
 			const { workspace, databasePath } = await openTestWorkspace();
 
 			await workspace.createProject({ name: "Invalid defaults" });
-			const withTable = await workspace.addTable({ name: "Samples" });
+			const withTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Samples" });
 			const table = requireTable(withTable.design?.tables[0]);
 
 			const literals: Array<{
@@ -1993,7 +1996,7 @@ describe("design workspace", () => {
 
 			const ids = new Map<string, string>();
 			for (const item of literals) {
-				const added = await workspace.addColumn({
+				const added = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 					tableId: table.id,
 					name: item.name,
 					type: item.type,
@@ -2005,7 +2008,7 @@ describe("design workspace", () => {
 			for (const item of literals) {
 				const columnId = ids.get(item.name);
 				if (!columnId) throw new Error(`Expected column ${item.name}.`);
-				state = await workspace.updateColumn({
+				state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 					tableId: table.id,
 					columnId,
 					changes: {
@@ -2029,7 +2032,7 @@ describe("design workspace", () => {
 
 			// Identity generation and a default both supply a value.
 			const idColumn = requireNamedColumn(requireTable(state.design?.tables[0]), "id");
-			const conflicting = await workspace.updateColumn({
+			const conflicting = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 				tableId: table.id,
 				columnId: idColumn.id,
 				changes: {
@@ -2048,7 +2051,7 @@ describe("design workspace", () => {
 
 			// A malformed action is refused instead of being stored.
 			await expect(
-				workspace.updateColumn({
+				workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 					tableId: table.id,
 					columnId: idColumn.id,
 					changes: {
@@ -2084,11 +2087,11 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Library" });
-		const before = await workspace.addTable({ name: "Books" });
+		const before = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(before.design?.tables[0]);
 		const appliesAfterAdd = applies.length;
 
-		const moved = await workspace.moveTable({
+		const moved = await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			position: { x: 640, y: 360 },
 		});
@@ -2108,17 +2111,17 @@ describe("design workspace", () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 
 		await workspace.createProject({ name: "Library" });
-		await workspace.addTable({ name: "Authors" });
-		const added = await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
+		const added = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const books = requireTable(added.design?.tables[1]);
 
-		const moved = await workspace.moveTable({
+		const moved = await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: books.id,
 			position: { x: 700, y: 420 },
 		});
 		expect(moved.revision).toBe(3);
 
-		const panned = await workspace.setViewport({ x: -160, y: 90, zoom: 1.4 });
+		const panned = await workspace.setViewport({ designId: workspace.getState().activeDesignId!, x: -160, y: 90, zoom: 1.4 });
 		expect(panned.design?.viewport).toEqual({ x: -160, y: 90, zoom: 1.4 });
 		expect(panned.revision).toBe(3);
 
@@ -2141,11 +2144,11 @@ describe("design workspace", () => {
 		});
 
 		await workspace.createProject({ name: "Library" });
-		const pending = workspace.addTable({ name: "Books" });
+		const pending = workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = requireTable(workspace.getState().design?.tables[0]);
 
 		// The layout save lands before the older structural save completes.
-		const moved = await workspace.moveTable({
+		const moved = await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			position: { x: 512, y: 256 },
 		});
@@ -2170,14 +2173,14 @@ describe("design workspace", () => {
 				),
 		});
 		await workspace.createProject({ name: "Layout history" });
-		const added = await workspace.addTable({ name: "Books" });
+		const added = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const books = requireTable(added.design?.tables[0]);
 
-		const olderSave = workspace.moveTable({
+		const olderSave = workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: books.id,
 			position: { x: 180, y: 120 },
 		});
-		const latest = await workspace.moveTable({
+		const latest = await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: books.id,
 			position: { x: 360, y: 240 },
 		});
@@ -2199,27 +2202,30 @@ describe("design workspace", () => {
 	test("undoes an Assistant turn while restoring deleted entities and preserving hand-added ones", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Undo entities" });
-		const initial = await workspace.addTable({ name: "original" });
+		const designId = workspace.getState().activeDesignId!;
+		const initial = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "original" });
 		const original = requireTable(initial.design?.tables[0]);
 		const turnId = "undo-entity-turn";
-		await workspace.applyAssistantDesign({ ...initial.design!, tables: [] }, turnId);
-		const withManual = await workspace.addTable({ name: "manual" });
+		await workspace.applyAssistantDesign({ ...initial.design!, tables: [] }, designId, turnId);
+		const withManual = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual" });
 		const generated = { ...original, id: "generated", name: "generated" };
 		await workspace.applyAssistantDesign(
 			{ ...withManual.design!, tables: [...withManual.design!.tables, generated] },
+			designId,
 			turnId,
 		);
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.design?.tables.map(({ name }) => name).sort()).toEqual(["manual", "original"]);
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redone.design?.tables.map(({ name }) => name).sort()).toEqual(["generated", "manual"]);
 	}, 30_000);
 
 	test("rebases Function argument hand-renames across Assistant undo and redo", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Undo arguments" });
-		await workspace.updateFunctions({
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!,
 			functions: [{
 				id: "function-f",
 				name: "f",
@@ -2242,7 +2248,7 @@ describe("design workspace", () => {
 				arguments: [{ name: "a", type: "bigint" }, { name: "b", type: "integer" }],
 			}],
 		};
-		await workspace.applyAssistantDesign(bigintDesign, turnId);
+		await workspace.applyAssistantDesign(bigintDesign, designId, turnId);
 		const assistantFunction = workspace.getState().design?.functions?.[0];
 		if (!assistantFunction) throw new Error("Expected the Assistant function to exist.");
 		const handEdited = {
@@ -2252,7 +2258,7 @@ describe("design workspace", () => {
 				arguments: [{ name: "a", type: "bigint" }, { name: "c", type: "integer" }],
 			}],
 		};
-		await workspace.updateFunctions({ functions: handEdited.functions });
+		await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!, functions: handEdited.functions });
 		const table: DesignTable = {
 			id: "assistant-table",
 			name: "generated",
@@ -2271,16 +2277,17 @@ describe("design workspace", () => {
 		};
 		await workspace.applyAssistantDesign(
 			{ ...workspace.getState().design!, tables: [...workspace.getState().design!.tables, table] },
+			designId,
 			turnId,
 		);
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.design?.functions?.[0]?.arguments).toEqual([
 			{ name: "a", type: "integer" },
 			{ name: "c", type: "integer" },
 		]);
 		expect(undone.design?.tables).toHaveLength(0);
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redone.design?.functions?.[0]?.arguments).toEqual([
 			{ name: "a", type: "bigint" },
 			{ name: "c", type: "integer" },
@@ -2325,7 +2332,7 @@ describe("design workspace", () => {
 		await workspace.createProject({ name: "Targets" });
 		const designId = workspace.getState().activeDesignId!;
 
-		expect(() => workspace.requireActiveDesign()).not.toThrow();
+		expect(() => workspace.requireActiveDesign(undefined)).toThrow(/design ID is required/i);
 		expect(() => workspace.requireActiveDesign(designId)).not.toThrow();
 		expect(() => workspace.requireActiveDesign("some-other-design")).toThrow(/not the active/i);
 	});

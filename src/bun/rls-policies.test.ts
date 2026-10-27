@@ -29,13 +29,14 @@ describe("row-level security policies", () => {
 		const databasePath = join(directory, "design.sqlite");
 		const workspace = await openWorkspace(databasePath);
 		await workspace.createProject({ name: "Private library" });
-		const created = await workspace.addTable({ name: "Books" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = created.design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
 		expect(table.rowLevelSecurity).toBe(false);
 		expect(table.policies).toEqual([]);
 
 		const applied = await workspace.updatePolicies({
+			designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			rowLevelSecurity: true,
 			policies: [{
@@ -48,12 +49,13 @@ describe("row-level security policies", () => {
 		expect(applied.sandbox.sql).toContain("ALTER TABLE \"Books\" ENABLE ROW LEVEL SECURITY;");
 		expect(applied.sandbox.sql).toContain("CREATE POLICY \"read_books\"");
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.design?.tables[0].rowLevelSecurity).toBe(false);
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redone.design?.tables[0].policies?.[0]?.name).toBe("read_books");
 
 		const rejected = await workspace.updatePolicies({
+			designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			rowLevelSecurity: true,
 			policies: [{
@@ -78,7 +80,8 @@ describe("row-level security policies", () => {
 		const databasePath = join(directory, "design.sqlite");
 		const first = await openWorkspace(databasePath);
 		const created = await first.createProject({ name: "Legacy" });
-		const added = await first.addTable({ name: "Records" });
+		const designId = created.activeDesignId!;
+		const added = await first.addTable({ designId, name: "Records" });
 		const design = structuredClone(added.design!);
 		delete design.tables[0].rowLevelSecurity;
 		delete design.tables[0].policies;
@@ -89,7 +92,7 @@ describe("row-level security policies", () => {
 			revision: added.revision,
 			documentRevision: added.revision + 1,
 			savedAt: Date.now(),
-		});
+		}, designId);
 		store.close();
 		const reopened = await openWorkspace(databasePath);
 		expect(reopened.getState().design?.tables[0].rowLevelSecurity).toBe(false);

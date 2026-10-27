@@ -119,12 +119,12 @@ export interface DesignWorkspace {
 	renameEdgeFunction(action: RenameEdgeFunctionAction): Promise<WorkspaceState>;
 	removeEdgeFunction(action: RemoveEdgeFunctionAction): Promise<WorkspaceState>;
 	updateEdgeFunctionSource(action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState>;
-	beginScenarioRun(action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }>;
+	beginScenarioRun(action: { scenarioId: string; designId: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
-	undo(action?: { designId?: string }): Promise<WorkspaceState>;
-	redo(action?: { designId?: string }): Promise<WorkspaceState>;
-	applyAssistantDesign(design: Design, assistantTurnId?: string, designId?: string): Promise<WorkspaceState>;
+	undo(action: { designId: string }): Promise<WorkspaceState>;
+	redo(action: { designId: string }): Promise<WorkspaceState>;
+	applyAssistantDesign(design: Design, designId: string, assistantTurnId?: string): Promise<WorkspaceState>;
 	onAssistantDesignMutation?(listener: (turnId: string, before: Design, after: Design) => void): () => void;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
@@ -162,8 +162,8 @@ export interface DesignWorkspace {
 	removeRelationship(action: RemoveRelationshipAction): Promise<WorkspaceState>;
 	/** Lists what a removal would also delete, before anything is removed. */
 	describeRemoval(target: RemovalTarget): RemovalPlan;
-	/** Throws unless `designId` is omitted or names the open project's active Design. */
-	requireActiveDesign(designId?: string): void;
+	/** Throws unless `designId` names the open project's active Design. */
+	requireActiveDesign(designId: string | undefined): void;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
@@ -622,7 +622,7 @@ export async function createDesignWorkspace(
 		projectId: string,
 		scenarios: Scenario[],
 		revision: number,
-		designId?: string,
+		designId: string,
 	) {
 		const savedAt = now();
 		const isCurrentScenarioSave = () =>
@@ -649,7 +649,7 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	async function saveEdgeFunctions(projectId: string, edgeFunctions: EdgeFunction[], revision: number, projectGeneration: number, designId?: string) {
+	async function saveEdgeFunctions(projectId: string, edgeFunctions: EdgeFunction[], revision: number, projectGeneration: number, designId: string) {
 		const savedAt = now();
 		const isCurrentEdgeFunctionSave = () =>
 			activeProjectId === projectId &&
@@ -679,9 +679,9 @@ export async function createDesignWorkspace(
 	async function updateEdgeFunctions(
 		projectId: string,
 		update: (items: EdgeFunction[]) => EdgeFunction[],
-		designId?: string,
+		designId: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const edgeFunctions = update(state.edgeFunctions);
 		const revision = edgeFunctionRevision + 1;
 		edgeFunctionRevision = revision;
@@ -694,9 +694,9 @@ export async function createDesignWorkspace(
 	async function updateScenarios(
 		projectId: string,
 		update: (scenarios: Scenario[]) => Scenario[],
-		designId?: string,
+		designId: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const scenarios = update(state.scenarios);
 		const revision = scenarioRevision + 1;
 		scenarioRevision = revision;
@@ -713,9 +713,9 @@ export async function createDesignWorkspace(
 	async function applyStructuralChange(
 		projectId: string,
 		design: Design,
-		recordHistory = true,
-		assistantTurnId?: string,
-		designId?: string,
+		recordHistory: boolean,
+		assistantTurnId: string | undefined,
+		designId: string,
 	) {
 		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
@@ -760,8 +760,8 @@ export async function createDesignWorkspace(
 	async function applyNonSchemaChange(
 		projectId: string,
 		design: Design,
-		recordHistory = true,
-		designId?: string,
+		recordHistory: boolean,
+		designId: string,
 	) {
 		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
@@ -782,7 +782,7 @@ export async function createDesignWorkspace(
 		return state;
 	}
 
-	async function applyHistoryChange(direction: "undo" | "redo", targetDesignId?: string) {
+	async function applyHistoryChange(direction: "undo" | "redo", targetDesignId: string) {
 		const { projectId, design: currentDesign, designId } = requireOpenDesign(targetDesignId);
 		const history = histories.get(designId);
 		if (!history) return state;
@@ -807,11 +807,14 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	function requireOpenDesign(targetDesignId?: string): { projectId: string; design: Design; designId: string } {
+	function requireOpenDesign(targetDesignId: string): { projectId: string; design: Design; designId: string } {
 		if (!state.project || !state.design || activeProjectId === null || activeDesignId === null) {
 			throw new Error("Open a project before editing its design.");
 		}
-		if (targetDesignId !== undefined && targetDesignId !== activeDesignId) {
+		if (typeof targetDesignId !== "string" || targetDesignId.length === 0) {
+			throw new Error("A database design ID is required.");
+		}
+		if (targetDesignId !== activeDesignId) {
 			throw new Error(`Target database design '${targetDesignId}' is not the active design.`);
 		}
 		return { projectId: activeProjectId, design: state.design, designId: activeDesignId };
@@ -1033,7 +1036,7 @@ export async function createDesignWorkspace(
 					designId);
 			});
 		},
-		beginScenarioRun(action: { scenarioId: string; designId?: string }) {
+		beginScenarioRun(action: { scenarioId: string; designId: string }) {
 			return runTask(async () => {
 				const { projectId, designId } = requireOpenDesign(action.designId);
 				if (activeScenarioRun) throw new Error("Another Scenario run is already active.");
@@ -1181,12 +1184,12 @@ export async function createDesignWorkspace(
 			});
 		},
 		undo(action) {
-			return runTask(() => applyHistoryChange("undo", action?.designId));
+			return runTask(() => applyHistoryChange("undo", action.designId));
 		},
 		redo(action) {
-			return runTask(() => applyHistoryChange("redo", action?.designId));
+			return runTask(() => applyHistoryChange("redo", action.designId));
 		},
-		applyAssistantDesign(design, assistantTurnId, targetDesignId) {
+		applyAssistantDesign(design, targetDesignId, assistantTurnId) {
 			return runTask(async () => {
 				const { projectId, design: currentDesign, designId } = requireOpenDesign(targetDesignId);
 				const normalized = normalizeDesign(design);
@@ -1389,12 +1392,12 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const { projectId, design, designId } = requireOpenDesign(action.designId);
 				const table = requireTable(design, action.tableId);
-				const target: RemovalTarget = { kind: "table", tableId: table.id };
+				const target: RemovalTarget = { kind: "table", tableId: table.id, designId };
 				requireConfirmedRemoval(design, target, action.confirmed);
 
 				return applyStructuralChange(
 					projectId,
-					removeTableAndItsRelationships(design, table),
+					removeTableAndItsRelationships(design, table, designId),
 					true,
 					undefined,
 					designId,
@@ -1542,7 +1545,7 @@ export async function createDesignWorkspace(
 		removeFunction(action) {
 			return runTask(async () => {
 				const { projectId, design, designId } = requireOpenDesign(action.designId);
-				const target: RemovalTarget = { kind: "function", functionId: action.functionId };
+				const target: RemovalTarget = { kind: "function", functionId: action.functionId, designId };
 				requireRemovalTarget(design, target);
 				requireConfirmedRemoval(design, target, action.confirmed);
 				return applyStructuralChange(projectId, {
@@ -1598,10 +1601,11 @@ export async function createDesignWorkspace(
 					kind: "column",
 					tableId: table.id,
 					columnId: column.id,
+					designId,
 				};
 				requireConfirmedRemoval(design, target, action.confirmed);
 
-				const nextDesign = removeColumnAndItsRelationships(design, table, column);
+				const nextDesign = removeColumnAndItsRelationships(design, table, column, designId);
 				return applyStructuralChange(projectId, nextDesign, true, undefined, designId);
 			});
 		},
@@ -1827,6 +1831,9 @@ export async function createDesignWorkspace(
 			return removalPlan(design, target);
 		},
 		requireActiveDesign(designId) {
+			if (typeof designId !== "string" || designId.length === 0) {
+				throw new Error("A database design ID is required.");
+			}
 			requireOpenDesign(designId);
 		},
 		setViewport(action) {
@@ -2147,8 +2154,8 @@ function describeAffectedRelationship(affected: AffectedRelationship): string {
 }
 
 /** Removes the table together with the relationships that participate in it. */
-function removeTableAndItsRelationships(design: Design, table: DesignTable): Design {
-	const affected = affectedRelationshipIds(design, { kind: "table", tableId: table.id });
+function removeTableAndItsRelationships(design: Design, table: DesignTable, designId: string): Design {
+	const affected = affectedRelationshipIds(design, { kind: "table", tableId: table.id, designId });
 	return {
 		...design,
 		tables: design.tables.filter((candidate) => candidate.id !== table.id),
@@ -2167,11 +2174,13 @@ function removeColumnAndItsRelationships(
 	design: Design,
 	table: DesignTable,
 	column: DesignColumn,
+	designId: string,
 ): Design {
 	const affected = affectedRelationshipIds(design, {
 		kind: "column",
 		tableId: table.id,
 		columnId: column.id,
+		designId,
 	});
 	return {
 		...design,

@@ -40,11 +40,11 @@ describe("session undo and redo", () => {
 	test("reverses and reapplies a structured default, saves the branch, and forgets history on reopen", async () => {
 		const { workspace, databasePath } = await openTestWorkspace();
 		await workspace.createProject({ name: "Publishing" });
-		const addedTable = await workspace.addTable({ name: "Authors" });
+		const addedTable = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 		const authors = requireTable(addedTable.design?.tables, "Authors");
-		const addedColumn = await workspace.addColumn({ tableId: authors.id, name: "pen_name", type: "text" });
+		const addedColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: authors.id, name: "pen_name", type: "text" });
 		const column = requireColumn(requireTable(addedColumn.design?.tables, "Authors"), "pen_name");
-		const defaulted = await workspace.updateColumn({
+		const defaulted = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			columnId: column.id,
 			changes: { default: { kind: "literal", literalType: "text", value: "Writer" } },
@@ -61,7 +61,7 @@ describe("session undo and redo", () => {
 		});
 		expect(defaulted.sandbox.tables[0].columns.find((candidate) => candidate.name === "pen_name")?.defaultExpression).toContain("Writer");
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.revision).toBe(defaulted.revision + 1);
 		expect(undone.save.status).toBe("saved");
 		expect(undone.undoRedo).toEqual({ canUndo: true, canRedo: true });
@@ -69,7 +69,7 @@ describe("session undo and redo", () => {
 		expect(undone.sql).toMatchObject({ status: "current", revision: undone.revision });
 		expect(undone.sandbox).toMatchObject({ status: "applied", revision: undone.revision });
 
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redone.revision).toBe(undone.revision + 1);
 		expect(redone.undoRedo).toEqual({ canUndo: true, canRedo: false });
 		expect(requireColumn(requireTable(redone.design?.tables, "Authors"), "pen_name").default).toEqual({
@@ -79,15 +79,15 @@ describe("session undo and redo", () => {
 		});
 		expect(redone.sandbox).toMatchObject({ status: "applied", revision: redone.revision });
 
-		const branched = await workspace.undo();
+		const branched = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		const branchColumn = requireColumn(requireTable(branched.design?.tables, "Authors"), "pen_name");
-		const newEdit = await workspace.updateColumn({
+		const newEdit = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			columnId: branchColumn.id,
 			changes: { default: { kind: "literal", literalType: "text", value: "Editor" } },
 		});
 		expect(newEdit.undoRedo).toEqual({ canUndo: true, canRedo: false });
-		const noRedo = await workspace.redo();
+		const noRedo = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(noRedo.revision).toBe(newEdit.revision);
 		expect(requireColumn(requireTable(noRedo.design?.tables, "Authors"), "pen_name").default).toEqual({
 			kind: "literal",
@@ -107,11 +107,11 @@ describe("session undo and redo", () => {
 	test("treats a card move as one layout-only undoable change", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Layout" });
-		const created = await workspace.addTable({ name: "Books" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const books = requireTable(created.design?.tables, "Books");
 		const originalSandbox = created.sandbox;
 
-		const moved = await workspace.moveTable({
+		const moved = await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: books.id,
 			position: { x: 280, y: 190 },
 		});
@@ -124,7 +124,7 @@ describe("session undo and redo", () => {
 		expect(moved.sandbox).toEqual(originalSandbox);
 		expect(moved.undoRedo).toEqual({ canUndo: true, canRedo: false });
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(requireTable(undone.design?.tables, "Books").position).toEqual(books.position);
 		expect(undone.revision).toBe(created.revision);
 		expect(undone.save.status).toBe("saved");
@@ -132,7 +132,7 @@ describe("session undo and redo", () => {
 		expect(undone.sandbox).toEqual(originalSandbox);
 		expect(undone.undoRedo).toEqual({ canUndo: true, canRedo: true });
 
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(requireTable(redone.design?.tables, "Books").position).toEqual({
 			x: 280,
 			y: 190,
@@ -145,10 +145,10 @@ describe("session undo and redo", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Undo with navigation" });
 		const authors = requireTable(
-			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables,
 			"Authors",
 		);
-		const addedColumn = await workspace.addColumn({
+		const addedColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			name: "pen_name",
 			type: "text",
@@ -157,7 +157,7 @@ describe("session undo and redo", () => {
 			requireTable(addedColumn.design?.tables, "Authors"),
 			"pen_name",
 		);
-		const edited = await workspace.updateColumn({
+		const edited = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			columnId: column.id,
 			changes: {
@@ -166,11 +166,11 @@ describe("session undo and redo", () => {
 		});
 		const viewport = { x: 180, y: 120, zoom: 1.25 };
 
-		const navigated = await workspace.setViewport(viewport);
+		const navigated = await workspace.setViewport({ ...viewport, designId: workspace.getState().activeDesignId! });
 		expect(navigated.design?.viewport).toEqual(viewport);
 		expect(navigated.undoRedo).toEqual(edited.undoRedo);
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(
 			requireColumn(requireTable(undone.design?.tables, "Authors"), "pen_name").default,
 		).toEqual({ kind: "none" });
@@ -182,10 +182,10 @@ describe("session undo and redo", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Redo with navigation" });
 		const authors = requireTable(
-			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables,
 			"Authors",
 		);
-		const addedColumn = await workspace.addColumn({
+		const addedColumn = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			name: "pen_name",
 			type: "text",
@@ -194,22 +194,22 @@ describe("session undo and redo", () => {
 			requireTable(addedColumn.design?.tables, "Authors"),
 			"pen_name",
 		);
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: authors.id,
 			columnId: column.id,
 			changes: {
 				default: { kind: "literal", literalType: "text", value: "Writer" },
 			},
 		});
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.undoRedo).toEqual({ canUndo: true, canRedo: true });
 		const viewport = { x: -150, y: 75, zoom: 1.4 };
 
-		const navigated = await workspace.setViewport(viewport);
+		const navigated = await workspace.setViewport({ ...viewport, designId: workspace.getState().activeDesignId! });
 		expect(navigated.design?.viewport).toEqual(viewport);
 		expect(navigated.undoRedo).toEqual({ canUndo: true, canRedo: true });
 
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(
 			requireColumn(requireTable(redone.design?.tables, "Authors"), "pen_name").default,
 		).toEqual({
@@ -223,9 +223,9 @@ describe("session undo and redo", () => {
 	test("restores each direct relationship with its generated column and database constraints", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Relationships" });
-		const authors = requireTable((await workspace.addTable({ name: "Authors" })).design?.tables, "Authors");
-		const books = requireTable((await workspace.addTable({ name: "Books" })).design?.tables, "Books");
-		const oneToMany = await workspace.addRelationship({
+		const authors = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables, "Authors");
+		const books = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" })).design?.tables, "Books");
+		const oneToMany = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-many",
@@ -241,14 +241,14 @@ describe("session undo and redo", () => {
 			relationships: [{ referencingTable: "Books", referencedTable: "Authors" }],
 		});
 
-		const withoutAuthorLink = await workspace.undo();
+		const withoutAuthorLink = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(withoutAuthorLink.design?.relationships).toEqual([]);
 		expect(requireTable(withoutAuthorLink.design?.tables, "Books").columns).not.toContainEqual(
 			expect.objectContaining({ id: authorForeignKey.id }),
 		);
 		expect(withoutAuthorLink.sandbox).toMatchObject({ status: "applied", relationships: [] });
 
-		const restoredAuthorLink = await workspace.redo();
+		const restoredAuthorLink = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(restoredAuthorLink.design?.relationships).toEqual([authorRelationship]);
 		expect(requireTable(restoredAuthorLink.design?.tables, "Books").columns).toContainEqual(
 			authorForeignKey,
@@ -258,9 +258,9 @@ describe("session undo and redo", () => {
 			relationships: [{ referencingTable: "Books", referencedTable: "Authors" }],
 		});
 
-		const users = requireTable((await workspace.addTable({ name: "Users" })).design?.tables, "Users");
-		const profiles = requireTable((await workspace.addTable({ name: "Profiles" })).design?.tables, "Profiles");
-		const oneToOne = await workspace.addRelationship({
+		const users = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Users" })).design?.tables, "Users");
+		const profiles = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Profiles" })).design?.tables, "Profiles");
+		const oneToOne = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: profiles.id,
 			referencedTableId: users.id,
 			cardinality: "one-to-one",
@@ -283,7 +283,7 @@ describe("session undo and redo", () => {
 				?.columns.find((column) => column.name === "user_id"),
 		).toMatchObject({ unique: true, nullable: false });
 
-		const withoutProfileLink = await workspace.undo();
+		const withoutProfileLink = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(withoutProfileLink.design?.relationships).toEqual([authorRelationship]);
 		expect(requireTable(withoutProfileLink.design?.tables, "Profiles").columns).not.toContainEqual(
 			expect.objectContaining({ id: profileRelationship.referencingColumnId }),
@@ -293,7 +293,7 @@ describe("session undo and redo", () => {
 			relationships: [{ referencingTable: "Books", referencedTable: "Authors" }],
 		});
 
-		const restoredProfileLink = await workspace.redo();
+		const restoredProfileLink = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(restoredProfileLink.design?.relationships).toContainEqual(profileRelationship);
 		expect(restoredProfileLink.sandbox).toMatchObject({
 			status: "applied",
@@ -313,14 +313,14 @@ describe("session undo and redo", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Relationship removal" });
 		const authors = requireTable(
-			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables,
 			"Authors",
 		);
 		const books = requireTable(
-			(await workspace.addTable({ name: "Books" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" })).design?.tables,
 			"Books",
 		);
-		const linked = await workspace.addRelationship({
+		const linked = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-many",
@@ -335,14 +335,14 @@ describe("session undo and redo", () => {
 		);
 
 		const students = requireTable(
-			(await workspace.addTable({ name: "Students" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" })).design?.tables,
 			"Students",
 		);
 		const courses = requireTable(
-			(await workspace.addTable({ name: "Courses" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" })).design?.tables,
 			"Courses",
 		);
-		const withJunction = await workspace.addRelationship({
+		const withJunction = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: students.id,
 			referencedTableId: courses.id,
 			cardinality: "many-to-many",
@@ -358,7 +358,7 @@ describe("session undo and redo", () => {
 			{ referencingTable: "StudentsCourses", referencedTable: "Students" },
 		];
 
-		const withoutDirect = await workspace.removeRelationship({
+		const withoutDirect = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: authorRelationship.id,
 		});
 		expect(withoutDirect.design?.relationships).toEqual(
@@ -376,7 +376,7 @@ describe("session undo and redo", () => {
 			relationships: junctionRelationships,
 		});
 
-		const restoredDirect = await workspace.undo();
+		const restoredDirect = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(restoredDirect.design).toEqual(withJunction.design);
 		if (restoredDirect.sandbox.status !== "applied") {
 			throw new Error("Expected an applied sandbox.");
@@ -389,14 +389,14 @@ describe("session undo and redo", () => {
 			}),
 		);
 
-		const removedDirectAgain = await workspace.redo();
+		const removedDirectAgain = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(removedDirectAgain.design).toEqual(withoutDirect.design);
 		expect(removedDirectAgain.sandbox).toMatchObject({
 			status: "applied",
 			relationships: junctionRelationships,
 		});
 
-		const withoutJunctionRelationship = await workspace.removeRelationship({
+		const withoutJunctionRelationship = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: association.leftRelationshipId,
 		});
 		expect(withoutJunctionRelationship.design?.relationships).toEqual([]);
@@ -414,7 +414,7 @@ describe("session undo and redo", () => {
 				?.columns.map((column) => column.name),
 		).toEqual(["id", "student_id", "course_id"]);
 
-		const restoredJunctionRelationship = await workspace.undo();
+		const restoredJunctionRelationship = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(restoredJunctionRelationship.design?.relationships).toEqual(
 			withoutDirect.design?.relationships,
 		);
@@ -427,7 +427,7 @@ describe("session undo and redo", () => {
 			relationships: junctionRelationships,
 		});
 
-		const removedJunctionRelationshipAgain = await workspace.redo();
+		const removedJunctionRelationshipAgain = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(removedJunctionRelationshipAgain.design).toEqual(
 			withoutJunctionRelationship.design,
 		);
@@ -440,9 +440,9 @@ describe("session undo and redo", () => {
 	test("undoes and redoes many-to-many junction creation as one complete association", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		const students = requireTable((await workspace.addTable({ name: "Students" })).design?.tables, "Students");
-		const courses = requireTable((await workspace.addTable({ name: "Courses" })).design?.tables, "Courses");
-		const created = await workspace.addRelationship({
+		const students = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" })).design?.tables, "Students");
+		const courses = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" })).design?.tables, "Courses");
+		const created = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: students.id,
 			referencedTableId: courses.id,
 			cardinality: "many-to-many",
@@ -464,7 +464,7 @@ describe("session undo and redo", () => {
 			],
 		});
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undone.design?.tables.map((table) => table.id)).toEqual([students.id, courses.id]);
 		expect(undone.design?.relationships).toEqual([]);
 		expect(undone.design?.manyToManyRelationships).toEqual([]);
@@ -472,7 +472,7 @@ describe("session undo and redo", () => {
 		if (undone.sandbox.status !== "applied") throw new Error("Expected an applied sandbox.");
 		expect(undone.sandbox.tables.map((table) => table.name).sort()).toEqual(["Courses", "Students"]);
 
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redone.design?.tables).toContainEqual(junction);
 		expect(redone.design?.manyToManyRelationships).toEqual([association]);
 		expect(redone.design?.relationships).toEqual(created.design?.relationships);
@@ -494,10 +494,10 @@ describe("session undo and redo", () => {
 	test("undoes and redoes a confirmed dependency deletion without altering unrelated design", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Recovery" });
-		const authors = requireTable((await workspace.addTable({ name: "Authors" })).design?.tables, "Authors");
-		const books = requireTable((await workspace.addTable({ name: "Books" })).design?.tables, "Books");
-		const reviews = requireTable((await workspace.addTable({ name: "Reviews" })).design?.tables, "Reviews");
-		const related = await workspace.addRelationship({
+		const authors = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables, "Authors");
+		const books = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" })).design?.tables, "Books");
+		const reviews = requireTable((await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Reviews" })).design?.tables, "Reviews");
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-many",
@@ -510,20 +510,20 @@ describe("session undo and redo", () => {
 		);
 		if (!authorForeignKey) throw new Error("Expected the generated author reference.");
 
-		await expect(workspace.removeTable({ tableId: authors.id })).rejects.toThrow(
+		await expect(workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: authors.id })).rejects.toThrow(
 			/Confirm the removal/,
 		);
 		expect(workspace.getState().design).toEqual(originalDesign);
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: false });
 
-		const deleted = await workspace.removeTable({ tableId: authors.id, confirmed: true });
+		const deleted = await workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: authors.id, confirmed: true });
 		expect(deleted.design?.tables.map((table) => table.name)).toEqual(["Books", "Reviews"]);
 		expect(deleted.design?.relationships).toEqual([]);
 		expect(requireTable(deleted.design?.tables, "Books").columns).toContainEqual(authorForeignKey);
 		expect(requireTable(deleted.design?.tables, "Reviews")).toEqual(reviews);
 		expect(deleted.sandbox).toMatchObject({ status: "applied", relationships: [] });
 
-		const restored = await workspace.undo();
+		const restored = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(restored.design).toEqual(originalDesign);
 		expect(restored.sandbox).toMatchObject({
 			status: "applied",
@@ -531,7 +531,7 @@ describe("session undo and redo", () => {
 		});
 		expect(restored.undoRedo).toEqual({ canUndo: true, canRedo: true });
 
-		const removedAgain = await workspace.redo();
+		const removedAgain = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(removedAgain.design?.tables.map((table) => table.name)).toEqual(["Books", "Reviews"]);
 		expect(removedAgain.design?.relationships).toEqual([]);
 		expect(requireTable(removedAgain.design?.tables, "Books").columns).toContainEqual(authorForeignKey);
@@ -541,9 +541,9 @@ describe("session undo and redo", () => {
 	test("undoes and redoes table renames through the current SQL and sandbox", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Names" });
-		const added = await workspace.addTable({ name: "Books" });
+		const added = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const books = requireTable(added.design?.tables, "Books");
-		const renamed = await workspace.renameTable({ tableId: books.id, name: "Volumes" });
+		const renamed = await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: books.id, name: "Volumes" });
 		expect(requireTable(renamed.design?.tables, "Volumes").id).toBe(books.id);
 		expect(renamed.sql).toMatchObject({ status: "current", revision: renamed.revision });
 		expect(renamed.sandbox).toMatchObject({
@@ -551,7 +551,7 @@ describe("session undo and redo", () => {
 			tables: [{ name: "Volumes" }],
 		});
 
-		const undone = await workspace.undo();
+		const undone = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(requireTable(undone.design?.tables, "Books").id).toBe(books.id);
 		expect(undone.sql).toMatchObject({ status: "current", revision: undone.revision });
 		expect(undone.sandbox).toMatchObject({
@@ -559,7 +559,7 @@ describe("session undo and redo", () => {
 			tables: [{ name: "Books" }],
 		});
 
-		const redone = await workspace.redo();
+		const redone = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(requireTable(redone.design?.tables, "Volumes").id).toBe(books.id);
 		expect(redone.sql).toMatchObject({ status: "current", revision: redone.revision });
 		expect(redone.sandbox).toMatchObject({
@@ -572,30 +572,30 @@ describe("session undo and redo", () => {
 		const alpha = await workspace.createProject({ name: "Alpha" });
 		const alphaId = alpha.project?.id;
 		if (!alphaId) throw new Error("Expected Alpha to be open.");
-		const alphaEdit = await workspace.addTable({ name: "Alpha table" });
+		const alphaEdit = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Alpha table" });
 		const alphaTable = requireTable(alphaEdit.design?.tables, "Alpha table");
 
 		const beta = await workspace.createProject({ name: "Beta" });
 		const betaId = beta.project?.id;
 		if (!betaId) throw new Error("Expected Beta to be open.");
 		expect(beta.undoRedo).toEqual({ canUndo: false, canRedo: false });
-		const betaEdit = await workspace.addTable({ name: "Beta table" });
+		const betaEdit = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Beta table" });
 		const betaTable = requireTable(betaEdit.design?.tables, "Beta table");
-		const undoneBeta = await workspace.undo();
+		const undoneBeta = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undoneBeta.design?.tables).toEqual([]);
 		expect(undoneBeta.undoRedo).toEqual({ canUndo: false, canRedo: true });
 
 		const openedAlpha = await workspace.openProject({ projectId: alphaId });
 		expect(openedAlpha.design?.tables).toContainEqual(alphaTable);
 		expect(openedAlpha.undoRedo).toEqual({ canUndo: true, canRedo: false });
-		const undoneAlpha = await workspace.undo();
+		const undoneAlpha = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(undoneAlpha.design?.tables).toEqual([]);
 		expect(undoneAlpha.undoRedo).toEqual({ canUndo: false, canRedo: true });
 
 		const openedBeta = await workspace.openProject({ projectId: betaId });
 		expect(openedBeta.design?.tables).toEqual([]);
 		expect(openedBeta.undoRedo).toEqual({ canUndo: false, canRedo: true });
-		const redoneBeta = await workspace.redo();
+		const redoneBeta = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(redoneBeta.design?.tables).toContainEqual(betaTable);
 		expect(redoneBeta.undoRedo).toEqual({ canUndo: true, canRedo: false });
 	}, 120_000);
@@ -603,14 +603,14 @@ describe("session undo and redo", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Column recovery" });
 		const authors = requireTable(
-			(await workspace.addTable({ name: "Authors" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" })).design?.tables,
 			"Authors",
 		);
 		const books = requireTable(
-			(await workspace.addTable({ name: "Books" })).design?.tables,
+			(await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" })).design?.tables,
 			"Books",
 		);
-		const related = await workspace.addRelationship({
+		const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-many",
@@ -623,6 +623,7 @@ describe("session undo and redo", () => {
 		);
 		if (!authorForeignKey) throw new Error("Expected the generated author reference.");
 		const target = {
+			designId: workspace.getState().activeDesignId!,
 			tableId: books.id,
 			columnId: authorForeignKey.id,
 		};
@@ -638,14 +639,14 @@ describe("session undo and redo", () => {
 		);
 		expect(deleted.sandbox).toMatchObject({ status: "applied", relationships: [] });
 
-		const restored = await workspace.undo();
+		const restored = await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(restored.design).toEqual(originalDesign);
 		expect(restored.sandbox).toMatchObject({
 			status: "applied",
 			relationships: [{ referencingTable: "Books", referencedTable: "Authors" }],
 		});
 
-		const removedAgain = await workspace.redo();
+		const removedAgain = await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(removedAgain.design?.relationships).toEqual([]);
 		expect(requireTable(removedAgain.design?.tables, "Books").columns).not.toContainEqual(
 			authorForeignKey,

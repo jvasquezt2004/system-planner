@@ -43,11 +43,11 @@ function requireTable(design: Design, name: string): DesignTable {
 
 async function createStudentsCoursesAssociation(workspace: DesignWorkspace) {
 	await workspace.createProject({ name: "School" });
-	const studentsState = await workspace.addTable({ name: "Students" });
+	const studentsState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
 	const students = requireTable(requireDesign(studentsState), "Students");
-	const coursesState = await workspace.addTable({ name: "Courses" });
+	const coursesState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" });
 	const courses = requireTable(requireDesign(coursesState), "Courses");
-	const related = await workspace.addRelationship({
+	const related = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 		referencingTableId: students.id,
 		referencedTableId: courses.id,
 		cardinality: "many-to-many",
@@ -63,13 +63,13 @@ describe("many-to-many relationships", () => {
 	test("creates a visible junction with required references and rejects duplicate pairs in PostgreSQL", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		const withStudents = await workspace.addTable({ name: "Students" });
+		const withStudents = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
 		const students = requireTable(requireDesign(withStudents), "Students");
-		const withCourses = await workspace.addTable({ name: "Courses" });
+		const withCourses = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" });
 		const courses = requireTable(requireDesign(withCourses), "Courses");
 		const courseId = courses.columns.find((column) => column.primaryKey);
 		if (!courseId) throw new Error("Expected a Courses primary key.");
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: courses.id,
 			columnId: courseId.id,
 			changes: { type: "uuid" },
@@ -82,7 +82,7 @@ describe("many-to-many relationships", () => {
 			updated: "00000000-0000-0000-0000-000000000003",
 		};
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: students.id,
 			referencedTableId: courses.id,
 			cardinality: "many-to-many",
@@ -197,20 +197,20 @@ describe("many-to-many relationships", () => {
 			throw new Error("Expected both generated endpoint references.");
 		}
 
-		await workspace.renameTable({ tableId: junction.id, name: "Enrollments" });
-		await workspace.renameTable({ tableId: students.id, name: "Learners" });
-		await workspace.renameTable({ tableId: courses.id, name: "Classes" });
-		await workspace.updateColumn({
+		await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: junction.id, name: "Enrollments" });
+		await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: students.id, name: "Learners" });
+		await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: courses.id, name: "Classes" });
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			columnId: studentReference.id,
 			changes: { name: "learner_id" },
 		});
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			columnId: courseReference.id,
 			changes: { name: "class_id" },
 		});
-		await workspace.addColumn({
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			name: "grade",
 			type: "text",
@@ -219,13 +219,13 @@ describe("many-to-many relationships", () => {
 			(column) => column.name === "grade",
 		);
 		if (!grade) throw new Error("Expected the editable association field.");
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			columnId: grade.id,
 			changes: { name: "letter_grade" },
 		});
 
-		await workspace.moveTable({
+		await workspace.moveTable({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			position: { x: 720, y: 520 },
 		});
@@ -278,14 +278,14 @@ describe("many-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { students, junction } =
 			await createStudentsCoursesAssociation(workspace);
-		await workspace.addColumn({
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			name: "enrolled_at",
 			type: "date",
 		});
 
 		const beforeCancellation = requireDesign(workspace.getState());
-		const plan = workspace.describeRemoval({ kind: "table", tableId: students.id });
+		const plan = workspace.describeRemoval({ designId: workspace.getState().activeDesignId!, kind: "table", tableId: students.id });
 		expect(plan.relationships).toHaveLength(1);
 		expect(plan.relationships[0]).toMatchObject({
 			cardinality: "many-to-many",
@@ -293,12 +293,12 @@ describe("many-to-many relationships", () => {
 			referencedTable: "Courses",
 			junctionTable: "StudentsCourses",
 		});
-		await expect(workspace.removeTable({ tableId: students.id })).rejects.toThrow(
+		await expect(workspace.removeTable({ designId: workspace.getState().activeDesignId!, tableId: students.id })).rejects.toThrow(
 			/StudentsCourses/,
 		);
 		expect(requireDesign(workspace.getState())).toEqual(beforeCancellation);
 
-		const removed = await workspace.removeTable({
+		const removed = await workspace.removeTable({ designId: workspace.getState().activeDesignId!,
 			tableId: students.id,
 			confirmed: true,
 		});
@@ -324,13 +324,13 @@ describe("many-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		const { association, junction } =
 			await createStudentsCoursesAssociation(workspace);
-		await workspace.addColumn({
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			name: "grade",
 			type: "text",
 		});
 
-		const removed = await workspace.removeRelationship({
+		const removed = await workspace.removeRelationship({ designId: workspace.getState().activeDesignId!,
 			relationshipId: association.leftRelationshipId,
 		});
 		const remaining = requireDesign(removed);
@@ -390,7 +390,7 @@ describe("many-to-many relationships", () => {
 		];
 		for (const changes of protectedChanges) {
 			await expect(
-				workspace.updateColumn({
+				workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 					tableId: junction.id,
 					columnId: studentReference.id,
 					changes,
@@ -399,7 +399,7 @@ describe("many-to-many relationships", () => {
 			expect(requireDesign(workspace.getState())).toEqual(design);
 		}
 		await expect(
-			workspace.updateRelationship({
+			workspace.updateRelationship({ designId: workspace.getState().activeDesignId!,
 				relationshipId: association.leftRelationshipId,
 				required: false,
 			}),
@@ -411,13 +411,13 @@ describe("many-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "Long names" });
 		const leftName = `${"L".repeat(59)}éé`;
-		const leftState = await workspace.addTable({ name: leftName });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: leftName });
 		const left = requireTable(requireDesign(leftState), leftName);
 		const rightName = `${"R".repeat(59)}水a`;
-		const rightState = await workspace.addTable({ name: rightName });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: rightName });
 		const right = requireTable(requireDesign(rightState), rightName);
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -472,7 +472,7 @@ describe("many-to-many relationships", () => {
 	test("allocates a distinct pair constraint beside an editable unique pair field", async () => {
 		const { workspace } = await openTestWorkspace();
 		const { junction } = await createStudentsCoursesAssociation(workspace);
-		const added = await workspace.addColumn({
+		const added = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			name: "pair",
 			type: "text",
@@ -481,7 +481,7 @@ describe("many-to-many relationships", () => {
 			(column) => column.name === "pair",
 		);
 		if (!pairField) throw new Error("Expected the editable pair field.");
-		const state = await workspace.updateColumn({
+		const state = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: junction.id,
 			columnId: pairField.id,
 			changes: { unique: true },
@@ -514,13 +514,13 @@ describe("many-to-many relationships", () => {
 	test("avoids PostgreSQL index names when choosing a junction table name", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		await workspace.addTable({ name: "Students" });
-		const leftState = await workspace.addTable({ name: "Students_" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students_" });
 		const left = requireTable(requireDesign(leftState), "Students_");
-		const rightState = await workspace.addTable({ name: "pkey" });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "pkey" });
 		const right = requireTable(requireDesign(rightState), "pkey");
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -533,13 +533,13 @@ describe("many-to-many relationships", () => {
 	test("allocates pair index names across tables", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		const leftState = await workspace.addTable({ name: "Students_" });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students_" });
 		const left = requireTable(requireDesign(leftState), "Students_");
-		const rightState = await workspace.addTable({ name: "Courses" });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" });
 		const right = requireTable(requireDesign(rightState), "Courses");
-		const otherState = await workspace.addTable({ name: "Students" });
+		const otherState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
 		const other = requireTable(requireDesign(otherState), "Students");
-		const columnState = await workspace.addColumn({
+		const columnState = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: other.id,
 			name: "Courses_pair",
 			type: "text",
@@ -548,13 +548,13 @@ describe("many-to-many relationships", () => {
 			(column) => column.name === "Courses_pair",
 		);
 		if (!pairColumn) throw new Error("Expected the other table's unique field.");
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: other.id,
 			columnId: pairColumn.id,
 			changes: { unique: true },
 		});
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -574,13 +574,13 @@ describe("many-to-many relationships", () => {
 	test("avoids identity sequence names when choosing a junction table", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		await workspace.addTable({ name: "Students" });
-		const leftState = await workspace.addTable({ name: "Students_id_" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students" });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Students_id_" });
 		const left = requireTable(requireDesign(leftState), "Students_id_");
-		const rightState = await workspace.addTable({ name: "seq" });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "seq" });
 		const right = requireTable(requireDesign(rightState), "seq");
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -593,16 +593,16 @@ describe("many-to-many relationships", () => {
 	test("uses PostgreSQL's suffix-preserving primary-key index name", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		await workspace.addTable({ name: "A".repeat(60) });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "A".repeat(60) });
 		const leftName = "A".repeat(58);
-		const leftState = await workspace.addTable({ name: leftName });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: leftName });
 		const left = requireTable(requireDesign(leftState), leftName);
 		const rightName = "_pkey";
-		const rightState = await workspace.addTable({ name: rightName });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: rightName });
 		const right = requireTable(requireDesign(rightState), rightName);
 		expect(rightState.sandbox.status).toBe("applied");
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -622,9 +622,9 @@ describe("many-to-many relationships", () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
 		const otherName = "A".repeat(60);
-		const otherState = await workspace.addTable({ name: otherName });
+		const otherState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: otherName });
 		const other = requireTable(requireDesign(otherState), otherName);
-		const columnState = await workspace.addColumn({
+		const columnState = await workspace.addColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: other.id,
 			name: "B",
 			type: "text",
@@ -633,18 +633,18 @@ describe("many-to-many relationships", () => {
 			(column) => column.name === "B",
 		);
 		if (!uniqueColumn) throw new Error("Expected the unique field.");
-		await workspace.updateColumn({
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: other.id,
 			columnId: uniqueColumn.id,
 			changes: { unique: true },
 		});
 
 		const leftName = `${"A".repeat(57)}_B_`;
-		const leftState = await workspace.addTable({ name: leftName });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: leftName });
 		const left = requireTable(requireDesign(leftState), leftName);
-		const rightState = await workspace.addTable({ name: "key" });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "key" });
 		const right = requireTable(requireDesign(rightState), "key");
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",
@@ -663,15 +663,15 @@ describe("many-to-many relationships", () => {
 	test("accounts for PostgreSQL's auto-suffixed index names", async () => {
 		const { workspace } = await openTestWorkspace();
 		await workspace.createProject({ name: "School" });
-		await workspace.addTable({ name: "foo_pkey" });
-		const fooState = await workspace.addTable({ name: "foo" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "foo_pkey" });
+		const fooState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "foo" });
 		const foo = requireTable(requireDesign(fooState), "foo");
-		const leftState = await workspace.addTable({ name: "foo_" });
+		const leftState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "foo_" });
 		const left = requireTable(requireDesign(leftState), "foo_");
-		const rightState = await workspace.addTable({ name: "pkey1" });
+		const rightState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "pkey1" });
 		const right = requireTable(requireDesign(rightState), "pkey1");
 
-		const state = await workspace.addRelationship({
+		const state = await workspace.addRelationship({ designId: workspace.getState().activeDesignId!,
 			referencingTableId: left.id,
 			referencedTableId: right.id,
 			cardinality: "many-to-many",

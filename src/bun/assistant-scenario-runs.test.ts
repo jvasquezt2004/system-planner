@@ -35,16 +35,17 @@ async function setup(sources: string[], options: SetupOptions = {}) {
 	workspaces.push(workspace);
 	const opened = await workspace.createProject({ name: "Assistant scenario runs" });
 	if (!opened.project || !opened.activeDesignId) throw new Error("Expected the project and its active Design to be open.");
-	const tableState = await workspace.addTable({ name: "Books" });
+	const designId = opened.activeDesignId;
+	const tableState = await workspace.addTable({ designId, name: "Books" });
 	const table = tableState.design?.tables[0];
 	if (!table) throw new Error("Expected Books table.");
-	await workspace.addColumn({ tableId: table.id, name: "title", type: "text" });
+	await workspace.addColumn({ designId, tableId: table.id, name: "title", type: "text" });
 	const scenarios: Scenario[] = [];
 	for (let index = 0; index < sources.length; index += 1) {
-		const created = await workspace.createScenario({ name: `Scenario ${index + 1}` });
+		const created = await workspace.createScenario({ designId, name: `Scenario ${index + 1}` });
 		const item = created.scenarios[created.scenarios.length - 1];
 		if (!item) throw new Error("Expected the saved Scenario.");
-		const updated = await workspace.updateScenarioSource({ scenarioId: item.id, source: sources[index] ?? "" });
+		const updated = await workspace.updateScenarioSource({ designId, scenarioId: item.id, source: sources[index] ?? "" });
 		scenarios.push(updated.scenarios.find(({ id }) => id === item.id) ?? item);
 	}
 	const driver = createScenarioRunDriver({
@@ -308,7 +309,7 @@ describe("Assistant Scenario runs", () => {
 		const design = workspace.getState().design;
 		const table = design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
-		await workspace.addColumn({ tableId: table.id, name: "subtitle", type: "text" });
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "subtitle", type: "text" });
 		expect(workspace.getState().scenarioRuns[scenarios[1]!.id]?.stale).toBe(true);
 	}, 60_000);
 
