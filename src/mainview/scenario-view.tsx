@@ -326,7 +326,7 @@ export function ScenarioView({
 							</div>
 							<div className="flex items-center justify-between border-b border-rule px-5 py-2">
 								<label htmlFor="scenario-source" className="kicker">TypeScript source</label>
-								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
+								<span className="text-[11px] text-ink-4">Included in Undo and Redo</span>
 							</div>
 <Editor
 								key={`${designId}:${generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}`}

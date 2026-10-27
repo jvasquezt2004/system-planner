@@ -993,8 +993,8 @@ export function Masthead({
 							variant="ghost"
 							size="icon-sm"
 							data-testid="undo-button"
-							aria-label="Undo last design change"
-							title="Undo last design change"
+							aria-label={state.undoActionName ? `Undo ${state.undoActionName}` : "Undo"}
+							title={state.undoActionName ? `Undo ${state.undoActionName}` : "Nothing to undo"}
 							disabled={busy || !state.undoRedo.canUndo}
 							onClick={onUndo}
 						>
@@ -1004,8 +1004,8 @@ export function Masthead({
 							variant="ghost"
 							size="icon-sm"
 							data-testid="redo-button"
-							aria-label="Redo last undone design change"
-							title="Redo last undone design change"
+							aria-label={state.redoActionName ? `Redo ${state.redoActionName}` : "Redo"}
+							title={state.redoActionName ? `Redo ${state.redoActionName}` : "Nothing to redo"}
 							disabled={busy || !state.undoRedo.canRedo}
 							onClick={onRedo}
 						>

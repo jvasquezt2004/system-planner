@@ -847,8 +847,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (kind === "function-body") throw new Error("Function bodies cannot be created; define a Function through apply_ddl.");
 				if (!input.name) throw new Error("A name is required to create a code item.");
 				const state = kind === "scenario"
-					? await workspace.createScenario({ name: input.name, designId: target.designId })
-					: await workspace.createEdgeFunction({ name: input.name, designId: target.designId });
+					? await workspace.createScenario({ name: input.name, designId: target.designId, assistantTurnId: currentTurnId })
+					: await workspace.createEdgeFunction({ name: input.name, designId: target.designId, assistantTurnId: currentTurnId });
 				assertTargetState(state, target, "The project or Design changed before the code item was created.");
 				boundState = state as BoundWorkspaceState;
 				const item = kind === "scenario"
@@ -880,11 +880,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				const beforeEdge = kind === "edge-function" ? currentBound.state.edgeFunctions.find((e) => e.id === input.id) : undefined;
 				const state = kind === "scenario"
 					? input.action === "rename"
-						? await workspace.renameScenario({ scenarioId: input.id, name: input.name!, designId: target.designId })
-						: await workspace.removeScenario({ scenarioId: input.id, designId: target.designId })
+						? await workspace.renameScenario({ scenarioId: input.id, name: input.name!, designId: target.designId, assistantTurnId: currentTurnId })
+						: await workspace.removeScenario({ scenarioId: input.id, designId: target.designId, assistantTurnId: currentTurnId })
 					: input.action === "rename"
-						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name!, designId: target.designId })
-						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id, designId: target.designId });
+						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name!, designId: target.designId, assistantTurnId: currentTurnId })
+						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id, designId: target.designId, assistantTurnId: currentTurnId });
 				assertTargetState(state, target, "The project or Design changed before the code item was updated.");
 				if (tracker) {
 					if (kind === "scenario") {
@@ -951,8 +951,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				after = before.replace(input.oldText, input.newText);
 			}
 			let state: WorkspaceState;
-			if (kind === "scenario") state = await workspace.updateScenarioSource({ scenarioId: input.id, source: after, designId: target.designId });
-			else if (kind === "edge-function") state = await workspace.updateEdgeFunctionSource({ edgeFunctionId: input.id, source: after, designId: target.designId });
+			if (kind === "scenario") state = await workspace.updateScenarioSource({ scenarioId: input.id, source: after, designId: target.designId, assistantTurnId: turnIds.get(conversationId) });
+			else if (kind === "edge-function") state = await workspace.updateEdgeFunctionSource({ edgeFunctionId: input.id, source: after, designId: target.designId, assistantTurnId: turnIds.get(conversationId) });
 			else {
 				const design = boundState.design;
 				if (!design) throw new Error("Open a project before writing a Function body.");

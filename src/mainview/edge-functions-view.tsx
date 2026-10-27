@@ -124,7 +124,7 @@ export function EdgeFunctionsView({
 							<SaveIndicator save={save} />
 							<Button variant="strike" size="sm" aria-label={`Remove Edge function ${selected.name}`} onClick={() => onRemove(selected.id)}><Trash2 /> Remove</Button>
 						</div>
-						<div className="flex items-center justify-between border-b border-rule px-5 py-2"><label htmlFor="edge-function-source" className="kicker">TypeScript handler</label><span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span></div>
+						<div className="flex items-center justify-between border-b border-rule px-5 py-2"><label htmlFor="edge-function-source" className="kicker">TypeScript handler</label><span className="text-[11px] text-ink-4">Included in Undo and Redo</span></div>
 						<Editor
 							key={`${designId}:${generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}`}
 							height="min(68vh, 720px)" language="typescript" value={sourceDraft}
