@@ -827,7 +827,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 								</g>
 							);
 						})}
-						{frame?.message && <WalkthroughMessageDot message={frame.message} />}
+						{frame?.messages.map((message, index) => <WalkthroughMessageDot key={`${message.connectionId}:${index}`} message={message} />)}
 						{scene.components.filter((component) => !isComponentHiddenByCollapse(scene, component.id)).map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
 							const linking = connectingFrom === component.id;

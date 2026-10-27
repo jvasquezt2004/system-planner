@@ -68,10 +68,15 @@ import type {
 	UpdateSystemServiceAction,
 } from "../shared/system-design";
 import type {
+	AddWalkthroughBlockAction,
+	AddWalkthroughParallelBranchAction,
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
 	MoveWalkthroughAction,
+	MoveWalkthroughBlockAction,
 	MoveWalkthroughStepAction,
+	RemoveWalkthroughBlockAction,
+	UpdateWalkthroughRepeatAction,
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
@@ -184,6 +189,14 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		updateWalkthroughStep: async (action: UpdateWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).updateWalkthroughStep(action),
 		moveWalkthroughStep: async (action: MoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughStep(action),
 		removeWalkthroughStep: async (action: RemoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthroughStep(action),
+		addWalkthroughBlock: async (action: AddWalkthroughBlockAction): Promise<WorkspaceState> => (await deps.workspace).addWalkthroughBlock(action),
+		addWalkthroughParallelBranch: async (action: AddWalkthroughParallelBranchAction): Promise<WorkspaceState> =>
+			(await deps.workspace).addWalkthroughParallelBranch(action),
+		updateWalkthroughRepeat: async (action: UpdateWalkthroughRepeatAction): Promise<WorkspaceState> =>
+			(await deps.workspace).updateWalkthroughRepeat(action),
+		moveWalkthroughBlock: async (action: MoveWalkthroughBlockAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughBlock(action),
+		removeWalkthroughBlock: async (action: RemoveWalkthroughBlockAction): Promise<WorkspaceState> =>
+			(await deps.workspace).removeWalkthroughBlock(action),
 		repairWalkthroughStep: async (action: RepairWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).repairWalkthroughStep(action),
 		acceptWalkthroughStepRedirection: async (action: AcceptWalkthroughStepRedirectionAction): Promise<WorkspaceState> =>
 			(await deps.workspace).acceptWalkthroughStepRedirection(action),

@@ -11,6 +11,9 @@ import {
 	WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT,
 	WALKTHROUGH_EXPLANATION_LIMIT,
 	WALKTHROUGH_NAME_LIMIT,
+	WALKTHROUGH_PARALLEL_BRANCH_LIMIT,
+	WALKTHROUGH_REPEAT_COUNT_MAX,
+	WALKTHROUGH_REPEAT_COUNT_MIN,
 	WALKTHROUGH_TRAVEL_PERCENT_MAX,
 	WALKTHROUGH_TRAVEL_PERCENT_MIN,
 	WALKTHROUGH_OPERATION_LIMIT,
@@ -19,7 +22,11 @@ import {
 	findWalkthrough,
 	walkthroughRepairCount,
 	walkthroughStepStatus,
+	walkthroughSteps,
 	type Walkthrough,
+	type WalkthroughBlock,
+	type WalkthroughContainerBlock,
+	type WalkthroughSequenceRef,
 	type WalkthroughStep,
 	type WalkthroughStepChanges,
 	type WalkthroughStepStatus,
@@ -68,8 +75,22 @@ export function WalkthroughEditor({
 	followCamera,
 }: WalkthroughEditorProps) {
 	const walkthrough = selection ? findWalkthrough(walkthroughs, selection.walkthroughId) ?? null : null;
+	const steps = walkthrough ? walkthroughSteps(walkthrough) : [];
 	const step = walkthrough && selection?.stepId
-		? walkthrough.steps.find((candidate) => candidate.id === selection.stepId) ?? null
+		? steps.find((candidate) => candidate.id === selection.stepId) ?? null
+		: null;
+	const blockNames = walkthrough ? blockNameMap(walkthrough.blocks) : new Map<string, string>();
+	const treeContext: TreeContext | null = walkthrough
+		? {
+			walkthroughId: walkthrough.id,
+			design,
+			selectedStepId: selection?.stepId ?? null,
+			numbers: new Map(steps.map((item, index) => [item.id, index + 1])),
+			names: blockNames,
+			client,
+			onApply,
+			onSelect,
+		}
 		: null;
 
 	function createWalkthrough() {
@@ -130,7 +151,7 @@ export function WalkthroughEditor({
 									>
 										<span className="block truncate font-medium text-ink">{item.name}</span>
 										<span className="block text-[11.5px] text-ink-3">
-											{countLabel(item.steps.length, "step")}
+											{countLabel(walkthroughSteps(item).length, "step")}
 											{repairs > 0 ? ` · ${repairs} to repair` : ""}
 										</span>
 									</button>
@@ -173,30 +194,17 @@ export function WalkthroughEditor({
 
 						<div className="flex flex-col gap-1.5">
 							<span className="text-ink-3">Steps</span>
-							{walkthrough.steps.length === 0 && (
-								<p className="text-ink-3">No steps yet. Choose a Connection below to add the first one.</p>
+							{walkthroughSteps(walkthrough).length === 0 && (
+								<p className="text-ink-3">No steps yet. Add a step below, or add a parallel or repeated block first.</p>
 							)}
-							<ol aria-label="Steps" className="flex flex-col gap-1">
-								{walkthrough.steps.map((item, index) => (
-									<StepRow
-										key={item.id}
-										index={index}
-										step={item}
-										status={walkthroughStepStatus(item, design)}
-										design={design}
-										active={item.id === selection?.stepId}
-										onSelect={() => onSelect({ walkthroughId: walkthrough.id, stepId: item.id })}
-										onMove={(toIndex) => onApply(() => client.moveWalkthroughStep(walkthrough.id, item.id, toIndex))}
-										last={index === walkthrough.steps.length - 1}
-									/>
-								))}
-							</ol>
+							<BlockList blocks={walkthrough.blocks} label="Steps" context={treeContext!} />
 						</div>
 
 						<WalkthroughTransport controls={playback} follow={followCamera} />
 
-						<AddStepControl
-							walkthroughId={walkthrough.id}
+						<AddEntryControl
+							walkthrough={walkthrough}
+							names={blockNames}
 							design={design}
 							client={client}
 							onApply={onApply}
@@ -237,8 +245,8 @@ export function WalkthroughEditor({
 	);
 }
 
-function countLabel(count: number, noun: string): string {
-	return `${count} ${noun}${count === 1 ? "" : "s"}`;
+function countLabel(count: number, noun: string, plural = `${noun}s`): string {
+	return `${count} ${count === 1 ? noun : plural}`;
 }
 
 /** A Connection endpoint may be a Component or a Service. */
@@ -290,8 +298,198 @@ function WalkthroughNameInput({
 	);
 }
 
+/** Everything the block tree needs to show a Walkthrough and to act on it. */
+type TreeContext = {
+	walkthroughId: string;
+	design: SystemDesign;
+	selectedStepId: string | null;
+	/** Authored ordinal of each step, from 1. */
+	numbers: ReadonlyMap<string, number>;
+	/** Display name of each parallel or repeated block. */
+	names: ReadonlyMap<string, string>;
+	client: Client;
+	onApply: (action: () => Promise<WorkspaceState>) => void;
+	onSelect: (selection: WalkthroughSelection | null) => void;
+};
+
+function BlockList({ blocks, label, context }: { blocks: WalkthroughBlock[]; label: string; context: TreeContext }) {
+	return (
+		<ol aria-label={label} className="flex flex-col gap-1">
+			{blocks.map((block, position) => {
+				const last = position === blocks.length - 1;
+				if (block.kind === "step") {
+					const id = block.step.id;
+					return (
+						<StepRow
+							key={id}
+							number={context.numbers.get(id) ?? position + 1}
+							position={position}
+							step={block.step}
+							status={walkthroughStepStatus(block.step, context.design)}
+							design={context.design}
+							active={id === context.selectedStepId}
+							last={last}
+							onSelect={() => context.onSelect({ walkthroughId: context.walkthroughId, stepId: id })}
+							onMove={(toIndex) => context.onApply(() => context.client.moveWalkthroughStep(context.walkthroughId, id, toIndex))}
+						/>
+					);
+				}
+				return (
+					<ContainerRow
+						key={block.id}
+						block={block}
+						name={context.names.get(block.id) ?? block.id}
+						position={position}
+						last={last}
+						context={context}
+					/>
+				);
+			})}
+		</ol>
+	);
+}
+
+function ContainerRow({
+	block,
+	name,
+	position,
+	last,
+	context,
+}: {
+	block: WalkthroughContainerBlock;
+	name: string;
+	position: number;
+	last: boolean;
+	context: TreeContext;
+}) {
+	const { client, onApply, walkthroughId } = context;
+	return (
+		<li aria-label={name} className="flex flex-col gap-2 rounded-md border border-rule-soft bg-paper p-2">
+			<div className="flex items-center gap-1">
+				<span className="min-w-0 flex-1 truncate">
+					<span className="font-medium text-ink">{name}</span>
+					<span className="text-[11.5px] text-ink-3">
+						{block.kind === "parallel"
+							? ` · ${countLabel(block.branches.length, "branch", "branches")} run together`
+							: " · runs its steps in order"}
+					</span>
+				</span>
+				<Button
+					type="button"
+					size="icon-xs"
+					variant="ghost"
+					aria-label={`Move ${name} up`}
+					disabled={position === 0}
+					onClick={() => onApply(() => client.moveWalkthroughBlock(walkthroughId, block.id, position - 1))}
+				>
+					<ArrowUp />
+				</Button>
+				<Button
+					type="button"
+					size="icon-xs"
+					variant="ghost"
+					aria-label={`Move ${name} down`}
+					disabled={last}
+					onClick={() => onApply(() => client.moveWalkthroughBlock(walkthroughId, block.id, position + 1))}
+				>
+					<ArrowDown />
+				</Button>
+				<Button
+					type="button"
+					size="icon-xs"
+					variant="ghost"
+					aria-label={`Remove ${name}`}
+					onClick={() => {
+						if (context.selectedStepId && containsStep(block, context.selectedStepId)) {
+							context.onSelect({ walkthroughId, stepId: null });
+						}
+						onApply(() => client.removeWalkthroughBlock(walkthroughId, block.id));
+					}}
+				>
+					<Trash2 />
+				</Button>
+			</div>
+
+			{block.kind === "repeat" ? (
+				<>
+					<RepeatCountInput
+						key={block.count}
+						name={name}
+						count={block.count}
+						onCommit={(count) => onApply(() => client.updateWalkthroughRepeat(walkthroughId, block.id, count))}
+					/>
+					{block.body.length === 0 ? (
+						<p className="text-[11.5px] italic text-ink-3">Empty body. Add steps here with “Add to”.</p>
+					) : (
+						<BlockList blocks={block.body} label={`${name} steps`} context={context} />
+					)}
+				</>
+			) : (
+				<div className="flex flex-col gap-2">
+					{block.branches.map((branch, branchIndex) => (
+						<section
+							key={branchIndex}
+							aria-label={`${name} branch ${branchIndex + 1}`}
+							className="flex flex-col gap-1 border-l-2 border-rule-soft pl-2"
+						>
+							<span className="text-[11.5px] text-ink-3">Branch {branchIndex + 1}</span>
+							{branch.length === 0 ? (
+								<p className="text-[11.5px] italic text-ink-3">Empty branch. Add steps here with “Add to”.</p>
+							) : (
+								<BlockList blocks={branch} label={`${name} branch ${branchIndex + 1} steps`} context={context} />
+							)}
+						</section>
+					))}
+					{block.branches.length < WALKTHROUGH_PARALLEL_BRANCH_LIMIT && (
+						<Button
+							type="button"
+							size="xs"
+							variant="outline"
+							className="self-start"
+							onClick={() => onApply(() => client.addWalkthroughParallelBranch(walkthroughId, block.id))}
+						>
+							<Plus className="size-3" />
+							Add branch
+						</Button>
+					)}
+				</div>
+			)}
+		</li>
+	);
+}
+
+function RepeatCountInput({ name, count, onCommit }: { name: string; count: number; onCommit: (count: number) => void }) {
+	const [draft, setDraft] = useState(String(count));
+	function commit() {
+		const value = Number(draft.trim());
+		if (!Number.isInteger(value) || value < WALKTHROUGH_REPEAT_COUNT_MIN || value > WALKTHROUGH_REPEAT_COUNT_MAX) {
+			setDraft(String(count));
+			return;
+		}
+		if (value !== count) onCommit(value);
+	}
+	return (
+		<label className="flex items-center gap-2 text-[12.5px] text-ink-2">
+			<span>Runs</span>
+			<Input
+				type="number"
+				inputMode="numeric"
+				min={WALKTHROUGH_REPEAT_COUNT_MIN}
+				max={WALKTHROUGH_REPEAT_COUNT_MAX}
+				value={draft}
+				aria-label={`${name} count`}
+				className="h-8 w-20"
+				onChange={(event) => setDraft(event.target.value)}
+				onBlur={commit}
+			/>
+			<span>times, in order</span>
+		</label>
+	);
+}
+
 function StepRow({
-	index,
+	number,
+	position,
 	step,
 	status,
 	design,
@@ -300,7 +498,8 @@ function StepRow({
 	onSelect,
 	onMove,
 }: {
-	index: number;
+	number: number;
+	position: number;
 	step: WalkthroughStep;
 	status: WalkthroughStepStatus;
 	design: SystemDesign;
@@ -317,7 +516,7 @@ function StepRow({
 				onClick={onSelect}
 				className="flex min-w-0 flex-1 items-baseline gap-2 text-left"
 			>
-				<span className="tabular-nums text-ink-3">{index + 1}.</span>
+				<span className="tabular-nums text-ink-3">{number}.</span>
 				<span className="min-w-0 flex-1">
 					<span className={cn("block truncate", step.title ? "text-ink" : "italic text-ink-3")}>
 						{step.title || "Untitled step"}
@@ -336,9 +535,9 @@ function StepRow({
 				type="button"
 				size="icon-xs"
 				variant="ghost"
-				aria-label={`Move step ${index + 1} up`}
-				disabled={index === 0}
-				onClick={() => onMove(index - 1)}
+				aria-label={`Move step ${number} up`}
+				disabled={position === 0}
+				onClick={() => onMove(position - 1)}
 			>
 				<ArrowUp />
 			</Button>
@@ -346,9 +545,9 @@ function StepRow({
 				type="button"
 				size="icon-xs"
 				variant="ghost"
-				aria-label={`Move step ${index + 1} down`}
+				aria-label={`Move step ${number} down`}
 				disabled={last}
-				onClick={() => onMove(index + 1)}
+				onClick={() => onMove(position + 1)}
 			>
 				<ArrowDown />
 			</Button>
@@ -356,53 +555,149 @@ function StepRow({
 	);
 }
 
-function AddStepControl({
-	walkthroughId,
+/** Where a new step or block goes: the top level, a parallel branch, or a repeated body. */
+type SequenceTarget = { value: string; label: string; ref: WalkthroughSequenceRef };
+const TOP_LEVEL_TARGET = "top";
+
+function sequenceTargets(blocks: WalkthroughBlock[], names: ReadonlyMap<string, string>): SequenceTarget[] {
+	const targets: SequenceTarget[] = [{ value: TOP_LEVEL_TARGET, label: "Top level", ref: { blockId: null } }];
+	const visit = (items: WalkthroughBlock[]) => {
+		for (const block of items) {
+			if (block.kind === "step") continue;
+			const name = names.get(block.id) ?? block.id;
+			if (block.kind === "parallel") {
+				block.branches.forEach((branch, index) => {
+					const ref = { blockId: block.id, branch: index };
+					targets.push({ value: JSON.stringify(ref), label: `${name}, branch ${index + 1}`, ref });
+					visit(branch);
+				});
+			} else {
+				const ref = { blockId: block.id };
+				targets.push({ value: JSON.stringify(ref), label: `${name} body`, ref });
+				visit(block.body);
+			}
+		}
+	};
+	visit(blocks);
+	return targets;
+}
+
+/** Names parallel and repeated blocks in authoring order, counting each kind separately. */
+function blockNameMap(blocks: WalkthroughBlock[]): Map<string, string> {
+	const names = new Map<string, string>();
+	let parallel = 0;
+	let repeat = 0;
+	const visit = (items: WalkthroughBlock[]) => {
+		for (const block of items) {
+			if (block.kind === "step") continue;
+			if (block.kind === "parallel") {
+				parallel += 1;
+				names.set(block.id, `Parallel ${parallel}`);
+				block.branches.forEach(visit);
+			} else {
+				repeat += 1;
+				names.set(block.id, `Repeat ${repeat}`);
+				visit(block.body);
+			}
+		}
+	};
+	visit(blocks);
+	return names;
+}
+
+function containsStep(block: WalkthroughBlock, stepId: string): boolean {
+	if (block.kind === "step") return block.step.id === stepId;
+	const sequences = block.kind === "parallel" ? block.branches : [block.body];
+	return sequences.some((sequence) => sequence.some((child) => containsStep(child, stepId)));
+}
+
+function AddEntryControl({
+	walkthrough,
+	names,
 	design,
 	client,
 	onApply,
 	onSelect,
 }: {
-	walkthroughId: string;
+	walkthrough: Walkthrough;
+	names: ReadonlyMap<string, string>;
 	design: SystemDesign;
 	client: Client;
 	onApply: (action: () => Promise<WorkspaceState>) => void;
 	onSelect: (selection: WalkthroughSelection | null) => void;
 }) {
-	const [chosen, setChosen] = useState<string | null>(null);
+	const [chosenTarget, setChosenTarget] = useState<string>(TOP_LEVEL_TARGET);
+	const [chosenConnection, setChosenConnection] = useState<string | null>(null);
+	const targets = sequenceTargets(walkthrough.blocks, names);
+	const target = targets.find((candidate) => candidate.value === chosenTarget) ?? targets[0]!;
 	const connections = design.connections;
-	if (connections.length === 0) {
-		return <p className="text-ink-3">Connect components in the System design to add steps.</p>;
-	}
-	const connectionId = connections.some((connection) => connection.id === chosen) ? chosen! : connections[0]!.id;
+	const connectionId = connections.some((connection) => connection.id === chosenConnection)
+		? chosenConnection!
+		: connections[0]?.id;
 	return (
 		<div className="flex flex-col gap-1.5">
-			<span className="text-ink-3">Add a step</span>
-			<div className="flex items-center gap-1.5">
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Add to</span>
 				<select
-					aria-label="Connection for new step"
-					value={connectionId}
-					onChange={(event) => setChosen(event.target.value)}
-					className="h-8 min-w-0 flex-1 rounded-md border border-input bg-paper-raised px-2 text-[12.5px]"
+					aria-label="Add to"
+					value={target.value}
+					onChange={(event) => setChosenTarget(event.target.value)}
+					className="h-8 rounded-md border border-input bg-paper-raised px-2 text-[12.5px]"
 				>
-					{connections.map((connection) => (
-						<option key={connection.id} value={connection.id}>
-							{connectionOptionLabel(design, connection)}
-						</option>
+					{targets.map((item) => (
+						<option key={item.value} value={item.value}>{item.label}</option>
 					))}
 				</select>
+			</label>
+			{connections.length === 0 ? (
+				<p className="text-ink-3">Connect components in the System design to add steps.</p>
+			) : (
+				<div className="flex items-center gap-1.5">
+					<select
+						aria-label="Connection for new step"
+						value={connectionId}
+						onChange={(event) => setChosenConnection(event.target.value)}
+						className="h-8 min-w-0 flex-1 rounded-md border border-input bg-paper-raised px-2 text-[12.5px]"
+					>
+						{connections.map((connection) => (
+							<option key={connection.id} value={connection.id}>
+								{connectionOptionLabel(design, connection)}
+							</option>
+						))}
+					</select>
+					<Button
+						type="button"
+						size="sm"
+						variant="outline"
+						onClick={() => {
+							const id = crypto.randomUUID();
+							onSelect({ walkthroughId: walkthrough.id, stepId: id });
+							onApply(() => client.addWalkthroughStep({ id, walkthroughId: walkthrough.id, connectionId: connectionId!, sequence: target.ref }));
+						}}
+					>
+						<Plus className="size-3.5" />
+						Add step
+					</Button>
+				</div>
+			)}
+			<div className="flex flex-wrap gap-1.5">
 				<Button
 					type="button"
 					size="sm"
 					variant="outline"
-					onClick={() => {
-						const id = crypto.randomUUID();
-						onSelect({ walkthroughId, stepId: id });
-						onApply(() => client.addWalkthroughStep({ id, walkthroughId, connectionId }));
-					}}
+					onClick={() => onApply(() => client.addWalkthroughBlock(walkthrough.id, "parallel", crypto.randomUUID(), target.ref))}
 				>
 					<Plus className="size-3.5" />
-					Add
+					Parallel block
+				</Button>
+				<Button
+					type="button"
+					size="sm"
+					variant="outline"
+					onClick={() => onApply(() => client.addWalkthroughBlock(walkthrough.id, "repeat", crypto.randomUUID(), target.ref))}
+				>
+					<Plus className="size-3.5" />
+					Repeated block
 				</Button>
 			</div>
 		</div>

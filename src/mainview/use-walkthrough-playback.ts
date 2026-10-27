@@ -6,8 +6,10 @@ import {
 	createPlaybackTransport,
 	deriveWalkthroughFrame,
 	isTransportPlaying,
+	nextStepStartMs,
 	pauseTransport,
 	playTransport,
+	previousStepStartMs,
 	seekTransport,
 	setTransportSpeed,
 	stepStartMs,
@@ -134,9 +136,6 @@ export function useWalkthroughPlayback({
 		setClockMs(now);
 	}
 
-	const currentIndex = frame?.stepIndex ?? 0;
-	const stepCount = timeline?.steps.length ?? 0;
-
 	return {
 		problems,
 		timeline,
@@ -147,14 +146,10 @@ export function useWalkthroughPlayback({
 		},
 		restart: () => change((current, now, total) => seekTransport(current, 0, now, total)),
 		previous: () => {
-			if (timeline) change((current, now, total) => seekTransport(current, stepStartMs(timeline, currentIndex - 1), now, total));
+			if (timeline) change((current, now, total) => seekTransport(current, previousStepStartMs(timeline, transportTimeMs(current, now, total)), now, total));
 		},
 		next: () => {
-			if (!timeline) return;
-			change((current, now, total) => {
-				const target = currentIndex + 1 >= stepCount ? total : stepStartMs(timeline, currentIndex + 1);
-				return seekTransport(current, target, now, total);
-			});
+			if (timeline) change((current, now, total) => seekTransport(current, nextStepStartMs(timeline, transportTimeMs(current, now, total)), now, total));
 		},
 		seekStep: (index) => {
 			if (timeline) change((current, now, total) => seekTransport(current, stepStartMs(timeline, index), now, total));
