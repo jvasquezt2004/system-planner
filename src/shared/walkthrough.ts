@@ -80,6 +80,19 @@ export type UpdateWalkthroughStepAction = { walkthroughId: string; stepId: strin
 export type MoveWalkthroughStepAction = { walkthroughId: string; stepId: string; toIndex: number };
 export type RemoveWalkthroughStepAction = { walkthroughId: string; stepId: string };
 export type RepairWalkthroughStepAction = { walkthroughId: string; stepId: string; connectionId: string };
+export type AcceptWalkthroughStepRedirectionAction = { walkthroughId: string; stepId: string };
+
+/** A step, in any Walkthrough, that plays a Connection a pending removal would delete. */
+export type AffectedWalkthroughStep = {
+	walkthroughId: string;
+	walkthroughName: string;
+	stepId: string;
+	title: string;
+	connectionId: string;
+};
+
+/** What removing architecture content does to Walkthroughs. Affected steps keep their text and become dangling. */
+export type WalkthroughRemovalImpact = { walkthroughSteps: AffectedWalkthroughStep[] };
 
 export function findWalkthrough(walkthroughs: Walkthrough[], walkthroughId: string): Walkthrough | undefined {
 	return walkthroughs.find((walkthrough) => walkthrough.id === walkthroughId);
@@ -199,6 +212,45 @@ export function repairWalkthroughStep(
 		...walkthrough,
 		steps: walkthrough.steps.map((step) => (step.id === stepId ? next : step)),
 	});
+}
+
+/**
+ * Accepts the route a redirected step's Connection now runs. Keeping the same
+ * Connection id is not enough on its own: only a step whose endpoints changed
+ * can be accepted, and acceptance records the endpoints the designer reviewed.
+ */
+export function acceptWalkthroughStepRedirection(
+	walkthroughs: Walkthrough[],
+	walkthroughId: string,
+	stepId: string,
+	design: SystemDesign,
+): Walkthrough[] {
+	const walkthrough = requireWalkthrough(walkthroughs, walkthroughId);
+	const current = requireStep(walkthrough, stepId);
+	if (walkthroughStepStatus(current, design).status !== "redirected") {
+		throw new Error("This step does not run a changed route to accept.");
+	}
+	return repairWalkthroughStep(walkthroughs, walkthroughId, stepId, current.connectionId, design);
+}
+
+/**
+ * The steps, across every Walkthrough, that play one of the given Connections.
+ * Removing those Connections, directly or with the Components and Services they
+ * join, leaves these steps dangling. Nothing is deleted by listing them.
+ */
+export function walkthroughStepsOnConnections(walkthroughs: Walkthrough[], connectionIds: readonly string[]): AffectedWalkthroughStep[] {
+	const ids = new Set(connectionIds);
+	return walkthroughs.flatMap((walkthrough) =>
+		walkthrough.steps
+			.filter((step) => ids.has(step.connectionId))
+			.map((step) => ({
+				walkthroughId: walkthrough.id,
+				walkthroughName: walkthrough.name,
+				stepId: step.id,
+				title: step.title,
+				connectionId: step.connectionId,
+			})),
+	);
 }
 
 /** The highlight for the selected step, or null when the selection no longer names a step. */

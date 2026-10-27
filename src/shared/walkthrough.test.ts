@@ -12,8 +12,10 @@ import {
 	type SystemDesign,
 } from "./system-design";
 import {
+	acceptWalkthroughStepRedirection,
 	addWalkthrough,
 	addWalkthroughStep,
+	walkthroughStepsOnConnections,
 	moveWalkthrough,
 	moveWalkthroughStep,
 	normalizeWalkthroughs,
@@ -235,5 +237,62 @@ describe("Walkthrough model", () => {
 			.toThrow("Step duration must be");
 		expect(() => normalizeWalkthroughs([{ id: "w", name: "W", steps: [{ ...repairable[0]!.steps[0], route: "api" }] }]))
 			.toThrow('Step "s" has a malformed route.');
+	});
+});
+
+describe("Walkthrough impact and redirection", () => {
+	function uploadDesign(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "client", name: "Browser", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "api", name: "API", position: { x: 300, y: 0 } });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 600, y: 0 } });
+		design = addSystemConnection(design, { id: "upload", sourceId: "client", targetId: "api", label: "Upload" });
+		return addSystemConnection(design, { id: "enqueue", sourceId: "api", targetId: "queue", label: "Enqueue" });
+	}
+
+	function withSteps(design: SystemDesign): Walkthrough[] {
+		let walkthroughs = addWalkthrough([], { id: "upload-flow", name: "Upload" });
+		walkthroughs = addWalkthrough(walkthroughs, { id: "queue-flow", name: "Queue" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload-flow", { id: "s1", connectionId: "upload", title: "Send", explanation: "Browser posts." }, design);
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload-flow", { id: "s2", connectionId: "enqueue", title: "Queue" }, design);
+		return addWalkthroughStep(walkthroughs, "queue-flow", { id: "s3", connectionId: "enqueue", title: "Publish" }, design);
+	}
+
+	test("listing impact names every step, across Walkthroughs, that plays a removed Connection and changes nothing", () => {
+		const design = uploadDesign();
+		const walkthroughs = withSteps(design);
+		const before = JSON.stringify(walkthroughs);
+
+		expect(walkthroughStepsOnConnections(walkthroughs, ["enqueue"])).toEqual([
+			{ walkthroughId: "upload-flow", walkthroughName: "Upload", stepId: "s2", title: "Queue", connectionId: "enqueue" },
+			{ walkthroughId: "queue-flow", walkthroughName: "Queue", stepId: "s3", title: "Publish", connectionId: "enqueue" },
+		]);
+		expect(walkthroughStepsOnConnections(walkthroughs, ["missing"])).toEqual([]);
+		expect(JSON.stringify(walkthroughs)).toBe(before);
+	});
+
+	test("accepting a redirected step records the Connection's new endpoints and keeps its text", () => {
+		const design = uploadDesign();
+		const walkthroughs = withSteps(design);
+		const redirected = updateSystemConnection(design, "enqueue", { sourceId: "client" });
+		expect(walkthroughStepStatus(walkthroughs[0]!.steps[1]!, redirected)).toEqual({ status: "redirected", sourceId: "client", targetId: "queue" });
+
+		const accepted = acceptWalkthroughStepRedirection(walkthroughs, "upload-flow", "s2", redirected);
+		expect(accepted[0]!.steps[1]).toMatchObject({ connectionId: "enqueue", route: { sourceId: "client", targetId: "queue" }, title: "Queue" });
+		expect(walkthroughStepStatus(accepted[0]!.steps[1]!, redirected)).toEqual({ status: "ok" });
+		expect(accepted[1]).toEqual(walkthroughs[1]);
+	});
+
+	test("a retained Connection id is not an accepted redirection: steps that are ok or dangling cannot be accepted", () => {
+		const design = uploadDesign();
+		const walkthroughs = withSteps(design);
+		expect(() => acceptWalkthroughStepRedirection(walkthroughs, "upload-flow", "s2", design))
+			.toThrow("This step does not run a changed route to accept.");
+
+		const removed = removeSystemConnection(design, "enqueue");
+		expect(() => acceptWalkthroughStepRedirection(walkthroughs, "upload-flow", "s2", removed))
+			.toThrow("This step does not run a changed route to accept.");
+		expect(() => acceptWalkthroughStepRedirection(walkthroughs, "upload-flow", "missing", removed))
+			.toThrow("That step could not be found.");
 	});
 });

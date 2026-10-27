@@ -8,6 +8,7 @@ import {
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
 	describeSystemComponentRemoval,
+	describeSystemConnectionRemoval,
 	describeSystemServiceRemoval,
 	canAddSystemGroupMember,
 	findSystemComponent,
@@ -20,6 +21,7 @@ import {
 	type SystemComponent,
 	type SystemComponentKind,
 	type SystemComponentRemovalPlan,
+	type SystemConnectionRemovalPlan,
 	type SystemConnection,
 	type SystemDesign,
 	type SystemGroup,
@@ -28,7 +30,13 @@ import {
 	type SystemServiceSize,
 } from "../shared/system-design";
 import type { workspaceClient } from "./workspace-client";
-import { findWalkthrough, selectedWalkthroughHighlight, type WalkthroughHighlight } from "../shared/walkthrough";
+import {
+	findWalkthrough,
+	selectedWalkthroughHighlight,
+	type AffectedWalkthroughStep,
+	type WalkthroughHighlight,
+	walkthroughStepsOnConnections,
+} from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
 import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
@@ -76,9 +84,11 @@ type Drag = {
 	moved: boolean;
 };
 type Pan = { pointerStart: CanvasPoint; viewportStart: CanvasViewport; moved: boolean };
-type PendingRemoval =
-	| { kind: "component"; plan: SystemComponentRemovalPlan }
-	| { kind: "service"; plan: SystemServiceRemovalPlan };
+/** A removal waiting for confirmation. `walkthroughSteps` are the steps it would leave dangling. */
+export type PendingRemoval =
+	| { kind: "component"; plan: SystemComponentRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] }
+	| { kind: "service"; plan: SystemServiceRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] }
+	| { kind: "connection"; plan: SystemConnectionRemovalPlan; walkthroughSteps: AffectedWalkthroughStep[] };
 
 const KIND_LABELS: Record<SystemComponentKind, string> = {
 	generic: "Component",
@@ -411,19 +421,40 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if (removal.kind === "component") {
 			const componentId = removal.plan.componentId;
 			onApply(() => client.removeSystemComponent(componentId));
-		} else {
+		} else if (removal.kind === "service") {
 			const serviceId = removal.plan.serviceId;
 			onApply(() => client.removeSystemService(serviceId));
+		} else {
+			const connectionId = removal.plan.connectionId;
+			onApply(() => client.removeSystemConnection(connectionId));
 		}
 	}
 
 	/** Lists what the removal changes in the displayed design; the workspace checks again on confirm. */
 	function openComponentRemoval(componentId: string) {
-		setPendingRemoval({ kind: "component", plan: describeSystemComponentRemoval(design!, componentId) });
+		const plan = describeSystemComponentRemoval(design!, componentId);
+		setPendingRemoval({ kind: "component", plan, walkthroughSteps: stepsOnConnections(plan.connections) });
 	}
 
 	function openServiceRemoval(serviceId: string) {
-		setPendingRemoval({ kind: "service", plan: describeSystemServiceRemoval(design!, serviceId) });
+		const plan = describeSystemServiceRemoval(design!, serviceId);
+		setPendingRemoval({ kind: "service", plan, walkthroughSteps: stepsOnConnections(plan.connections) });
+	}
+
+	/** A Connection no Walkthrough plays is removed at once; one that a step plays is confirmed first, because its steps go dangling. */
+	function requestConnectionRemoval(connectionId: string) {
+		setSelection(null);
+		const walkthroughSteps = stepsOnConnections([{ id: connectionId }]);
+		if (walkthroughSteps.length === 0) {
+			onApply(() => client.removeSystemConnection(connectionId));
+			return;
+		}
+		const plan = describeSystemConnectionRemoval(design!, connectionId);
+		setPendingRemoval({ kind: "connection", plan, walkthroughSteps });
+	}
+
+	function stepsOnConnections(connections: { id: string }[]): AffectedWalkthroughStep[] {
+		return walkthroughStepsOnConnections(state.walkthroughs ?? [], connections.map((connection) => connection.id));
 	}
 
 	function handleBackgroundClick() {
@@ -448,9 +479,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if ((event.key === "Delete" || event.key === "Backspace") && selection) {
 			event.preventDefault();
 			if (selection.kind === "connection") {
-				const id = selection.id;
-				setSelection(null);
-				onApply(() => client.removeSystemConnection(id));
+				requestConnectionRemoval(selection.id);
 			} else if (selection.kind === "group") {
 				// Removing a Group keeps its members, so it needs no confirmation.
 				const id = selection.id;
@@ -979,11 +1008,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onClose={() => setSelection(null)}
 							onApply={onApply}
 							client={client}
-							onRemove={() => {
-								const id = selectedConnection.id;
-								setSelection(null);
-								onApply(() => client.removeSystemConnection(id));
-							}}
+							onRemove={() => requestConnectionRemoval(selectedConnection.id)}
 						/>
 					)}
 				</aside>
@@ -995,7 +1020,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					<DialogFooter>
 						<Button type="button" variant="outline" onClick={() => setPendingRemoval(null)}>Cancel</Button>
 						<Button type="button" variant="destructive" onClick={confirmRemoval}>
-							{pendingRemoval?.kind === "service" ? "Remove service" : "Remove component"}
+							{removalButtonLabel(pendingRemoval)}
 						</Button>
 					</DialogFooter>
 				</DialogContent>
@@ -1019,19 +1044,43 @@ function sceneAfterPointer(drag: Drag, dx: number, dy: number): SceneDrag {
 	return { mode: "service", id: scene.id, position };
 }
 
-function RemovalSummary({ removal }: { removal: PendingRemoval }) {
+function removalButtonLabel(removal: PendingRemoval | null): string {
+	if (removal?.kind === "service") return "Remove service";
+	if (removal?.kind === "connection") return "Remove connection";
+	return "Remove component";
+}
+
+export function RemovalSummary({ removal }: { removal: PendingRemoval }) {
+	if (removal.kind === "connection") {
+		return (
+			<>
+				<DialogHeader>
+					<DialogTitle>Remove “{removal.plan.connectionLabel}”?</DialogTitle>
+					<DialogDescription>
+						{removal.walkthroughSteps.length} Walkthrough step{removal.walkthroughSteps.length === 1 ? "" : "s"} play this connection.
+						They keep their text and become dangling until you repair them.
+					</DialogDescription>
+				</DialogHeader>
+				<WalkthroughStepList steps={removal.walkthroughSteps} />
+			</>
+		);
+	}
 	const connections = removal.plan.connections;
 	const connectionText = connections.length === 0
 		? ""
 		: `This also removes ${connections.length} connection${connections.length === 1 ? "" : "s"}:`;
+	const stepText = removal.walkthroughSteps.length === 0
+		? ""
+		: `${removal.walkthroughSteps.length} Walkthrough step${removal.walkthroughSteps.length === 1 ? "" : "s"} will become dangling and keep ${removal.walkthroughSteps.length === 1 ? "its" : "their"} text.`;
 	if (removal.kind === "component") {
 		return (
 			<>
 				<DialogHeader>
 					<DialogTitle>Remove “{removal.plan.componentName}”?</DialogTitle>
-					<DialogDescription>{connectionText || "No connections use this component."}</DialogDescription>
+					<DialogDescription>{[connectionText || "No connections use this component.", stepText].filter(Boolean).join(" ")}</DialogDescription>
 				</DialogHeader>
 				{connections.length > 0 && <ConnectionList connections={connections} />}
+				<WalkthroughStepList steps={removal.walkthroughSteps} />
 			</>
 		);
 	}
@@ -1043,7 +1092,7 @@ function RemovalSummary({ removal }: { removal: PendingRemoval }) {
 		<>
 			<DialogHeader>
 				<DialogTitle>Remove “{removal.plan.serviceName}”?</DialogTitle>
-				<DialogDescription>{[releasedText, connectionText].filter(Boolean).join(" ")}</DialogDescription>
+				<DialogDescription>{[releasedText, connectionText, stepText].filter(Boolean).join(" ")}</DialogDescription>
 			</DialogHeader>
 			{released.length > 0 && (
 				<ul className="max-h-40 space-y-1 overflow-y-auto text-[13px] text-ink-2" aria-label="Released components">
@@ -1053,7 +1102,22 @@ function RemovalSummary({ removal }: { removal: PendingRemoval }) {
 				</ul>
 			)}
 			{connections.length > 0 && <ConnectionList connections={connections} />}
+			<WalkthroughStepList steps={removal.walkthroughSteps} />
 		</>
+	);
+}
+
+/** The Walkthrough steps a removal leaves dangling, grouped by the Walkthrough they belong to. */
+function WalkthroughStepList({ steps }: { steps: AffectedWalkthroughStep[] }) {
+	if (steps.length === 0) return null;
+	return (
+		<ul className="max-h-48 space-y-1 overflow-y-auto text-[13px] text-ink-2" aria-label="Affected Walkthrough steps">
+			{steps.map((step) => (
+				<li key={`${step.walkthroughId}:${step.stepId}`} className="rounded-sm bg-proof-red-wash px-2 py-1 text-proof-red">
+					{step.walkthroughName}: {step.title || "Untitled step"}
+				</li>
+			))}
+		</ul>
 	);
 }
 
