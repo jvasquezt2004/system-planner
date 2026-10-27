@@ -4,12 +4,15 @@ import type { ScenarioRunDriver } from "./scenario-run-driver";
 export type AssistantScenarioRunRequest = {
 	requestId: string;
 	projectId: string;
+	designId: string;
 	scenario: Scenario;
 };
 
 type PendingRequest = {
 	projectId: string;
+	designId: string;
 	scenarioId: string;
+	scenario: Scenario;
 	controller: AbortController;
 	cancelled: boolean;
 	runId: string | null;
@@ -36,17 +39,20 @@ export function createAssistantScenarioRunBridge(options: AssistantScenarioRunBr
 
 	function request(input: AssistantScenarioRunRequest) {
 		const current = options.getWorkspaceState();
-		if (!current || current.project?.id !== input.projectId) {
-			options.complete(input.requestId, null, "The project changed before the Scenario run could start.");
+		if (!current || current.project?.id !== input.projectId || current.activeDesignId !== input.designId) {
+			options.complete(input.requestId, null, "The project or Design changed before the Scenario run could start.");
 			return;
 		}
-		if (!current.scenarios.some(({ id }) => id === input.scenario.id)) {
-			options.complete(input.requestId, null, "The requested Scenario no longer exists in this project.");
+		const scenario = current.scenarios.find(({ id }) => id === input.scenario.id);
+		if (!scenario || (scenario.designId !== undefined && scenario.designId !== input.designId) || scenario.source !== input.scenario.source) {
+			options.complete(input.requestId, null, "The requested Scenario changed or no longer belongs to the target Design.");
 			return;
 		}
 		const entry: PendingRequest = {
 			projectId: input.projectId,
+			designId: input.designId,
 			scenarioId: input.scenario.id,
+			scenario: { ...input.scenario, designId: input.designId },
 			controller: new AbortController(),
 			cancelled: false,
 			runId: null,
@@ -56,8 +62,13 @@ export function createAssistantScenarioRunBridge(options: AssistantScenarioRunBr
 		void options.driver.runQueued(() => {
 			if (entry.cancelled) return null;
 			const latest = options.getWorkspaceState();
-			return latest?.project?.id === entry.projectId
-				? latest.scenarios.find(({ id }) => id === entry.scenarioId) ?? null
+			const latestScenario = latest?.scenarios.find(({ id }) => id === entry.scenarioId);
+			return latest?.project?.id === entry.projectId &&
+				latest.activeDesignId === entry.designId &&
+				latestScenario !== undefined &&
+				latestScenario.source === entry.scenario.source &&
+				(latestScenario.designId === undefined || latestScenario.designId === entry.designId)
+				? entry.scenario
 				: null;
 		}, {
 			signal: entry.controller.signal,
@@ -68,8 +79,8 @@ export function createAssistantScenarioRunBridge(options: AssistantScenarioRunBr
 		}).then((run) => {
 			if (entry.cancelled) return;
 			const latest = options.getWorkspaceState();
-			if (latest?.project?.id !== entry.projectId) {
-				options.complete(input.requestId, null, "The project changed while the Scenario was running.");
+			if (latest?.project?.id !== entry.projectId || latest.activeDesignId !== entry.designId) {
+				options.complete(input.requestId, null, "The project or Design changed while the Scenario was running.");
 			} else if (!run) {
 				options.complete(input.requestId, null, "The Scenario run was cancelled before it finished.");
 			} else {

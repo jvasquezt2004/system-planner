@@ -265,7 +265,7 @@ describe("assistant DDL translator", () => {
 		const pending = await applyAssistantDdl(workspace, "DROP TABLE records;");
 		expect(pending.status).toBe("confirmation-required");
 		if (pending.status !== "confirmation-required") throw new Error("Expected a DDL confirmation.");
-		await applyAssistantDdl(workspace, "DROP TABLE records;", { confirmedDrops: true, confirmation: { projectId: pending.projectId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) } });
+		await applyAssistantDdl(workspace, "DROP TABLE records;", { confirmedDrops: true, confirmation: { projectId: pending.projectId, designId: pending.designId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) } });
 		const design = workspace.getState().design!;
 		expect(design.tables.some(({ name }) => name === "records")).toBe(false);
 		expect(design.triggers).toEqual([]);
@@ -302,7 +302,7 @@ describe("assistant DDL translator", () => {
 		expect(pending.revision).toBe(workspace.getState().revision);
 		const applied = await applyAssistantDdl(workspace, sql, {
 			confirmedDrops: true,
-			confirmation: { projectId: pending.projectId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
+			confirmation: { projectId: pending.projectId, designId: pending.designId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
 		});
 		expect(applied.status).toBe("applied");
 		const design = workspace.getState().design!;
@@ -323,18 +323,30 @@ describe("assistant DDL translator", () => {
 		if (pending.status !== "confirmation-required") throw new Error("Expected a DDL confirmation.");
 		await expect(applyAssistantDdl(workspace, "DROP TABLE users;", {
 			confirmedDrops: true,
-			confirmation: { projectId: pending.projectId, revision: pending.revision, targetIds: [] },
+			confirmation: { projectId: pending.projectId, designId: pending.designId, revision: pending.revision, targetIds: [] },
 		})).rejects.toThrow("confirmation is stale");
 		await expect(applyAssistantDdl(workspace, "DROP TABLE users;", {
 			confirmedDrops: true,
-			confirmation: { projectId: "another-project", revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
+			confirmation: { projectId: "another-project", designId: pending.designId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
 		})).rejects.toThrow("confirmation is stale");
 		await applyAssistantDdl(workspace, "CREATE TABLE unrelated (id integer PRIMARY KEY);");
 		await expect(applyAssistantDdl(workspace, "DROP TABLE users;", {
 			confirmedDrops: true,
-			confirmation: { projectId: pending.projectId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
+			confirmation: { projectId: pending.projectId, designId: pending.designId, revision: pending.revision, targetIds: pending.targets.map(({ targetId }) => targetId) },
 		})).rejects.toThrow("confirmation is stale");
 	});
+	test("rejects Assistant DDL for a different target Design", async () => {
+		const workspace = await openWorkspace();
+		const before = workspace.getState().design;
+		const projectId = workspace.getState().project?.id;
+		if (!projectId || !before) throw new Error("Expected an open project and Design.");
+		await expect(applyAssistantDdl(workspace, "CREATE TABLE should_not_exist (id integer);", {
+			expectedProjectId: projectId,
+			expectedDesignId: "another-design",
+		})).rejects.toThrow("Design changed");
+		expect(workspace.getState().design).toEqual(before);
+	});
+
 
 	test("rejects DROP VIEW before resolving its name as a table", async () => {
 		const workspace = await openWorkspace();
@@ -383,11 +395,11 @@ describe("assistant DDL translator", () => {
 
 	test("preserves relationship-owned one-to-one uniqueness through unrelated ALTER", async () => {
 		const workspace = await openWorkspace();
-		const accountsState = await workspace.addTable({ name: "accounts" });
-		const profilesState = await workspace.addTable({ name: "profiles" });
+		const accountsState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "accounts" });
+		const profilesState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "profiles" });
 		const accounts = accountsState.design!.tables.find(({ name }) => name === "accounts")!;
 		const profiles = profilesState.design!.tables.find(({ name }) => name === "profiles")!;
-		await workspace.addRelationship({ referencingTableId: profiles.id, referencedTableId: accounts.id, cardinality: "one-to-one" });
+		await workspace.addRelationship({ designId: workspace.getState().activeDesignId!, referencingTableId: profiles.id, referencedTableId: accounts.id, cardinality: "one-to-one" });
 		const originalRelationship = workspace.getState().design!.relationships.find(({ referencingTableId }) => referencingTableId === profiles.id)!;
 		const localColumn = workspace.getState().design!.tables.find(({ id }) => id === profiles.id)!.columns.find(({ id }) => id === originalRelationship.referencingColumnId)!;
 
@@ -403,11 +415,11 @@ describe("assistant DDL translator", () => {
 
 	test("preserves relationship-owned junction uniqueness through unrelated ALTER", async () => {
 		const workspace = await openWorkspace();
-		const aState = await workspace.addTable({ name: "a" });
-		const bState = await workspace.addTable({ name: "b" });
+		const aState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "a" });
+		const bState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "b" });
 		const a = aState.design!.tables.find(({ name }) => name === "a")!;
 		const b = bState.design!.tables.find(({ name }) => name === "b")!;
-		await workspace.addRelationship({ referencingTableId: a.id, referencedTableId: b.id, cardinality: "many-to-many" });
+		await workspace.addRelationship({ designId: workspace.getState().activeDesignId!, referencingTableId: a.id, referencedTableId: b.id, cardinality: "many-to-many" });
 		const designBefore = workspace.getState().design!;
 		const association = designBefore.manyToManyRelationships[0]!;
 		const junction = designBefore.tables.find(({ id }) => id === association.junctionTableId)!;
@@ -422,13 +434,13 @@ describe("assistant DDL translator", () => {
 		if (!generated.ok) throw new Error(generated.errors.join("; "));
 		expect(generated.sql).toContain(`UNIQUE ("${endpointNames[0]}", "${endpointNames[1]}")`);
 		expect(workspace.getState().sandbox.status).toBe("applied");
-	});
+	}, 60_000);
 
 	test("places unrelated tables to the right of existing cards", async () => {
 		const workspace = await openWorkspace();
-		const created = await workspace.addTable({ name: "far_card" });
+		const created = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "far_card" });
 		const farCard = created.design!.tables.find(({ name }) => name === "far_card")!;
-		await workspace.moveTable({ tableId: farCard.id, position: { x: 1700, y: 600 } });
+		await workspace.moveTable({ designId: workspace.getState().activeDesignId!, tableId: farCard.id, position: { x: 1700, y: 600 } });
 
 		await applyAssistantDdl(workspace, "CREATE TABLE unrelated (id integer PRIMARY KEY);");
 

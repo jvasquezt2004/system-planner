@@ -16,15 +16,17 @@ async function openWorkspace() {
 	const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 	workspaces.push(workspace);
 	await workspace.createProject({ name: "Scenario fixture" });
-	const withTable = await workspace.addTable({ name: "Books" });
+	const designId = workspace.getState().activeDesignId;
+	if (!designId) throw new Error("Expected an active Design.");
+	const withTable = await workspace.addTable({ designId, name: "Books" });
 	const table = withTable.design?.tables[0];
 	if (!table) throw new Error("Expected Books table.");
-	const title = await workspace.addColumn({ tableId: table.id, name: "title", type: "text" });
+	const title = await workspace.addColumn({ designId, tableId: table.id, name: "title", type: "text" });
 	const column = title.design?.tables[0].columns.find((item) => item.name === "title");
 	if (!column) throw new Error("Expected title column.");
-	await workspace.updateColumn({ tableId: table.id, columnId: column.id, changes: { nullable: false } });
-	const scenario = await workspace.createScenario({ name: "Insert and select" });
-	return { workspace, scenarioId: scenario.scenarios[0].id };
+	await workspace.updateColumn({ designId, tableId: table.id, columnId: column.id, changes: { nullable: false } });
+	const scenario = await workspace.createScenario({ name: "Insert and select", designId });
+	return { workspace, scenarioId: scenario.scenarios[0].id, designId };
 }
 
 function scenarioDriverFor(workspace: DesignWorkspace) {
@@ -84,9 +86,10 @@ afterEach(async () => {
 describe("Scenario runs", () => {
 	test("unknown tables return PostgREST PGRST205 errors and fuzzy-match hints", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		await workspace.addTable({ name: "Customers" });
-		await workspace.addTable({ name: "projects" });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.addTable({ designId, name: "Customers" });
+		await workspace.addTable({ designId, name: "projects" });
+		const { runId } = await workspace.beginScenarioRun({ designId, scenarioId });
 		const supabase = clientFor(workspace, runId);
 
 		const missing = await supabase.from("missing_table").select("*");
@@ -131,7 +134,7 @@ describe("Scenario runs", () => {
 	test("the real supabase-js client inserts, selects by eq, and receives PostgreSQL SQLSTATE errors", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		requireState(workspace.getState());
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ designId: workspace.getState().activeDesignId!, scenarioId });
 		const supabase = clientFor(workspace, runId);
 
 		const inserted = await supabase.from("Books").insert({ title: "The Left Hand of Darkness" }).select("*");
@@ -153,11 +156,12 @@ describe("Scenario runs", () => {
 		if (!books) throw new Error("Expected Books table.");
 		const title = books.columns.find((column) => column.name === "title");
 		if (!title) throw new Error("Expected the Books title column.");
-		const auditState = await workspace.addTable({ name: "Audit" });
+		const designId = workspace.getState().activeDesignId!;
+		const auditState = await workspace.addTable({ designId, name: "Audit" });
 		const audit = auditState.design?.tables.find((table) => table.name === "Audit");
 		if (!audit) throw new Error("Expected Audit table.");
-		await workspace.addColumn({ tableId: audit.id, name: "message", type: "text" });
-		const withFunctions = await workspace.updateFunctions({ functions: [
+		await workspace.addColumn({ designId, tableId: audit.id, name: "message", type: "text" });
+		const withFunctions = await workspace.updateFunctions({ designId, functions: [
 			{
 				id: "normalise-title", name: "normalise_title", arguments: [], returnType: "trigger",
 				returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker",
@@ -170,12 +174,12 @@ describe("Scenario runs", () => {
 			},
 		] });
 		expect(withFunctions.sandbox.status).toBe("applied");
-		await workspace.updateTriggers({ triggers: [
+		await workspace.updateTriggers({ designId, triggers: [
 			{ id: "normalise-before-insert", name: "normalise_before_insert", tableId: books.id, timing: "BEFORE", events: [{ event: "INSERT" }], level: "ROW", functionId: "normalise-title", when: "" },
 			{ id: "audit-after-insert", name: "audit_after_insert", tableId: books.id, timing: "AFTER", events: [{ event: "INSERT" }], level: "ROW", functionId: "audit-title", when: "" },
 			{ id: "audit-title-update", name: "audit_title_update", tableId: books.id, timing: "AFTER", events: [{ event: "UPDATE", columnIds: [title.id] }], level: "ROW", functionId: "audit-title", when: "" },
 		] });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ designId, scenarioId });
 		const supabase = clientFor(workspace, runId);
 		const inserted = await supabase.from("Books").insert({ title: "draft" }).select("*");
 		expect(inserted.error).toBeNull();
@@ -192,8 +196,8 @@ describe("Scenario runs", () => {
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
 		const idColumn = books?.columns.find((column) => column.name === "id");
 		if (!books || !idColumn) throw new Error("Expected Books primary key.");
-		await workspace.updateColumn({ tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		await workspace.updateColumn({ designId: workspace.getState().activeDesignId!, tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
+		const { runId } = await workspace.beginScenarioRun({ designId: workspace.getState().activeDesignId!, scenarioId });
 		const supabase = clientFor(workspace, runId);
 
 		const inserted = await supabase.from("Books").insert([
@@ -227,7 +231,7 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("write status codes match minimal and representation responses through supabase-js", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ designId: workspace.getState().activeDesignId!, scenarioId });
 		const supabase = clientFor(workspace, runId);
 
 		const insertedMinimal = await supabase.from("Books").insert({ title: "Minimal insert" });
@@ -257,7 +261,7 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("single and maybeSingle shape write representations and reject the wrong cardinality", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ designId: workspace.getState().activeDesignId!, scenarioId });
 		const supabase = clientFor(workspace, runId);
 
 		const inserted = await supabase.from("Books").insert({ title: "One" }).select("*").single();
@@ -290,16 +294,17 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
 		if (!books) throw new Error("Expected Books table.");
-		await workspace.renameTable({ tableId: books.id, name: "Table test 1" });
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.renameTable({ designId, tableId: books.id, name: "Table test 1" });
 		const renamed = workspace.getState().design?.tables.find((table) => table.name === "Table test 1");
 		const nameColumn = renamed?.columns.find((column) => column.name === "title");
 		if (!renamed || !nameColumn) throw new Error("Expected renamed table and column.");
-		await workspace.updateColumn({ tableId: renamed.id, columnId: nameColumn.id, changes: { name: "Name" } });
-		const childState = await workspace.addTable({ name: "test 2" });
+		await workspace.updateColumn({ designId, tableId: renamed.id, columnId: nameColumn.id, changes: { name: "Name" } });
+		const childState = await workspace.addTable({ designId, name: "test 2" });
 		const child = childState.design?.tables.find((table) => table.name === "test 2");
 		if (!child) throw new Error("Expected test 2 table.");
-		await workspace.addRelationship({ referencingTableId: child.id, referencedTableId: renamed.id });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		await workspace.addRelationship({ designId, referencingTableId: child.id, referencedTableId: renamed.id });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId });
 		const supabase = clientFor(workspace, runId);
 		const parent = await supabase.from("Table test 1").insert({ Name: "Parent" }).select('"Name"').single();
 		const childRecord = await supabase.from("test 2").insert({ table_test_1_id: 1 }).select("*").single();
@@ -321,8 +326,8 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("empty inserts use database defaults for one row and bulk rows", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		await workspace.addTable({ name: "DefaultRows" });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "DefaultRows" });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		const one = await supabase.from("DefaultRows").insert({}).select("*").single();
 		expect(one.error).toBeNull();
@@ -338,16 +343,16 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
 		if (!books) throw new Error("Expected Books table.");
-		await workspace.updateFunctions({ functions: [{
+		await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!, functions: [{
 			id: "raise-status", name: "raise_status", arguments: [], returnType: "trigger", returnsSet: false,
 			language: "plpgsql", volatility: "volatile", security: "invoker",
 			body: "BEGIN RAISE EXCEPTION 'forced status' USING ERRCODE = NEW.title; END;",
 		}] });
-		await workspace.updateTriggers({ triggers: [{
+		await workspace.updateTriggers({ designId: workspace.getState().activeDesignId!, triggers: [{
 			id: "raise-status-before-insert", name: "raise_status_before_insert", tableId: books.id, timing: "BEFORE",
 			events: [{ event: "INSERT" }], level: "ROW", functionId: "raise-status", when: "",
 		}] });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const cases: [string, number][] = [
 			["22P02", 400], ["42601", 400], ["42P01", 404], ["42883", 404], ["23000", 400],
 			["23503", 409], ["23505", 409], ["23502", 400], ["23514", 400],
@@ -375,9 +380,9 @@ describe("Scenario runs", () => {
 			["payload", "jsonb"],
 			["event_date", "date"],
 		] as const) {
-			await workspace.addColumn({ tableId: table.id, name, type });
+			await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: table.id, name, type });
 		}
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		const values = {
 			title: "Serialized",
@@ -397,25 +402,27 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("bulk inserts honor defaultToNull for heterogeneous record keys", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const itemsState = await workspace.addTable({ name: "Items" });
+		const itemsState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Items" });
 		const items = itemsState.design?.tables.find((table) => table.name === "Items");
 		if (!items) throw new Error("Expected Items table.");
-		const addedA = await workspace.addColumn({ tableId: items.id, name: "a", type: "text" });
+		const addedA = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: items.id, name: "a", type: "text" });
 		const columnA = addedA.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "a");
-		const addedB = await workspace.addColumn({ tableId: items.id, name: "b", type: "text" });
+		const addedB = await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: items.id, name: "b", type: "text" });
 		const columnB = addedB.design?.tables.find((table) => table.id === items.id)?.columns.find((column) => column.name === "b");
 		if (!columnA || !columnB) throw new Error("Expected heterogeneous payload columns.");
 		await workspace.updateColumn({
+			designId: workspace.getState().activeDesignId!,
 			tableId: items.id,
 			columnId: columnA.id,
 			changes: { default: { kind: "literal", literalType: "text", value: "default-a" } },
 		});
 		await workspace.updateColumn({
+			designId: workspace.getState().activeDesignId!,
 			tableId: items.id,
 			columnId: columnB.id,
 			changes: { default: { kind: "literal", literalType: "text", value: "default-b" } },
 		});
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		const useDefaults = await supabase.from("Items").insert([{ a: "first" }, { b: "second" }], { defaultToNull: false }).select("a,b");
 		expect(useDefaults.error).toBeNull();
@@ -431,17 +438,19 @@ describe("Scenario runs", () => {
 		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Relationship writes" });
-		const authorsState = await workspace.addTable({ name: "Authors" });
-		const booksState = await workspace.addTable({ name: "Books" });
+		const designId = workspace.getState().activeDesignId!;
+		const authorsState = await workspace.addTable({ designId, name: "Authors" });
+		const booksState = await workspace.addTable({ designId, name: "Books" });
 		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
 		const books = booksState.design?.tables.find((table) => table.name === "Books");
 		if (!authors || !books) throw new Error("Expected relationship tables.");
 		const authorIdColumn = authors.columns.find((column) => column.name === "id");
 		const bookIdColumn = books.columns.find((column) => column.name === "id");
 		if (!authorIdColumn || !bookIdColumn) throw new Error("Expected primary-key columns.");
-		await workspace.updateColumn({ tableId: authors.id, columnId: authorIdColumn.id, changes: { identity: false } });
-		await workspace.updateColumn({ tableId: books.id, columnId: bookIdColumn.id, changes: { identity: false } });
+		await workspace.updateColumn({ designId, tableId: authors.id, columnId: authorIdColumn.id, changes: { identity: false } });
+		await workspace.updateColumn({ designId, tableId: books.id, columnId: bookIdColumn.id, changes: { identity: false } });
 		const relationshipState = await workspace.addRelationship({
+			designId,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-one",
@@ -451,8 +460,8 @@ describe("Scenario runs", () => {
 		const authorId = relationshipState.design?.tables.find((table) => table.id === books.id)?.columns
 			.find((column) => column.id === relationship.referencingColumnId)?.name;
 		if (!authorId) throw new Error("Expected relationship-owned foreign key column.");
-		const scenario = await workspace.createScenario({ name: "Relationship violations" });
-		const run = await workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0]!.id });
+		const scenario = await workspace.createScenario({ name: "Relationship violations", designId });
+		const run = await workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0]!.id, designId });
 		const supabase = clientFor(workspace, run.runId);
 		const author = await supabase.from("Authors").insert({ id: 1 }).select("id").single();
 		expect(author.error).toBeNull();
@@ -474,12 +483,15 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("the real supabase-js client embeds filtered and limited one-to-many resources", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
-		const authorsState = await workspace.addTable({ name: "Authors" });
+		const designId = workspace.getState().activeDesignId!;
+		const authorsState = await workspace.addTable({ designId, name: "Authors" });
 		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
-		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
-		await workspace.addColumn({ tableId: authors.id, name: "name", type: "text" });
+		if (!authors) throw new Error("Expected Authors table.");
+		await workspace.addColumn({ designId, tableId: authors.id, name: "name", type: "text" });
+		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
+		if (!books) throw new Error("Expected Books table.");
 		const relationState = await workspace.addRelationship({
+			designId,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-many",
@@ -488,7 +500,7 @@ describe("Scenario runs", () => {
 		const authorColumn = relationState.design?.tables.find((table) => table.id === books.id)?.columns
 			.find((column) => column.id === relationship?.referencingColumnId)?.name;
 		if (!relationship || !authorColumn) throw new Error("Expected a foreign-key column.");
-		const run = await workspace.beginScenarioRun({ scenarioId });
+		const run = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, run.runId);
 		const authorInsert = await supabase.from("Authors").insert([{ name: "First" }, { name: "Second" }]);
 		const bookInsert = await supabase.from("Books").insert([
@@ -521,11 +533,13 @@ describe("Scenario runs", () => {
 	test("the real supabase-js client embeds visible many-to-many related records", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((item) => item.name === "Books");
-		const catalogState = await workspace.addTable({ name: "Catalog" });
+		const designId = workspace.getState().activeDesignId!;
+		const catalogState = await workspace.addTable({ designId, name: "Catalog" });
 		const catalog = catalogState.design?.tables.find((item) => item.name === "Catalog");
 		if (!books || !catalog) throw new Error("Expected endpoint tables.");
-		await workspace.addColumn({ tableId: catalog.id, name: "name", type: "text" });
+		await workspace.addColumn({ designId, tableId: catalog.id, name: "name", type: "text" });
 		const relationState = await workspace.addRelationship({
+			designId,
 			referencingTableId: books.id,
 			referencedTableId: catalog.id,
 			cardinality: "many-to-many",
@@ -541,7 +555,7 @@ describe("Scenario runs", () => {
 		}
 		expect(junction.name).toBe("BooksCatalog");
 		expect(junctionColumns).toEqual(["book_id", "catalog_id"]);
-		const run = await workspace.beginScenarioRun({ scenarioId });
+		const run = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, run.runId);
 		const book = await supabase.from("Books").insert({ title: "Related" }).select("id").single();
 		const item = await supabase.from("Catalog").insert({ name: "Reference" }).select("id").single();
@@ -558,12 +572,13 @@ describe("Scenario runs", () => {
 	test("ambiguous embeds return the PostgREST PGRST201 response and foreign-key hints resolve it", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
-		const authorsState = await workspace.addTable({ name: "Authors" });
+		const designId = workspace.getState().activeDesignId!;
+		const authorsState = await workspace.addTable({ designId, name: "Authors" });
 		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
 		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
-		await workspace.addRelationship({ referencingTableId: books.id, referencedTableId: authors.id });
-		await workspace.addRelationship({ referencingTableId: books.id, referencedTableId: authors.id });
-		const run = await workspace.beginScenarioRun({ scenarioId });
+		await workspace.addRelationship({ designId, referencingTableId: books.id, referencedTableId: authors.id });
+		await workspace.addRelationship({ designId, referencingTableId: books.id, referencedTableId: authors.id });
+		const run = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, run.runId);
 		const ambiguous = await supabase.from("Books").select("id,Authors(id)");
 		expect(ambiguous.error?.code).toBe("PGRST201");
@@ -576,12 +591,13 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("finishing captures every table in primary-key order with a 500-row cap and total", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		await workspace.addTable({ name: "EmptyRecords" });
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.addTable({ designId, name: "EmptyRecords" });
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
 		const idColumn = books?.columns.find((column) => column.name === "id");
 		if (!books || !idColumn) throw new Error("Expected Books primary key.");
-		await workspace.updateColumn({ tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		await workspace.updateColumn({ designId, tableId: books.id, columnId: idColumn.id, changes: { identity: false } });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId });
 		const supabase = clientFor(workspace, runId);
 		for (let id = 501; id >= 1; id -= 1) {
 			const inserted = await supabase.from("Books").insert({ id, title: `Book ${id}` }).select("*");
@@ -606,14 +622,14 @@ describe("Scenario runs", () => {
 
 	test("unsupported filters fail loudly and consecutive runs start with empty records", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const first = await workspace.beginScenarioRun({ scenarioId });
+		const first = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const firstClient = clientFor(workspace, first.runId);
 		const unsupported = await firstClient.from("Books").select("*").filter("id", "fts", "temporary");
 		expect(unsupported.error?.code).toBe("PGRST_SANDBOX_UNSUPPORTED");
 		await firstClient.from("Books").insert({ title: "temporary" }).select("*");
 		await workspace.finishScenarioRun({ runId: first.runId, status: "passed", console: [] });
 
-		const second = await workspace.beginScenarioRun({ scenarioId });
+		const second = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const secondClient = clientFor(workspace, second.runId);
 		const empty = await secondClient.from("Books").select("*").eq("id", 1);
 		expect(empty.error).toBeNull();
@@ -625,8 +641,10 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
 		if (!books) throw new Error("Expected Books table.");
-		await workspace.addColumn({ tableId: books.id, name: "owner_id", type: "uuid" });
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.addColumn({ designId, tableId: books.id, name: "owner_id", type: "uuid" });
 		const enabled = await workspace.updatePolicies({
+			designId,
 			tableId: books.id,
 			rowLevelSecurity: true,
 			policies: [{
@@ -640,7 +658,7 @@ describe("Scenario runs", () => {
 			}],
 		});
 		expect(enabled.sandbox.status).toBe("applied");
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const alice = clientFor(workspace, runId, { identity: { role: "authenticated", sub: "11111111-1111-4111-8111-111111111111" } });
 		const bob = clientFor(workspace, runId, { identity: { role: "authenticated", sub: "22222222-2222-4222-8222-222222222222" } });
 		const service = clientFor(workspace, runId, { identity: { role: "service_role" } });
@@ -673,6 +691,7 @@ describe("Scenario runs", () => {
 		const table = workspace.getState().design?.tables.find((candidate) => candidate.name === "Books");
 		if (!table) throw new Error("Expected Books table.");
 		await workspace.updatePolicies({
+			designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			rowLevelSecurity: false,
 			policies: [{
@@ -680,7 +699,7 @@ describe("Scenario runs", () => {
 				mode: "permissive", using: "false", withCheck: "false",
 			}],
 		});
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const anonymous = clientFor(workspace, runId);
 		const inserted = await anonymous.from("Books").insert({ title: "Still public" }).select("*");
 		expect(inserted.error).toBeNull();
@@ -693,13 +712,14 @@ describe("Scenario runs", () => {
 		const workspace = await createDesignWorkspace({ databasePath: join(directory, "design.sqlite") });
 		workspaces.push(workspace);
 		await workspace.createProject({ name: "Unapplied fixture" });
-		const scenario = await workspace.createScenario({ name: "First" });
-		await expect(workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0].id })).rejects.toThrow("Apply a valid design revision");
+		const designId = workspace.getState().activeDesignId!;
+		const scenario = await workspace.createScenario({ designId, name: "First" });
+		await expect(workspace.beginScenarioRun({ designId, scenarioId: scenario.scenarios[0].id })).rejects.toThrow("Apply a valid design revision");
 
-		await workspace.addTable({ name: "Books" });
-		const first = await workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0].id });
-		await expect(workspace.beginScenarioRun({ scenarioId: scenario.scenarios[0].id })).rejects.toThrow("already active");
-		const laterDraft = await workspace.addTable({ name: "Authors" });
+		await workspace.addTable({ designId, name: "Books" });
+		const first = await workspace.beginScenarioRun({ designId, scenarioId: scenario.scenarios[0].id });
+		await expect(workspace.beginScenarioRun({ designId, scenarioId: scenario.scenarios[0].id })).rejects.toThrow("already active");
+		const laterDraft = await workspace.addTable({ designId, name: "Authors" });
 		expect(laterDraft.scenarioRuns[scenario.scenarios[0].id]?.stale).toBe(true);
 		await workspace.finishScenarioRun({ runId: first.runId, status: "passed", console: [] });
 	}, 60_000);
@@ -708,7 +728,7 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const driver = scenarioDriverFor(workspace);
 		const runScenario = async (source: string) => {
-			const result = await driver.run({ id: scenarioId, name: "Expectation fixture", source });
+			const result = await driver.run({ id: scenarioId, name: "Expectation fixture", source, designId: workspace.getState().activeDesignId! });
 			if (!result) throw new Error("Expected the Scenario run to finish.");
 			return { result, run: workspace.getState().scenarioRuns[scenarioId] };
 		};
@@ -765,6 +785,7 @@ describe("Scenario runs", () => {
 		try {
 			const result = await driver.run({
 				id: scenarioId,
+				designId: workspace.getState().activeDesignId!,
 				name: "Identity clients",
 				source: `
 					console.log(typeof fetch, typeof WebSocket, typeof expect);
@@ -810,6 +831,7 @@ describe("Scenario runs", () => {
 		try {
 			const result = await driver.run({
 				id: scenarioId,
+				designId: workspace.getState().activeDesignId!,
 				name: "Worker transport",
 				source: 'const label: string = "worker"; const result = await supabase.from("Books").insert({ title: "from worker" }).select("*"); console.log(label, result.data);',
 			});
@@ -825,7 +847,7 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("the runner permits type-only imports and removes worker network primitives", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
 		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; console: string[] }>();
 		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
@@ -849,7 +871,7 @@ describe("Scenario runs", () => {
 
 	test("the runner refuses runtime imports before executing scenario code", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const worker = new Worker(new URL("../mainview/scenario-worker.ts", import.meta.url), { type: "module" });
 		const { promise, resolve, reject } = Promise.withResolvers<{ status: string; reason: string; console: string[] }>();
 		const timeout = setTimeout(() => reject(new Error("Scenario Worker did not finish")), 10_000);
@@ -877,7 +899,7 @@ describe("Scenario runs", () => {
 
 	test("core reads project columns, apply PostgREST filters and sorting, and paginate", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const responses: Response[] = [];
 		const supabase = clientFor(workspace, runId, { responses });
 		await supabase.from("Books").insert({ title: "Alpha" }).select("*");
@@ -932,7 +954,7 @@ describe("Scenario runs", () => {
 
 	test("single and maybeSingle return object responses with PostgREST cardinality errors", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		await supabase.from("Books").insert({ title: "Only" }).select("*");
 		const one = await supabase.from("Books").select("id,title").eq("id", 1).single();
@@ -953,7 +975,7 @@ describe("Scenario runs", () => {
 
 	test("unsupported read projections are refused and missing embeds return PGRST200", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		const [embedding, alias, jsonPath] = await Promise.all([
 			supabase.from("Books").select("Authors(*)"),
@@ -973,8 +995,10 @@ describe("Scenario runs", () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const table = workspace.getState().design?.tables.find((item) => item.name === "Books");
 		if (!table) throw new Error("Expected Books table.");
-		await workspace.addColumn({ tableId: table.id, name: "owner_id", type: "uuid" });
+		const designId = workspace.getState().activeDesignId!;
+		await workspace.addColumn({ designId, tableId: table.id, name: "owner_id", type: "uuid" });
 		await workspace.updatePolicies({
+			designId,
 			tableId: table.id,
 			rowLevelSecurity: true,
 			policies: [{
@@ -982,7 +1006,7 @@ describe("Scenario runs", () => {
 				mode: "permissive", using: "owner_id = auth.uid()", withCheck: "owner_id = auth.uid()",
 			}],
 		});
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const aliceId = "11111111-1111-4111-8111-111111111111";
 		const alice = clientFor(workspace, runId, { identity: { role: "authenticated", sub: aliceId } });
 		const inserted = await alice.from("Books").insert([
@@ -1040,7 +1064,7 @@ describe("Scenario runs", () => {
 	}, 60_000);
 	test("real supabase-js calls Functions with named arguments, composite and set results, and request identity", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
-		const configured = await workspace.updateFunctions({ functions: [
+		const configured = await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!, functions: [
 			{ id: "sum-ints", name: "sum_ints", arguments: [{ name: "a", type: "integer" }, { name: "b", type: "integer" }], returnType: "integer", returnsSet: false, language: "sql", volatility: "immutable", security: "invoker", body: "SELECT a + b" },
 			{ id: "who-am-i", name: "who_am_i", arguments: [], returnType: "uuid", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: "SELECT auth.uid()" },
 			{ id: "get-book", name: "get_book", arguments: [{ name: "book_id", type: "integer" }], returnType: "Books", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: 'SELECT * FROM "Books" WHERE id = book_id' },
@@ -1050,7 +1074,7 @@ describe("Scenario runs", () => {
 		] });
 		expect(configured.revision).toBeGreaterThan(1);
 		expect(configured.sandbox.status).toBe("applied");
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		await supabase.from("Books").insert({ title: "A" }).select("*");
 		const sum = await supabase.rpc("sum_ints", { a: 20, b: 22 });
@@ -1087,13 +1111,15 @@ describe("Scenario runs", () => {
 	test("RPC composite and set results serialize embedded resources like table reads", async () => {
 		const { workspace, scenarioId } = await openWorkspace();
 		const books = workspace.getState().design?.tables.find((table) => table.name === "Books");
-		const authorsState = await workspace.addTable({ name: "Authors" });
+		const designId = workspace.getState().activeDesignId!;
+		const authorsState = await workspace.addTable({ designId, name: "Authors" });
 		const authors = authorsState.design?.tables.find((table) => table.name === "Authors");
 		if (!books || !authors) throw new Error("Expected Authors and Books tables.");
 		const authorPrimaryKey = authors.columns.find((column) => column.name === "id");
 		if (!authorPrimaryKey) throw new Error("Expected the Authors primary key.");
-		await workspace.updateColumn({ tableId: authors.id, columnId: authorPrimaryKey.id, changes: { identity: false } });
+		await workspace.updateColumn({ designId, tableId: authors.id, columnId: authorPrimaryKey.id, changes: { identity: false } });
 		const relationshipState = await workspace.addRelationship({
+			designId,
 			referencingTableId: books.id,
 			referencedTableId: authors.id,
 			cardinality: "one-to-one",
@@ -1103,8 +1129,7 @@ describe("Scenario runs", () => {
 		const authorColumn = relationshipState.design?.tables.find((table) => table.id === books.id)?.columns
 			.find((column) => column.id === relationship.referencingColumnId);
 		if (!authorColumn) throw new Error("Expected the relationship-owned author column.");
-		const configured = await workspace.updateFunctions({ functions: [
-			{
+		const configured = await workspace.updateFunctions({ designId, functions: [{
 				id: "book-by-id",
 				name: "book_by_id",
 				arguments: [{ name: "book_id", type: "integer" }],
@@ -1128,7 +1153,7 @@ describe("Scenario runs", () => {
 			},
 		] });
 		expect(configured.sandbox.status).toBe("applied");
-		const { runId } = await workspace.beginScenarioRun({ scenarioId });
+		const { runId } = await workspace.beginScenarioRun({ scenarioId, designId: workspace.getState().activeDesignId! });
 		const supabase = clientFor(workspace, runId);
 		const author = await supabase.from("Authors").insert({ id: 1 }).select("id");
 		expect(author.error).toBeNull();

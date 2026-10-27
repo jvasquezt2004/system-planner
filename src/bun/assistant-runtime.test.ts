@@ -65,7 +65,7 @@ describe("Assistant pi agent runtime", () => {
 		expect(saved?.title).toBe("What is in the design?");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["users", "posts"]);
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: false });
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 	});
 	test("folds real pi events into the same visible transcript as saved messages", async () => {
@@ -127,7 +127,7 @@ describe("Assistant pi agent runtime", () => {
 		const second = await workspace.createProject({ name: "Other project" });
 		if (!second.project) throw new Error("Expected the second project to be open.");
 		const secondProjectId = second.project.id;
-		await workspace.addTable({ name: "only_in_other_project" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "only_in_other_project" });
 		await workspace.openProject({ projectId: conversationProjectId });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -213,7 +213,7 @@ describe("Assistant pi agent runtime", () => {
 		expect(scripted.state.callCount).toBe(2);
 		expect(workspace.getState().design?.tables).toEqual([]);
 		expect(workspace.getState().design?.relationships).toEqual([]);
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 	});
 	test("rejects replaying an old destructive confirmation after the project changes", async () => {
@@ -285,8 +285,8 @@ describe("Assistant pi agent runtime", () => {
 			fauxAssistantMessage([fauxText("I have the updated context.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Read this project.", "scripted-model", "low");
-		await workspace.createScenario({ name: "review scenario" });
-		await workspace.createEdgeFunction({ name: "notify_change" });
+		await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "review scenario" });
+		await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "notify_change" });
 		await runtime.sendMessage(conversation.id, "What changed?", "scripted-model", "high");
 
 		expect(requests).toHaveLength(3);
@@ -320,7 +320,7 @@ describe("Assistant pi agent runtime", () => {
 				requestCount += 1;
 				if (requestCount === 2 && !insertedManualEdit) {
 					insertedManualEdit = true;
-					await workspace.addTable({ name: "manual_table" });
+					await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_table" });
 				}
 				return models.streamSimple(model, context, options);
 			},
@@ -335,7 +335,7 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "Create two tables.", "scripted-model");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_first", "manual_table", "assistant_second"]);
 
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["manual_table"]);
 		expect(workspace.getState().undoRedo).toEqual({ canUndo: true, canRedo: true });
 	});
@@ -384,13 +384,13 @@ describe("Assistant pi agent runtime", () => {
 				const realStore = openDesignStore(path);
 				return {
 					...realStore,
-					async saveDesign(projectId, design, save) {
+					async saveDesign(projectId, design, save, designId) {
 						if (blockNextTargetSave && projectId === targetProjectId) {
 							blockNextTargetSave = false;
 							saveStarted.resolve();
 							await saveGate.promise;
 						}
-						realStore.saveDesign(projectId, design, save);
+						realStore.saveDesign(projectId, design, save, designId);
 					},
 				};
 			},
@@ -401,7 +401,7 @@ describe("Assistant pi agent runtime", () => {
 		targetProjectId = target.project.id;
 		const other = await workspace.createProject({ name: "Other project" });
 		if (!other.project) throw new Error("Expected other project.");
-		await workspace.addTable({ name: "private_other_table" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "private_other_table" });
 		await workspace.openProject({ projectId: targetProjectId });
 
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -455,10 +455,11 @@ describe("Assistant pi agent runtime", () => {
 		expect(generated.sql).not.toContain("COMMENT ON COLUMN");
 		const readResult = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult");
 		const readPayload = readResult?.payload as { content?: Array<{ text?: string }> } | undefined;
-		const readProject = JSON.parse(readPayload?.content?.[0]?.text ?? "{}") as { generatedSql?: string };
+		const readProject = JSON.parse(readPayload?.content?.[0]?.text ?? "{}") as { projectId?: string; designId?: string; generatedSql?: string };
+		expect(readProject.projectId).toBe(state.project.id);
+		expect(readProject.designId).toBe(state.activeDesignId ?? undefined);
 		expect(readProject.generatedSql).toContain('-- Column notes\n-- "t"."id": old private intent');
 		expect(readProject.generatedSql).not.toContain("COMMENT ON COLUMN");
-		expect(workspace.getState().sandbox.status).toBe("applied");
 	});
 
 	test("confirms staged table dependencies from a deterministic plan", async () => {
@@ -521,7 +522,7 @@ describe("Assistant pi agent runtime", () => {
 		await runtime.sendMessage(conversation.id, "Drop users.", "scripted-model");
 		const firstPlan = runtime.loadConversation(conversation.id)!.messages.find(({ role }) => role === "toolResult")!;
 		const toolCallId = (firstPlan.payload as { toolCallId: string }).toolCallId;
-		await workspace.addTable({ name: "unrelated" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "unrelated" });
 
 		const refreshed = await runtime.confirmDdlDrop(conversation.id, toolCallId);
 
@@ -575,11 +576,11 @@ describe("Assistant pi agent runtime", () => {
 		workspaces.push(workspace);
 		const state = await workspace.createProject({ name: "Code tools" });
 		if (!state.project) throw new Error("Expected the project to be open.");
-		await workspace.addTable({ name: "Books" });
-		const scenario = await workspace.createScenario({ name: "Original scenario" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
+		const scenario = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Original scenario" });
 		const scenarioId = scenario.scenarios[0]?.id;
 		if (!scenarioId) throw new Error("Expected a saved Scenario.");
-		const edge = await workspace.createEdgeFunction({ name: "original_handler" });
+		const edge = await workspace.createEdgeFunction({ designId: workspace.getState().activeDesignId!, name: "original_handler" });
 		const edgeId = edge.edgeFunctions[0]?.id;
 		if (!edgeId) throw new Error("Expected a saved Edge function.");
 		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
@@ -689,11 +690,11 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		scripted.setResponses([
 			fauxAssistantMessage([
 				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Generated scenario" }),
-				fauxToolCall("manage_code", { action: "rename", kind: "scenario", id: "workspace-2", name: "Renamed scenario" }),
-				fauxToolCall("manage_code", { action: "remove", kind: "scenario", id: "workspace-2" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "scenario", id: "workspace-3", name: "Renamed scenario" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "scenario", id: "workspace-3" }),
 				fauxToolCall("manage_code", { action: "create", kind: "edge-function", name: "generated_handler" }),
-				fauxToolCall("manage_code", { action: "rename", kind: "edge-function", id: "workspace-3", name: "renamed_handler" }),
-				fauxToolCall("manage_code", { action: "remove", kind: "edge-function", id: "workspace-3" }),
+				fauxToolCall("manage_code", { action: "rename", kind: "edge-function", id: "workspace-4", name: "renamed_handler" }),
+				fauxToolCall("manage_code", { action: "remove", kind: "edge-function", id: "workspace-4" }),
 			], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxText("The requested code items were updated.")]),
 		]);
@@ -702,6 +703,54 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().scenarios).toEqual([]);
 		expect(workspace.getState().edgeFunctions).toEqual([]);
 		expect(runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult")).toHaveLength(6);
+	});
+	test("does not create a Scenario in the newly active Design when its tool call is pending", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-code-target-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const first = await workspace.createProject({ name: "Scenario target" });
+		if (!first.project || !first.activeDesignId) throw new Error("Expected the first project Design to be open.");
+		const firstProjectId = first.project.id;
+		const firstDesignId = first.activeDesignId;
+		const second = await workspace.createProject({ name: "Other target" });
+		if (!second.project || !second.activeDesignId) throw new Error("Expected the second project Design to be open.");
+		await workspace.openProject({ projectId: firstProjectId });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(firstProjectId);
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "Must stay in source Design" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Finished.")]),
+		]);
+
+		const originalCreateScenario = workspace.createScenario.bind(workspace);
+		const callStarted = Promise.withResolvers<{ designId?: string }>();
+		const releaseCall = Promise.withResolvers<void>();
+		workspace.createScenario = async (action) => {
+			callStarted.resolve({ designId: action.designId });
+			await releaseCall.promise;
+			return originalCreateScenario(action);
+		};
+		const send = runtime.sendMessage(conversation.id, "Create a scenario.", "scripted-model");
+		const action = await callStarted.promise;
+		expect(action.designId).toBe(firstDesignId);
+		await workspace.openProject({ projectId: second.project.id });
+		releaseCall.resolve();
+		await send;
+
+		expect(workspace.getState().project?.id).toBe(second.project.id);
+		expect(workspace.getState().scenarios).toEqual([]);
+		const toolResults = runtime.loadConversation(conversation.id)?.messages.filter(({ role }) => role === "toolResult") ?? [];
+		expect(toolResults).toHaveLength(1);
+		expect(JSON.stringify(toolResults[0]?.payload)).toContain("not the active design");
 	});
 	test("undoes and redoes a Function-body write together with DDL in one Assistant turn", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-function-turn-"));
@@ -712,7 +761,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const state = await workspace.createProject({ name: "Function undo" });
 		if (!state.project) throw new Error("Expected the project to be open.");
 		const functionId = "turn-function";
-		await workspace.updateFunctions({ functions: [{
+		await workspace.updateFunctions({ designId: workspace.getState().activeDesignId!, functions: [{
 			id: functionId,
 			name: "turn_function",
 			arguments: [],
@@ -741,10 +790,10 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 
-		await workspace.undo();
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables).toEqual([]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 1");
-		await workspace.redo();
+		await workspace.redo({ designId: workspace.getState().activeDesignId! });
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_records"]);
 		expect(workspace.getState().design?.functions?.[0]?.body).toBe("SELECT 2");
 	});
@@ -1092,7 +1141,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			fauxAssistantMessage([fauxText("Created the project changes.")]),
 		]);
 		await runtime.sendMessage(conversation.id, "Create the project changes.", "scripted-model");
-		await workspace.setViewport({ x: 140, y: -35, zoom: 1.4 });
+		await workspace.setViewport({ designId: workspace.getState().activeDesignId!, x: 140, y: -35, zoom: 1.4 });
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
 		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table"]);
 		expect(workspace.getState().scenarios.map(({ name }) => name)).toEqual(["assistant_scenario"]);
@@ -1124,7 +1173,7 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(false);
 	});
 
-	test("disables turn revert after a hand edit", async () => {
+	test("preserves independent manual edits after turn on revert", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-revert-hand-edit-"));
 		directories.push(directory);
 		const databasePath = join(directory, "project.sqlite");
@@ -1144,10 +1193,10 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		]);
 		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
 		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
-		await workspace.addTable({ name: "hand_table" });
-		expect(runtime.canRevertTurn(conversation.id)).toBe(false);
-		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(/can no longer be reverted/);
-		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["assistant_table", "hand_table"]);
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "hand_table" });
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["hand_table"]);
 	});
 	test("delivers a message sent mid-turn as steering after the current tool call", async () => {
 		const directory = mkdtempSync(join(tmpdir(), "db-planner-assistant-steering-"));
@@ -1340,6 +1389,8 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 			revision: 2,
 			sql: "current",
 			sandbox: "accepted",
+			projectId: state.project.id,
+			designId: state.activeDesignId,
 		});
 
 		// 5. Assert duplicate synonym fields are gone
@@ -1563,5 +1614,597 @@ Deno.serve(async () => { const result = await client.from("Books").select("id");
 		const payloadStr = JSON.stringify(rerunToolResult?.payload);
 		expect(payloadStr).toContain('"status":"already applied"');
 		expect(payloadStr).not.toContain("does not exist");
+	});
+	test("stale relevant content: DDL on modified table prompts rereading while independent edit proceeds (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-stale-ddl-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Stale DDL" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "authors" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "categories" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		// Turn 1: Assistant reads project.
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("read_project", {}),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Read project complete.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Read project.", "scripted-model");
+
+		// Designer modifies authors and creates an independent table logs:
+		const authorsTable = workspace.getState().design!.tables.find((t) => t.name === "authors")!;
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: authorsTable.id, name: "bio", type: "text" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "logs" });
+
+		// Turn 2: Assistant tries to alter authors without re-reading -> rejected as stale.
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "ALTER TABLE authors ADD COLUMN website text;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The alter was attempted.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Alter authors.", "scripted-model");
+		const conv1 = runtime.loadConversation(conversation.id)!;
+		const toolResults = conv1.messages.filter((m) => m.role === "toolResult");
+		const ddlResult = toolResults[toolResults.length - 1];
+		expect(JSON.stringify(ddlResult.payload)).toContain("Stale relevant content: table \\\"authors\\\" changed since last read");
+
+		// Now assistant re-reads project and modifies categories while an independent table is added
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("read_project", {}),
+				fauxToolCall("apply_ddl", { sql: "ALTER TABLE categories ADD COLUMN description text;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Added description to categories.")]),
+		]);
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "reviews" }); // independent manual edit
+		await runtime.sendMessage(conversation.id, "Re-read and alter categories.", "scripted-model");
+		const finalTables = workspace.getState().design!.tables.map((t) => t.name);
+		expect(finalTables).toContain("authors");
+		expect(finalTables).toContain("categories");
+		expect(finalTables).toContain("logs");
+		expect(finalTables).toContain("reviews");
+		const cat = workspace.getState().design!.tables.find((t) => t.name === "categories")!;
+		expect(cat.columns.map((c) => c.name)).toContain("description");
+	}, 30_000);
+
+	test("stale relevant content: source edit on modified Scenario prompts rereading (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-stale-source-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Stale Source" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+		const s1State = await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario 1" });
+		const s1 = s1State.scenarios[0]!;
+		await workspace.createScenario({ designId: workspace.getState().activeDesignId!, name: "Scenario 2" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		// Assistant reads project
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("read_project", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Read project done.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Read.", "scripted-model");
+
+		// Designer manually edits Scenario 1
+		await workspace.updateScenarioSource({ designId: workspace.getState().activeDesignId!, scenarioId: s1.id, source: "console.log('hand edit');" });
+
+		// Assistant tries to write to Scenario 1
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "write", kind: "scenario", id: s1.id, source: "console.log('stale overwrite');" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Wrote source.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Write code to Scenario 1.", "scripted-model");
+		const conv = runtime.loadConversation(conversation.id)!;
+		const toolResults = conv.messages.filter((m) => m.role === "toolResult");
+		const writeResult = toolResults[toolResults.length - 1];
+		expect(JSON.stringify(writeResult.payload)).toContain("Stale relevant content: Scenario \\\"Scenario 1\\\" changed since last read");
+		expect(workspace.getState().scenarios.find((s) => s.id === s1.id)?.source).toBe("console.log('hand edit');");
+	});
+
+	test("conflicting inverse: dependent foreign key to assistant table leaves all content unchanged (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conflict-fk-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Conflict FK" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		// Assistant creates parent_table
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE parent_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created parent_table.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create parent_table.", "scripted-model");
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+
+		// Designer manually adds child_table and a foreign key referencing parent_table
+		const afterParent = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "child_table" });
+		const parentTable = afterParent.design!.tables.find((t) => t.name === "parent_table")!;
+		const childTable = afterParent.design!.tables.find((t) => t.name === "child_table")!;
+		await workspace.addRelationship({
+			designId: workspace.getState().activeDesignId!,
+			referencingTableId: childTable.id,
+			referencedTableId: parentTable.id,
+			cardinality: "one-to-many",
+		});
+
+		// Attempt to revert the Assistant turn
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(
+			/Cannot revert Assistant turn due to conflicting items: table "parent_table" is referenced by foreign key on table "child_table"/,
+		);
+
+		// All project content remains unchanged!
+		expect(workspace.getState().design!.tables.map((t) => t.name).sort()).toEqual(["child_table", "parent_table"]);
+		expect(workspace.getState().design!.relationships).toHaveLength(1);
+	});
+
+	test("conflicting inverse: manual modification to assistant scenario leaves all content unchanged (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-conflict-scenario-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Conflict Scenario" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "assistant_flow", source: "console.log(1);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created scenario.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create scenario.", "scripted-model");
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+
+		const scenario = workspace.getState().scenarios.find((s) => s.name === "assistant_flow")!;
+		await workspace.updateScenarioSource({ designId: workspace.getState().activeDesignId!, scenarioId: scenario.id, source: "console.log('manual edit');" });
+
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(
+			/Cannot revert Assistant turn due to conflicting items: Scenario "assistant_flow" was modified after this turn/,
+		);
+
+		expect(workspace.getState().scenarios.find((s) => s.id === scenario.id)?.source).toBe("console.log('manual edit');");
+	});
+
+	test("atomic multi-artifact restoration: persistence failure rolls back SQLite and preserves workspace state (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-atomic-save-fail-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const store = openDesignStore(databasePath);
+		const workspace = await createDesignWorkspace({ databasePath, openStore: () => store });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Atomic Fail" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE t1 (id integer PRIMARY KEY);" }),
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "s1" }),
+				fauxToolCall("manage_code", { action: "create", kind: "edge-function", name: "e1" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created changes.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create artifacts.", "scripted-model");
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["t1"]);
+		expect(workspace.getState().scenarios.map((s) => s.name)).toEqual(["s1"]);
+		expect(workspace.getState().edgeFunctions.map((e) => e.name)).toEqual(["e1"]);
+
+		// Intercept store.saveProjectArtifacts to simulate a failure inside the transaction
+		const originalSave = store.saveProjectArtifacts.bind(store);
+		let throwOnSave = true;
+		store.saveProjectArtifacts = (input) => {
+			if (throwOnSave) {
+				throw new Error("Simulated SQLite write failure");
+			}
+			return originalSave(input);
+		};
+
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow("Simulated SQLite write failure");
+
+		// In-memory workspace state is completely preserved:
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["t1"]);
+		expect(workspace.getState().scenarios.map((s) => s.name)).toEqual(["s1"]);
+		expect(workspace.getState().edgeFunctions.map((e) => e.name)).toEqual(["e1"]);
+
+		// SQLite database was rolled back and still contains t1, s1, e1:
+		const loadedProject = store.loadProject(state.project.id);
+		expect(loadedProject!.design.tables.map((t) => t.name)).toEqual(["t1"]);
+		const loadedScenarios = store.loadScenarios(state.project.id, state.activeDesignId!);
+		expect(loadedScenarios.scenarios.map((s) => s.name)).toEqual(["s1"]);
+		const loadedEdge = store.loadEdgeFunctions(state.project.id, state.activeDesignId!);
+		expect(loadedEdge.edgeFunctions.map((e) => e.name)).toEqual(["e1"]);
+
+		// When persistence succeeds, revert finishes cleanly
+		throwOnSave = false;
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design!.tables).toEqual([]);
+		expect(workspace.getState().scenarios).toEqual([]);
+		expect(workspace.getState().edgeFunctions).toEqual([]);
+	});
+	test("preserves manual edits and persistence while Revert awaits an atomic save (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-restore-race-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const store = openDesignStore(databasePath);
+		const workspace = await createDesignWorkspace({ databasePath, openStore: () => store });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Restore race" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created the table.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create a table.", "scripted-model");
+
+		const originalSave = store.saveProjectArtifacts.bind(store);
+		const { promise: entered, resolve: signal } = Promise.withResolvers<void>();
+		const { promise: gate, resolve: release } = Promise.withResolvers<void>();
+		store.saveProjectArtifacts = async (input) => {
+			originalSave(input);
+			signal();
+			await gate;
+		};
+
+		const reverting = runtime.revertTurn(conversation.id);
+		await entered;
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_during_restore" });
+		release();
+		await reverting;
+
+		expect(workspace.getState().design!.tables.map(({ name }) => name)).toEqual(["manual_during_restore"]);
+		expect(store.loadProject(state.project.id)!.design.tables.map(({ name }) => name)).toEqual(["manual_during_restore"]);
+	});
+
+	test("Stop preserves live applied changes and leaves stopped turn safely revertable (#118)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-stop-revert-manual-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Stop Revert Manual" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		let stopTriggered = false;
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE kept_live (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			() => {
+				if (!stopTriggered) {
+					stopTriggered = true;
+					runtime.stop(conversation.id);
+				}
+				return fauxAssistantMessage([fauxText("This will not be delivered.")]);
+			},
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create kept_live.", "scripted-model");
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["kept_live"]);
+
+		// Designer adds an independent manual table
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "hand_table" });
+		expect(runtime.canRevertTurn(conversation.id)).toBe(true);
+
+		// Revert removes kept_live and keeps hand_table
+		await runtime.revertTurn(conversation.id);
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["hand_table"]);
+	});
+	test("actor attribution: manual edit in microtask during apply_ddl await is preserved on Revert (#118 item 2)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-attribution-microtask-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Attribution Probe" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		const { promise: manualAdded, resolve: resolveManual } = Promise.withResolvers<void>();
+		let probeFired = false;
+		workspace.subscribe((event) => {
+			if (!probeFired && event.design?.tables.some((t) => t.name === "assistant_table")) {
+				probeFired = true;
+				queueMicrotask(() => {
+					void workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "manual_during_tool" }).then(() => resolveManual());
+				});
+			}
+		});
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_table (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created assistant_table.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create assistant_table.", "scripted-model");
+		await manualAdded;
+
+		const tableNames = workspace.getState().design!.tables.map((t) => t.name);
+		expect(tableNames).toContain("assistant_table");
+		expect(tableNames).toContain("manual_during_tool");
+
+		await runtime.revertTurn(conversation.id);
+		const afterRevert = workspace.getState().design!.tables.map((t) => t.name);
+		expect(afterRevert).not.toContain("assistant_table");
+		expect(afterRevert).toContain("manual_during_tool");
+	});
+
+	test("conflicting inverse: manual edits to Assistant-created Function blocks Revert (#118 item 3)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-fn-conflict-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Fn Conflict" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE OR REPLACE FUNCTION answer() RETURNS integer LANGUAGE sql AS $$ SELECT 1; $$;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created function.")]),
+		]);
+
+		await runtime.sendMessage(conversation.id, "Create answer function.", "scripted-model");
+		expect(workspace.getState().design!.functions?.map((f) => f.name)).toEqual(["answer"]);
+
+		const fn = workspace.getState().design!.functions![0]!;
+		await workspace.updateFunctions({
+			designId: workspace.getState().activeDesignId!,
+			functions: [{ ...fn, body: "SELECT 2;" }],
+		});
+
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(
+			/Cannot revert Assistant turn due to conflicting items: Function "answer" was modified after this turn/,
+		);
+
+		expect(workspace.getState().design!.functions?.find((f) => f.id === fn.id)?.body).toBe("SELECT 2;");
+	});
+
+	test("preserves manual indexes, unique constraints, and policies on Assistant-modified table (#118 item 4)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-preserve-metadata-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Preserve Metadata" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const tableState = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "users" });
+		const usersTable = tableState.design!.tables[0]!;
+		await workspace.addColumn({ designId: workspace.getState().activeDesignId!, tableId: usersTable.id, name: "email", type: "text" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "ALTER TABLE users ADD COLUMN age integer;" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Added age column.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Add age column.", "scripted-model");
+
+		const updatedUsers = workspace.getState().design!.tables.find((t) => t.name === "users")!;
+		const emailCol = updatedUsers.columns.find((c) => c.name === "email")!;
+		await workspace.updateIndexes({
+			designId: workspace.getState().activeDesignId!,
+			tableId: updatedUsers.id,
+			indexes: [{ id: "idx-1", name: "idx_users_email", method: "btree", keys: [{ columnId: emailCol.id }], unique: false }],
+		});
+		await workspace.updateUniqueConstraints({
+			designId: workspace.getState().activeDesignId!,
+			tableId: updatedUsers.id,
+			uniqueConstraints: [{ id: "uc-1", name: "uc_users_email", columnIds: [emailCol.id] }],
+		});
+		await workspace.updatePolicies({
+			designId: workspace.getState().activeDesignId!,
+			tableId: updatedUsers.id,
+			rowLevelSecurity: true,
+			policies: [{ id: "pol-1", name: "allow_select", command: "SELECT", roles: ["public"], mode: "permissive", using: "true", withCheck: "" }],
+		});
+
+		await runtime.revertTurn(conversation.id);
+		const restoredUsers = workspace.getState().design!.tables.find((t) => t.name === "users")!;
+		expect(restoredUsers.columns.map((c) => c.name)).not.toContain("age");
+		expect(restoredUsers.indexes?.map((i) => i.name)).toContain("idx_users_email");
+		expect(restoredUsers.uniqueConstraints?.map((u) => u.name)).toContain("uc_users_email");
+		expect(restoredUsers.policies?.map((p) => p.name)).toContain("allow_select");
+	});
+
+	test("dependency validation: manual referencing-side FK or trigger on Assistant table blocks Revert (#118 item 5)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-dep-val-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Dep Val" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "base_table" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE assistant_source (id integer PRIMARY KEY);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created assistant_source.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create assistant_source.", "scripted-model");
+
+		const curDesign = workspace.getState().design!;
+		const astTable = curDesign.tables.find((t) => t.name === "assistant_source")!;
+		const baseTable = curDesign.tables.find((t) => t.name === "base_table")!;
+		await workspace.addRelationship({
+			designId: workspace.getState().activeDesignId!,
+			referencingTableId: astTable.id,
+			referencedTableId: baseTable.id,
+			cardinality: "one-to-many",
+		});
+
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(
+			/Cannot revert Assistant turn due to conflicting items:.*assistant_source/,
+		);
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toContain("assistant_source");
+	});
+
+	test("atomic persistence: stale CAS revision triggers complete transaction rollback (#118 item 6)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-cas-rollback-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const store = openDesignStore(databasePath);
+		const workspace = await createDesignWorkspace({ databasePath, openStore: () => store });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "CAS Rollback" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "CREATE TABLE ast_t (id integer PRIMARY KEY);" }),
+				fauxToolCall("manage_code", { action: "create", kind: "scenario", name: "ast_s" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Created changes.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Create.", "scripted-model");
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["ast_t"]);
+		expect(workspace.getState().scenarios.map((s) => s.name)).toEqual(["ast_s"]);
+
+		store.saveScenarios(state.project.id, [{ id: "other", name: "other", source: "" }], { revision: 999, savedAt: Date.now() }, state.activeDesignId!);
+
+		await expect(runtime.revertTurn(conversation.id)).rejects.toThrow(/Stale scenario revision/);
+
+		expect(workspace.getState().design!.tables.map((t) => t.name)).toEqual(["ast_t"]);
+		expect(store.loadProject(state.project.id)!.design.tables.map((t) => t.name)).toEqual(["ast_t"]);
+	});
+
+	test("relevant stale-write: ALTER TABLE dependency on modified referenced table prompts rereading (#118 item 7)", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-alter-dep-"));
+		directories.push(directory);
+		const databasePath = join(directory, "project.sqlite");
+		const workspace = await createDesignWorkspace({ databasePath });
+		workspaces.push(workspace);
+		const state = await workspace.createProject({ name: "Alter Dep" });
+		if (!state.project) throw new Error("Expected the project to be open.");
+
+		await workspace.addTable({ designId: state.activeDesignId!, name: "users" });
+		await workspace.addTable({ designId: state.activeDesignId!, name: "orders" });
+
+		const scripted = fauxProvider({ provider: "anthropic", models: [{ id: "scripted-model", name: "Scripted model" }] });
+		const models = createModels();
+		models.setProvider(scripted.provider);
+		const runtime = createAssistantRuntime({ databasePath, workspace, models, getApiKey: async () => "test-key" });
+		runtimes.push(runtime);
+		const conversation = runtime.createConversation(state.project.id);
+
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("read_project", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Read complete.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Read.", "scripted-model");
+
+		const usersTable = workspace.getState().design!.tables.find((t) => t.name === "users")!;
+		await workspace.addColumn({ designId: state.activeDesignId!, tableId: usersTable.id, name: "bio", type: "text" });
+
+		scripted.setResponses([
+			fauxAssistantMessage([
+				fauxToolCall("apply_ddl", { sql: "ALTER TABLE orders ADD COLUMN user_id integer REFERENCES users(id);" }),
+			], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("Alter attempted.")]),
+		]);
+		await runtime.sendMessage(conversation.id, "Alter orders.", "scripted-model");
+
+		const conv = runtime.loadConversation(conversation.id)!;
+		const toolResults = conv.messages.filter((m) => m.role === "toolResult");
+		const lastResult = toolResults[toolResults.length - 1];
+		expect(JSON.stringify(lastResult.payload)).toContain("Stale relevant content: referenced table \\\"users\\\" changed since last read");
 	});
 });

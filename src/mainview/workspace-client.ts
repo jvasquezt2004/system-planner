@@ -41,7 +41,7 @@ import type { Scenario } from "../shared/design";
 const listeners = new Set<(state: WorkspaceState) => void>();
 const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
 const assistantOAuthListeners = new Set<(event: { providerId: string; event: unknown }) => void>();
-const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; scenario: Scenario }) => void>();
+const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; designId: string; scenario: Scenario }) => void>();
 const assistantScenarioRunCancelListeners = new Set<(requestId: string) => void>();
 let latestState: WorkspaceState | null = null;
 
@@ -96,16 +96,16 @@ export const workspaceClient = {
 	createProject(name: string): Promise<WorkspaceState> {
 		return rpc.request.createProject({ name });
 	},
-	createScenario(request: { name: string }): Promise<WorkspaceState> {
+	createScenario(request: { name: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.createScenario(request);
 	},
-	renameScenario(request: { scenarioId: string; name: string }): Promise<WorkspaceState> {
+	renameScenario(request: { scenarioId: string; name: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.renameScenario(request);
 	},
-	removeScenario(request: { scenarioId: string }): Promise<WorkspaceState> {
+	removeScenario(request: { scenarioId: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.removeScenario(request);
 	},
-	updateScenarioSource(request: { scenarioId: string; source: string }): Promise<WorkspaceState> {
+	updateScenarioSource(request: { scenarioId: string; source: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.updateScenarioSource(request);
 	},
 	createEdgeFunction(action: CreateEdgeFunctionAction): Promise<WorkspaceState> {
@@ -120,8 +120,8 @@ export const workspaceClient = {
 	updateEdgeFunctionSource(action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState> {
 		return rpc.request.updateEdgeFunctionSource(action);
 	},
-	beginScenarioRun(scenarioId: string) {
-		return rpc.request.beginScenarioRun({ scenarioId });
+	beginScenarioRun(action: { scenarioId: string; designId: string }) {
+		return rpc.request.beginScenarioRun(action);
 	},
 	handleSandboxApiRequest(runId: string, request: SandboxApiRequest) {
 		return rpc.request.handleSandboxApiRequest({ runId, request });
@@ -132,73 +132,63 @@ export const workspaceClient = {
 	openProject(projectId: string): Promise<WorkspaceState> {
 		return rpc.request.openProject({ projectId });
 	},
-	undo(): Promise<WorkspaceState> {
-		return rpc.request.undo({});
+	undo(designId: string): Promise<WorkspaceState> {
+		return rpc.request.undo({ designId });
 	},
-	redo(): Promise<WorkspaceState> {
-		return rpc.request.redo({});
+	redo(designId: string): Promise<WorkspaceState> {
+		return rpc.request.redo({ designId });
 	},
-	addTable(name: string, position?: CanvasPoint): Promise<WorkspaceState> {
-		return rpc.request.addTable({ name, position });
+	addTable(designId: string, name: string, position?: CanvasPoint): Promise<WorkspaceState> {
+		return rpc.request.addTable({ designId, name, position });
 	},
-	renameTable(tableId: string, name: string): Promise<WorkspaceState> {
-		return rpc.request.renameTable({ tableId, name });
+	renameTable(designId: string, tableId: string, name: string): Promise<WorkspaceState> {
+		return rpc.request.renameTable({ designId, tableId, name });
 	},
-	removeTable(tableId: string, confirmed?: boolean): Promise<WorkspaceState> {
-		return rpc.request.removeTable({ tableId, confirmed });
+	removeTable(designId: string, tableId: string, confirmed?: boolean): Promise<WorkspaceState> {
+		return rpc.request.removeTable({ designId, tableId, confirmed });
 	},
-	moveTable(tableId: string, position: CanvasPoint): Promise<WorkspaceState> {
-		return rpc.request.moveTable({ tableId, position });
+	moveTable(designId: string, tableId: string, position: CanvasPoint): Promise<WorkspaceState> {
+		return rpc.request.moveTable({ designId, tableId, position });
 	},
-	addColumn(
-		tableId: string,
-		name?: string,
-		type?: ColumnType,
-	): Promise<WorkspaceState> {
-		return rpc.request.addColumn({ tableId, name, type });
+	addColumn(designId: string, tableId: string, name?: string, type?: ColumnType): Promise<WorkspaceState> {
+		return rpc.request.addColumn({ designId, tableId, name, type });
 	},
-	updateColumn(
-		tableId: string,
-		columnId: string,
-		changes: ColumnChanges,
-	): Promise<WorkspaceState> {
-		return rpc.request.updateColumn({ tableId, columnId, changes });
+	updateColumn(designId: string, tableId: string, columnId: string, changes: ColumnChanges): Promise<WorkspaceState> {
+		return rpc.request.updateColumn({ designId, tableId, columnId, changes });
 	},
-	updateIndexes(tableId: string, indexes: DesignIndex[]): Promise<WorkspaceState> {
-		return rpc.request.updateIndexes({ tableId, indexes });
+	updateIndexes(designId: string, tableId: string, indexes: DesignIndex[]): Promise<WorkspaceState> {
+		return rpc.request.updateIndexes({ designId, tableId, indexes });
 	},
-	updateEnumTypes(enumTypes: DesignEnumType[]): Promise<WorkspaceState> {
-		return rpc.request.updateEnumTypes({ enumTypes });
+	updateEnumTypes(designId: string, enumTypes: DesignEnumType[]): Promise<WorkspaceState> {
+		return rpc.request.updateEnumTypes({ designId, enumTypes });
 	},
-	updateFunctions(functions: DesignFunction[]): Promise<WorkspaceState> {
-		return rpc.request.updateFunctions({ functions });
+	updateFunctions(designId: string, functions: DesignFunction[]): Promise<WorkspaceState> {
+		return rpc.request.updateFunctions({ designId, functions });
 	},
-	updateTriggers(triggers: DesignTrigger[]): Promise<WorkspaceState> {
-		return rpc.request.updateTriggers({ triggers });
+	updateTriggers(designId: string, triggers: DesignTrigger[]): Promise<WorkspaceState> {
+		return rpc.request.updateTriggers({ designId, triggers });
 	},
 	removeFunction(action: RemoveFunctionAction): Promise<WorkspaceState> {
 		return rpc.request.removeFunction(action);
 	},
-	updateUniqueConstraints(tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
-		return rpc.request.updateUniqueConstraints({ tableId, uniqueConstraints });
+	updateUniqueConstraints(designId: string, tableId: string, uniqueConstraints: DesignUniqueConstraint[]): Promise<WorkspaceState> {
+		return rpc.request.updateUniqueConstraints({ designId, tableId, uniqueConstraints });
 	},
-	updatePolicies(tableId: string, rowLevelSecurity: boolean, policies: DesignPolicy[]): Promise<WorkspaceState> {
-		return rpc.request.updatePolicies({ tableId, rowLevelSecurity, policies });
+	updatePolicies(designId: string, tableId: string, rowLevelSecurity: boolean, policies: DesignPolicy[]): Promise<WorkspaceState> {
+		return rpc.request.updatePolicies({ designId, tableId, rowLevelSecurity, policies });
 	},
-	removeColumn(
-		tableId: string,
-		columnId: string,
-		confirmed?: boolean,
-	): Promise<WorkspaceState> {
-		return rpc.request.removeColumn({ tableId, columnId, confirmed });
+	removeColumn(designId: string, tableId: string, columnId: string, confirmed?: boolean): Promise<WorkspaceState> {
+		return rpc.request.removeColumn({ designId, tableId, columnId, confirmed });
 	},
 	addRelationship(
+		designId: string,
 		referencingTableId: string,
 		referencedTableId: string,
 		cardinality?: RelationshipCreationCardinality,
 		junctionPosition?: CanvasPoint,
 	): Promise<WorkspaceState> {
 		return rpc.request.addRelationship({
+			designId,
 			referencingTableId,
 			referencedTableId,
 			cardinality,
@@ -206,19 +196,20 @@ export const workspaceClient = {
 		});
 	},
 	updateRelationship(
+		designId: string,
 		relationshipId: string,
 		changes: { required?: boolean; cardinality?: RelationshipCardinality; onDelete?: ReferentialAction; onUpdate?: ReferentialAction },
 	): Promise<WorkspaceState> {
-		return rpc.request.updateRelationship({ relationshipId, ...changes });
+		return rpc.request.updateRelationship({ designId, relationshipId, ...changes });
 	},
-	removeRelationship(relationshipId: string): Promise<WorkspaceState> {
-		return rpc.request.removeRelationship({ relationshipId });
+	removeRelationship(designId: string, relationshipId: string): Promise<WorkspaceState> {
+		return rpc.request.removeRelationship({ designId, relationshipId });
 	},
 	describeRemoval(target: RemovalTarget): Promise<RemovalPlan> {
 		return rpc.request.describeRemoval(target);
 	},
-	setViewport(viewport: CanvasViewport): Promise<WorkspaceState> {
-		return rpc.request.setViewport(viewport);
+	setViewport(designId: string, viewport: CanvasViewport): Promise<WorkspaceState> {
+		return rpc.request.setViewport({ ...viewport, designId });
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });
@@ -315,7 +306,7 @@ export const workspaceClient = {
 		assistantListeners.add(listener);
 		return () => { assistantListeners.delete(listener); };
 	},
-	subscribeAssistantScenarioRuns(listener: (request: { requestId: string; projectId: string; scenario: Scenario }) => void) {
+	subscribeAssistantScenarioRuns(listener: (request: { requestId: string; projectId: string; designId: string; scenario: Scenario }) => void) {
 		assistantScenarioRunListeners.add(listener);
 		return () => { assistantScenarioRunListeners.delete(listener); };
 	},

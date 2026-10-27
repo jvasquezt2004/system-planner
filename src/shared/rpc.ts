@@ -82,15 +82,15 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			renameEdgeFunction: { params: RenameEdgeFunctionAction; response: WorkspaceState };
 			removeEdgeFunction: { params: RemoveEdgeFunctionAction; response: WorkspaceState };
 			updateEdgeFunctionSource: { params: UpdateEdgeFunctionSourceAction; response: WorkspaceState };
-			beginScenarioRun: { params: { scenarioId: string; designId?: string }; response: { runId: string; state: WorkspaceState } };
+			beginScenarioRun: { params: { scenarioId: string; designId: string }; response: { runId: string; state: WorkspaceState } };
 			handleSandboxApiRequest: { params: { runId: string; request: SandboxApiRequest }; response: SandboxApiResponse };
 			finishScenarioRun: { params: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };
 			undo: {
-				params: Record<string, never>;
+				params: { designId: string };
 				response: WorkspaceState;
 			};
 			redo: {
-				params: Record<string, never>;
+				params: { designId: string };
 				response: WorkspaceState;
 			};
 			addTable: {
@@ -203,7 +203,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 		messages: {
 			workspaceState: WorkspaceState;
 			sqlPreviewExportCompleted: { requestId: string; result: SqlPreviewExportResult };
-			assistantScenarioRunRequest: { requestId: string; projectId: string; designId?: string; scenario: Scenario };
+			assistantScenarioRunRequest: { requestId: string; projectId: string; designId: string; scenario: Scenario };
 			assistantScenarioRunCancel: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };
 			assistantOAuthEvent: { providerId: string; event: unknown };

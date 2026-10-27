@@ -1,3 +1,5 @@
+import { scenarioDatabaseTypeUri } from "../shared/scenario-types";
+
 import { loader } from "@monaco-editor/react";
 import * as monaco from "monaco-editor";
 import EditorWorker from "../../node_modules/monaco-editor/esm/vs/editor/editor.worker.js?worker";
@@ -19,12 +21,18 @@ const BUNDLER_MODULE_RESOLUTION = 100 as monaco.typescript.ModuleResolutionKind;
 const FORCE_MODULE_DETECTION = 3;
 
 
+const extraLibraryDisposables: monaco.IDisposable[] = [];
+
 /**
- * Configures the TypeScript language service shared by the Scenario and Edge
- * function editors. Monaco 0.57 exposes it as the top-level `typescript`
- * namespace; `languages.typescript` is only a deprecated, empty stub at runtime.
+ * Configures the shared TypeScript service for one executable artifact's
+ * Design. Monaco's global declarations are replaced, not accumulated, so two
+ * Designs never merge incompatible `Database` interfaces.
  */
-export function configureTypeScript(paths: Record<string, string[]>, libraries: Array<[content: string, uri: string]>) {
+export function configureTypeScript(
+	designId: string,
+	paths: Record<string, string[]>,
+	libraries: Array<[content: string, uri: string]>,
+) {
 	const { typescriptDefaults, ScriptTarget, ModuleKind } = monaco.typescript;
 	typescriptDefaults.setCompilerOptions({
 		target: ScriptTarget.ESNext,
@@ -36,5 +44,11 @@ export function configureTypeScript(paths: Record<string, string[]>, libraries: 
 		strict: true,
 		noEmit: true,
 	});
-	for (const [content, uri] of libraries) typescriptDefaults.addExtraLib(content, uri);
+	if (!libraries.some(([, uri]) => uri === scenarioDatabaseTypeUri(designId))) {
+		throw new Error("TypeScript declarations do not match the target database Design.");
+	}
+	for (const disposable of extraLibraryDisposables.splice(0)) disposable.dispose();
+	for (const [content, uri] of libraries) {
+		extraLibraryDisposables.push(typescriptDefaults.addExtraLib(content, uri));
+	}
 }

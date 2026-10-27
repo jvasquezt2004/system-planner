@@ -38,10 +38,10 @@ export type Scenario = { id: string; name: string; source: string; designId?: st
 export type EdgeFunction = { id: string; name: string; source: string; designId?: string };
 
 export type EdgeFunctionSaveState = ScenarioSaveState;
-export type CreateEdgeFunctionAction = { name: string; designId?: string };
-export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string; designId?: string };
-export type RemoveEdgeFunctionAction = { edgeFunctionId: string; designId?: string };
-export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string; designId?: string };
+export type CreateEdgeFunctionAction = { name: string; designId: string };
+export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string; designId: string };
+export type RemoveEdgeFunctionAction = { edgeFunctionId: string; designId: string };
+export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string; designId: string };
 
 export type ScenarioExpectationResult = {
 	description: string;
@@ -61,6 +61,7 @@ export type ScenarioRun = {
 	scenarioId?: string;
 	status: ScenarioRunStatus;
 	revision: number;
+	scenarioRevision: number;
 	edgeFunctionRevision: number;
 	stale: boolean;
 	requests: ScenarioRequestLogEntry[];
@@ -98,10 +99,10 @@ export type ScenarioSaveState =
 	| { status: "saved"; revision: number; savedAt: number; designId?: string }
 	| { status: "failed"; revision: number; error: string; designId?: string };
 
-export type CreateScenarioAction = { name: string; designId?: string };
-export type RenameScenarioAction = { scenarioId: string; name: string; designId?: string };
-export type RemoveScenarioAction = { scenarioId: string; designId?: string };
-export type UpdateScenarioSourceAction = { scenarioId: string; source: string; designId?: string };
+export type CreateScenarioAction = { name: string; designId: string };
+export type RenameScenarioAction = { scenarioId: string; name: string; designId: string };
+export type RemoveScenarioAction = { scenarioId: string; designId: string };
+export type UpdateScenarioSourceAction = { scenarioId: string; source: string; designId: string };
 
 
 export type CanvasPoint = {
@@ -262,9 +263,9 @@ export type Design = {
 	functions?: DesignFunction[];
 	triggers?: DesignTrigger[];
 };
-export type UpdateFunctionsAction = { functions: DesignFunction[]; designId?: string };
-export type UpdateTriggersAction = { triggers: DesignTrigger[]; designId?: string };
-export type RemoveFunctionAction = { functionId: string; confirmed?: boolean; designId?: string };
+export type UpdateFunctionsAction = { functions: DesignFunction[]; designId: string };
+export type UpdateTriggersAction = { triggers: DesignTrigger[]; designId: string };
+export type RemoveFunctionAction = { functionId: string; confirmed?: boolean; designId: string };
 
 export type SaveState =
 	| { status: "idle" }
@@ -297,6 +298,8 @@ export type DisplayedSqlPreview = Readonly<{
 	revision: number;
 	draftRevision: number;
 	sql: string;
+	/** The Design whose generated SQL this preview shows. */
+	designId?: string;
 }>;
 
 /** Result of copying the read-only SQL preview to the system clipboard. */
@@ -319,6 +322,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 				revision: sql.revision,
 				draftRevision: sql.revision,
 				sql: sql.sql,
+				designId: sql.designId,
 			};
 		case "checking":
 			return sql.sql === null || sql.availableRevision === null
@@ -328,6 +332,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 						revision: sql.availableRevision,
 						draftRevision: sql.draftRevision,
 						sql: sql.sql,
+						designId: sql.designId,
 					};
 		case "stale":
 			return {
@@ -335,6 +340,7 @@ export function getDisplayedSqlPreview(sql: SqlState): DisplayedSqlPreview | nul
 				revision: sql.revision,
 				draftRevision: sql.draftRevision,
 				sql: sql.sql,
+				designId: sql.designId,
 			};
 		case "empty":
 			return null;
@@ -446,7 +452,7 @@ export type WorkspaceState = {
 	edgeFunctionSave: EdgeFunctionSaveState;
 	scenarioSave: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
-	/** In-memory undo/redo availability for the currently open project only. */
+	/** In-memory undo/redo availability for the currently open Design only. */
 	undoRedo: { canUndo: boolean; canRedo: boolean };
 };
 
@@ -555,27 +561,27 @@ export function getSqlPreviewValidationStatus(
 
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
-export type AddTableAction = { name: string; position?: CanvasPoint; designId?: string };
-export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[]; designId?: string };
-export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[]; designId?: string };
+export type AddTableAction = { name: string; position?: CanvasPoint; designId: string };
+export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[]; designId: string };
+export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[]; designId: string };
 export type UpdatePoliciesAction = {
 	tableId: string;
 	rowLevelSecurity: boolean;
 	policies: DesignPolicy[];
-	designId?: string;
+	designId: string;
 };
-export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[]; designId?: string };
-export type RenameTableAction = { tableId: string; name: string; designId?: string };
+export type UpdateEnumTypesAction = { enumTypes: DesignEnumType[]; designId: string };
+export type RenameTableAction = { tableId: string; name: string; designId: string };
 /** Removing a table that relationships depend on requires explicit confirmation. */
-export type RemoveTableAction = { tableId: string; confirmed?: boolean; designId?: string };
-export type MoveTableAction = { tableId: string; position: CanvasPoint; designId?: string };
-export type SetViewportAction = CanvasViewport & { designId?: string };
+export type RemoveTableAction = { tableId: string; confirmed?: boolean; designId: string };
+export type MoveTableAction = { tableId: string; position: CanvasPoint; designId: string };
+export type SetViewportAction = CanvasViewport & { designId: string };
 
 export type AddColumnAction = {
 	tableId: string;
 	name?: string;
 	type?: ColumnType;
-	designId?: string;
+	designId: string;
 };
 
 /** Editable column properties. Omitted properties stay as they are. */
@@ -590,14 +596,14 @@ export type UpdateColumnAction = {
 	tableId: string;
 	columnId: string;
 	changes: ColumnChanges;
-	designId?: string;
+	designId: string;
 };
 
 export type RemoveColumnAction = {
 	tableId: string;
 	columnId: string;
 	confirmed?: boolean;
-	designId?: string;
+	designId: string;
 };
 
 /**
@@ -611,7 +617,7 @@ export type AddRelationshipAction = {
 	cardinality?: RelationshipCreationCardinality;
 	/** Canvas placement for the visible junction created by many-to-many. */
 	junctionPosition?: CanvasPoint;
-	designId?: string;
+	designId: string;
 };
 /** An omitted property keeps its current value. */
 export type UpdateRelationshipAction = {
@@ -620,19 +626,20 @@ export type UpdateRelationshipAction = {
 	cardinality?: RelationshipCardinality;
 	onDelete?: ReferentialAction;
 	onUpdate?: ReferentialAction;
-	designId?: string;
+	designId: string;
 };
 
 /** Constraints a relationship owns and a destructive edit would remove. */
 export type RelationshipConstraint = "foreign-key" | "unique" | "pair-unique";
 
-export type RemoveRelationshipAction = { relationshipId: string; designId?: string };
+export type RemoveRelationshipAction = { relationshipId: string; designId: string };
+
 
 export type RemovalTarget = (
 	| { kind: "table"; tableId: string }
 	| { kind: "column"; tableId: string; columnId: string }
 	| { kind: "function"; functionId: string }
-) & { designId?: string };
+) & { designId: string };
 
 /** A relationship or association a pending removal would also delete. */
 export type AffectedRelationship = {

@@ -30,8 +30,15 @@ export interface ProjectRecord {
  */
 export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
-	createProject(project: ProjectSummary, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
-	saveDesign(projectId: string, design: Design, save: DesignSave, designId?: string): void | Promise<void>;
+	createProject(project: ProjectSummary, design: Design, save: DesignSave, designId: string): void | Promise<void>;
+	saveDesign(projectId: string, design: Design, save: DesignSave, designId: string): void | Promise<void>;
+	saveProjectArtifacts(input: {
+		projectId: string;
+		designId: string;
+		design?: { design: Design; save: DesignSave };
+		scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+		edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+	}): void | Promise<void>;
 	loadProject(projectId: string): ProjectRecord | null;
 	listDesigns(projectId: string): DatabaseDesignSummary[];
 	loadDesign(designId: string): DatabaseDesignRecord | null;
@@ -55,22 +62,22 @@ export type ScenarioDocumentRecord = {
 };
 
 export interface ScenarioStore {
-	loadScenarios(projectId: string, designId?: string): ScenarioDocumentRecord;
+	loadScenarios(projectId: string, designId: string): ScenarioDocumentRecord;
 	saveScenarios(
 		projectId: string,
 		scenarios: StoredScenario[],
 		save: ScenarioSave,
-		designId?: string,
+		designId: string,
 	): void | Promise<void>;
 }
 
 export interface EdgeFunctionStore {
-	loadEdgeFunctions(projectId: string, designId?: string): EdgeFunctionDocumentRecord;
+	loadEdgeFunctions(projectId: string, designId: string): EdgeFunctionDocumentRecord;
 	saveEdgeFunctions(
 		projectId: string,
 		edgeFunctions: EdgeFunction[],
 		save: ScenarioSave,
-		designId?: string,
+		designId: string,
 	): void | Promise<void>;
 }
 
@@ -170,32 +177,19 @@ export function openDesignStore(
 
 	database.exec(SCHEMA);
 
-	const selectPrimaryDesignId = database.query<{ id: string }, [string]>(
-		`SELECT id FROM designs WHERE project_id = ? ORDER BY rowid ASC LIMIT 1`,
-	);
 	const selectDesignByIdAndProject = database.query<{ id: string }, [string, string]>(
 		`SELECT id FROM designs WHERE id = ? AND project_id = ?`,
 	);
 
-	const listScenarios = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
-		SELECT id, name, source, design_id FROM scenarios WHERE project_id = ? ORDER BY position ASC
-	`);
 	const listScenariosByDesign = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
 		SELECT id, name, source, design_id FROM scenarios WHERE design_id = ? ORDER BY position ASC
 	`);
-	const selectScenarioDocument = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
-		`SELECT revision, updated_at, design_id FROM scenario_documents WHERE project_id = ?`,
-	);
 	const selectScenarioDocumentByDesign = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
 		`SELECT revision, updated_at, design_id FROM scenario_documents WHERE design_id = ?`,
 	);
-	const deleteScenarios = database.query(`DELETE FROM scenarios WHERE project_id = ?`);
 	const deleteScenariosByDesign = database.query(`DELETE FROM scenarios WHERE design_id = ?`);
 	const insertScenario = database.query(
 		`INSERT INTO scenarios (project_id, design_id, id, position, name, source) VALUES (?, ?, ?, ?, ?, ?)`,
-	);
-	const selectScenarioRevision = database.query<{ revision: number }, [string]>(
-		`SELECT revision FROM scenario_documents WHERE project_id = ?`,
 	);
 	const selectScenarioRevisionByDesign = database.query<{ revision: number }, [string]>(
 		`SELECT revision FROM scenario_documents WHERE design_id = ?`,
@@ -207,50 +201,31 @@ export function openDesignStore(
 	);
 
 	const saveScenariosTransaction = database.transaction(
-		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave, designId?: string) => {
-			if (designId !== undefined) {
-				const owner = selectDesignByIdAndProject.get(designId, projectId);
-				if (!owner) {
-					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
-				}
+		(projectId: string, scenarios: StoredScenario[], save: ScenarioSave, designId: string) => {
+			const owner = selectDesignByIdAndProject.get(designId, projectId);
+			if (!owner) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
 			}
-			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
-			const current = targetDesignId
-				? selectScenarioRevisionByDesign.get(targetDesignId) ?? selectScenarioRevision.get(projectId)
-				: selectScenarioRevision.get(projectId);
+			const current = selectScenarioRevisionByDesign.get(designId);
 			if (current && current.revision >= save.revision) return;
-			if (targetDesignId) {
-				deleteScenariosByDesign.run(targetDesignId);
-			} else {
-				deleteScenarios.run(projectId);
-			}
+			deleteScenariosByDesign.run(designId);
 			scenarios.forEach((scenario, position) =>
-				insertScenario.run(projectId, targetDesignId, scenario.id, position, scenario.name, scenario.source),
+				insertScenario.run(projectId, designId, scenario.id, position, scenario.name, scenario.source),
 			);
-			upsertScenarioRevision.run(projectId, targetDesignId, save.revision, save.savedAt);
+			upsertScenarioRevision.run(projectId, designId, save.revision, save.savedAt);
 			touchProject.run(save.savedAt, projectId);
 		},
 	);
 
-	const listEdgeFunctions = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(
-		`SELECT id, name, source, design_id FROM edge_functions WHERE project_id = ? ORDER BY position ASC`,
-	);
 	const listEdgeFunctionsByDesign = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(
 		`SELECT id, name, source, design_id FROM edge_functions WHERE design_id = ? ORDER BY position ASC`,
-	);
-	const selectEdgeFunctionDocument = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
-		`SELECT revision, updated_at, design_id FROM edge_function_documents WHERE project_id = ?`,
 	);
 	const selectEdgeFunctionDocumentByDesign = database.query<{ revision: number; updated_at: number; design_id: string | null }, [string]>(
 		`SELECT revision, updated_at, design_id FROM edge_function_documents WHERE design_id = ?`,
 	);
-	const selectEdgeFunctionRevision = database.query<{ revision: number }, [string]>(
-		`SELECT revision FROM edge_function_documents WHERE project_id = ?`,
-	);
 	const selectEdgeFunctionRevisionByDesign = database.query<{ revision: number }, [string]>(
 		`SELECT revision FROM edge_function_documents WHERE design_id = ?`,
 	);
-	const deleteEdgeFunctions = database.query(`DELETE FROM edge_functions WHERE project_id = ?`);
 	const deleteEdgeFunctionsByDesign = database.query(`DELETE FROM edge_functions WHERE design_id = ?`);
 	const insertEdgeFunction = database.query(
 		`INSERT INTO edge_functions (project_id, design_id, id, position, name, source) VALUES (?, ?, ?, ?, ?, ?)`,
@@ -261,27 +236,18 @@ export function openDesignStore(
 		 WHERE edge_function_documents.revision < excluded.revision`,
 	);
 	const saveEdgeFunctionsTransaction = database.transaction(
-		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave, designId?: string) => {
-			if (designId !== undefined) {
-				const owner = selectDesignByIdAndProject.get(designId, projectId);
-				if (!owner) {
-					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
-				}
+		(projectId: string, edgeFunctions: EdgeFunction[], save: ScenarioSave, designId: string) => {
+			const owner = selectDesignByIdAndProject.get(designId, projectId);
+			if (!owner) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
 			}
-			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id ?? null;
-			const current = targetDesignId
-				? selectEdgeFunctionRevisionByDesign.get(targetDesignId) ?? selectEdgeFunctionRevision.get(projectId)
-				: selectEdgeFunctionRevision.get(projectId);
+			const current = selectEdgeFunctionRevisionByDesign.get(designId);
 			if (current && current.revision >= save.revision) return;
-			if (targetDesignId) {
-				deleteEdgeFunctionsByDesign.run(targetDesignId);
-			} else {
-				deleteEdgeFunctions.run(projectId);
-			}
+			deleteEdgeFunctionsByDesign.run(designId);
 			edgeFunctions.forEach((edgeFunction, position) =>
-				insertEdgeFunction.run(projectId, targetDesignId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+				insertEdgeFunction.run(projectId, designId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
 			);
-			upsertEdgeFunctionRevision.run(projectId, targetDesignId, save.revision, save.savedAt);
+			upsertEdgeFunctionRevision.run(projectId, designId, save.revision, save.savedAt);
 			touchProject.run(save.savedAt, projectId);
 		},
 	);
@@ -311,10 +277,6 @@ export function openDesignStore(
 		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
 		 WHERE id = ? AND project_id = ? AND document_revision < ?`,
 	);
-	const updatePrimaryDesignByProject = database.query(
-		`UPDATE designs SET revision = ?, document_revision = ?, document = ?, updated_at = ?
-		 WHERE id = (SELECT id FROM designs WHERE project_id = ? ORDER BY rowid ASC LIMIT 1) AND document_revision < ?`,
-	);
 	const listDesignsQuery = database.query<DatabaseDesignSummary, [string]>(
 		`SELECT id, project_id AS projectId, name FROM designs WHERE project_id = ? ORDER BY rowid ASC`,
 	);
@@ -332,11 +294,10 @@ export function openDesignStore(
 	const touchProject = database.query(`UPDATE projects SET updated_at = ? WHERE id = ?`);
 
 	const createProjectTransaction = database.transaction(
-		(project: ProjectSummary, design: Design, save: DesignSave, designId?: string) => {
-			const idToUse = designId ?? crypto.randomUUID();
+		(project: ProjectSummary, design: Design, save: DesignSave, designId: string) => {
 			insertProject.run(project.id, project.name, save.savedAt, save.savedAt);
 			insertDesign.run(
-				idToUse,
+				designId,
 				project.id,
 				"",
 				save.revision,
@@ -348,36 +309,68 @@ export function openDesignStore(
 	);
 
 	const saveDesignTransaction = database.transaction(
-		(projectId: string, design: Design, save: DesignSave, designId?: string) => {
-			if (designId !== undefined) {
-				const owner = selectDesignByIdAndProject.get(designId, projectId);
-				if (!owner) {
-					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
-				}
+		(projectId: string, design: Design, save: DesignSave, designId: string) => {
+			const owner = selectDesignByIdAndProject.get(designId, projectId);
+			if (!owner) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+			}
+			const result = updateDesignByIdAndProject.run(
+				save.revision,
+				save.documentRevision,
+				JSON.stringify(design),
+				save.savedAt,
+				designId,
+				projectId,
+				save.documentRevision,
+			);
+			if (result.changes > 0) touchProject.run(save.savedAt, projectId);
+		},
+	);
+	const saveProjectArtifactsTransaction = database.transaction(
+		(input: {
+			projectId: string;
+			designId: string;
+			design?: { design: Design; save: DesignSave };
+			scenarios?: { scenarios: StoredScenario[]; save: ScenarioSave };
+			edgeFunctions?: { edgeFunctions: EdgeFunction[]; save: ScenarioSave };
+		}) => {
+			if (!selectDesignByIdAndProject.get(input.designId, input.projectId)) {
+				throw new Error(`Database design "${input.designId}" does not belong to project "${input.projectId}".`);
+			}
+			if (input.design) {
+				const { design, save } = input.design;
 				const result = updateDesignByIdAndProject.run(
-					save.revision,
-					save.documentRevision,
-					JSON.stringify(design),
-					save.savedAt,
-					designId,
-					projectId,
-					save.documentRevision,
+					save.revision, save.documentRevision, JSON.stringify(design), save.savedAt,
+					input.designId, input.projectId, save.documentRevision,
 				);
-				if (result.changes > 0) touchProject.run(save.savedAt, projectId);
-			} else {
-				// Deterministically update the singular primary design for this project
-				const result = updatePrimaryDesignByProject.run(
-					save.revision,
-					save.documentRevision,
-					JSON.stringify(design),
-					save.savedAt,
-					projectId,
-					save.documentRevision,
+				if (result.changes === 0) throw new Error("Stale design document revision during atomic save.");
+				touchProject.run(save.savedAt, input.projectId);
+			}
+			if (input.scenarios) {
+				const { scenarios, save } = input.scenarios;
+				const current = selectScenarioRevisionByDesign.get(input.designId);
+				if (current && current.revision >= save.revision) throw new Error("Stale scenario revision during atomic save.");
+				deleteScenariosByDesign.run(input.designId);
+				scenarios.forEach((scenario, position) =>
+					insertScenario.run(input.projectId, input.designId, scenario.id, position, scenario.name, scenario.source),
 				);
-				if (result.changes > 0) touchProject.run(save.savedAt, projectId);
+				upsertScenarioRevision.run(input.projectId, input.designId, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
+			}
+			if (input.edgeFunctions) {
+				const { edgeFunctions, save } = input.edgeFunctions;
+				const current = selectEdgeFunctionRevisionByDesign.get(input.designId);
+				if (current && current.revision >= save.revision) throw new Error("Stale edge function revision during atomic save.");
+				deleteEdgeFunctionsByDesign.run(input.designId);
+				edgeFunctions.forEach((edgeFunction, position) =>
+					insertEdgeFunction.run(input.projectId, input.designId, edgeFunction.id, position, edgeFunction.name, edgeFunction.source),
+				);
+				upsertEdgeFunctionRevision.run(input.projectId, input.designId, save.revision, save.savedAt);
+				touchProject.run(save.savedAt, input.projectId);
 			}
 		},
 	);
+
 
 	return {
 		listProjects() {
@@ -388,6 +381,9 @@ export function openDesignStore(
 		},
 		saveDesign(projectId, design, save, designId) {
 			saveDesignTransaction(projectId, design, save, designId);
+		},
+		saveProjectArtifacts(input) {
+			saveProjectArtifactsTransaction(input);
 		},
 		loadProject(projectId) {
 			const row = selectProject.get(projectId);
@@ -418,58 +414,44 @@ export function openDesignStore(
 			};
 		},
 		loadScenarios(projectId, designId) {
-			if (designId !== undefined) {
-				const owner = selectDesignByIdAndProject.get(designId, projectId);
-				if (!owner) {
-					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
-				}
+			const owner = selectDesignByIdAndProject.get(designId, projectId);
+			if (!owner) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
 			}
-			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
-			const scenarios = targetDesignId
-				? listScenariosByDesign.all(targetDesignId)
-				: listScenarios.all(projectId);
-			const document = targetDesignId
-				? selectScenarioDocumentByDesign.get(targetDesignId) ?? selectScenarioDocument.get(projectId)
-				: selectScenarioDocument.get(projectId);
+			const scenarios = listScenariosByDesign.all(designId);
+			const document = selectScenarioDocumentByDesign.get(designId);
 			return {
-				scenarios: scenarios.map((s) => ({
-					id: s.id,
-					name: s.name,
-					source: s.source,
-					designId: s.design_id ?? targetDesignId ?? undefined,
+				scenarios: scenarios.map((scenario) => ({
+					id: scenario.id,
+					name: scenario.name,
+					source: scenario.source,
+					designId: scenario.design_id ?? designId,
 				})),
 				revision: document?.revision ?? 0,
 				savedAt: document?.updated_at ?? null,
-				designId: targetDesignId ?? undefined,
+				designId,
 			};
 		},
 		saveScenarios(projectId, scenarios, save, designId) {
 			saveScenariosTransaction(projectId, scenarios, save, designId);
 		},
 		loadEdgeFunctions(projectId, designId) {
-			if (designId !== undefined) {
-				const owner = selectDesignByIdAndProject.get(designId, projectId);
-				if (!owner) {
-					throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
-				}
+			const owner = selectDesignByIdAndProject.get(designId, projectId);
+			if (!owner) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
 			}
-			const targetDesignId = designId ?? selectPrimaryDesignId.get(projectId)?.id;
-			const edgeFunctions = targetDesignId
-				? listEdgeFunctionsByDesign.all(targetDesignId)
-				: listEdgeFunctions.all(projectId);
-			const document = targetDesignId
-				? selectEdgeFunctionDocumentByDesign.get(targetDesignId) ?? selectEdgeFunctionDocument.get(projectId)
-				: selectEdgeFunctionDocument.get(projectId);
+			const edgeFunctions = listEdgeFunctionsByDesign.all(designId);
+			const document = selectEdgeFunctionDocumentByDesign.get(designId);
 			return {
-				edgeFunctions: edgeFunctions.map((ef) => ({
-					id: ef.id,
-					name: ef.name,
-					source: ef.source,
-					designId: ef.design_id ?? targetDesignId ?? undefined,
+				edgeFunctions: edgeFunctions.map((edgeFunction) => ({
+					id: edgeFunction.id,
+					name: edgeFunction.name,
+					source: edgeFunction.source,
+					designId: edgeFunction.design_id ?? designId,
 				})),
 				revision: document?.revision ?? 0,
 				savedAt: document?.updated_at ?? null,
-				designId: targetDesignId ?? undefined,
+				designId,
 			};
 		},
 		saveEdgeFunctions(projectId, edgeFunctions, save, designId) {

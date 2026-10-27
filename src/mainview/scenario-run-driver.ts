@@ -1,7 +1,7 @@
 import type { Scenario, ScenarioRun, SandboxApiRequest, SandboxApiResponse, WorkspaceState } from "../shared/design";
 
 export type ScenarioRunClient = {
-	beginScenarioRun(action: { scenarioId: string }): Promise<{ runId: string; state: WorkspaceState }>;
+	beginScenarioRun(action: { scenarioId: string; designId: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: {
 		runId: string;
@@ -51,6 +51,7 @@ type ActiveRun = {
 	scenario: Scenario;
 	runId: string | null;
 	projectId: string | null;
+	designId: string | null;
 	token: unknown;
 	worker: WorkerPort | null;
 	edgeWorkers: Set<WorkerPort>;
@@ -98,13 +99,19 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 		run.worker = null;
 		void options.workspace.finishScenarioRun({ runId: run.runId, ...outcome }).then((state) => {
 			if (active === run) active = null;
-			if (!isCurrent(run) || state.project?.id !== run.projectId) {
+			if (!isCurrent(run) || state.project?.id !== run.projectId || state.activeDesignId !== run.designId) {
 				run.resolve(null);
 				return;
 			}
 			options.onState?.(state);
 			const finished = state.scenarioRuns[run.scenario.id];
-			run.resolve(finished?.id === run.runId && finished.status !== "running" ? finished : null);
+			run.resolve(
+				finished?.id === run.runId &&
+				finished.designId === run.designId &&
+				finished.status !== "running"
+					? finished
+					: null,
+			);
 		}).catch((error: unknown) => {
 			if (active === run) active = null;
 			run.reject(error);
@@ -126,12 +133,14 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 	return {
 		async run(scenario, onStarted) {
 			if (disposed || active || !isCurrent()) return null;
+			if (!scenario.designId) throw new Error("A database design ID is required to run a Scenario.");
 			const token = options.getToken?.();
 			const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
 			const run: ActiveRun = {
 				scenario,
 				runId: null,
 				projectId: null,
+				designId: null,
 				token,
 				worker: null,
 				edgeWorkers: new Set(),
@@ -144,7 +153,10 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 			};
 			active = run;
 			try {
-				const begun = await options.workspace.beginScenarioRun({ scenarioId: scenario.id });
+				const begun = await options.workspace.beginScenarioRun({
+					scenarioId: scenario.id,
+					designId: scenario.designId,
+				});
 				run.runId = begun.runId;
 				if (run.cancelled || active !== run || !isCurrent(run) || begun.state.project?.id == null) {
 					if (active === run) active = null;
@@ -152,6 +164,11 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 					return promise;
 				}
 				run.projectId = begun.state.project.id;
+				const designId = begun.state.activeDesignId;
+				if (!designId || (scenario.designId !== undefined && scenario.designId !== designId)) {
+					throw new Error("The Scenario run started in a different database Design.");
+				}
+				run.designId = designId;
 				onStarted?.(run.runId);
 				if (run.finishing) return promise;
 				if (pendingStops.delete(run.runId)) {
@@ -171,7 +188,9 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 					if (active !== run || run.finishing || run.cancelled || !isCurrent(run)) return;
 					const message = event.data;
 					if (message.type === "invoke" && message.runId === run.runId) {
-						const edgeFunction = begun.state.edgeFunctions.find(({ name }) => name === message.functionName);
+						const edgeFunction = begun.state.edgeFunctions.find(({ name, designId }) =>
+							name === message.functionName && (designId === undefined || designId === run.designId),
+						);
 						const invocationId = `${message.requestId}:${message.functionName}`;
 						const completeInvocation = async (status: number, body: unknown) => {
 							await options.workspace.handleSandboxApiRequest({

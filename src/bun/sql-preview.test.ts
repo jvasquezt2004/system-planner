@@ -50,7 +50,7 @@ describe("SQL preview transfer", () => {
 		const empty = await workspace.createProject({ name: "Library" });
 		expect(getDisplayedSqlPreview(empty.sql)).toBeNull();
 
-		const current = await workspace.addTable({ name: "Books" });
+		const current = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		expect(current.sql.status).toBe("current");
 		const currentPreview = requirePreview(getDisplayedSqlPreview(current.sql));
 		expect(getSqlPreviewValidationStatus(current)).toMatchObject({
@@ -78,7 +78,7 @@ describe("SQL preview transfer", () => {
 			currentPreview.sql,
 		);
 
-		const invalidDraft = await workspace.addTable({ name: "Books" });
+		const invalidDraft = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		expect(invalidDraft.sql.status).toBe("stale");
 		const stalePreview = requirePreview(getDisplayedSqlPreview(invalidDraft.sql));
 		expect(stalePreview).toMatchObject({
@@ -148,14 +148,14 @@ describe("SQL preview transfer", () => {
 			},
 		});
 		await workspace.createProject({ name: "Validation status" });
-		const accepted = await workspace.addTable({ name: "Books" });
+		const accepted = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		expect(getSqlPreviewValidationStatus(accepted)).toMatchObject({
 			status: "accepted",
 		});
 		const table = accepted.design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
 
-		const rename = workspace.renameTable({
+		const rename = workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			name: "Volumes",
 		});
@@ -211,10 +211,10 @@ describe("SQL preview transfer", () => {
 			},
 		});
 		await workspace.createProject({ name: "Sandbox error" });
-		const accepted = await workspace.addTable({ name: "Books" });
+		const accepted = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = accepted.design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
-		const failed = await workspace.renameTable({
+		const failed = await workspace.renameTable({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
 			name: "Volumes",
 		});
@@ -235,7 +235,7 @@ describe("SQL preview transfer", () => {
 	test("exports its click-time SQL snapshot while edits and project switches continue", async () => {
 		const { workspace, directory } = await openWorkspace();
 		await workspace.createProject({ name: "Authors project" });
-		const authored = await workspace.addTable({ name: "Authors" });
+		const authored = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Authors" });
 		const snapshot = requirePreview(getDisplayedSqlPreview(authored.sql));
 		const exportDirectory = join(directory, "exports");
 		mkdirSync(exportDirectory);
@@ -254,9 +254,9 @@ describe("SQL preview transfer", () => {
 
 		const exportPromise = actions.export(snapshot, "authors.sql");
 		await dialogStartedPromise;
-		await workspace.addTable({ name: "Books" });
+		await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		await workspace.createProject({ name: "Courses project" });
-		const otherProject = await workspace.addTable({ name: "Courses" });
+		const otherProject = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Courses" });
 		expect(otherProject.sql.status).toBe("current");
 		continueDialog(exportDirectory);
 
@@ -289,10 +289,10 @@ describe("SQL preview transfer", () => {
 			},
 		});
 		await workspace.createProject({ name: "Library" });
-		const accepted = await workspace.addTable({ name: "Books" });
+		const accepted = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const table = accepted.design?.tables[0];
 		if (!table) throw new Error("Expected Books table.");
-		const rejected = await workspace.renameTable({ tableId: table.id, name: "Volumes" });
+		const rejected = await workspace.renameTable({ designId: workspace.getState().activeDesignId!, tableId: table.id, name: "Volumes" });
 		expect(rejected.sql.status).toBe("current");
 		expect(rejected.sandbox).toMatchObject({
 			status: "failed",
@@ -336,7 +336,7 @@ describe("SQL preview transfer", () => {
 	test("reports cancellation, clipboard failure, and file errors without changing the design", async () => {
 		const { workspace, directory } = await openWorkspace();
 		await workspace.createProject({ name: "Library" });
-		const state = await workspace.addTable({ name: "Books" });
+		const state = await workspace.addTable({ designId: workspace.getState().activeDesignId!, name: "Books" });
 		const preview = requirePreview(getDisplayedSqlPreview(state.sql));
 		const originalDesign = structuredClone(state.design);
 		const cancelActions = createSqlPreviewActions({

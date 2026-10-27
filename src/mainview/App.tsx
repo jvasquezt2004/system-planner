@@ -64,7 +64,7 @@ import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
 import { ArchitectureProofView } from "./architecture-proof";
 
-type RunAllOperation = { projectId: string; generation: number };
+type RunAllOperation = { projectId: string; designId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
 type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers" | "architecture";
@@ -120,7 +120,11 @@ export function App({
 	}, [assistantCollapsed]);
 	const [scenarioStarting, setScenarioStarting] = useState(false);
 	const projectIdRef = useRef<string | null>(null);
+	const designIdRef = useRef<string | null>(null);
 	const projectGeneration = useRef(0);
+	/** Changes whenever the view switches Project or Design; late results from an earlier target are dropped. */
+	const targetKeyRef = useRef<string | null>(null);
+	const targetVersion = useRef(0);
 	const scenarioRunDriver = useRef<ScenarioRunDriver | null>(null);
 	const runAllOperation = useRef<RunAllOperation | null>(null);
 	const scenarioStartOperation = useRef<object | null>(null);
@@ -137,8 +141,13 @@ export function App({
 	}, []);
 	const receiveWorkspaceState = useCallback((next: WorkspaceState) => {
 		const nextProjectId = next.project?.id ?? null;
-		if (projectIdRef.current !== nextProjectId) {
+		const nextDesignId = next.activeDesignId ?? null;
+		const nextTargetKey = `${nextProjectId ?? ""}\u0000${nextDesignId ?? ""}`;
+		if (targetKeyRef.current !== nextTargetKey) {
+			targetKeyRef.current = nextTargetKey;
+			targetVersion.current += 1;
 			projectIdRef.current = nextProjectId;
+			designIdRef.current = nextDesignId;
 			projectGeneration.current += 1;
 			resetScenarioExecution();
 		}
@@ -149,7 +158,7 @@ export function App({
 	if (!scenarioRunDriver.current) {
 		scenarioRunDriver.current = createScenarioRunDriver({
 			workspace: {
-				beginScenarioRun: ({ scenarioId }) => workspaceClient.beginScenarioRun(scenarioId),
+				beginScenarioRun: (action) => workspaceClient.beginScenarioRun(action),
 				handleSandboxApiRequest: ({ runId, request }) =>
 					workspaceClient.handleSandboxApiRequest(runId, request),
 				finishScenarioRun: (action) => workspaceClient.finishScenarioRun(action),
@@ -203,19 +212,16 @@ export function App({
 
 
 	const run = useCallback(async (action: () => Promise<WorkspaceState>) => {
-		const requestProjectId = projectIdRef.current;
-		const requestGeneration = projectGeneration.current;
+		const requestTarget = targetVersion.current;
 		setBusy(true);
 		setError(null);
 		try {
 			const next = await action();
-			if (
-				projectGeneration.current !== requestGeneration &&
-				next.project?.id === requestProjectId
-			) return;
-			receiveWorkspaceState(next);
+			// The workspace pushes its current state whenever the target changes, so a
+			// result that arrives after a switch is already superseded.
+			if (targetVersion.current === requestTarget) receiveWorkspaceState(next);
 		} catch (cause) {
-			if (projectGeneration.current === requestGeneration) setError(errorMessage(cause));
+			if (targetVersion.current === requestTarget) setError(errorMessage(cause));
 		} finally {
 			setBusy(false);
 		}
@@ -223,28 +229,29 @@ export function App({
 
 	/** Layout saves never change the schema, so they skip the busy state. */
 	const applyLayout = useCallback(async (action: () => Promise<WorkspaceState>) => {
-		const requestProjectId = projectIdRef.current;
+		const requestTarget = targetVersion.current;
 		setError(null);
 		try {
 			const next = await action();
-			if (
-				projectIdRef.current === requestProjectId &&
-				next.project?.id === requestProjectId
-			) setState(next);
+			if (targetVersion.current === requestTarget) setState(next);
 		} catch (cause) {
-			setError(errorMessage(cause));
+			if (targetVersion.current === requestTarget) setError(errorMessage(cause));
 		}
 	}, []);
 
 	const applySavedContent = useCallback(
 		async (action: () => Promise<WorkspaceState>) => {
 			const requestProjectId = state?.project?.id;
+			const requestDesignId = state?.activeDesignId;
 			try {
 				const next = await action();
 				setState((current) =>
 					requestProjectId &&
+					requestDesignId &&
 					current?.project?.id === requestProjectId &&
-					next.project?.id === requestProjectId
+					current.activeDesignId === requestDesignId &&
+					next.project?.id === requestProjectId &&
+					next.activeDesignId === requestDesignId
 						? next
 						: current,
 				);
@@ -252,7 +259,7 @@ export function App({
 				setError(errorMessage(cause));
 			}
 		},
-		[state?.project?.id],
+		[state?.activeDesignId, state?.project?.id],
 	);
 	const projectId = state?.project?.id ?? null;
 	const activeScenarioRun = state
@@ -272,13 +279,18 @@ export function App({
 		});
 	}, []);
 	const runScenario = useCallback(
-		(scenario: Scenario) => scenarioRunDriver.current?.run(scenario) ?? Promise.resolve(null),
+		(scenario: Scenario) => {
+			const designId = designIdRef.current;
+			if (!designId) return Promise.resolve(null);
+			return scenarioRunDriver.current?.run({ ...scenario, designId }) ?? Promise.resolve(null);
+		},
 		[],
 	);
 	const runSingleScenario = useCallback(async (scenario: Scenario) => {
 		if (
 			!state ||
 			state.project?.id !== projectIdRef.current ||
+			state.activeDesignId !== designIdRef.current ||
 			!getLastAppliedSandbox(state.sandbox) ||
 			scenarioIsRunning ||
 			scenarioStartOperation.current ||
@@ -301,10 +313,13 @@ export function App({
 
 	const runAll = useCallback(async () => {
 		const currentProjectId = projectIdRef.current;
+		const currentDesignId = designIdRef.current;
 		if (
 			!state ||
 			!currentProjectId ||
+			!currentDesignId ||
 			state.project?.id !== currentProjectId ||
+			state.activeDesignId !== currentDesignId ||
 			!getLastAppliedSandbox(state.sandbox) ||
 			scenarioIsRunning ||
 			scenarioStarting ||
@@ -314,9 +329,13 @@ export function App({
 		) return;
 		const operation: RunAllOperation = {
 			projectId: currentProjectId,
+			designId: currentDesignId,
 			generation: projectGeneration.current,
 		};
-		const snapshot = state.scenarios.map((scenario) => ({ ...scenario }));
+		const snapshot = state.scenarios.map((scenario) => ({
+			...scenario,
+			designId: currentDesignId,
+		}));
 		runAllOperation.current = operation;
 		setRunAllActive(true);
 		setRunAllResults([]);
@@ -324,6 +343,7 @@ export function App({
 			const results = await runAllScenarios(snapshot, runScenario, () =>
 				runAllOperation.current === operation &&
 				projectIdRef.current === operation.projectId &&
+				designIdRef.current === operation.designId &&
 				projectGeneration.current === operation.generation,
 			);
 			if (runAllOperation.current === operation) setRunAllResults(results);
@@ -418,6 +438,7 @@ export function App({
 				setError(null);
 				try {
 					const next = await workspaceClient.addRelationship(
+						designIdRef.current!,
 						referencingTableId,
 						referencedTableId,
 						cardinality,
@@ -451,14 +472,14 @@ export function App({
 
 	const handleSetRelationshipRequired = useCallback(
 		(relationshipId: string, required: boolean) => {
-			void run(() => workspaceClient.updateRelationship(relationshipId, { required }));
+			void run(() => workspaceClient.updateRelationship(designIdRef.current!, relationshipId, { required }));
 		},
 		[run],
 	);
 
 	const handleSetRelationshipCardinality = useCallback(
 		(relationshipId: string, cardinality: RelationshipCardinality) => {
-			void run(() => workspaceClient.updateRelationship(relationshipId, { cardinality }));
+			void run(() => workspaceClient.updateRelationship(designIdRef.current!, relationshipId, { cardinality }));
 		},
 		[run],
 	);
@@ -466,7 +487,7 @@ export function App({
 	const handleRemoveRelationship = useCallback(
 		(relationshipId: string) => {
 			setSelectedRelationshipId(null);
-			void run(() => workspaceClient.removeRelationship(relationshipId));
+			void run(() => workspaceClient.removeRelationship(designIdRef.current!, relationshipId));
 		},
 		[run],
 	);
@@ -489,12 +510,12 @@ export function App({
 		setSelectedRelationshipId(null);
 		setSelectedColumnId(null);
 		if (target.kind === "function") {
-			void run(() => workspaceClient.removeFunction({ functionId: target.functionId, confirmed: true }));
+			void run(() => workspaceClient.removeFunction({ functionId: target.functionId, confirmed: true, designId: target.designId }));
 		} else if (target.kind === "table") {
 			setSelectedTableId(null);
-			void run(() => workspaceClient.removeTable(target.tableId, true));
+			void run(() => workspaceClient.removeTable(target.designId, target.tableId, true));
 		} else {
-			void run(() => workspaceClient.removeColumn(target.tableId, target.columnId, true));
+			void run(() => workspaceClient.removeColumn(target.designId, target.tableId, target.columnId, true));
 		}
 	}, [pendingRemoval, run]);
 
@@ -503,7 +524,7 @@ export function App({
 			setBusy(true);
 			setError(null);
 			try {
-				const next = await workspaceClient.addTable(name, position);
+				const next = await workspaceClient.addTable(designIdRef.current!, name, position);
 				setState(next);
 				const created = next.design?.tables[next.design.tables.length - 1];
 				if (created) {
@@ -525,7 +546,7 @@ export function App({
 			setBusy(true);
 			setError(null);
 			try {
-				const next = await workspaceClient.addColumn(selectedTableId);
+				const next = await workspaceClient.addColumn(designIdRef.current!, selectedTableId);
 				setState(next);
 				const table = next.design?.tables.find(
 					(candidate) => candidate.id === selectedTableId,
@@ -543,29 +564,29 @@ export function App({
 	const handleApplyColumn = useCallback(
 		(columnId: string, changes: ColumnChanges) => {
 			if (!selectedTableId) return;
-			void run(() => workspaceClient.updateColumn(selectedTableId, columnId, changes));
+			void run(() => workspaceClient.updateColumn(designIdRef.current!, selectedTableId, columnId, changes));
 		},
 		[run, selectedTableId],
 	);
 
 	const handleRemoveColumn = useCallback(
 		(columnId: string) => {
-			if (!selectedTableId) return;
-			void requestRemoval({ kind: "column", tableId: selectedTableId, columnId });
+			if (!selectedTableId || !state?.activeDesignId) return;
+			void requestRemoval({ kind: "column", tableId: selectedTableId, columnId, designId: state.activeDesignId });
 		},
-		[requestRemoval, selectedTableId],
+		[requestRemoval, selectedTableId, state?.activeDesignId],
 	);
 
 	const handleMoveTable = useCallback(
 		(tableId: string, position: CanvasPoint) => {
-			void applyLayout(() => workspaceClient.moveTable(tableId, position));
+			void applyLayout(() => workspaceClient.moveTable(designIdRef.current!, tableId, position));
 		},
 		[applyLayout],
 	);
 
 	const handleViewportChange = useCallback(
 		(viewport: CanvasViewport) => {
-			void applyLayout(() => workspaceClient.setViewport(viewport));
+			void applyLayout(() => workspaceClient.setViewport(designIdRef.current!, viewport));
 		},
 		[applyLayout],
 	);
@@ -605,8 +626,8 @@ export function App({
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
-				onUndo={() => void run(() => workspaceClient.undo())}
-				onRedo={() => void run(() => workspaceClient.redo())}
+				onUndo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.undo(designId)); }}
+				onRedo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.redo(designId)); }}
 				view={view}
 				onViewChange={setView}
 			/>
@@ -658,7 +679,7 @@ export function App({
 						</div>
 						{view === "sql" && (
 							<SqlPreviewView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId ?? ""}`}
 								design={state.design}
 								sql={state.sql}
 								sandbox={state.sandbox}
@@ -672,8 +693,8 @@ export function App({
 								functions={state.design.functions ?? []}
 								initialSelectedId={assistantCodeTarget?.kind === "function-body" ? assistantCodeTarget.id : null}
 								busy={busy}
-								onSave={(functions) => void run(() => workspaceClient.updateFunctions(functions))}
-								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId })}
+								onSave={(functions) => void run(() => workspaceClient.updateFunctions(state.activeDesignId!, functions))}
+								onRemove={(functionId) => void requestRemoval({ kind: "function", functionId, designId: state.activeDesignId! })}
 							/>
 						)}
 						{view === "triggers" && (
@@ -683,10 +704,11 @@ export function App({
 								tables={state.design.tables}
 								functions={state.design.functions ?? []}
 								busy={busy}
-								onSave={(triggers) => void run(() => workspaceClient.updateTriggers(triggers))}
+								onSave={(triggers) => void run(() => workspaceClient.updateTriggers(state.activeDesignId!, triggers))}
 								onRemove={(triggerId) =>
 									void run(() =>
 										workspaceClient.updateTriggers(
+											state.activeDesignId!,
 											(state.design?.triggers ?? []).filter((trigger) => trigger.id !== triggerId),
 										),
 									)
@@ -695,7 +717,8 @@ export function App({
 						)}
 						{view === "scenarios" && (
 							<ScenarioView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId}`}
+								designId={state.activeDesignId!}
 								scenarios={state.scenarios}
 								initialSelectedId={assistantCodeTarget?.kind === "scenario" ? assistantCodeTarget.id : null}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
@@ -712,41 +735,42 @@ export function App({
 								onRun={(scenario) => void runSingleScenario(scenario)}
 								onStop={stopScenario}
 								onCreate={(name) =>
-									void applySavedContent(() => workspaceClient.createScenario({ name }))
+									void applySavedContent(() => workspaceClient.createScenario({ name, designId: state.activeDesignId! }))
 								}
 								onRename={(scenarioId, name) =>
 									void applySavedContent(() =>
-										workspaceClient.renameScenario({ scenarioId, name }),
+										workspaceClient.renameScenario({ scenarioId, name, designId: state.activeDesignId! }),
 									)
 								}
 								onRemove={(scenarioId) =>
-									void applySavedContent(() => workspaceClient.removeScenario({ scenarioId }))
+									void applySavedContent(() => workspaceClient.removeScenario({ scenarioId, designId: state.activeDesignId! }))
 								}
 								onUpdateSource={(scenarioId, source) =>
 									void applySavedContent(() =>
-										workspaceClient.updateScenarioSource({ scenarioId, source }),
+										workspaceClient.updateScenarioSource({ scenarioId, source, designId: state.activeDesignId! }),
 									)
 								}
 							/>
 						)}
 						{view === "edge-functions" && (
 							<EdgeFunctionsView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId}`}
+								designId={state.activeDesignId!}
 								edgeFunctions={state.edgeFunctions}
 								initialSelectedId={assistantCodeTarget?.kind === "edge-function" ? assistantCodeTarget.id : null}
 								save={state.edgeFunctionSave}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
 								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
 								appliedFunctions={getLastAppliedSandbox(state.sandbox)?.functions ?? []}
-								onCreate={(name) => void applySavedContent(() => workspaceClient.createEdgeFunction({ name }))}
+								onCreate={(name) => void applySavedContent(() => workspaceClient.createEdgeFunction({ name, designId: state.activeDesignId! }))}
 								onRename={(edgeFunctionId, name) =>
-									void applySavedContent(() => workspaceClient.renameEdgeFunction({ edgeFunctionId, name }))
+									void applySavedContent(() => workspaceClient.renameEdgeFunction({ edgeFunctionId, name, designId: state.activeDesignId! }))
 								}
 								onRemove={(edgeFunctionId) =>
-									void applySavedContent(() => workspaceClient.removeEdgeFunction({ edgeFunctionId }))
+									void applySavedContent(() => workspaceClient.removeEdgeFunction({ edgeFunctionId, designId: state.activeDesignId! }))
 								}
 								onUpdateSource={(edgeFunctionId, source) =>
-									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source }))
+									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source, designId: state.activeDesignId! }))
 								}
 							/>
 						)}
@@ -821,27 +845,27 @@ export function App({
 									sql={state.sql}
 									busy={busy}
 									onRename={(name) =>
-										void run(() => workspaceClient.renameTable(selectedTable.id, name))
+										void run(() => workspaceClient.renameTable(state.activeDesignId!, selectedTable.id, name))
 									}
 									onRemove={() =>
-										void requestRemoval({ kind: "table", tableId: selectedTable.id })
+										void requestRemoval({ kind: "table", tableId: selectedTable.id, designId: state.activeDesignId! })
 									}
 									onSelectColumn={setSelectedColumnId}
 									onAddColumn={handleAddColumn}
 									onApplyColumn={handleApplyColumn}
 									onUpdateIndexes={(indexes) =>
-										void run(() => workspaceClient.updateIndexes(selectedTable.id, indexes))
+										void run(() => workspaceClient.updateIndexes(state.activeDesignId!, selectedTable.id, indexes))
 									}
 									onUpdateEnumTypes={(enumTypes) =>
-										void run(() => workspaceClient.updateEnumTypes(enumTypes))
+										void run(() => workspaceClient.updateEnumTypes(state.activeDesignId!, enumTypes))
 									}
 									onUpdateUniqueConstraints={(uniqueConstraints) =>
 										void run(() =>
-											workspaceClient.updateUniqueConstraints(selectedTable.id, uniqueConstraints),
+											workspaceClient.updateUniqueConstraints(state.activeDesignId!, selectedTable.id, uniqueConstraints),
 										)
 									}
 									onUpdatePolicies={(rowLevelSecurity, policies) =>
-										void run(() => workspaceClient.updatePolicies(selectedTable.id, rowLevelSecurity, policies))
+										void run(() => workspaceClient.updatePolicies(state.activeDesignId!, selectedTable.id, rowLevelSecurity, policies))
 									}
 									onRemoveColumn={handleRemoveColumn}
 									onSelectRelationship={handleSelectRelationship}
@@ -849,7 +873,7 @@ export function App({
 									onSetRelationshipCardinality={handleSetRelationshipCardinality}
 									onSetReferentialAction={(relationshipId, action, value) =>
 									void run(() =>
-										workspaceClient.updateRelationship(relationshipId, {
+										workspaceClient.updateRelationship(state.activeDesignId!, relationshipId, {
 											[action]: value,
 										}),
 									)

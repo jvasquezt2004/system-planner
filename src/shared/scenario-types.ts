@@ -16,6 +16,10 @@ export function scenarioTypeLibraryUri(globPath: string): string {
 	return `file:///node_modules/${globPath.replace(/^\.\.\/\.\.\/node_modules\//, "")}`;
 }
 
+export function scenarioDatabaseTypeUri(designId: string): string {
+	return `file:///designs/${encodeURIComponent(designId)}/scenario-database.d.ts`;
+}
+
 function typeScriptType(dataType: string, enumTypeName?: string): string {
 	if (enumTypeName) return `Database["public"]["Enums"][${JSON.stringify(enumTypeName)}]`;
 	switch (dataType.toLowerCase()) {
