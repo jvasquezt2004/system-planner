@@ -22,6 +22,8 @@ import {
 	type WalkthroughStepStatus,
 } from "../shared/walkthrough";
 import type { workspaceClient } from "./workspace-client";
+import type { WalkthroughPlaybackControls } from "./use-walkthrough-playback";
+import { WalkthroughTransport } from "./walkthrough-transport";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -41,6 +43,7 @@ export type WalkthroughEditorProps = {
 	selection: WalkthroughSelection | null;
 	onSelect: (selection: WalkthroughSelection | null) => void;
 	onClose: () => void;
+	playback: WalkthroughPlaybackControls;
 };
 
 /**
@@ -57,6 +60,7 @@ export function WalkthroughEditor({
 	selection,
 	onSelect,
 	onClose,
+	playback,
 }: WalkthroughEditorProps) {
 	const walkthrough = selection ? findWalkthrough(walkthroughs, selection.walkthroughId) ?? null : null;
 	const step = walkthrough && selection?.stepId
@@ -183,6 +187,8 @@ export function WalkthroughEditor({
 								))}
 							</ol>
 						</div>
+
+						<WalkthroughTransport controls={playback} />
 
 						<AddStepControl
 							walkthroughId={walkthrough.id}

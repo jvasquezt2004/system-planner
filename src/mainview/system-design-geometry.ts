@@ -1,5 +1,6 @@
 import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, type CanvasPoint, type CanvasViewport } from "../shared/design";
 import { computeConnectionPath, sampleCubicBezier, type ProofPoint, type ProofRect } from "../shared/architecture-proof";
+import type { PlaybackRoute } from "../shared/walkthrough-playback";
 import {
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
@@ -93,6 +94,8 @@ export type ConnectionGeometry = {
 	connection: SystemConnection;
 	pathString: string;
 	start: ProofPoint;
+	cp1: ProofPoint;
+	cp2: ProofPoint;
 	end: ProofPoint;
 	/** The midpoint of the curve, where the label sits. */
 	labelPoint: ProofPoint;
@@ -123,9 +126,25 @@ export function connectionGeometries(design: SystemDesign, positions?: Map<strin
 		if (!source || !target) continue;
 		const route = computeConnectionPath(source, target, offsets.get(connection.id) ?? 0);
 		const labelPoint = sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, 0.5);
-		result.push({ connection, pathString: route.pathString, start: route.start, end: route.end, labelPoint });
+		result.push({
+			connection,
+			pathString: route.pathString,
+			start: route.start,
+			cp1: route.cp1,
+			cp2: route.cp2,
+			end: route.end,
+			labelPoint,
+		});
 	}
 	return result;
+}
+
+/** The curve each drawn Connection follows, keyed by Connection id, for sampling a walkthrough message along it. */
+export function playbackRoutes(geometries: ConnectionGeometry[]): Map<string, PlaybackRoute> {
+	return new Map(geometries.map((geometry) => [
+		geometry.connection.id,
+		{ start: geometry.start, cp1: geometry.cp1, cp2: geometry.cp2, end: geometry.end },
+	]));
 }
 
 /** Estimates the width of a connection label pill from its text. */

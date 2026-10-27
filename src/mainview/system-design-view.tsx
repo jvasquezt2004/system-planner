@@ -23,12 +23,15 @@ import {
 	type SystemServiceSize,
 } from "../shared/system-design";
 import type { workspaceClient } from "./workspace-client";
-import { selectedWalkthroughHighlight } from "../shared/walkthrough";
+import { findWalkthrough, selectedWalkthroughHighlight, type WalkthroughHighlight } from "../shared/walkthrough";
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
+import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
+import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
 	labelWidth,
 	movedBeyondThreshold,
+	playbackRoutes,
 	previewScene,
 	resizedServiceSize,
 	screenToWorld,
@@ -126,6 +129,14 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	// The drawn scene is the saved design with any gesture in progress applied.
 	const scene = useMemo(() => (design ? previewScene(design, drag?.scene ?? null) : null), [design, drag]);
 	const geometries = useMemo(() => (scene ? connectionGeometries(scene) : []), [scene]);
+	const routes = useMemo(() => playbackRoutes(geometries), [geometries]);
+	const reducedMotion = usePrefersReducedMotion();
+	const selectedWalkthrough = walkthroughSelection
+		? findWalkthrough(state.walkthroughs ?? [], walkthroughSelection.walkthroughId) ?? null
+		: null;
+	// Playback runs on the drawn scene, so a dragged Component's route moves with the message.
+	const playback = useWalkthroughPlayback({ walkthrough: selectedWalkthrough, design: scene, routes, reducedMotion });
+	const frame = playback.active?.frame ?? null;
 
 	if (!design || !scene) {
 		return (
@@ -139,10 +150,12 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const selectedService = selection?.kind === "service" ? findSystemService(design, selection.id) ?? null : null;
 	const selectedConnection = selection?.kind === "connection" ? findSystemConnection(design, selection.id) ?? null : null;
 	const serviceNames = new Map(design.services.map((service) => [service.id, service.name]));
-	/** The open walkthrough step's Connection and endpoints, traced in the architecture. */
-	const highlight = walkthroughSelection?.stepId
-		? selectedWalkthroughHighlight(state.walkthroughs ?? [], design, walkthroughSelection.walkthroughId, walkthroughSelection.stepId)
-		: null;
+	/** While a Walkthrough clock is in use it traces the playing step; otherwise the open step is traced. */
+	const highlight: WalkthroughHighlight | null = frame
+		? frame.highlight
+		: walkthroughSelection?.stepId
+			? selectedWalkthroughHighlight(state.walkthroughs ?? [], design, walkthroughSelection.walkthroughId, walkthroughSelection.stepId)
+			: null;
 
 	function scheduleViewportSave(next: CanvasViewport) {
 		interacting.current = true;
@@ -381,6 +394,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					onApply={onApply}
 					selection={walkthroughSelection}
 					onSelect={setWalkthroughSelection}
+					playback={playback}
 					onClose={() => {
 						setWalkthroughsOpen(false);
 						setWalkthroughSelection(null);
@@ -422,6 +436,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const selected = selection?.kind === "service" && selection.id === service.id;
 							const linking = connectingFrom === service.id;
 							const traced = highlight?.endpointIds.includes(service.id) ?? false;
+							const reaction = frame?.reactions[service.id];
 							const { width, height } = service.size;
 							return (
 								<g
@@ -446,6 +461,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									}}
 								>
 									<title>{service.name}</title>
+									{reaction && <ReactionTag reaction={reaction} kind="generic" x={0} y={-12} />}
+									{reaction && <ReactionRing reaction={reaction} width={width} height={height} radius={18} />}
 									<rect
 										width={width}
 										height={height}
@@ -534,10 +551,12 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 								</g>
 							);
 						})}
+						{frame?.message && <WalkthroughMessageDot message={frame.message} />}
 						{scene.components.map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
 							const linking = connectingFrom === component.id;
 							const traced = highlight?.endpointIds.includes(component.id) ?? false;
+							const reaction = frame?.reactions[component.id];
 							const detail = component.technology ?? component.description ?? "";
 							const owner = component.serviceId === null ? undefined : serviceNames.get(component.serviceId);
 							return (
@@ -565,6 +584,15 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									}}
 								>
 									<title>{component.name}</title>
+									{reaction && <ReactionTag reaction={reaction} kind={component.kind} x={0} y={-12} />}
+									{reaction && (
+										<ReactionRing
+											reaction={reaction}
+											width={SYSTEM_COMPONENT_SIZE.width}
+											height={SYSTEM_COMPONENT_SIZE.height}
+											radius={14}
+										/>
+									)}
 									<rect
 										width={SYSTEM_COMPONENT_SIZE.width}
 										height={SYSTEM_COMPONENT_SIZE.height}
@@ -636,7 +664,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						size="sm"
 						variant={walkthroughsOpen ? "pencil" : "outline"}
 						aria-pressed={walkthroughsOpen}
-						onClick={() => setWalkthroughsOpen((open) => !open)}
+						onClick={() => {
+							// Closing the panel also ends its selection, so playback cannot run without its controls.
+							if (walkthroughsOpen) setWalkthroughSelection(null);
+							setWalkthroughsOpen((open) => !open);
+						}}
 					>
 						Walkthroughs
 					</Button>
@@ -653,6 +685,23 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				</div>
 
 				<SaveLine save={state.systemSave} />
+
+				{frame && (
+					<div
+						role="status"
+						aria-live="polite"
+						data-testid="walkthrough-caption"
+						className="pointer-events-none absolute bottom-4 left-1/2 w-[min(520px,calc(100%-2rem))] -translate-x-1/2 rounded-md border border-rule-soft bg-paper-raised/95 px-4 py-3 shadow-xs"
+					>
+						<p className="kicker">
+							Step {frame.stepIndex + 1} of {playback.timeline?.steps.length ?? 0}
+							{frame.complete ? " · Finished" : ""}
+						</p>
+						<p className="font-medium text-ink">{frame.step.title || "Untitled step"}</p>
+						{frame.step.explanation && <p className="text-[13px] text-ink-2">{frame.step.explanation}</p>}
+						{frame.step.exampleMessage && <p className="font-mono text-[12px] text-ink-3">{frame.step.exampleMessage}</p>}
+					</div>
+				)}
 
 				{connectingFrom !== undefined && (
 					<p className="absolute bottom-4 left-4 rounded-md bg-paper-raised/95 px-3 py-1.5 text-[12px] text-ink-2 shadow-xs">

@@ -8,10 +8,12 @@ import {
 	openSpotNear,
 	type SystemDesign,
 } from "../shared/system-design";
+import { sampleCubicBezier } from "../shared/architecture-proof";
 import {
 	clampZoom,
 	connectionGeometries,
 	movedBeyondThreshold,
+	playbackRoutes,
 	previewScene,
 	resizedServiceSize,
 	screenToWorld,
@@ -119,3 +121,32 @@ function ownedServiceDesign(): SystemDesign {
 	design = addSystemConnection(design, { id: "dispatch", sourceId: "orders", targetId: "queue", label: "Dispatches" });
 	return design;
 }
+
+describe("Walkthrough playback routes", () => {
+	test("a playback route is the curve the overview draws, so a message sampled on it lies on the Connection", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "a", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "b", position: { x: 320, y: 0 } });
+		design = addSystemConnection(design, { id: "ab", sourceId: "a", targetId: "b", label: "Calls" });
+
+		const geometry = connectionGeometries(design)[0]!;
+		const route = playbackRoutes([geometry]).get("ab")!;
+		expect(route.start).toEqual(geometry.start);
+		expect(route.end).toEqual(geometry.end);
+		expect(sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, 0.5)).toEqual(geometry.labelPoint);
+	});
+
+	test("moving a Component changes the route its playback follows, not the rest of the design's routes", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "a", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "b", position: { x: 320, y: 0 } });
+		design = addSystemComponent(design, { id: "c", position: { x: 0, y: 240 } });
+		design = addSystemConnection(design, { id: "ab", sourceId: "a", targetId: "b", label: "Calls" });
+		design = addSystemConnection(design, { id: "ac", sourceId: "a", targetId: "c", label: "Stores" });
+
+		const before = playbackRoutes(connectionGeometries(design));
+		const after = playbackRoutes(connectionGeometries(moveSystemComponent(design, "b", { x: 320, y: 200 })));
+		expect(after.get("ab")!.end).not.toEqual(before.get("ab")!.end);
+		expect(after.get("ac")).toEqual(before.get("ac"));
+	});
+});
