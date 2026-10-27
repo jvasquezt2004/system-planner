@@ -19,10 +19,12 @@ import {
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
 	moveSystemComponent,
 	removeSystemConnection,
+	resizeSystemGroup,
 	updateSystemComponent,
 	type SystemDesign,
 } from "./system-design";
@@ -325,6 +327,11 @@ describe("Walkthrough playback key", () => {
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, addSystemComponent(design, { id: "cache", position: { x: 0, y: 200 } }))).not.toBe(key);
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, removeSystemConnection(design, "reply"))).not.toBe(key);
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, addSystemService(design, { id: "svc", name: "Svc", position: { x: 0, y: 0 } }))).not.toBe(key);
+
+		const grouped = addSystemGroup(design, { id: "tier", name: "Tier", position: { x: -20, y: -20 }, memberIds: ["api"] });
+		expect(walkthroughPlaybackKey(walkthroughs[0]!, grouped)).not.toBe(key);
+		const resized = resizeSystemGroup(grouped, "tier", { width: 600, height: 300 });
+		expect(walkthroughPlaybackKey(walkthroughs[0]!, resized)).toBe(walkthroughPlaybackKey(walkthroughs[0]!, grouped));
 
 		const edited = updateWalkthroughStep(walkthroughs, "upload", "s1", { explanation: "Now explained" });
 		expect(walkthroughPlaybackKey(edited[0]!, design)).not.toBe(key);

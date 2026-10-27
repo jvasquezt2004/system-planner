@@ -10,7 +10,7 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import type { StoredScenario } from "./store";
-import type { SystemComponent, SystemConnection, SystemContent, SystemService } from "../shared/system-design";
+import { keepSystemGroupMembers, type SystemComponent, type SystemConnection, type SystemContent, type SystemGroup, type SystemService } from "../shared/system-design";
 
 type Node = Record<string, any>;
 const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
@@ -22,8 +22,8 @@ export type RestorationResult =
 			design: Design;
 			scenarios: StoredScenario[];
 			edgeFunctions: EdgeFunction[];
-			/** Present when the turn changed Components or Connections. Services are kept as they are now. */
-			systemDesign?: { services: SystemService[]; components: SystemComponent[]; connections: SystemConnection[] };
+			/** Present when the turn changed Components or Connections. Services and Groups are kept as they are now. */
+			systemDesign?: { services: SystemService[]; groups: SystemGroup[]; components: SystemComponent[]; connections: SystemConnection[] };
 	  }
 	| {
 			ok: false;
@@ -856,7 +856,7 @@ export class TurnTracker {
 	 */
 	private restoreSystemDesign(
 		currentState: WorkspaceState,
-	): { services: SystemService[]; components: SystemComponent[]; connections: SystemConnection[] } | string | null {
+	): { services: SystemService[]; groups: SystemGroup[]; components: SystemComponent[]; connections: SystemConnection[] } | string | null {
 		if (this.systemChanges.size === 0) return null;
 		const services = structuredClone(currentState.systemDesign?.services ?? []);
 		const components = structuredClone(currentState.systemDesign?.components ?? []);
@@ -878,7 +878,11 @@ export class TurnTracker {
 				restoreSystemItem(connections, change.id, change.original as SystemConnection | null);
 			}
 		}
-		return { services, components, connections };
+		// Groups keep their current membership, minus any Component the revert removed.
+		const currentGroups = currentState.systemDesign?.groups ?? [];
+		const liveIds = new Set([...services, ...components, ...currentGroups].map((item) => item.id));
+		const groups = structuredClone(keepSystemGroupMembers(currentGroups, liveIds));
+		return { services, groups, components, connections };
 	}
 }
 

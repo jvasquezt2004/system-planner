@@ -276,14 +276,16 @@ export function stepStartMs(timeline: PlaybackTimeline, stepIndex: number): numb
 /**
  * Identifies what the playback clock is showing. Playback is stopped whenever
  * this key changes: any structural System design change (Components, Services,
- * ownership, Connections, and their endpoints) or any change to the Walkthrough
- * itself. Layout, viewport, and names do not change it.
+ * ownership, Groups and their membership, database Design links, Connections,
+ * and their endpoints) or any change to the Walkthrough itself. Layout,
+ * viewport, sizes, and names do not change it.
  */
 export function walkthroughPlaybackKey(walkthrough: Walkthrough, design: SystemDesign): string {
 	return JSON.stringify({
 		walkthrough,
 		services: design.services.map((service) => service.id),
-		components: design.components.map((component) => [component.id, component.serviceId]),
+		groups: design.groups.map((group) => [group.id, group.memberIds]),
+		components: design.components.map((component) => [component.id, component.serviceId, component.designId ?? null]),
 		connections: design.connections.map((connection) => [connection.id, connection.sourceId, connection.targetId]),
 	});
 }

@@ -6,19 +6,30 @@ import { join } from "node:path";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemGroup,
 	addSystemService,
+	componentsLinkedToDesign,
 	createEmptySystemDesign,
 	createMigratedSystemDesign,
 	describeSystemComponentRemoval,
+	canAddSystemGroupMember,
+	describeSystemGroupMove,
 	describeSystemServiceRemoval,
+	findSystemComponent,
+	keepSystemGroupMembers,
+	systemGroupsContaining,
 	moveSystemComponent,
+	moveSystemGroup,
 	moveSystemService,
 	normalizeSystemDesign,
 	removeSystemComponent,
+	removeSystemGroup,
 	removeSystemService,
+	resizeSystemGroup,
 	resizeSystemService,
 	systemConnectionRouteOffsets,
 	updateSystemComponent,
+	updateSystemGroup,
 	type SystemDesign,
 } from "../shared/system-design";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
@@ -472,3 +483,388 @@ describe("System design Services workspace", () => {
 		expect(workspace.getState().systemDesign?.components[0]!.position).toEqual({ x: 80, y: 120 });
 	});
 });
+
+/**
+ * Two overlapping Groups, one nested inside the other, around a Service that
+ * owns a Component and a shared Component at system scope.
+ */
+function groupedDesign(): SystemDesign {
+	let design = createEmptySystemDesign();
+	design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+	design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+	design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 300, y: 60 } });
+	design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 300, y: 200 } });
+	design = addSystemConnection(design, { id: "writes", sourceId: "worker", targetId: "queue", label: "Writes" });
+	design = addSystemGroup(design, { id: "domain", name: "Domain", position: { x: 20, y: 20 }, memberIds: ["queue", "orders"] });
+	design = addSystemGroup(design, { id: "core", name: "Core", position: { x: 0, y: 0 }, memberIds: ["domain", "cache", "queue"] });
+	return design;
+}
+
+describe("System design Groups", () => {
+	test("Groups overlap and nest without changing Service ownership or Component positions", () => {
+		const design = groupedDesign();
+		expect(design.groups.find((group) => group.id === "core")!.memberIds).toEqual(["domain", "cache", "queue"]);
+		expect(design.groups.find((group) => group.id === "domain")!.memberIds).toEqual(["queue", "orders"]);
+		expect(design.components.find((component) => component.id === "queue")!.serviceId).toBeNull();
+		expect(design.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+
+		const resized = resizeSystemGroup(design, "domain", { width: 600, height: 400 });
+		expect(resized.groups.find((group) => group.id === "domain")!.memberIds).toEqual(["queue", "orders"]);
+		expect(resized.components).toEqual(design.components);
+		expect(resized.services).toEqual(design.services);
+	});
+
+	test("a Group that contains itself or closes a nesting cycle is refused and leaves the design as it was", () => {
+		const design = groupedDesign();
+		const before = JSON.stringify(design);
+		expect(() => updateSystemGroup(design, "domain", { memberIds: ["domain"] })).toThrow("A Group cannot contain itself.");
+		// Core already contains Domain, so Domain cannot also contain Core.
+		expect(() => updateSystemGroup(design, "domain", { memberIds: ["core"] })).toThrow(/would create a cycle/);
+		expect(() => updateSystemGroup(design, "domain", { memberIds: ["ghost"] })).toThrow(/does not match a Component, Service, or Group/);
+		expect(JSON.stringify(design)).toBe(before);
+	});
+
+	test("moving a Group carries nested members and Service-owned Components exactly once", () => {
+		const design = groupedDesign();
+		const targets = describeSystemGroupMove(design, "core");
+		expect([...targets.groupIds].sort()).toEqual(["core", "domain"]);
+		expect(targets.serviceIds).toEqual(["orders"]);
+		expect([...targets.componentIds].sort()).toEqual(["cache", "queue", "worker"]);
+
+		const moved = moveSystemGroup(design, "core", { x: 100, y: 50 });
+		expect(moved.groups.find((group) => group.id === "core")!.position).toEqual({ x: 100, y: 50 });
+		expect(moved.groups.find((group) => group.id === "domain")!.position).toEqual({ x: 120, y: 70 });
+		expect(moved.services[0]!.position).toEqual({ x: 100, y: 50 });
+		// Queue is in both Groups; it shifts by the offset once, not twice.
+		expect(moved.components.find((component) => component.id === "queue")!.position).toEqual({ x: 400, y: 110 });
+		expect(moved.components.find((component) => component.id === "cache")!.position).toEqual({ x: 400, y: 250 });
+		expect(moved.components.find((component) => component.id === "worker")!.position).toEqual({ x: 140, y: 110 });
+		expect(moved.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+	});
+
+	test("Service membership is independent of ownership: a Group move does not reassign owners", () => {
+		const design = groupedDesign();
+		const moved = moveSystemGroup(design, "domain", { x: 200, y: 200 });
+		expect(moved.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+		expect(moved.components.find((component) => component.id === "queue")!.serviceId).toBeNull();
+
+		const withWorker = updateSystemGroup(design, "domain", { memberIds: ["queue", "orders", "worker"] });
+		expect(withWorker.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+		expect(withWorker.services).toEqual(design.services);
+	});
+
+	test("removing a Group keeps its members, their ownership, and their Connections", () => {
+		const design = groupedDesign();
+		const removed = removeSystemGroup(design, "domain");
+		expect(removed.groups.map((group) => group.id)).toEqual(["core"]);
+		expect(removed.groups[0]!.memberIds).toEqual(["cache", "queue"]);
+		expect(removed.components.map((component) => component.id).sort()).toEqual(["cache", "queue", "worker"]);
+		expect(removed.services.map((service) => service.id)).toEqual(["orders"]);
+		expect(removed.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+		expect(removed.connections.map((connection) => connection.id)).toEqual(["writes"]);
+	});
+
+	test("removing a Component or Service also removes it from every Group that named it", () => {
+		const design = groupedDesign();
+		const withoutQueue = removeSystemComponent(design, "queue");
+		expect(withoutQueue.groups.find((group) => group.id === "domain")!.memberIds).toEqual(["orders"]);
+		expect(withoutQueue.groups.find((group) => group.id === "core")!.memberIds).toEqual(["domain", "cache"]);
+
+		const withoutOrders = removeSystemService(design, "orders");
+		expect(withoutOrders.groups.find((group) => group.id === "domain")!.memberIds).toEqual(["queue"]);
+		expect(withoutOrders.components.find((component) => component.id === "worker")!.serviceId).toBeNull();
+	});
+
+	test("a stored Group document round-trips, a legacy document loads with no Groups, and invalid membership is rejected", () => {
+		const design = groupedDesign();
+		expect(normalizeSystemDesign(JSON.parse(JSON.stringify(design)))).toEqual(design);
+
+		const legacy = normalizeSystemDesign({ components: [], connections: [], viewport: { x: 0, y: 0, zoom: 1 } });
+		expect(legacy.groups).toEqual([]);
+
+		const stored = JSON.parse(JSON.stringify(design));
+		stored.groups[0].memberIds.push("ghost");
+		expect(() => normalizeSystemDesign(stored)).toThrow('Group "domain" contains "ghost", which does not exist.');
+
+		const cyclic = JSON.parse(JSON.stringify(design));
+		cyclic.groups.find((group: { id: string }) => group.id === "domain").memberIds.push("core");
+		expect(() => normalizeSystemDesign(cyclic)).toThrow(/cycle/);
+
+		const selfNested = JSON.parse(JSON.stringify(design));
+		selfNested.groups[0].memberIds.push(selfNested.groups[0].id);
+		expect(() => normalizeSystemDesign(selfNested)).toThrow(/cannot contain itself/);
+	});
+
+	test("a Group cannot reuse the id of a Component or Service", () => {
+		const design = groupedDesign();
+		expect(() => addSystemGroup(design, { id: "queue", position: { x: 0, y: 0 } })).toThrow('"queue" is already used by a Component.');
+		expect(() => addSystemComponent(design, { id: "domain", position: { x: 0, y: 0 } })).toThrow('"domain" is already used by a Group.');
+		expect(() => normalizeSystemDesign({
+			services: [],
+			groups: [{ id: "queue", name: "G", position: { x: 0, y: 0 }, size: { width: 200, height: 160 }, memberIds: [] }],
+			components: [{ id: "queue", kind: "generic", name: "Queue", properties: [], position: { x: 0, y: 0 } }],
+			connections: [],
+		})).toThrow('Component "queue" uses the id of a Group.');
+	});
+});
+
+describe("System design Groups workspace", () => {
+	test("Groups, memberships, frames, and their nesting persist across reopen", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Regions" });
+		await first.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await first.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 60 });
+		await first.addSystemGroup({ id: "east", name: "East region", x: 260, y: 20, width: 400, height: 260, memberIds: ["queue"] });
+		await first.addSystemGroup({ id: "platform", name: "Platform", x: 0, y: 0, memberIds: ["east", "orders"] });
+		await first.moveSystemGroup({ groupId: "platform", x: 40, y: 40 });
+		await first.resizeSystemGroup({ groupId: "east", width: 480, height: 300 });
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const system = reopened.getState().systemDesign!;
+		expect(system.groups).toEqual([
+			// East moved with its parent Group by the same offset.
+			{ id: "east", name: "East region", position: { x: 300, y: 60 }, size: { width: 480, height: 300 }, memberIds: ["queue"] },
+			{ id: "platform", name: "Platform", position: { x: 40, y: 40 }, size: { width: 360, height: 240 }, memberIds: ["east", "orders"] },
+		]);
+		expect(system.components.find((component) => component.id === "queue")!.position).toEqual({ x: 340, y: 100 });
+		expect(system.services[0]!.position).toEqual({ x: 40, y: 40 });
+	});
+
+	test("creating, renaming, changing members, moving, resizing, and removing a Group are named history actions that Undo and Redo step through", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "History" });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 60 });
+		await workspace.addSystemComponent({ id: "cache", name: "Cache", x: 300, y: 200 });
+
+		const created = await workspace.addSystemGroup({ id: "domain", name: "Domain", x: 260, y: 20, memberIds: ["queue"] });
+		expect(created.undoActionName).toBe("Add group “Domain”");
+		const added = await workspace.updateSystemGroup({ groupId: "domain", changes: { memberIds: ["queue", "cache"] } });
+		expect(added.undoActionName).toBe("Add “Cache” to “Domain”");
+		const removedMember = await workspace.updateSystemGroup({ groupId: "domain", changes: { memberIds: ["cache"] } });
+		expect(removedMember.undoActionName).toBe("Remove “Queue” from “Domain”");
+		const renamed = await workspace.updateSystemGroup({ groupId: "domain", changes: { name: "Data" } });
+		expect(renamed.undoActionName).toBe("Rename group to “Data”");
+		const moved = await workspace.moveSystemGroup({ groupId: "domain", x: 0, y: 0 });
+		expect(moved.undoActionName).toBe("Move group “Data”");
+		const resized = await workspace.resizeSystemGroup({ groupId: "domain", width: 500, height: 300 });
+		expect(resized.undoActionName).toBe("Resize group “Data”");
+		const removed = await workspace.removeSystemGroup({ groupId: "domain" });
+		expect(removed.undoActionName).toBe("Remove group “Data”");
+		expect(removed.systemDesign!.groups).toEqual([]);
+		expect(removed.systemDesign!.components.map((component) => component.id).sort()).toEqual(["cache", "queue"]);
+
+		const designId = () => workspace.getState().activeDesignId!;
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]).toMatchObject({ id: "domain", name: "Data", memberIds: ["cache"] });
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]!.size).toEqual({ width: 360, height: 240 });
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]!.position).toEqual({ x: 260, y: 20 });
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]).toMatchObject({ name: "Domain", memberIds: ["cache"] });
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]!.memberIds).toEqual(["queue", "cache"]);
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups[0]!.memberIds).toEqual(["queue"]);
+		await workspace.undo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups).toEqual([]);
+
+		await workspace.redo({ designId: designId() });
+		expect(workspace.getState().systemDesign!.groups).toHaveLength(1);
+	});
+
+	test("a refused nesting cycle changes nothing and adds no history entry", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Cycles" });
+		await workspace.addSystemGroup({ id: "outer", name: "Outer", x: 0, y: 0 });
+		await workspace.addSystemGroup({ id: "inner", name: "Inner", x: 20, y: 20, memberIds: ["outer"] });
+		const before = workspace.getState();
+		await expect(workspace.updateSystemGroup({ groupId: "outer", changes: { memberIds: ["inner"] } })).rejects.toThrow(/would create a cycle/);
+		expect(workspace.getState().systemDesign).toEqual(before.systemDesign);
+		expect(workspace.getState().undoActionName).toBe(before.undoActionName);
+	});
+
+	test("removing a Component is one undoable action that restores its Group memberships", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Memberships" });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 60 });
+		await workspace.addSystemGroup({ id: "domain", name: "Domain", x: 260, y: 20, memberIds: ["queue"] });
+		await workspace.removeSystemComponent({ componentId: "queue" });
+		expect(workspace.getState().systemDesign!.groups[0]!.memberIds).toEqual([]);
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign!.groups[0]!.memberIds).toEqual(["queue"]);
+	});
+});
+
+describe("System design Group helpers", () => {
+	test("a Group offers only members that do not already enclose it and cannot close a cycle", () => {
+		const design = groupedDesign();
+		expect(systemGroupsContaining(design, "queue").map((group) => group.id).sort()).toEqual(["core", "domain"]);
+		expect(canAddSystemGroupMember(design, "domain", "domain")).toBe(false);
+		expect(canAddSystemGroupMember(design, "domain", "core")).toBe(false);
+		expect(canAddSystemGroupMember(design, "core", "domain")).toBe(true);
+		expect(canAddSystemGroupMember(design, "core", "ghost")).toBe(false);
+	});
+
+	test("Assistant Revert keeps Group membership only for items the restored design still has", () => {
+		const groups = groupedDesign().groups;
+		const kept = keepSystemGroupMembers(groups, new Set(["queue", "domain", "core", "orders"]));
+		expect(kept.find((group) => group.id === "domain")!.memberIds).toEqual(["queue", "orders"]);
+		const pruned = keepSystemGroupMembers(groups, new Set(["domain", "core", "orders"]));
+		expect(pruned.find((group) => group.id === "domain")!.memberIds).toEqual(["orders"]);
+		expect(pruned.find((group) => group.id === "core")!.memberIds).toEqual(["domain"]);
+	});
+});
+
+
+describe("System design database links", () => {
+	test("only a Database component may name a Design, and a linked Component cannot change kind until it is unlinked", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemComponent(design, { id: "orders-db", kind: "database", name: "Orders DB", position: { x: 0, y: 0 }, designId: "design-orders" });
+		expect(() => addSystemComponent(design, { id: "cache", kind: "generic", name: "Cache", position: { x: 300, y: 0 }, designId: "design-orders" }))
+			.toThrow("Only a Database component can link to a database design.");
+		expect(() => updateSystemComponent(design, "orders-db", { kind: "generic" }))
+			.toThrow("Unlink this Component from its database design before changing its kind.");
+
+		const unlinked = updateSystemComponent(design, "orders-db", { designId: undefined });
+		expect(findSystemComponent(unlinked, "orders-db")).not.toHaveProperty("designId");
+		expect(updateSystemComponent(unlinked, "orders-db", { kind: "generic" }).components[0]!.kind).toBe("generic");
+	});
+
+	test("a stored document with a generic Component naming a Design is rejected", () => {
+		expect(() => normalizeSystemDesign({
+			components: [{ id: "cache", kind: "generic", name: "Cache", properties: [], position: { x: 0, y: 0 }, serviceId: null, designId: "design-1" }],
+			connections: [],
+		})).toThrow("Only a Database component can link to a database design.");
+	});
+
+	test("a conceptual database such as Redis stays unlinked, while a linked Database component keeps its own identity", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Checkout" });
+		await workspace.addSystemComponent({ id: "redis", kind: "database", name: "Session store", technology: "Redis", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", technology: "PostgreSQL", x: 300, y: 0 });
+
+		expect(componentIn(workspace, "redis")).not.toHaveProperty("designId");
+		const linked = await workspace.createSystemDatabaseDesign({ componentId: "orders-db", name: "Orders schema" });
+		const designId = linked.activeDesignId!;
+		expect(componentIn(workspace, "orders-db").designId).toBe(designId);
+		expect(designId).not.toBe("orders-db");
+		expect(componentIn(workspace, "redis")).not.toHaveProperty("designId");
+		expect(linked.designs.find((design) => design.id === designId)?.name).toBe("Orders schema");
+
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+		const reopened = await openWorkspace(databasePath);
+		expect(componentIn(reopened, "orders-db").designId).toBe(designId);
+		expect(componentIn(reopened, "redis")).not.toHaveProperty("designId");
+	});
+
+	test("creating a Design for a Database component keeps the overview open and its save status, and switching Designs keeps them too", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Overview" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		await workspace.setActiveView({ view: "system" });
+
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "orders-db" });
+		expect(created.systemDesign?.components.map((component) => component.id)).toEqual(["orders-db"]);
+		expect(created.activeView).toBe("system");
+		expect(created.systemSave?.status).toBe("saved");
+
+		const first = created.designs.find((design) => design.id !== created.activeDesignId)!;
+		const switched = await workspace.openDesign({ designId: first.id });
+		expect(switched.systemDesign?.components.map((component) => component.id)).toEqual(["orders-db"]);
+		expect(switched.activeView).toBe("system");
+	});
+
+	test("linking, unlinking, and relinking are Project-history actions that Undo and Redo step through, naming each change", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "History" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "orders-db", name: "Orders schema" });
+		const designId = created.activeDesignId!;
+		expect(created.undoActionName).toBe("Link “Orders DB” to “Orders schema”");
+
+		await workspace.linkSystemDatabase({ componentId: "orders-db", designId: null });
+		expect(componentIn(workspace, "orders-db")).not.toHaveProperty("designId");
+		expect(workspace.getState().undoActionName).toBe("Unlink “Orders DB” from its design");
+
+		await workspace.undo({ designId });
+		expect(componentIn(workspace, "orders-db").designId).toBe(designId);
+		await workspace.redo({ designId });
+		expect(componentIn(workspace, "orders-db")).not.toHaveProperty("designId");
+	});
+
+	test("two Database components can share one Design, and a schema edit is visible through either link across reopen", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Replicas" });
+		await workspace.addSystemComponent({ id: "primary", kind: "database", name: "Primary", technology: "PostgreSQL", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "replica", kind: "database", name: "Read replica", technology: "PostgreSQL", x: 300, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "primary", name: "Orders schema" });
+		const shared = created.activeDesignId!;
+		const linked = await workspace.linkSystemDatabase({ componentId: "replica", designId: shared });
+
+		expect(componentsLinkedToDesign(linked.systemDesign!, shared).map((component) => component.id)).toEqual(["primary", "replica"]);
+		expect(linked.undoActionName).toBe("Link “Read replica” to “Orders schema”");
+
+		await workspace.addTable({ name: "orders", designId: shared });
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const state = reopened.getState();
+		expect(componentsLinkedToDesign(state.systemDesign!, shared)).toHaveLength(2);
+		const opened = await reopened.openDesign({ designId: shared });
+		expect(opened.design?.tables.map((table) => table.name)).toEqual(["orders"]);
+	});
+
+	test("unlinking or removing a Database component keeps its Design, Scenarios, and Edge functions", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await workspace.createProject({ name: "Billing" });
+		await workspace.addSystemComponent({ id: "billing-db", kind: "database", name: "Billing DB", x: 0, y: 0 });
+		const created = await workspace.createSystemDatabaseDesign({ componentId: "billing-db", name: "Billing schema" });
+		const designId = created.activeDesignId!;
+		await workspace.createScenario({ name: "Charge card", designId });
+		await workspace.createEdgeFunction({ name: "webhook", designId });
+
+		await workspace.linkSystemDatabase({ componentId: "billing-db", designId: null });
+		await workspace.removeSystemComponent({ componentId: "billing-db" });
+		expect(workspace.getState().systemDesign?.components).toEqual([]);
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const opened = await reopened.openDesign({ designId });
+		expect(opened.designs.map((design) => design.name)).toContain("Billing schema");
+		expect(opened.scenarios.map((scenario) => scenario.name)).toEqual(["Charge card"]);
+		expect(opened.edgeFunctions.map((edgeFunction) => edgeFunction.name)).toEqual(["webhook"]);
+	});
+
+	test("link requests refuse a Design outside the Project, a generic Component, and a Component that is already linked", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Guards" });
+		await workspace.addSystemComponent({ id: "orders-db", kind: "database", name: "Orders DB", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 0 });
+		await expect(workspace.linkSystemDatabase({ componentId: "orders-db", designId: "missing-design" }))
+			.rejects.toThrow("That design could not be found in this project.");
+		await expect(workspace.linkSystemDatabase({ componentId: "queue", designId: workspace.getState().activeDesignId! }))
+			.rejects.toThrow("Only a Database component can link to a database design.");
+		await expect(workspace.createSystemDatabaseDesign({ componentId: "queue" }))
+			.rejects.toThrow("Only a Database component can link to a database design.");
+
+		await workspace.createSystemDatabaseDesign({ componentId: "orders-db" });
+		await expect(workspace.createSystemDatabaseDesign({ componentId: "orders-db" }))
+			.rejects.toThrow("This database component is already linked to a design. Unlink it first.");
+	});
+});
+
+function componentIn(workspace: DesignWorkspace, componentId: string) {
+	const component = workspace.getState().systemDesign?.components.find((item) => item.id === componentId);
+	if (!component) throw new Error(`Missing component ${componentId}`);
+	return component;
+}

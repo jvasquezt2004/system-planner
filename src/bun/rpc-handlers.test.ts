@@ -141,6 +141,39 @@ describe("RPC request handlers", () => {
 		});
 	});
 
+	test("System design Group requests forward their complete parameters to the workspace", async () => {
+		const captured: Record<string, unknown> = {};
+		const record = (name: string) => async (action: unknown) => {
+			captured[name] = action;
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			addSystemGroup: record("addSystemGroup"),
+			updateSystemGroup: record("updateSystemGroup"),
+			moveSystemGroup: record("moveSystemGroup"),
+			resizeSystemGroup: record("resizeSystemGroup"),
+			removeSystemGroup: record("removeSystemGroup"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.addSystemGroup({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
+		expect(captured.addSystemGroup).toEqual({ id: "domain", name: "Domain", x: 40, y: 40, width: 360, height: 240, memberIds: ["queue", "orders"] });
+		await handlers.updateSystemGroup({ groupId: "domain", changes: { memberIds: ["queue"] } });
+		expect(captured.updateSystemGroup).toEqual({ groupId: "domain", changes: { memberIds: ["queue"] } });
+		await handlers.moveSystemGroup({ groupId: "domain", x: 60, y: 30 });
+		expect(captured.moveSystemGroup).toEqual({ groupId: "domain", x: 60, y: 30 });
+		await handlers.resizeSystemGroup({ groupId: "domain", width: 500, height: 300 });
+		expect(captured.resizeSystemGroup).toEqual({ groupId: "domain", width: 500, height: 300 });
+		await handlers.removeSystemGroup({ groupId: "domain" });
+		expect(captured.removeSystemGroup).toEqual({ groupId: "domain" });
+	});
+
 	test("System design Service requests forward their complete parameters to the workspace", async () => {
 		const captured: Record<string, unknown> = {};
 		const record = (name: string) => async (action: unknown) => {
@@ -180,6 +213,32 @@ describe("RPC request handlers", () => {
 		const plan = await handlers.describeSystemServiceRemoval({ serviceId: "orders" });
 		expect(captured.describeSystemServiceRemoval).toBe("orders");
 		expect(plan.serviceName).toBe("Orders");
+	});
+
+	test("database link requests forward the component, the target Design, and the create-and-link name", async () => {
+		const captured: Record<string, unknown> = {};
+		const record = (name: string) => async (action: unknown) => {
+			captured[name] = action;
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			linkSystemDatabase: record("linkSystemDatabase"),
+			createSystemDatabaseDesign: record("createSystemDatabaseDesign"),
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.linkSystemDatabase({ componentId: "replica", designId: "design-orders" });
+		expect(captured.linkSystemDatabase).toEqual({ componentId: "replica", designId: "design-orders" });
+		await handlers.linkSystemDatabase({ componentId: "replica", designId: null });
+		expect(captured.linkSystemDatabase).toEqual({ componentId: "replica", designId: null });
+		await handlers.createSystemDatabaseDesign({ componentId: "primary", name: "Orders schema" });
+		expect(captured.createSystemDatabaseDesign).toEqual({ componentId: "primary", name: "Orders schema" });
 	});
 
 	test("Walkthrough requests forward their complete parameter objects to the workspace", async () => {

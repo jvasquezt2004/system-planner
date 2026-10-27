@@ -1,23 +1,28 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
-import type { CanvasPoint, CanvasViewport, WorkspaceState } from "../shared/design";
+import { ArrowRight, BoxSelect, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
+import type { CanvasPoint, CanvasViewport, DatabaseDesignSummary, WorkspaceState } from "../shared/design";
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
+	componentsLinkedToDesign,
 	SYSTEM_COMPONENT_KINDS,
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
 	describeSystemComponentRemoval,
 	describeSystemServiceRemoval,
-	openServiceSpotNear,
-	openSpotNear,
+	canAddSystemGroupMember,
 	findSystemComponent,
 	findSystemConnection,
+	findSystemGroup,
 	findSystemService,
+	openServiceSpotNear,
+	openSpotNear,
+	systemGroupsContaining,
 	type SystemComponent,
 	type SystemComponentKind,
 	type SystemComponentRemovalPlan,
 	type SystemConnection,
 	type SystemDesign,
+	type SystemGroup,
 	type SystemService,
 	type SystemServiceRemovalPlan,
 	type SystemServiceSize,
@@ -29,10 +34,12 @@ import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrou
 import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	connectionGeometries,
+	groupFrameAround,
 	labelWidth,
 	movedBeyondThreshold,
 	playbackRoutes,
 	previewScene,
+	resizedGroupSize,
 	resizedServiceSize,
 	screenToWorld,
 	truncateLabel,
@@ -56,6 +63,7 @@ type Client = typeof workspaceClient;
 type Selection =
 	| { kind: "component"; id: string }
 	| { kind: "service"; id: string }
+	| { kind: "group"; id: string }
 	| { kind: "connection"; id: string }
 	| null;
 type Drag = {
@@ -78,6 +86,8 @@ const KIND_LABELS: Record<SystemComponentKind, string> = {
 };
 
 const SAVE_DEBOUNCE_MS = 400;
+/** Height of a Group frame's header, where its name sits and where it can be dragged from. */
+const GROUP_HEADER_HEIGHT = 40;
 const ARROW_ID = "system-design-arrow";
 
 export type SystemDesignViewProps = {
@@ -87,7 +97,8 @@ export type SystemDesignViewProps = {
 	onApply: (action: () => Promise<WorkspaceState>) => void;
 	/** Runs a navigation or layout save without the busy state. */
 	onLayout: (action: () => Promise<WorkspaceState>) => void;
-	onOpenDatabase: () => void;
+	/** Opens the linked database Design's workspace. */
+	onOpenDatabase: (designId: string) => void;
 };
 
 /**
@@ -99,10 +110,13 @@ export type SystemDesignViewProps = {
  */
 export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatabase }: SystemDesignViewProps) {
 	const design = state.systemDesign ?? null;
+	const designs = state.designs ?? [];
 	const containerRef = useRef<HTMLDivElement>(null);
 	const [viewport, setViewport] = useState<CanvasViewport>(design?.viewport ?? { x: 0, y: 0, zoom: 1 });
 	const [selection, setSelection] = useState<Selection>(null);
 	const [connectingFrom, setConnectingFrom] = useState<string | null | undefined>(undefined);
+	/** The members chosen so far for a new Group, or null when not choosing. */
+	const [grouping, setGrouping] = useState<string[] | null>(null);
 	const [drag, setDrag] = useState<Drag | null>(null);
 	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
@@ -149,6 +163,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const selectedComponent = selection?.kind === "component" ? findSystemComponent(design, selection.id) ?? null : null;
 	const selectedService = selection?.kind === "service" ? findSystemService(design, selection.id) ?? null : null;
 	const selectedConnection = selection?.kind === "connection" ? findSystemConnection(design, selection.id) ?? null : null;
+	const selectedGroup = selection?.kind === "group" ? findSystemGroup(design, selection.id) ?? null : null;
 	const serviceNames = new Map(design.services.map((service) => [service.id, service.name]));
 	/** While a Walkthrough clock is in use it traces the playing step; otherwise the open step is traced. */
 	const highlight: WalkthroughHighlight | null = frame
@@ -181,7 +196,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	function handleBackgroundPointerDown(event: React.PointerEvent<HTMLDivElement>) {
-		if (event.button !== 0) return;
+		// Toolbar buttons and overlays sit inside the canvas. Their presses must reach them, not capture the pointer for a pan.
+		const onBackground = event.target === event.currentTarget || event.target instanceof SVGElement;
+		if (event.button !== 0 || !onBackground) return;
 		event.currentTarget.setPointerCapture(event.pointerId);
 		pan.current = {
 			pointerStart: pointerInContainer(event),
@@ -230,7 +247,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		}
 	}
 
-	/** Saves a finished gesture as one action: a move, a Service move, or a Service resize. */
+	/** Saves a finished gesture as one action: a move or resize of one frame or item. */
 	function commitScene(gesture: SceneDrag) {
 		if (gesture.mode === "component") {
 			const { id, position } = gesture;
@@ -238,6 +255,12 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		} else if (gesture.mode === "service") {
 			const { id, position } = gesture;
 			onApply(() => client.moveSystemService(id, position));
+		} else if (gesture.mode === "group") {
+			const { id, position } = gesture;
+			onApply(() => client.moveSystemGroup(id, position));
+		} else if (gesture.mode === "group-resize") {
+			const { id, size } = gesture;
+			onApply(() => client.resizeSystemGroup(id, size));
 		} else {
 			const { id, size } = gesture;
 			onApply(() => client.resizeSystemService(id, size));
@@ -272,9 +295,25 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		startDrag(event, { mode: "resize", id: service.id, size: service.size }, service.position, service.size);
 	}
 
+	function handleGroupPointerDown(event: React.PointerEvent<SVGGElement>, group: SystemGroup) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		startDrag(event, { mode: "group", id: group.id, position: group.position }, group.position, group.size);
+	}
+
+	function handleGroupResizePointerDown(event: React.PointerEvent<SVGRectElement>, group: SystemGroup) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		startDrag(event, { mode: "group-resize", id: group.id, size: group.size }, group.position, group.size);
+	}
+
 	function handleComponentClick(component: SystemComponent) {
 		if (connectingFrom !== undefined) {
 			connectEndpoint(component.id);
+			return;
+		}
+		if (grouping !== null) {
+			toggleGroupingMember(component.id);
 			return;
 		}
 		setSelection({ kind: "component", id: component.id });
@@ -285,7 +324,46 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			connectEndpoint(service.id);
 			return;
 		}
+		if (grouping !== null) {
+			toggleGroupingMember(service.id);
+			return;
+		}
 		setSelection({ kind: "service", id: service.id });
+	}
+
+	function handleGroupClick(group: SystemGroup) {
+		if (connectingFrom !== undefined) return;
+		if (grouping !== null) {
+			toggleGroupingMember(group.id);
+			return;
+		}
+		setSelection({ kind: "group", id: group.id });
+	}
+
+	function toggleGroupingMember(id: string) {
+		setGrouping((current) => {
+			if (current === null) return current;
+			return current.includes(id) ? current.filter((item) => item !== id) : [...current, id];
+		});
+	}
+
+	/** Encloses the chosen members in a new Group. The frame only starts the layout; membership is exactly the chosen list. */
+	function createGroup() {
+		if (grouping === null || grouping.length === 0) return;
+		const frame = groupFrameAround(design!, grouping);
+		if (!frame) return;
+		const id = crypto.randomUUID();
+		const memberIds = grouping;
+		setGrouping(null);
+		setSelection({ kind: "group", id });
+		onApply(() => client.addSystemGroup({
+			id,
+			memberIds,
+			x: frame.position.x,
+			y: frame.position.y,
+			width: frame.size.width,
+			height: frame.size.height,
+		}));
 	}
 
 	/** Connect mode accepts a Component or a Service as either end of the interaction. */
@@ -363,6 +441,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if (isEditingText(event.target)) return;
 		if (event.key === "Escape") {
 			setConnectingFrom(undefined);
+			setGrouping(null);
 			setSelection(null);
 			return;
 		}
@@ -372,6 +451,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				const id = selection.id;
 				setSelection(null);
 				onApply(() => client.removeSystemConnection(id));
+			} else if (selection.kind === "group") {
+				// Removing a Group keeps its members, so it needs no confirmation.
+				const id = selection.id;
+				setSelection(null);
+				onApply(() => client.removeSystemGroup(id));
 			} else if (selection.kind === "service") {
 				openServiceRemoval(selection.id);
 			} else {
@@ -380,8 +464,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		}
 	}
 
-	const hasItems = design.components.length > 0 || design.services.length > 0;
+	const hasItems = design.components.length > 0 || design.services.length > 0 || design.groups.length > 0;
 	const endpointCount = design.components.length + design.services.length;
+	const memberCount = endpointCount + design.groups.length;
 
 	return (
 		<div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
@@ -432,6 +517,36 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						</marker>
 					</defs>
 					<g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
+						{scene.groups.map((group) => {
+							const picked = grouping?.includes(group.id) ?? false;
+							const selected = selection?.kind === "group" && selection.id === group.id;
+							const emphasized = selected || picked;
+							const { width, height } = group.size;
+							return (
+								<g
+									key={group.id}
+									data-group-id={group.id}
+									data-member-count={group.memberIds.length}
+									transform={`translate(${group.position.x} ${group.position.y})`}
+									aria-label={`Group: ${group.name}`}
+									aria-pressed={grouping !== null ? picked : selected}
+								>
+									<rect
+										width={width}
+										height={height}
+										rx={16}
+										pointerEvents="none"
+										strokeDasharray="2 4"
+										strokeWidth={emphasized ? 2 : 1}
+										style={{
+											fill: "var(--color-paper-tint)",
+											fillOpacity: 0.55,
+											stroke: emphasized ? "var(--color-pencil)" : "var(--color-ink-3)",
+										}}
+									/>
+								</g>
+							);
+						})}
 						{scene.services.map((service) => {
 							const selected = selection?.kind === "service" && selection.id === service.id;
 							const linking = connectingFrom === service.id;
@@ -551,6 +666,69 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 								</g>
 							);
 						})}
+						{scene.groups.map((group) => {
+							// Headers and resize handles sit above Services and Components so a frame stays reachable where a boundary overlaps it.
+							const selected = selection?.kind === "group" && selection.id === group.id;
+							const picked = grouping?.includes(group.id) ?? false;
+							const emphasized = selected || picked;
+							const { width, height } = group.size;
+							return (
+								<g
+									key={`handles-${group.id}`}
+									data-group-handles={group.id}
+									transform={`translate(${group.position.x} ${group.position.y})`}
+								>
+									<g
+										role="button"
+										tabIndex={0}
+										aria-label={`Group: ${group.name}`}
+										aria-pressed={grouping !== null ? picked : selected}
+										className="cursor-grab active:cursor-grabbing"
+										onPointerDown={(event) => handleGroupPointerDown(event, group)}
+										onClick={(event) => {
+											event.stopPropagation();
+											handleGroupClick(group);
+										}}
+										onKeyDown={(event) => {
+											if (event.key === "Enter" || event.key === " ") {
+												event.preventDefault();
+												handleGroupClick(group);
+											}
+										}}
+									>
+										<title>{group.name}</title>
+										<rect
+											width={width}
+											height={GROUP_HEADER_HEIGHT}
+											rx={16}
+											style={{
+												fill: "var(--color-paper-raised)",
+												stroke: emphasized ? "var(--color-pencil)" : "var(--color-rule-strong)",
+											}}
+											strokeWidth={emphasized ? 2 : 1}
+										/>
+										<text x={14} y={16} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
+											GROUP · {group.memberIds.length}
+										</text>
+										<text x={14} y={32} fontSize={13.5} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
+											{truncateLabel(group.name, 36)}
+										</text>
+									</g>
+									<rect
+										data-testid="group-resize-handle"
+										x={width - 14}
+										y={height - 14}
+										width={10}
+										height={10}
+										rx={2}
+										className="cursor-nwse-resize"
+										style={{ fill: selected ? "var(--color-pencil)" : "var(--color-rule-strong)" }}
+										onPointerDown={(event) => handleGroupResizePointerDown(event, group)}
+										onClick={(event) => event.stopPropagation()}
+									/>
+								</g>
+							);
+						})}
 						{frame?.message && <WalkthroughMessageDot message={frame.message} />}
 						{scene.components.map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
@@ -613,8 +791,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										{truncateLabel(detail, 28)}
 									</text>
 									{component.kind === "database" && component.designId && (
-										<text x={SYSTEM_COMPONENT_SIZE.width - 14} y={22} textAnchor="end" fontSize={10} style={{ fill: "var(--color-pencil)" }}>
-											LINKED
+										<text x={SYSTEM_COMPONENT_SIZE.width - 14} y={22} textAnchor="end" fontSize={10} style={{ fill: "var(--color-pencil)" }} data-testid="schema-link-badge">
+											{componentsLinkedToDesign(design, component.designId).length > 1 ? "SHARED" : "LINKED"}
 										</text>
 									)}
 									{owner !== undefined && (
@@ -653,11 +831,28 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						size="sm"
 						variant={connectingFrom !== undefined ? "pencil" : "outline"}
 						aria-pressed={connectingFrom !== undefined}
-						onClick={() => setConnectingFrom(connectingFrom === undefined ? null : undefined)}
+						onClick={() => {
+							setGrouping(null);
+							setConnectingFrom(connectingFrom === undefined ? null : undefined);
+						}}
 						disabled={endpointCount < 2}
 					>
 						<Link2 className="size-3.5" />
 						{connectingFrom === undefined ? "Connect" : connectingFrom === null ? "Choose source" : "Choose target"}
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant={grouping !== null ? "pencil" : "outline"}
+						aria-pressed={grouping !== null}
+						onClick={() => {
+							setConnectingFrom(undefined);
+							setGrouping(grouping === null ? [] : null);
+						}}
+						disabled={memberCount === 0}
+					>
+						<BoxSelect className="size-3.5" />
+						Group
 					</Button>
 					<Button
 						type="button"
@@ -703,6 +898,22 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					</div>
 				)}
 
+				{grouping !== null && (
+					<div className="absolute bottom-4 left-4 flex flex-wrap items-center gap-2 rounded-md bg-paper-raised/95 px-3 py-1.5 text-[12px] text-ink-2 shadow-xs">
+						<p>
+							{grouping.length === 0
+								? "Choose the components, services, or groups to enclose. Press Escape to cancel."
+								: `${grouping.length} selected. Choose more, then create the group.`}
+						</p>
+						<Button type="button" size="sm" onClick={createGroup} disabled={grouping.length === 0}>
+							Create group
+						</Button>
+						<Button type="button" size="sm" variant="outline" onClick={() => setGrouping(null)}>
+							Cancel
+						</Button>
+					</div>
+				)}
+
 				{connectingFrom !== undefined && (
 					<p className="absolute bottom-4 left-4 rounded-md bg-paper-raised/95 px-3 py-1.5 text-[12px] text-ink-2 shadow-xs">
 						{connectingFrom === null
@@ -712,7 +923,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				)}
 			</div>
 
-			{(selectedComponent || selectedService || selectedConnection) && (
+			{(selectedComponent || selectedService || selectedConnection || selectedGroup) && (
 				<aside
 					aria-label="Selection"
 					className="absolute right-4 top-4 bottom-4 flex w-[300px] max-w-[calc(100%-2rem)] flex-col overflow-y-auto rounded-md border border-rule-soft bg-paper-raised p-4 shadow-sm"
@@ -722,6 +933,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							key={selectedComponent.id}
 							component={selectedComponent}
 							design={design}
+							designs={designs}
 							onClose={() => setSelection(null)}
 							onApply={onApply}
 							client={client}
@@ -741,6 +953,22 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onSelectComponent={(id) => setSelection({ kind: "component", id })}
 							onSelectConnection={(id) => setSelection({ kind: "connection", id })}
 							onRequestRemove={() => openServiceRemoval(selectedService.id)}
+						/>
+					)}
+					{selectedGroup && (
+						<GroupInspector
+							key={selectedGroup.id}
+							group={selectedGroup}
+							design={design}
+							client={client}
+							onApply={onApply}
+							onClose={() => setSelection(null)}
+							onSelect={(kind, id) => setSelection({ kind, id })}
+							onRemove={() => {
+								const id = selectedGroup.id;
+								setSelection(null);
+								onApply(() => client.removeSystemGroup(id));
+							}}
 						/>
 					)}
 					{selectedConnection && (
@@ -782,10 +1010,13 @@ function sceneAfterPointer(drag: Drag, dx: number, dy: number): SceneDrag {
 	if (scene.mode === "resize") {
 		return { mode: "resize", id: scene.id, size: resizedServiceSize(drag.originSize, dx, dy) };
 	}
+	if (scene.mode === "group-resize") {
+		return { mode: "group-resize", id: scene.id, size: resizedGroupSize(drag.originSize, dx, dy) };
+	}
 	const position = { x: Math.round(drag.origin.x + dx), y: Math.round(drag.origin.y + dy) };
-	return scene.mode === "component"
-		? { mode: "component", id: scene.id, position }
-		: { mode: "service", id: scene.id, position };
+	if (scene.mode === "component") return { mode: "component", id: scene.id, position };
+	if (scene.mode === "group") return { mode: "group", id: scene.id, position };
+	return { mode: "service", id: scene.id, position };
 }
 
 function RemovalSummary({ removal }: { removal: PendingRemoval }) {
@@ -861,6 +1092,7 @@ function SaveLine({ save }: { save: WorkspaceState["systemSave"] }) {
 function ComponentInspector({
 	component,
 	design,
+	designs,
 	client,
 	onApply,
 	onClose,
@@ -870,12 +1102,13 @@ function ComponentInspector({
 }: {
 	component: SystemComponent;
 	design: SystemDesign;
+	designs: DatabaseDesignSummary[];
 	client: Client;
 	onApply: (action: () => Promise<WorkspaceState>) => void;
 	onClose: () => void;
 	onSelectConnection: (id: string) => void;
 	onRequestRemove: () => void;
-	onOpenDatabase: () => void;
+	onOpenDatabase: (designId: string) => void;
 }) {
 	const [name, setName] = useState(component.name);
 	const [technology, setTechnology] = useState(component.technology ?? "");
@@ -932,6 +1165,7 @@ function ComponentInspector({
 				<select
 					aria-label="Component kind"
 					value={component.kind}
+					disabled={component.designId !== undefined}
 					onChange={(event) => onApply(() => client.updateSystemComponent(component.id, { kind: event.target.value as SystemComponentKind }))}
 					className="h-8 rounded-md border border-input bg-paper-raised px-2"
 				>
@@ -954,6 +1188,7 @@ function ComponentInspector({
 					))}
 				</select>
 			</label>
+			<GroupMembership design={design} id={component.id} />
 			<label className="flex flex-col gap-1">
 				<span className="text-ink-3">Technology</span>
 				<Input value={technology} maxLength={500} placeholder="Optional, e.g. PostgreSQL" onChange={(event) => setTechnology(event.target.value)} onBlur={commitDetails} />
@@ -1014,19 +1249,14 @@ function ComponentInspector({
 				))}
 			</div>
 			{component.kind === "database" && (
-				<div className="rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2">
-					{component.designId ? (
-						<>
-							<p>Linked to this Project’s database design.</p>
-							<Button type="button" size="sm" variant="outline" className="mt-2" onClick={onOpenDatabase}>
-								<ArrowRight className="size-3.5" />
-								Open database workspace
-							</Button>
-						</>
-					) : (
-						<p>Conceptual: not linked to a database design yet.</p>
-					)}
-				</div>
+				<DatabaseLinkSection
+					component={component}
+					design={design}
+					designs={designs}
+					client={client}
+					onApply={onApply}
+					onOpenDatabase={onOpenDatabase}
+				/>
 			)}
 			<div className="flex flex-col gap-1">
 				<span className="text-ink-3">Connections ({related.length})</span>
@@ -1046,6 +1276,86 @@ function ComponentInspector({
 				<Trash2 className="size-3.5" />
 				Remove component
 			</Button>
+		</div>
+	);
+}
+
+/**
+ * Links a Database component to a database Design. A conceptual component can
+ * create a Design or link an existing one; a linked component can open the
+ * database workspace or unlink. Several components may link one Design: a
+ * Shared schema, which the note names.
+ */
+function DatabaseLinkSection({
+	component,
+	design,
+	designs,
+	client,
+	onApply,
+	onOpenDatabase,
+}: {
+	component: SystemComponent;
+	design: SystemDesign;
+	designs: DatabaseDesignSummary[];
+	client: Client;
+	onApply: (action: () => Promise<WorkspaceState>) => void;
+	onOpenDatabase: (designId: string) => void;
+}) {
+	const linkedDesignId = component.designId;
+	if (linkedDesignId === undefined) {
+		return (
+			<div className="flex flex-col gap-2 rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2" data-testid="database-link">
+				<p>Conceptual: not linked to a database design yet.</p>
+				<Button type="button" size="sm" variant="outline" className="self-start" onClick={() => onApply(() => client.createSystemDatabaseDesign(component.id))}>
+					<Plus className="size-3.5" />
+					Create database design
+				</Button>
+				{designs.length > 0 && (
+					<label className="flex flex-col gap-1">
+						<span className="text-ink-3">Or link an existing design</span>
+						<select
+							aria-label="Link an existing design"
+							value=""
+							onChange={(event) => {
+								if (event.target.value) onApply(() => client.linkSystemDatabase(component.id, event.target.value));
+							}}
+							className="h-8 rounded-md border border-input bg-paper-raised px-2"
+						>
+							<option value="">Choose a design…</option>
+							{designs.map((item) => (
+								<option key={item.id} value={item.id}>{item.name}</option>
+							))}
+						</select>
+					</label>
+				)}
+			</div>
+		);
+	}
+	const linked = designs.find((item) => item.id === linkedDesignId);
+	const others = componentsLinkedToDesign(design, linkedDesignId).filter((item) => item.id !== component.id);
+	return (
+		<div className="flex flex-col gap-2 rounded-md bg-paper-tint p-2.5 text-[12.5px] text-ink-2" data-testid="database-link">
+			{linked ? (
+				<p>Linked to design “{linked.name}”.</p>
+			) : (
+				<p>The linked design is missing from this Project. Unlink it to choose another.</p>
+			)}
+			{others.length > 0 && (
+				<p data-testid="shared-schema-note">
+					Shared schema with {others.map((item) => item.name).join(", ")}. Schema edits apply to every linked component.
+				</p>
+			)}
+			<div className="flex flex-wrap gap-1.5">
+				{linked && (
+					<Button type="button" size="sm" variant="outline" onClick={() => onOpenDatabase(linkedDesignId)}>
+						<ArrowRight className="size-3.5" />
+						Open database workspace
+					</Button>
+				)}
+				<Button type="button" size="sm" variant="ghost" onClick={() => onApply(() => client.linkSystemDatabase(component.id, null))}>
+					Unlink
+				</Button>
+			</div>
 		</div>
 	);
 }
@@ -1105,6 +1415,7 @@ function ServiceInspector({
 					}}
 				/>
 			</label>
+			<GroupMembership design={design} id={service.id} />
 			<div className="flex flex-col gap-1.5">
 				<span className="text-ink-3">Owns ({owned.length})</span>
 				{owned.length === 0 && <p className="text-ink-3">No components yet. Assign one below or from a component’s Owner field.</p>}
@@ -1164,6 +1475,148 @@ function ServiceInspector({
 			<Button type="button" variant="strike" size="sm" className="mt-1 self-start" onClick={onRequestRemove}>
 				<Trash2 className="size-3.5" />
 				Remove service
+			</Button>
+		</div>
+	);
+}
+
+/** Lists the Groups that enclose an item. Membership never changes ownership, so this is informational. */
+function GroupMembership({ design, id }: { design: SystemDesign; id: string }) {
+	const groups = systemGroupsContaining(design, id);
+	return (
+		<div className="flex flex-col gap-1">
+			<span className="text-ink-3">Groups ({groups.length})</span>
+			{groups.length === 0 ? (
+				<p className="text-ink-3">Not in a group. Use Group to enclose it.</p>
+			) : (
+				<p className="text-ink-2">{groups.map((group) => group.name).join(", ")}</p>
+			)}
+		</div>
+	);
+}
+
+function memberLabel(design: SystemDesign, id: string): { kind: "Component" | "Service" | "Group"; name: string } {
+	const component = findSystemComponent(design, id);
+	if (component) return { kind: "Component", name: component.name };
+	const service = findSystemService(design, id);
+	if (service) return { kind: "Service", name: service.name };
+	return { kind: "Group", name: findSystemGroup(design, id)?.name ?? "Missing" };
+}
+
+/**
+ * A Group's name, members, and frame. Members are explicit: removing one here
+ * leaves the item itself, its ownership, and its Connections untouched.
+ */
+function GroupInspector({
+	group,
+	design,
+	client,
+	onApply,
+	onClose,
+	onSelect,
+	onRemove,
+}: {
+	group: SystemGroup;
+	design: SystemDesign;
+	client: Client;
+	onApply: (action: () => Promise<WorkspaceState>) => void;
+	onClose: () => void;
+	onSelect: (kind: "component" | "service" | "group", id: string) => void;
+	onRemove: () => void;
+}) {
+	const [name, setName] = useState(group.name);
+	const candidates = [...design.components, ...design.services, ...design.groups].filter(
+		(item) => !group.memberIds.includes(item.id) && canAddSystemGroupMember(design, group.id, item.id),
+	);
+	const enclosing = systemGroupsContaining(design, group.id);
+
+	function commitName() {
+		const trimmed = name.trim();
+		if (trimmed.length === 0) {
+			setName(group.name);
+			return;
+		}
+		if (trimmed !== group.name) onApply(() => client.updateSystemGroup(group.id, { name: trimmed }));
+	}
+
+	function setMembers(memberIds: string[]) {
+		onApply(() => client.updateSystemGroup(group.id, { memberIds }));
+	}
+
+	return (
+		<div className="flex flex-col gap-3 text-[13px]">
+			<div className="flex items-center justify-between">
+				<span className="kicker">Group</span>
+				<Button type="button" size="icon" variant="ghost" aria-label="Close inspector" className="size-7" onClick={onClose}>
+					<X className="size-3.5" />
+				</Button>
+			</div>
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Name</span>
+				<Input
+					value={name}
+					maxLength={80}
+					aria-label="Group name"
+					onChange={(event) => setName(event.target.value)}
+					onBlur={commitName}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+					}}
+				/>
+			</label>
+			<div className="flex flex-col gap-1.5">
+				<span className="text-ink-3">Members ({group.memberIds.length})</span>
+				{group.memberIds.length === 0 && <p className="text-ink-3">No members yet. Add one below.</p>}
+				{group.memberIds.map((memberId) => {
+					const member = memberLabel(design, memberId);
+					const kind = member.kind === "Component" ? "component" : member.kind === "Service" ? "service" : "group";
+					return (
+						<div key={memberId} className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 hover:bg-paper-tint">
+							<button type="button" onClick={() => onSelect(kind, memberId)} className="min-w-0 truncate text-left">
+								<span className="text-ink-3">{member.kind} · </span>{member.name}
+							</button>
+							<Button
+								type="button"
+								size="xs"
+								variant="outline"
+								aria-label={`Remove ${member.name} from this group`}
+								onClick={() => setMembers(group.memberIds.filter((id) => id !== memberId))}
+							>
+								Remove
+							</Button>
+						</div>
+					);
+				})}
+				{candidates.length > 0 && (
+					<label className="flex flex-col gap-1 pt-1">
+						<span className="text-ink-3">Add a member</span>
+						<select
+							aria-label="Add a member to this group"
+							value=""
+							onChange={(event) => {
+								const memberId = event.target.value;
+								if (memberId) setMembers([...group.memberIds, memberId]);
+							}}
+							className="h-8 rounded-md border border-input bg-paper-raised px-2"
+						>
+							<option value="">Choose an item…</option>
+							{candidates.map((item) => (
+								<option key={item.id} value={item.id}>{memberLabel(design, item.id).kind}: {item.name}</option>
+							))}
+						</select>
+					</label>
+				)}
+			</div>
+			<div className="flex flex-col gap-1">
+				<span className="text-ink-3">Inside ({enclosing.length})</span>
+				{enclosing.length === 0 ? <p className="text-ink-3">Not nested in another group.</p> : enclosing.map((item) => <p key={item.id} className="text-ink-2">{item.name}</p>)}
+			</div>
+			<p className="text-[12px] text-ink-3">
+				Moving this frame moves its members. Resizing it changes only its size. Neither changes membership or ownership.
+			</p>
+			<Button type="button" variant="strike" size="sm" className="mt-1 self-start" onClick={onRemove}>
+				<Trash2 className="size-3.5" />
+				Remove group
 			</Button>
 		</div>
 	);

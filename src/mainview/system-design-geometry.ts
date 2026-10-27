@@ -3,7 +3,11 @@ import { computeConnectionPath, sampleCubicBezier, type ProofPoint, type ProofRe
 import type { PlaybackRoute } from "../shared/walkthrough-playback";
 import {
 	SYSTEM_COMPONENT_SIZE,
+	SYSTEM_GROUP_MIN_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
+	findSystemGroup,
+	moveSystemGroup,
+	resizeSystemGroup,
 	systemConnectionRouteOffsets,
 	type SystemComponent,
 	type SystemConnection,
@@ -18,14 +22,23 @@ export const DRAG_THRESHOLD_PX = 3;
 export type SceneDrag =
 	| { mode: "component"; id: string; position: CanvasPoint }
 	| { mode: "service"; id: string; position: CanvasPoint }
-	| { mode: "resize"; id: string; size: SystemServiceSize };
+	| { mode: "resize"; id: string; size: SystemServiceSize }
+	| { mode: "group"; id: string; position: CanvasPoint }
+	| { mode: "group-resize"; id: string; size: SystemServiceSize };
 
 /**
  * The design as it will look once the drag is saved. Moving a Service carries
- * the Components it owns by the same offset; ownership itself never changes.
+ * the Components it owns by the same offset; moving a Group carries its nested
+ * members once each. Ownership and membership never change.
  */
 export function previewScene(design: SystemDesign, drag: SceneDrag | null): SystemDesign {
 	if (!drag) return design;
+	if (drag.mode === "group") {
+		return findSystemGroup(design, drag.id) ? moveSystemGroup(design, drag.id, drag.position) : design;
+	}
+	if (drag.mode === "group-resize") {
+		return findSystemGroup(design, drag.id) ? resizeSystemGroup(design, drag.id, drag.size) : design;
+	}
 	if (drag.mode === "component") {
 		return {
 			...design,
@@ -55,11 +68,50 @@ export function previewScene(design: SystemDesign, drag: SceneDrag | null): Syst
 	};
 }
 
+/** The size a frame takes when its corner moves by the pointer offset, never below its minimum. */
+export function resizedFrameSize(origin: SystemServiceSize, dx: number, dy: number, minimum: SystemServiceSize): SystemServiceSize {
+	return {
+		width: Math.max(minimum.width, Math.round(origin.width + dx)),
+		height: Math.max(minimum.height, Math.round(origin.height + dy)),
+	};
+}
+
 /** The size a Service boundary takes when its corner moves by the pointer offset, never below the minimum. */
 export function resizedServiceSize(origin: SystemServiceSize, dx: number, dy: number): SystemServiceSize {
+	return resizedFrameSize(origin, dx, dy, SYSTEM_SERVICE_MIN_SIZE);
+}
+
+/** The size a Group frame takes when its corner moves by the pointer offset, never below its minimum. */
+export function resizedGroupSize(origin: SystemServiceSize, dx: number, dy: number): SystemServiceSize {
+	return resizedFrameSize(origin, dx, dy, SYSTEM_GROUP_MIN_SIZE);
+}
+
+/** Padding between a Group frame and the members it encloses. The top leaves room for the header. */
+const GROUP_FRAME_PADDING = { left: 24, right: 24, top: 48, bottom: 24 } as const;
+
+/**
+ * The frame that encloses the given members as they are drawn now. Membership
+ * comes from the explicit list, not from this geometry; the frame is only a
+ * starting layout for a new Group. Returns null when there is nothing to enclose.
+ */
+export function groupFrameAround(design: SystemDesign, memberIds: readonly string[]): { position: CanvasPoint; size: SystemServiceSize } | null {
+	const rects: { x: number; y: number; width: number; height: number }[] = [];
+	for (const id of memberIds) {
+		const component = design.components.find((item) => item.id === id);
+		const service = design.services.find((item) => item.id === id);
+		const group = findSystemGroup(design, id);
+		if (component) rects.push(componentRect(component));
+		else if (service) rects.push({ x: service.position.x, y: service.position.y, width: service.size.width, height: service.size.height });
+		else if (group) rects.push({ x: group.position.x, y: group.position.y, width: group.size.width, height: group.size.height });
+	}
+	if (rects.length === 0) return null;
+	const left = Math.min(...rects.map((rect) => rect.x)) - GROUP_FRAME_PADDING.left;
+	const top = Math.min(...rects.map((rect) => rect.y)) - GROUP_FRAME_PADDING.top;
+	const right = Math.max(...rects.map((rect) => rect.x + rect.width)) + GROUP_FRAME_PADDING.right;
+	const bottom = Math.max(...rects.map((rect) => rect.y + rect.height)) + GROUP_FRAME_PADDING.bottom;
 	return {
-		width: Math.max(SYSTEM_SERVICE_MIN_SIZE.width, Math.round(origin.width + dx)),
-		height: Math.max(SYSTEM_SERVICE_MIN_SIZE.height, Math.round(origin.height + dy)),
+		position: { x: Math.round(left), y: Math.round(top) },
+		size: resizedGroupSize({ width: right - left, height: bottom - top }, 0, 0),
 	};
 }
 

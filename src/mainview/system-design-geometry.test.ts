@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
 	moveSystemComponent,
+	moveSystemGroup,
 	openSpotNear,
 	type SystemDesign,
 } from "../shared/system-design";
@@ -12,9 +14,11 @@ import { sampleCubicBezier } from "../shared/architecture-proof";
 import {
 	clampZoom,
 	connectionGeometries,
+	groupFrameAround,
 	movedBeyondThreshold,
 	playbackRoutes,
 	previewScene,
+	resizedGroupSize,
 	resizedServiceSize,
 	screenToWorld,
 	truncateLabel,
@@ -150,3 +154,48 @@ describe("Walkthrough playback routes", () => {
 		expect(after.get("ac")).toEqual(before.get("ac"));
 	});
 });
+
+describe("system design Group geometry", () => {
+	function nestedDesign(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 300, y: 60 } });
+		design = addSystemGroup(design, { id: "domain", name: "Domain", position: { x: 20, y: 20 }, memberIds: ["queue", "orders"] });
+		return addSystemGroup(design, { id: "core", name: "Core", position: { x: 0, y: 0 }, memberIds: ["domain", "queue"] });
+	}
+
+	test("a live Group drag previews exactly what the saved move will produce, once per identity", () => {
+		const design = nestedDesign();
+		const preview = previewScene(design, { mode: "group", id: "core", position: { x: 60, y: 10 } });
+		expect(preview).toEqual(moveSystemGroup(design, "core", { x: 60, y: 10 }));
+		// Offset (60, 10): queue is a member of two Groups but moves once.
+		expect(preview.components.find((component) => component.id === "queue")!.position).toEqual({ x: 360, y: 70 });
+		expect(preview.components.find((component) => component.id === "worker")!.position).toEqual({ x: 100, y: 70 });
+		expect(preview.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+	});
+
+	test("a Group resize preview changes only the frame size and never its members", () => {
+		const design = nestedDesign();
+		const preview = previewScene(design, { mode: "group-resize", id: "domain", size: { width: 500, height: 300 } });
+		expect(preview.groups.find((group) => group.id === "domain")!.size).toEqual({ width: 500, height: 300 });
+		expect(preview.groups.find((group) => group.id === "domain")!.memberIds).toEqual(["queue", "orders"]);
+		expect(preview.components).toEqual(design.components);
+	});
+
+	test("Group resizing keeps the minimum frame size", () => {
+		expect(resizedGroupSize({ width: 360, height: 240 }, -500, -500)).toEqual({ width: 160, height: 120 });
+		expect(resizedGroupSize({ width: 360, height: 240 }, 40, 10)).toEqual({ width: 400, height: 250 });
+	});
+
+	test("a new Group frame encloses its chosen members, including nested Groups and Services", () => {
+		const design = nestedDesign();
+		const frame = groupFrameAround(design, ["queue", "orders"])!;
+		// Queue spans x 300..480, y 60..144; Orders spans x 0..420, y 0..280.
+		expect(frame.position).toEqual({ x: -24, y: -48 });
+		expect(frame.size.width).toBeGreaterThanOrEqual(420 + 24 + 24);
+		expect(frame.size.height).toBeGreaterThanOrEqual(280 + 48 + 24);
+		expect(groupFrameAround(design, [])).toBeNull();
+	});
+});
+
