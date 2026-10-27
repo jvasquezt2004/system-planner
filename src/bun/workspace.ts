@@ -280,6 +280,8 @@ export interface DesignWorkspace {
 			edgeFunctions: EdgeFunction[];
 			/** Present when the turn changed the System design; restores all of its items together. */
 			systemDesign?: SystemContent;
+			/** Present when the turn changed any Walkthrough; replaces the whole list. */
+			walkthroughs?: Walkthrough[];
 		} | {
 			ok: false;
 			conflicts: string[];
@@ -365,6 +367,11 @@ export interface DesignWorkspace {
 	 * and links it. The new Design becomes the active one; the overview stays open.
 	 */
 	createSystemDatabaseDesign(action: CreateSystemDatabaseDesignAction): Promise<WorkspaceState>;
+	/**
+	 * Replaces the Walkthroughs with a validated batch result as one history action.
+	 * With `assistantTurnId`, the change joins that Assistant turn's single action.
+	 */
+	replaceWalkthroughs(action: { walkthroughs: Walkthrough[]; assistantTurnId?: string }): Promise<WorkspaceState>;
 	/** Walkthrough edits. Each one is a single Project-history action; steps are never deleted by topology changes. */
 	createWalkthrough(action: CreateWalkthroughAction): Promise<WorkspaceState>;
 	renameWalkthrough(action: RenameWalkthroughAction): Promise<WorkspaceState>;
@@ -1849,6 +1856,7 @@ export async function createDesignWorkspace(
 				let targetScenarios = input.scenarios;
 				let targetEdgeFunctions = input.edgeFunctions;
 				let targetSystem: SystemContent | undefined;
+				let targetWalkthroughs: Walkthrough[] | undefined;
 
 				if (input.validateAndRestore) {
 					const result = input.validateAndRestore(current);
@@ -1859,6 +1867,7 @@ export async function createDesignWorkspace(
 					targetScenarios = result.scenarios;
 					targetEdgeFunctions = result.edgeFunctions;
 					targetSystem = result.systemDesign;
+					targetWalkthroughs = result.walkthroughs;
 				}
 
 				if (!targetDesign || !targetScenarios || !targetEdgeFunctions) {
@@ -1882,13 +1891,17 @@ export async function createDesignWorkspace(
 				const nextScenarioRevision = ++scenarioRevision;
 				const nextEdgeFunctionRevision = ++edgeFunctionRevision;
 				const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
+				const walkthroughsChanged = targetWalkthroughs !== undefined
+					&& JSON.stringify(current.walkthroughs ?? []) !== JSON.stringify(targetWalkthroughs);
+				const nextWalkthroughs: Walkthrough[] = walkthroughsChanged ? structuredClone(targetWalkthroughs!) : (current.walkthroughs ?? []);
+				const nextWalkthroughDocumentRevision = walkthroughsChanged ? ++walkthroughDocumentRevision : walkthroughDocumentRevision;
 				const savedAt = now();
 				const history = histories.get(designId);
 				const originalHistory = history ? structuredClone(history) : undefined;
 				recordContentChange(
 					{ name: REVERT_ASSISTANT_TURN_ACTION_NAME },
 					projectContent(current.design, current.scenarios, current.edgeFunctions),
-					projectContent(restored, targetScenarios, targetEdgeFunctions, nextSystem),
+					projectContent(restored, targetScenarios, targetEdgeFunctions, nextSystem, nextWalkthroughs),
 					true,
 				);
 				const lastApplied = getLastAppliedSandbox(state.sandbox);
@@ -1900,6 +1913,7 @@ export async function createDesignWorkspace(
 					edgeFunctions: targetEdgeFunctions,
 					systemDesign: nextSystem,
 					...(systemChanged ? { systemSave: { status: "saving" as const, revision: nextSystemDocumentRevision, designId } } : {}),
+					...(walkthroughsChanged ? { walkthroughs: nextWalkthroughs, walkthroughSave: { status: "saving" as const, revision: nextWalkthroughDocumentRevision, designId } } : {}),
 					save: { status: "saving", revision: nextRevision, designId },
 					scenarioSave: { status: "saving", revision: nextScenarioRevision, designId },
 					edgeFunctionSave: { status: "saving", revision: nextEdgeFunctionRevision, designId },
@@ -1920,18 +1934,22 @@ export async function createDesignWorkspace(
 					...(systemChanged && nextSystem
 						? { systemDesign: { systemDesign: nextSystem, save: { revision: nextSystemDocumentRevision, documentRevision: nextSystemDocumentRevision, savedAt } } }
 						: {}),
+					...(walkthroughsChanged
+						? { walkthroughs: { walkthroughs: nextWalkthroughs, save: { revision: nextWalkthroughDocumentRevision, savedAt } } }
+						: {}),
 				};
 				try {
 					await store.saveProjectArtifacts(initialSave);
 				} catch (error) {
 					const concurrentEdit = state.revision !== nextRevision || documentRevision !== nextDocumentRevision
 						|| scenarioRevision !== nextScenarioRevision || edgeFunctionRevision !== nextEdgeFunctionRevision
-						|| systemDocumentRevision !== nextSystemDocumentRevision;
+						|| systemDocumentRevision !== nextSystemDocumentRevision || walkthroughDocumentRevision !== nextWalkthroughDocumentRevision;
 					if (!concurrentEdit) {
 						documentRevision = nextDocumentRevision - 1;
 						scenarioRevision = nextScenarioRevision - 1;
 						edgeFunctionRevision = nextEdgeFunctionRevision - 1;
 						if (systemChanged) systemDocumentRevision = nextSystemDocumentRevision - 1;
+						if (walkthroughsChanged) walkthroughDocumentRevision = nextWalkthroughDocumentRevision - 1;
 						if (originalHistory) histories.set(designId, originalHistory);
 						else histories.delete(designId);
 						setState(current);
@@ -1947,17 +1965,21 @@ export async function createDesignWorkspace(
 							...(currentState.systemDesign
 								? { systemDesign: { systemDesign: currentState.systemDesign, save: { revision: ++systemDocumentRevision, documentRevision: systemDocumentRevision, savedAt: now() } } }
 								: {}),
+							...(walkthroughsChanged
+								? { walkthroughs: { walkthroughs: currentState.walkthroughs ?? [], save: { revision: ++walkthroughDocumentRevision, savedAt: now() } } }
+								: {}),
 						});
 					}
 					throw error;
 				}
 				if (state.revision === nextRevision && documentRevision === nextDocumentRevision
 					&& scenarioRevision === nextScenarioRevision && edgeFunctionRevision === nextEdgeFunctionRevision
-					&& systemDocumentRevision === nextSystemDocumentRevision) {
+					&& systemDocumentRevision === nextSystemDocumentRevision && walkthroughDocumentRevision === nextWalkthroughDocumentRevision) {
 					setState({
 						...state,
 						projects: store.listProjects(),
 						save: { status: "saved", revision: nextRevision, savedAt, designId },
+						...(walkthroughsChanged ? { walkthroughSave: { status: "saved" as const, revision: nextWalkthroughDocumentRevision, savedAt, designId } } : {}),
 						scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt, designId },
 						edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt, designId },
 						...(systemChanged ? { systemSave: { status: "saved" as const, revision: nextSystemDocumentRevision, savedAt, designId } } : {}),
@@ -1977,6 +1999,9 @@ export async function createDesignWorkspace(
 						edgeFunctions: { edgeFunctions: latest.edgeFunctions, save: { revision: correctiveEdgeFunctionRevision, savedAt: now() } },
 						...(latest.systemDesign
 							? { systemDesign: { systemDesign: latest.systemDesign, save: { revision: correctiveSystemRevision, documentRevision: correctiveSystemRevision, savedAt: now() } } }
+							: {}),
+						...(walkthroughsChanged
+							? { walkthroughs: { walkthroughs: latest.walkthroughs ?? [], save: { revision: ++walkthroughDocumentRevision, savedAt: now() } } }
 							: {}),
 					});
 				}
@@ -2787,6 +2812,16 @@ export async function createDesignWorkspace(
 						},
 					};
 				});
+			});
+		},
+		replaceWalkthroughs(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange(() => ({
+					next: normalizeWalkthroughs(action.walkthroughs),
+					action: action.assistantTurnId !== undefined
+						? { name: ASSISTANT_TURN_ACTION_NAME, assistantTurnId: action.assistantTurnId }
+						: { name: "Edit walkthroughs" },
+				}));
 			});
 		},
 		createWalkthrough(action) {

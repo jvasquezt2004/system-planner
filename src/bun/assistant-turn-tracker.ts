@@ -11,6 +11,7 @@ import type {
 } from "../shared/design";
 import type { StoredScenario } from "./store";
 import { keepSystemGroupMembers, type SystemComponent, type SystemConnection, type SystemContent, type SystemGroup, type SystemService } from "../shared/system-design";
+import type { Walkthrough } from "../shared/walkthrough";
 
 type SystemItemKind = "service" | "group" | "component" | "connection";
 type SystemItem = SystemService | SystemGroup | SystemComponent | SystemConnection;
@@ -28,6 +29,8 @@ export type RestorationResult =
 			edgeFunctions: EdgeFunction[];
 			/** Present when the turn changed any System design item. Restores every item the turn touched, together. */
 			systemDesign?: SystemRestoration;
+			/** Present when the turn changed any Walkthrough. The whole list with those Walkthroughs put back. */
+			walkthroughs?: Walkthrough[];
 	  }
 	| {
 			ok: false;
@@ -94,9 +97,41 @@ export class TurnTracker {
 		last: SystemItem | null;
 	}>();
 
+	/**
+	 * Walkthroughs the turn changed, keyed by id. `original` is the Walkthrough
+	 * before the turn (null when the turn created it) and `originalIndex` is its
+	 * place in the list then, so Revert puts it back where it was.
+	 */
+	readonly walkthroughChanges = new Map<string, {
+		id: string;
+		original: Walkthrough | null;
+		originalIndex: number;
+		last: Walkthrough | null;
+	}>();
+
 	constructor(turnId: string, projectId: string) {
 		this.turnId = turnId;
 		this.projectId = projectId;
+	}
+
+	/** Records one Assistant edit to the Walkthroughs; net-zero changes leave no trace. */
+	recordWalkthroughMutation(before: Walkthrough[], after: Walkthrough[]) {
+		const ids = new Set([...before.map((item) => item.id), ...after.map((item) => item.id)]);
+		for (const id of ids) {
+			const prior = before.find((item) => item.id === id) ?? null;
+			const latest = after.find((item) => item.id === id) ?? null;
+			if (JSON.stringify(prior) === JSON.stringify(latest)) continue;
+			const existing = this.walkthroughChanges.get(id);
+			const entry = existing ?? {
+				id,
+				original: structuredClone(prior),
+				originalIndex: before.findIndex((item) => item.id === id),
+				last: null,
+			};
+			entry.last = structuredClone(latest);
+			if (JSON.stringify(entry.original) === JSON.stringify(entry.last)) this.walkthroughChanges.delete(id);
+			else this.walkthroughChanges.set(id, entry);
+		}
 	}
 
 	/** Records one Assistant edit to the System design; net-zero changes leave no trace. */
@@ -406,7 +441,8 @@ export class TurnTracker {
 			this.modifiedScenarios.size > 0 ||
 			this.addedEdgeFunctionIds.size > 0 ||
 			this.removedEdgeFunctions.size > 0 ||
-			this.modifiedEdgeFunctions.size > 0
+			this.modifiedEdgeFunctions.size > 0 ||
+			this.walkthroughChanges.size > 0
 		);
 	}
 
@@ -847,15 +883,51 @@ export class TurnTracker {
 			viewport: currentDesign.viewport,
 		};
 
+		// Every conflict is reported together, so the designer sees all of them at once.
 		const systemDesign = this.restoreSystemDesign(currentState);
-		if (typeof systemDesign === "string") return { ok: false, conflicts: [...conflicts, systemDesign] };
+		const walkthroughs = this.restoreWalkthroughs(currentState);
+		const failures = [
+			...conflicts,
+			...(typeof systemDesign === "string" ? [systemDesign] : []),
+			...(typeof walkthroughs === "string" ? [walkthroughs] : []),
+		];
+		if (failures.length > 0) return { ok: false, conflicts: failures };
 		return {
 			ok: true,
 			design: restoredDesign,
 			scenarios: restoredScenarios,
 			edgeFunctions: restoredEdgeFunctions,
-			...(systemDesign ? { systemDesign } : {}),
+			...(typeof systemDesign === "object" && systemDesign !== null ? { systemDesign } : {}),
+			...(typeof walkthroughs === "object" && walkthroughs !== null ? { walkthroughs } : {}),
 		};
+	}
+
+	/**
+	 * Puts back the Walkthroughs the turn changed. A Walkthrough edited manually
+	 * after the turn is a conflict, reported by name; the others are left alone.
+	 */
+	private restoreWalkthroughs(currentState: WorkspaceState): Walkthrough[] | string | null {
+		if (this.walkthroughChanges.size === 0) return null;
+		const list = structuredClone(currentState.walkthroughs ?? []);
+		const conflicts: string[] = [];
+		for (const change of this.walkthroughChanges.values()) {
+			const current = list.find((item) => item.id === change.id) ?? null;
+			if (JSON.stringify(current) !== JSON.stringify(change.last)) {
+				conflicts.push(`Walkthrough "${(change.last ?? change.original)?.name}" was modified after this Assistant turn`);
+			}
+		}
+		if (conflicts.length > 0) return conflicts.join("; ");
+		for (const change of this.walkthroughChanges.values()) {
+			const index = list.findIndex((item) => item.id === change.id);
+			if (change.original === null) {
+				if (index >= 0) list.splice(index, 1);
+			} else if (index >= 0) {
+				list[index] = structuredClone(change.original);
+			} else {
+				list.splice(Math.min(change.originalIndex, list.length), 0, structuredClone(change.original));
+			}
+		}
+		return list;
 	}
 
 	/**

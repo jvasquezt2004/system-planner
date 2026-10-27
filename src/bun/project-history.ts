@@ -168,6 +168,21 @@ export function rebaseManualEdits(manualBefore: unknown, manualAfter: unknown, b
 }
 
 /**
+ * The identity an array entry is matched by: its `id`, or for a Walkthrough step
+ * block (`{ kind: "step", step }`) the step's id. Undefined when it has neither.
+ */
+function entryKey(item: unknown): string | undefined {
+	if (item === null || typeof item !== "object") return undefined;
+	const record = item as { id?: unknown; kind?: unknown; step?: unknown };
+	if (typeof record.id === "string") return record.id;
+	if (record.kind === "step" && record.step !== null && typeof record.step === "object") {
+		const stepId = (record.step as { id?: unknown }).id;
+		if (typeof stepId === "string") return stepId;
+	}
+	return undefined;
+}
+
+/**
  * Applies the difference between two snapshots to a target. Records with a
  * stable `id` are matched by identity so independent edits merge. Anything
  * that cannot be matched takes the manual value.
@@ -175,15 +190,13 @@ export function rebaseManualEdits(manualBefore: unknown, manualAfter: unknown, b
 function applyManualDelta(target: unknown, manualBefore: unknown, manualAfter: unknown): unknown {
 	if (JSON.stringify(manualBefore) === JSON.stringify(manualAfter)) return structuredClone(target);
 	if (Array.isArray(manualBefore) && Array.isArray(manualAfter)) {
-		const keyed = [...manualBefore, ...manualAfter].every((item) =>
-			item !== null && typeof item === "object" && "id" in item && typeof item.id === "string",
-		);
+		const keyed = [...manualBefore, ...manualAfter].every((item) => entryKey(item) !== undefined);
 		if (keyed && Array.isArray(target)) {
-			const beforeById = new Map(manualBefore.map((item) => [(item as { id: string }).id, item]));
-			const afterById = new Map(manualAfter.map((item) => [(item as { id: string }).id, item]));
-			const targetById = new Map(target.map((item) => [(item as { id: string }).id, item]));
+			const beforeById = new Map(manualBefore.map((item) => [entryKey(item)!, item]));
+			const afterById = new Map(manualAfter.map((item) => [entryKey(item)!, item]));
+			const targetById = new Map(target.map((item) => [entryKey(item)!, item]));
 			const result = target.map((item) => structuredClone(item));
-			const resultById = new Map(result.map((item) => [(item as { id: string }).id, item]));
+			const resultById = new Map(result.map((item) => [entryKey(item)!, item]));
 			for (const id of new Set([...beforeById.keys(), ...afterById.keys()])) {
 				const before = beforeById.get(id);
 				const after = afterById.get(id);
@@ -194,12 +207,12 @@ function applyManualDelta(target: unknown, manualBefore: unknown, manualAfter: u
 						resultById.set(id, added);
 					}
 				} else if (before !== undefined && after === undefined) {
-					const index = result.findIndex((item) => (item as { id: string }).id === id);
+					const index = result.findIndex((item) => entryKey(item) === id);
 					if (index >= 0) result.splice(index, 1);
 					resultById.delete(id);
 				} else if (before !== undefined && after !== undefined && resultById.has(id)) {
 					const next = applyManualDelta(targetById.get(id), before, after);
-					const index = result.findIndex((item) => (item as { id: string }).id === id);
+					const index = result.findIndex((item) => entryKey(item) === id);
 					if (index >= 0) result[index] = next;
 					resultById.set(id, next);
 				}
