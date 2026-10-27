@@ -41,7 +41,7 @@ import type { Scenario } from "../shared/design";
 const listeners = new Set<(state: WorkspaceState) => void>();
 const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
 const assistantOAuthListeners = new Set<(event: { providerId: string; event: unknown }) => void>();
-const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; scenario: Scenario }) => void>();
+const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; designId: string; scenario: Scenario }) => void>();
 const assistantScenarioRunCancelListeners = new Set<(requestId: string) => void>();
 let latestState: WorkspaceState | null = null;
 
@@ -105,16 +105,16 @@ export const workspaceClient = {
 	createProject(name: string): Promise<WorkspaceState> {
 		return rpc.request.createProject({ name });
 	},
-	createScenario(request: { name: string }): Promise<WorkspaceState> {
+	createScenario(request: { name: string; designId?: string }): Promise<WorkspaceState> {
 		return rpc.request.createScenario(request);
 	},
-	renameScenario(request: { scenarioId: string; name: string }): Promise<WorkspaceState> {
+	renameScenario(request: { scenarioId: string; name: string; designId?: string }): Promise<WorkspaceState> {
 		return rpc.request.renameScenario(request);
 	},
-	removeScenario(request: { scenarioId: string }): Promise<WorkspaceState> {
+	removeScenario(request: { scenarioId: string; designId?: string }): Promise<WorkspaceState> {
 		return rpc.request.removeScenario(request);
 	},
-	updateScenarioSource(request: { scenarioId: string; source: string }): Promise<WorkspaceState> {
+	updateScenarioSource(request: { scenarioId: string; source: string; designId?: string }): Promise<WorkspaceState> {
 		return rpc.request.updateScenarioSource(request);
 	},
 	createEdgeFunction(action: CreateEdgeFunctionAction): Promise<WorkspaceState> {
@@ -129,8 +129,8 @@ export const workspaceClient = {
 	updateEdgeFunctionSource(action: UpdateEdgeFunctionSourceAction): Promise<WorkspaceState> {
 		return rpc.request.updateEdgeFunctionSource(action);
 	},
-	beginScenarioRun(scenarioId: string) {
-		return rpc.request.beginScenarioRun({ scenarioId });
+	beginScenarioRun(action: { scenarioId: string; designId?: string }) {
+		return rpc.request.beginScenarioRun(action);
 	},
 	handleSandboxApiRequest(runId: string, request: SandboxApiRequest) {
 		return rpc.request.handleSandboxApiRequest({ runId, request });
@@ -321,7 +321,7 @@ export const workspaceClient = {
 		assistantListeners.add(listener);
 		return () => { assistantListeners.delete(listener); };
 	},
-	subscribeAssistantScenarioRuns(listener: (request: { requestId: string; projectId: string; scenario: Scenario }) => void) {
+	subscribeAssistantScenarioRuns(listener: (request: { requestId: string; projectId: string; designId: string; scenario: Scenario }) => void) {
 		assistantScenarioRunListeners.add(listener);
 		return () => { assistantScenarioRunListeners.delete(listener); };
 	},

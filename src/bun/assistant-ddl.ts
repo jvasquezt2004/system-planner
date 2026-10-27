@@ -14,10 +14,10 @@ import { checkDdlRelevantContent } from "./assistant-turn-tracker";
 // model the JSON-shaped runtime nodes locally so statement fields stay usable.
 type Node = Record<string, any>;
 export type AssistantDdlRemovalTarget = { kind: "table" | "column"; targetId: string; removal: RemovalPlan };
-export type AssistantDdlConfirmation = { projectId: string; revision: number; targetIds: string[] };
+export type AssistantDdlConfirmation = { projectId: string; designId: string; revision: number; targetIds: string[] };
 export type AssistantDdlResult =
 	| { status: "applied"; state: WorkspaceState; statements: string[] }
-	| { status: "confirmation-required"; statement: string; removal: RemovalPlan; targets: AssistantDdlRemovalTarget[]; projectId: string; revision: number };
+	| { status: "confirmation-required"; statement: string; removal: RemovalPlan; targets: AssistantDdlRemovalTarget[]; projectId: string; designId: string; revision: number };
 
 function placeTable(design: Design, references: unknown[]): { x: number; y: number } {
 	const referenced = references
@@ -211,6 +211,7 @@ export type AssistantDdlOptions = {
 	assistantTurnId?: string;
 	confirmedDrops?: boolean;
 	expectedProjectId?: string;
+	expectedDesignId?: string;
 	confirmation?: AssistantDdlConfirmation;
 	idFactory?: () => string;
 	planOnly?: boolean;
@@ -220,12 +221,17 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	const parsed = await parse(sql) as Node;
 	const state = workspace.getState();
 	if (options.expectedProjectId && state.project?.id !== options.expectedProjectId) throw new Error("Assistant DDL project changed before parsing completed.");
+	if (options.expectedDesignId && state.activeDesignId !== options.expectedDesignId) throw new Error("Assistant DDL Design changed before parsing completed.");
 	if (options.confirmedDrops) {
 		if (!options.confirmation) throw new Error("Assistant DDL confirmation token is required.");
-		if (state.project?.id !== options.confirmation.projectId || state.revision !== options.confirmation.revision) throw new Error("Assistant DDL confirmation is stale: project or revision changed.");
+		if (state.project?.id !== options.confirmation.projectId ||
+			state.activeDesignId !== options.confirmation.designId ||
+			state.revision !== options.confirmation.revision) {
+			throw new Error("Assistant DDL confirmation is stale: project, Design, or revision changed.");
+		}
 	}
 	const statements: Node[] = parsed.stmts ?? [];
-	if (!state.project || !state.design) throw new Error("Cannot apply assistant DDL without an open project.");
+	if (!state.project || !state.design || !state.activeDesignId) throw new Error("Cannot apply assistant DDL without an open database Design.");
 	if (options.readDesign) {
 		checkDdlRelevantContent(options.readDesign, state.design, statements);
 	}
@@ -508,19 +514,48 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	}
 	const latest = workspace.getState();
 	if (options.expectedProjectId && latest.project?.id !== options.expectedProjectId) throw new Error("Assistant DDL project changed before commit.");
-	if (!latest.project || !latest.design) throw new Error("Cannot apply assistant DDL without an open project.");
+	if (options.expectedDesignId && latest.activeDesignId !== options.expectedDesignId) throw new Error("Assistant DDL Design changed before commit.");
+	if (!latest.project || !latest.design || latest.activeDesignId !== state.activeDesignId) {
+		throw new Error("Assistant DDL project or Design changed before commit.");
+	}
 	const targetIds = pendingRemovals.map(({ targetId }) => targetId).sort();
 	if (options.confirmation) {
 		const confirmedIds = [...options.confirmation.targetIds].sort();
-		if (latest.project?.id !== options.confirmation.projectId || latest.revision !== options.confirmation.revision || confirmedIds.length !== targetIds.length || confirmedIds.some((targetId, index) => targetId !== targetIds[index])) throw new Error("Assistant DDL confirmation is stale: targets, project, or revision changed.");
-	} else if (latest.project?.id !== state.project.id || (!options.readDesign && latest.revision !== state.revision)) {
+		if (latest.project.id !== options.confirmation.projectId || latest.activeDesignId !== options.confirmation.designId ||
+			latest.revision !== options.confirmation.revision || confirmedIds.length !== targetIds.length ||
+			confirmedIds.some((targetId, index) => targetId !== targetIds[index])) {
+			throw new Error("Assistant DDL confirmation is stale: targets, project, Design, or revision changed.");
+		}
+	} else if (latest.project.id !== state.project.id || (!options.readDesign && latest.revision !== state.revision)) {
 		throw new Error("Assistant DDL project or revision changed before commit.");
 	} else if (options.readDesign && latest.revision !== state.revision) {
 		checkDdlRelevantContent(options.readDesign, latest.design, statements);
 	}
-	if (options.planOnly) return { status: "confirmation-required", statement: sql, removal: aggregateRemoval(pendingRemovals), targets: pendingRemovals, projectId: state.project.id, revision: state.revision };
-	if (!options.confirmedDrops && pendingRemovals.some(({ removal }) => !removalPlanEmpty(removal))) {
-		return { status: "confirmation-required", statement: sql, removal: aggregateRemoval(pendingRemovals), targets: pendingRemovals, projectId: state.project.id, revision: state.revision };
+	if (options.planOnly) {
+		return {
+			status: "confirmation-required",
+			statement: sql,
+			removal: aggregateRemoval(pendingRemovals),
+			targets: pendingRemovals,
+			projectId: state.project.id,
+			designId: state.activeDesignId,
+			revision: state.revision,
+		};
 	}
-	return { status: "applied", state: await workspace.applyAssistantDesign(design, options.assistantTurnId), statements: appliedStatements };
+	if (!options.confirmedDrops && pendingRemovals.some(({ removal }) => !removalPlanEmpty(removal))) {
+		return {
+			status: "confirmation-required",
+			statement: sql,
+			removal: aggregateRemoval(pendingRemovals),
+			targets: pendingRemovals,
+			projectId: state.project.id,
+			designId: state.activeDesignId,
+			revision: state.revision,
+		};
+	}
+	return {
+		status: "applied",
+		state: await workspace.applyAssistantDesign(design, options.assistantTurnId, state.activeDesignId),
+		statements: appliedStatements,
+	};
 }

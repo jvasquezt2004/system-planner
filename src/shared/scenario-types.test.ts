@@ -1,8 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import ts from "typescript";
 import type { SandboxAppliedTable } from "./design";
-import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths } from "./scenario-types";
+import { generateScenarioDatabaseTypes, scenarioDatabaseTypeUri, scenarioSupabaseTypePaths } from "./scenario-types";
 describe("Scenario Database type generation", () => {
+	test("assigns each Design its own Monaco declaration URI", () => {
+		const first = scenarioDatabaseTypeUri("design/first");
+		const second = scenarioDatabaseTypeUri("design/second");
+		expect(first).not.toBe(second);
+		expect(first).toContain("design%2Ffirst");
+	});
+
 	test("emits applied table and column types with insert optionality", () => {
 		const tables: SandboxAppliedTable[] = [{
 			name: "Library Items",

@@ -4,7 +4,7 @@ import Editor, { type Monaco, type OnMount } from "@monaco-editor/react";
 import { configureTypeScript } from "./monaco-setup";
 import { FileCode2, Plus, Trash2 } from "lucide-react";
 import type { DesignEnumType, DesignFunction, SandboxAppliedTable, Scenario, ScenarioRun, ScenarioSaveState } from "../shared/design";
-import { generateScenarioDatabaseTypes, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
+import { generateScenarioDatabaseTypes, scenarioDatabaseTypeUri, scenarioSupabaseTypePaths, scenarioTypeLibraryUri } from "../shared/scenario-types";
 import type { RunAllResult } from "../shared/run-all";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,6 +27,7 @@ const allSupabaseTypeDeclarations = {
 };
 
 type Props = {
+	designId: string;
 	initialSelectedId?: string | null;
 	scenarios: Scenario[];
 	appliedTables: SandboxAppliedTable[];
@@ -49,6 +50,7 @@ type Props = {
 };
 /** Manage saved Scenarios and show the latest run's observable results. */
 export function ScenarioView({
+	designId,
 	initialSelectedId,
 	scenarios,
 	appliedTables,
@@ -303,7 +305,7 @@ export function ScenarioView({
 									size="sm"
 									disabled={Boolean(runDisabledReason) || selectedRun?.status === "running"}
 									title={runDisabledReason ?? undefined}
-									onClick={() => onRun({ ...selected, source: sourceDraft })}
+									onClick={() => onRun({ ...selected, source: sourceDraft, designId })}
 								>
 									Run
 								</Button>
@@ -327,7 +329,7 @@ export function ScenarioView({
 								<span className="text-[11px] text-ink-4">Saved independently of design undo and redo</span>
 							</div>
 <Editor
-								key={generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}
+								key={`${designId}:${generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions)}`}
 								height="min(60vh, 640px)"
 								language="typescript"
 								value={sourceDraft}
@@ -356,8 +358,8 @@ export function ScenarioView({
 									);
 								}}
 								beforeMount={() => {
-									configureTypeScript(scenarioSupabaseTypePaths, [
-										[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), "file:///scenario-globals.d.ts"],
+									configureTypeScript(designId, scenarioSupabaseTypePaths, [
+										[generateScenarioDatabaseTypes(appliedTables, appliedEnums, appliedFunctions), scenarioDatabaseTypeUri(designId)],
 										...Object.entries(allSupabaseTypeDeclarations).map(
 											([filename, contents]): [string, string] => [contents, scenarioTypeLibraryUri(filename)],
 										),

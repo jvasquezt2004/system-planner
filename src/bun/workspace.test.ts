@@ -243,11 +243,16 @@ describe("design workspace", () => {
 		const edgeFunction = createdFunction.edgeFunctions[0];
 		if (!edgeFunction) throw new Error("Expected a saved Edge function.");
 
-		const begun = await workspace.beginScenarioRun({ scenarioId: scenario.id });
+		const designId = createdScenario.activeDesignId;
+		if (!designId) throw new Error("Expected an active database Design.");
+		const begun = await workspace.beginScenarioRun({ scenarioId: scenario.id, designId });
 		expect(begun.state.scenarioRuns[scenario.id]).toMatchObject({
+			designId,
 			status: "running",
 			stale: false,
 		});
+		const scenarioRevision = begun.state.scenarioRuns[scenario.id]?.scenarioRevision;
+		expect(typeof scenarioRevision).toBe("number");
 		expect(typeof begun.state.scenarioRuns[scenario.id]?.edgeFunctionRevision).toBe("number");
 		const completed = await workspace.finishScenarioRun({ runId: begun.runId, status: "passed", console: [] });
 		expect(completed.scenarioRuns[scenario.id]?.stale).toBe(false);
@@ -255,10 +260,20 @@ describe("design workspace", () => {
 		const edited = await workspace.updateEdgeFunctionSource({
 			edgeFunctionId: edgeFunction.id,
 			source: 'Deno.serve(() => Response.json({ changed: true }));',
+			designId,
 		});
 		expect(edited.scenarioRuns[scenario.id]).toMatchObject({
 			status: "passed",
 			stale: true,
+		});
+		const editedScenario = await workspace.updateScenarioSource({
+			scenarioId: scenario.id,
+			source: "await supabase.from('Books').select('*');",
+			designId,
+		});
+		expect(editedScenario.scenarioRuns[scenario.id]).toMatchObject({
+			stale: true,
+			scenarioRevision: scenarioRevision,
 		});
 	});
 	test("persists ordered Edge functions independently with Supabase slugs and reopens them", async () => {

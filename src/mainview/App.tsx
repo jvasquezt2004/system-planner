@@ -63,7 +63,7 @@ import { FunctionsView } from "./functions-view";
 import { AssistantSidebar } from "./assistant-sidebar";
 import { EdgeFunctionsView } from "./edge-functions-view";
 
-type RunAllOperation = { projectId: string; generation: number };
+type RunAllOperation = { projectId: string; designId: string; generation: number };
 
 /** The main window shows the canvas, SQL preview, or saved Scenarios. */
 type WorkspaceView = "canvas" | "sql" | "scenarios" | "edge-functions" | "functions" | "triggers";
@@ -119,6 +119,7 @@ export function App({
 	}, [assistantCollapsed]);
 	const [scenarioStarting, setScenarioStarting] = useState(false);
 	const projectIdRef = useRef<string | null>(null);
+	const designIdRef = useRef<string | null>(null);
 	const projectGeneration = useRef(0);
 	/** Changes whenever the view switches Project or Design; late results from an earlier target are dropped. */
 	const targetKeyRef = useRef<string | null>(null);
@@ -139,13 +140,13 @@ export function App({
 	}, []);
 	const receiveWorkspaceState = useCallback((next: WorkspaceState) => {
 		const nextProjectId = next.project?.id ?? null;
-		const nextTargetKey = `${nextProjectId ?? ""}\u0000${next.activeDesignId ?? ""}`;
+		const nextDesignId = next.activeDesignId ?? null;
+		const nextTargetKey = `${nextProjectId ?? ""}\u0000${nextDesignId ?? ""}`;
 		if (targetKeyRef.current !== nextTargetKey) {
 			targetKeyRef.current = nextTargetKey;
 			targetVersion.current += 1;
-		}
-		if (projectIdRef.current !== nextProjectId) {
 			projectIdRef.current = nextProjectId;
+			designIdRef.current = nextDesignId;
 			projectGeneration.current += 1;
 			resetScenarioExecution();
 		}
@@ -156,7 +157,7 @@ export function App({
 	if (!scenarioRunDriver.current) {
 		scenarioRunDriver.current = createScenarioRunDriver({
 			workspace: {
-				beginScenarioRun: ({ scenarioId }) => workspaceClient.beginScenarioRun(scenarioId),
+				beginScenarioRun: (action) => workspaceClient.beginScenarioRun(action),
 				handleSandboxApiRequest: ({ runId, request }) =>
 					workspaceClient.handleSandboxApiRequest(runId, request),
 				finishScenarioRun: (action) => workspaceClient.finishScenarioRun(action),
@@ -240,12 +241,16 @@ export function App({
 	const applySavedContent = useCallback(
 		async (action: () => Promise<WorkspaceState>) => {
 			const requestProjectId = state?.project?.id;
+			const requestDesignId = state?.activeDesignId;
 			try {
 				const next = await action();
 				setState((current) =>
 					requestProjectId &&
+					requestDesignId &&
 					current?.project?.id === requestProjectId &&
-					next.project?.id === requestProjectId
+					current.activeDesignId === requestDesignId &&
+					next.project?.id === requestProjectId &&
+					next.activeDesignId === requestDesignId
 						? next
 						: current,
 				);
@@ -253,7 +258,7 @@ export function App({
 				setError(errorMessage(cause));
 			}
 		},
-		[state?.project?.id],
+		[state?.activeDesignId, state?.project?.id],
 	);
 	const projectId = state?.project?.id ?? null;
 	const activeScenarioRun = state
@@ -273,13 +278,17 @@ export function App({
 		});
 	}, []);
 	const runScenario = useCallback(
-		(scenario: Scenario) => scenarioRunDriver.current?.run(scenario) ?? Promise.resolve(null),
+		(scenario: Scenario) => scenarioRunDriver.current?.run({
+			...scenario,
+			designId: scenario.designId ?? designIdRef.current ?? undefined,
+		}) ?? Promise.resolve(null),
 		[],
 	);
 	const runSingleScenario = useCallback(async (scenario: Scenario) => {
 		if (
 			!state ||
 			state.project?.id !== projectIdRef.current ||
+			state.activeDesignId !== designIdRef.current ||
 			!getLastAppliedSandbox(state.sandbox) ||
 			scenarioIsRunning ||
 			scenarioStartOperation.current ||
@@ -302,10 +311,13 @@ export function App({
 
 	const runAll = useCallback(async () => {
 		const currentProjectId = projectIdRef.current;
+		const currentDesignId = designIdRef.current;
 		if (
 			!state ||
 			!currentProjectId ||
+			!currentDesignId ||
 			state.project?.id !== currentProjectId ||
+			state.activeDesignId !== currentDesignId ||
 			!getLastAppliedSandbox(state.sandbox) ||
 			scenarioIsRunning ||
 			scenarioStarting ||
@@ -315,9 +327,13 @@ export function App({
 		) return;
 		const operation: RunAllOperation = {
 			projectId: currentProjectId,
+			designId: currentDesignId,
 			generation: projectGeneration.current,
 		};
-		const snapshot = state.scenarios.map((scenario) => ({ ...scenario }));
+		const snapshot = state.scenarios.map((scenario) => ({
+			...scenario,
+			designId: scenario.designId ?? currentDesignId,
+		}));
 		runAllOperation.current = operation;
 		setRunAllActive(true);
 		setRunAllResults([]);
@@ -325,6 +341,7 @@ export function App({
 			const results = await runAllScenarios(snapshot, runScenario, () =>
 				runAllOperation.current === operation &&
 				projectIdRef.current === operation.projectId &&
+				designIdRef.current === operation.designId &&
 				projectGeneration.current === operation.generation,
 			);
 			if (runAllOperation.current === operation) setRunAllResults(results);
@@ -693,7 +710,8 @@ export function App({
 						)}
 						{view === "scenarios" && (
 							<ScenarioView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId}`}
+								designId={state.activeDesignId!}
 								scenarios={state.scenarios}
 								initialSelectedId={assistantCodeTarget?.kind === "scenario" ? assistantCodeTarget.id : null}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
@@ -710,41 +728,42 @@ export function App({
 								onRun={(scenario) => void runSingleScenario(scenario)}
 								onStop={stopScenario}
 								onCreate={(name) =>
-									void applySavedContent(() => workspaceClient.createScenario({ name }))
+									void applySavedContent(() => workspaceClient.createScenario({ name, designId: state.activeDesignId! }))
 								}
 								onRename={(scenarioId, name) =>
 									void applySavedContent(() =>
-										workspaceClient.renameScenario({ scenarioId, name }),
+										workspaceClient.renameScenario({ scenarioId, name, designId: state.activeDesignId! }),
 									)
 								}
 								onRemove={(scenarioId) =>
-									void applySavedContent(() => workspaceClient.removeScenario({ scenarioId }))
+									void applySavedContent(() => workspaceClient.removeScenario({ scenarioId, designId: state.activeDesignId! }))
 								}
 								onUpdateSource={(scenarioId, source) =>
 									void applySavedContent(() =>
-										workspaceClient.updateScenarioSource({ scenarioId, source }),
+										workspaceClient.updateScenarioSource({ scenarioId, source, designId: state.activeDesignId! }),
 									)
 								}
 							/>
 						)}
 						{view === "edge-functions" && (
 							<EdgeFunctionsView
-								key={state.project.id}
+								key={`${state.project.id}:${state.activeDesignId}`}
+								designId={state.activeDesignId!}
 								edgeFunctions={state.edgeFunctions}
 								initialSelectedId={assistantCodeTarget?.kind === "edge-function" ? assistantCodeTarget.id : null}
 								save={state.edgeFunctionSave}
 								appliedTables={getLastAppliedSandbox(state.sandbox)?.tables ?? []}
 								appliedEnums={getLastAppliedSandbox(state.sandbox)?.enumTypes ?? []}
 								appliedFunctions={getLastAppliedSandbox(state.sandbox)?.functions ?? []}
-								onCreate={(name) => void applySavedContent(() => workspaceClient.createEdgeFunction({ name }))}
+								onCreate={(name) => void applySavedContent(() => workspaceClient.createEdgeFunction({ name, designId: state.activeDesignId! }))}
 								onRename={(edgeFunctionId, name) =>
-									void applySavedContent(() => workspaceClient.renameEdgeFunction({ edgeFunctionId, name }))
+									void applySavedContent(() => workspaceClient.renameEdgeFunction({ edgeFunctionId, name, designId: state.activeDesignId! }))
 								}
 								onRemove={(edgeFunctionId) =>
-									void applySavedContent(() => workspaceClient.removeEdgeFunction({ edgeFunctionId }))
+									void applySavedContent(() => workspaceClient.removeEdgeFunction({ edgeFunctionId, designId: state.activeDesignId! }))
 								}
 								onUpdateSource={(edgeFunctionId, source) =>
-									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source }))
+									void applySavedContent(() => workspaceClient.updateEdgeFunctionSource({ edgeFunctionId, source, designId: state.activeDesignId! }))
 								}
 							/>
 						)}

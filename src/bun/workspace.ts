@@ -124,7 +124,7 @@ export interface DesignWorkspace {
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
 	undo(action?: { designId?: string }): Promise<WorkspaceState>;
 	redo(action?: { designId?: string }): Promise<WorkspaceState>;
-	applyAssistantDesign(design: Design, assistantTurnId?: string): Promise<WorkspaceState>;
+	applyAssistantDesign(design: Design, assistantTurnId?: string, designId?: string): Promise<WorkspaceState>;
 	onAssistantDesignMutation?(listener: (turnId: string, before: Design, after: Design) => void): () => void;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
@@ -349,6 +349,7 @@ export async function createDesignWorkspace(
 		projectId: string;
 		designId: string;
 		revision: number;
+		scenarioRevision: number;
 		edgeFunctionRevision: number;
 		database: ScenarioRunDatabase | null;
 		tables: SandboxAppliedTable[];
@@ -371,7 +372,9 @@ export async function createDesignWorkspace(
 						scenarioId,
 						run ? {
 							...run,
-							stale: run.revision < next.revision || run.edgeFunctionRevision < edgeFunctionRevision,
+							stale: run.revision < next.revision ||
+								run.scenarioRevision < scenarioRevision ||
+								run.edgeFunctionRevision < edgeFunctionRevision,
 						} : null,
 					]),
 				),
@@ -622,13 +625,17 @@ export async function createDesignWorkspace(
 		designId?: string,
 	) {
 		const savedAt = now();
+		const isCurrentScenarioSave = () =>
+			activeProjectId === projectId &&
+			activeDesignId === designId &&
+			scenarioRevision === revision;
 		try {
 			await store.saveScenarios(projectId, scenarios, { revision, savedAt }, designId);
-			if (activeProjectId === projectId && scenarioRevision === revision) {
+			if (isCurrentScenarioSave()) {
 				setState({ ...state, projects: store.listProjects(), scenarioSave: { status: "saved", revision, savedAt, designId } });
 			}
 		} catch (error) {
-			if (activeProjectId === projectId && scenarioRevision === revision) {
+			if (isCurrentScenarioSave()) {
 				setState({
 					...state,
 					scenarioSave: {
@@ -644,13 +651,18 @@ export async function createDesignWorkspace(
 
 	async function saveEdgeFunctions(projectId: string, edgeFunctions: EdgeFunction[], revision: number, projectGeneration: number, designId?: string) {
 		const savedAt = now();
+		const isCurrentEdgeFunctionSave = () =>
+			activeProjectId === projectId &&
+			activeDesignId === designId &&
+			edgeFunctionProjectGeneration === projectGeneration &&
+			edgeFunctionRevision === revision;
 		try {
 			await store.saveEdgeFunctions(projectId, edgeFunctions, { revision, savedAt }, designId);
-			if (activeProjectId === projectId && edgeFunctionProjectGeneration === projectGeneration && edgeFunctionRevision === revision) {
+			if (isCurrentEdgeFunctionSave()) {
 				setState({ ...state, projects: store.listProjects(), edgeFunctionSave: { status: "saved", revision, savedAt, designId } });
 			}
 		} catch (error) {
-			if (activeProjectId === projectId && edgeFunctionProjectGeneration === projectGeneration && edgeFunctionRevision === revision) {
+			if (isCurrentEdgeFunctionSave()) {
 				setState({
 					...state,
 					edgeFunctionSave: {
@@ -664,16 +676,22 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	function updateEdgeFunctions(projectId: string, update: (items: EdgeFunction[]) => EdgeFunction[], designId?: string) {
+	async function updateEdgeFunctions(
+		projectId: string,
+		update: (items: EdgeFunction[]) => EdgeFunction[],
+		designId?: string,
+	) {
 		const targetDesignId = designId ?? activeDesignId ?? undefined;
 		const edgeFunctions = update(state.edgeFunctions);
 		const revision = edgeFunctionRevision + 1;
 		edgeFunctionRevision = revision;
 		setState({ ...state, edgeFunctions, edgeFunctionSave: { status: "saving", revision, designId: targetDesignId } });
-		return saveEdgeFunctions(projectId, edgeFunctions, revision, edgeFunctionProjectGeneration, targetDesignId);
+		const committedState = state;
+		await saveEdgeFunctions(projectId, edgeFunctions, revision, edgeFunctionProjectGeneration, targetDesignId);
+		return activeProjectId === projectId && activeDesignId === targetDesignId ? state : committedState;
 	}
 
-	function updateScenarios(
+	async function updateScenarios(
 		projectId: string,
 		update: (scenarios: Scenario[]) => Scenario[],
 		designId?: string,
@@ -687,7 +705,9 @@ export async function createDesignWorkspace(
 			scenarios,
 			scenarioSave: { status: "saving", revision, designId: targetDesignId },
 		});
-		return saveScenarios(projectId, scenarios, revision, targetDesignId);
+		const committedState = state;
+		await saveScenarios(projectId, scenarios, revision, targetDesignId);
+		return activeProjectId === projectId && activeDesignId === targetDesignId ? state : committedState;
 	}
 	/** Saves the draft immediately and debounces its disposable preview rebuild. */
 	async function applyStructuralChange(
@@ -929,8 +949,7 @@ export async function createDesignWorkspace(
 					source: 'Deno.serve(async (_request) => new Response("OK"));',
 					designId,
 				};
-				await updateEdgeFunctions(projectId, (items) => [...items, edgeFunction], designId);
-				return state;
+				return await updateEdgeFunctions(projectId, (items) => [...items, edgeFunction], designId);
 			});
 		},
 		renameEdgeFunction(action) {
@@ -943,10 +962,9 @@ export async function createDesignWorkspace(
 					throw new Error(`Edge function “${name}” already exists in this project.`);
 				}
 				if (current.name === name) return state;
-				await updateEdgeFunctions(projectId, (items) =>
+				return await updateEdgeFunctions(projectId, (items) =>
 					items.map((item) => item.id === current.id ? { ...item, name } : item),
 				designId);
-				return state;
 			});
 		},
 		removeEdgeFunction(action) {
@@ -955,8 +973,7 @@ export async function createDesignWorkspace(
 				if (!state.edgeFunctions.some((item) => item.id === action.edgeFunctionId)) {
 					throw new Error("That Edge function could not be found.");
 				}
-				await updateEdgeFunctions(projectId, (items) => items.filter((item) => item.id !== action.edgeFunctionId), designId);
-				return state;
+				return await updateEdgeFunctions(projectId, (items) => items.filter((item) => item.id !== action.edgeFunctionId), designId);
 			});
 		},
 		updateEdgeFunctionSource(action) {
@@ -965,10 +982,9 @@ export async function createDesignWorkspace(
 				const edgeFunction = state.edgeFunctions.find((item) => item.id === action.edgeFunctionId);
 				if (!edgeFunction) throw new Error("That Edge function could not be found.");
 				if (edgeFunction.source === action.source) return state;
-				await updateEdgeFunctions(projectId, (items) =>
+				return await updateEdgeFunctions(projectId, (items) =>
 					items.map((item) => item.id === edgeFunction.id ? { ...item, source: action.source } : item),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		createScenario(action) {
@@ -977,8 +993,7 @@ export async function createDesignWorkspace(
 				const name = action.name.trim();
 				if (!name) throw new Error("Scenario name is required.");
 				const scenario: Scenario = { id: createId(), name, source: "", designId };
-				await updateScenarios(projectId, (scenarios) => [...scenarios, scenario], designId);
-				return state;
+				return await updateScenarios(projectId, (scenarios) => [...scenarios, scenario], designId);
 			});
 		},
 		renameScenario(action) {
@@ -989,10 +1004,9 @@ export async function createDesignWorkspace(
 				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
 				if (!scenario) throw new Error("That scenario could not be found.");
 				if (scenario.name === name) return state;
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.map((item) => item.id === action.scenarioId ? { ...item, name } : item),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		removeScenario(action) {
@@ -1001,10 +1015,9 @@ export async function createDesignWorkspace(
 				if (!state.scenarios.some((item) => item.id === action.scenarioId)) {
 					throw new Error("That scenario could not be found.");
 				}
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.filter((item) => item.id !== action.scenarioId),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		updateScenarioSource(action) {
@@ -1013,12 +1026,11 @@ export async function createDesignWorkspace(
 				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
 				if (!scenario) throw new Error("That scenario could not be found.");
 				if (scenario.source === action.source) return state;
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.map((item) =>
 						item.id === action.scenarioId ? { ...item, source: action.source } : item,
 					),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		beginScenarioRun(action: { scenarioId: string; designId?: string }) {
@@ -1026,15 +1038,18 @@ export async function createDesignWorkspace(
 				const { projectId, designId } = requireOpenDesign(action.designId);
 				if (activeScenarioRun) throw new Error("Another Scenario run is already active.");
 				const scenario = state.scenarios.find((candidate) => candidate.id === action.scenarioId);
-				if (!scenario) throw new Error("That Scenario could not be found.");
+				if (!scenario || (scenario.designId !== undefined && scenario.designId !== designId)) {
+					throw new Error("That Scenario could not be found in the target database Design.");
+				}
 				const snapshot = getLastAppliedSandbox(state.sandbox);
-				if (!snapshot) throw new Error("Apply a valid design revision before running a Scenario.");
+				if (!snapshot || snapshot.designId !== designId) throw new Error("Apply a valid design revision before running a Scenario.");
 				const run = {
 					id: createId(),
 					scenarioId: scenario.id,
 					projectId,
 					designId,
 					revision: snapshot.revision,
+					scenarioRevision,
 					edgeFunctionRevision,
 					database: null as ScenarioRunDatabase | null,
 					tables: snapshot.tables,
@@ -1052,8 +1067,10 @@ export async function createDesignWorkspace(
 							scenarioId: scenario.id,
 							status: "running",
 							revision: run.revision,
+							scenarioRevision: run.scenarioRevision,
 							edgeFunctionRevision: run.edgeFunctionRevision,
-							stale: run.revision < state.revision || run.edgeFunctionRevision < edgeFunctionRevision,
+							stale: run.revision < state.revision || run.scenarioRevision < scenarioRevision ||
+								run.edgeFunctionRevision < edgeFunctionRevision,
 							requests: [],
 							console: [],
 							grids: [],
@@ -1063,7 +1080,7 @@ export async function createDesignWorkspace(
 				});
 				try {
 					const database = await createScenarioRunDatabase(snapshot.sql);
-					if (activeScenarioRun !== run || activeProjectId !== projectId) {
+					if (activeScenarioRun !== run || activeProjectId !== projectId || activeDesignId !== designId) {
 						await database.close();
 						throw new Error("The Scenario run was superseded.");
 					}
@@ -1072,7 +1089,7 @@ export async function createDesignWorkspace(
 					if (activeScenarioRun === run) {
 						activeScenarioRun = null;
 						const current = state.scenarioRuns[scenario.id];
-						if (activeProjectId === projectId && current?.id === run.id) {
+						if (activeProjectId === projectId && activeDesignId === designId && current?.id === run.id) {
 							setState({
 								...state,
 								scenarioRuns: {
@@ -1095,7 +1112,7 @@ export async function createDesignWorkspace(
 		handleSandboxApiRequest(action) {
 			return runTask(async () => {
 				const run = activeScenarioRun;
-				if (!run || run.id !== action.runId || run.projectId !== activeProjectId || !run.database) {
+				if (!run || run.id !== action.runId || run.projectId !== activeProjectId || run.designId !== activeDesignId || !run.database) {
 					return {
 						status: 410,
 						headers: { "content-type": "application/json" },
@@ -1103,7 +1120,7 @@ export async function createDesignWorkspace(
 					};
 				}
 				const { response, entry } = await handleSandboxApiRequest(run.database, run.tables, action.request, run.relationships, run.functions);
-				if (activeScenarioRun !== run || activeProjectId !== run.projectId) return response;
+				if (activeScenarioRun !== run || activeProjectId !== run.projectId || activeDesignId !== run.designId) return response;
 				const previous = state.scenarioRuns[run.scenarioId];
 				if (!previous || previous.id !== run.id) return response;
 				setState({
@@ -1122,7 +1139,7 @@ export async function createDesignWorkspace(
 		finishScenarioRun(action) {
 			return runTask(async () => {
 				const run = activeScenarioRun;
-				if (!run || run.id !== action.runId || run.projectId !== activeProjectId) return state;
+				if (!run || run.id !== action.runId || run.projectId !== activeProjectId || run.designId !== activeDesignId) return state;
 				const previous = state.scenarioRuns[run.scenarioId];
 				let grids = previous?.id === run.id ? previous.grids : [];
 				let status = action.status;
@@ -1152,7 +1169,9 @@ export async function createDesignWorkspace(
 								console: output,
 								grids,
 								expectations: action.expectations ?? [],
-								stale: run.revision < state.revision || run.edgeFunctionRevision < edgeFunctionRevision,
+								scenarioRevision: run.scenarioRevision,
+								stale: run.revision < state.revision || run.scenarioRevision < scenarioRevision ||
+									run.edgeFunctionRevision < edgeFunctionRevision,
 								...(reason ? { reason } : {}),
 							},
 						},
@@ -1167,9 +1186,9 @@ export async function createDesignWorkspace(
 		redo(action) {
 			return runTask(() => applyHistoryChange("redo", action?.designId));
 		},
-		applyAssistantDesign(design, assistantTurnId) {
+		applyAssistantDesign(design, assistantTurnId, targetDesignId) {
 			return runTask(async () => {
-				const { projectId, design: currentDesign, designId } = requireOpenDesign();
+				const { projectId, design: currentDesign, designId } = requireOpenDesign(targetDesignId);
 				const normalized = normalizeDesign(design);
 				const currentTables = new Map(currentDesign.tables.map((table) => [table.id, table]));
 				for (const table of normalized.tables) {

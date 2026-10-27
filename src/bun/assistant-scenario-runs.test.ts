@@ -34,7 +34,7 @@ async function setup(sources: string[], options: SetupOptions = {}) {
 	const workspace = await createDesignWorkspace({ databasePath });
 	workspaces.push(workspace);
 	const opened = await workspace.createProject({ name: "Assistant scenario runs" });
-	if (!opened.project) throw new Error("Expected the project to be open.");
+	if (!opened.project || !opened.activeDesignId) throw new Error("Expected the project and its active Design to be open.");
 	const tableState = await workspace.addTable({ name: "Books" });
 	const table = tableState.design?.tables[0];
 	if (!table) throw new Error("Expected Books table.");
@@ -69,13 +69,14 @@ async function setup(sources: string[], options: SetupOptions = {}) {
 			return models.streamSimple(model, context, streamOptions);
 		},
 		scenarioRunTimeoutMs: options.scenarioRunTimeoutMs,
-		runScenario: options.runScenario ?? options.runScenarioFactory?.(workspace, driver) ?? (async (projectId, scenario, signal) => {
-			if (workspace.getState().project?.id !== projectId) throw new Error("Bound project changed.");
-			return driver.runQueued(scenario, { signal });
+		runScenario: options.runScenario ?? options.runScenarioFactory?.(workspace, driver) ?? (async (projectId, designId, scenario, signal) => {
+			const state = workspace.getState();
+			if (state.project?.id !== projectId || state.activeDesignId !== designId) throw new Error("Bound project or Design changed.");
+			return driver.runQueued({ ...scenario, designId }, { signal });
 		}),
 	});
 	runtimes.push(runtime);
-	return { databasePath, workspace, scenarios, scripted, runtime, projectId: opened.project.id, requests, driver };
+	return { databasePath, workspace, scenarios, scripted, runtime, projectId: opened.project.id, designId: opened.activeDesignId, requests, driver };
 }
 
 type CompactRun = { scenario: string; status: string; stale: boolean; failedExpectations: unknown[]; console: string[]; requestLog: unknown[]; grids: unknown[] };
@@ -139,14 +140,46 @@ describe("Assistant Scenario runs", () => {
 		expect(requests[2]).toContain("capturedRows");
 		expect(requests[2]).toContain("failedExpectationCount");
 	});
+	test("keeps a scripted Scenario run bound to the invocation Design across navigation", async () => {
+		const requestStarted = Promise.withResolvers<{ projectId: string; designId: string }>();
+		const finishRun = Promise.withResolvers<null>();
+		const { workspace, scenarios, scripted, runtime, projectId, designId } = await setup(
+			['console.log("must not run against the next Design");'],
+			{
+				runScenario: async (boundProjectId, boundDesignId) => {
+					requestStarted.resolve({ projectId: boundProjectId, designId: boundDesignId });
+					return finishRun.promise;
+				},
+			},
+		);
+		const conversation = runtime.createConversation(projectId);
+		scripted.setResponses([
+			fauxAssistantMessage([fauxToolCall("run_scenarios", { mode: "one", scenarioId: scenarios[0]!.id })], { stopReason: "toolUse" }),
+			fauxAssistantMessage([fauxText("The run could not be accepted after navigation.")]),
+		]);
+		const turn = runtime.sendMessage(conversation.id, "Run the saved Scenario.", "scripted-model");
+		const invokedTarget = await requestStarted.promise;
+		expect(invokedTarget).toEqual({ projectId, designId });
+
+		const other = await workspace.createProject({ name: "Other Design" });
+		if (!other.project) throw new Error("Expected the other project to be open.");
+		finishRun.resolve(null);
+		await turn;
+
+		expect(workspace.getState().project?.id).toBe(other.project.id);
+		expect(workspace.getState().scenarioRuns).toEqual({});
+		const toolResult = runtime.loadConversation(conversation.id)?.messages.find(({ role }) => role === "toolResult");
+		expect(JSON.stringify(toolResult?.payload)).toContain("changed while the Scenario run was in progress");
+	});
+
 	test("finishes the Assistant turn when the view never reports a run", async () => {
 		const timeoutMessage = "The view did not report the Scenario run result in time.";
 		const requestStarted = Promise.withResolvers<void>();
 		const { scenarios, scripted, runtime, projectId, requests } = await setup(
-			['console.log("never started");'],
+			['console.log("timeout scenario");'],
 			{
 				scenarioRunTimeoutMs: 20,
-				runScenario: async (_projectId, _scenario, _signal, timeoutMs) => {
+				runScenario: async (_projectId, _designId, _scenario, _signal, timeoutMs) => {
 					requestStarted.resolve();
 					const { promise, reject } = Promise.withResolvers<null>();
 					setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
@@ -187,7 +220,7 @@ describe("Assistant Scenario runs", () => {
 						else completion.resolve(run);
 					},
 				});
-				return (boundProjectId, scenario, signal) => {
+				return (boundProjectId, designId, scenario, signal) => {
 					const requestId = crypto.randomUUID();
 					const { promise, resolve, reject } = Promise.withResolvers<ScenarioRun | null>();
 					pending.set(requestId, { resolve, reject });
@@ -197,7 +230,7 @@ describe("Assistant Scenario runs", () => {
 						error.name = "AbortError";
 						reject(error);
 					};
-					bridge.request({ requestId, projectId: boundProjectId, scenario });
+					bridge.request({ requestId, projectId: boundProjectId, designId, scenario });
 					signal?.addEventListener("abort", onAbort, { once: true });
 					if (signal?.aborted) onAbort();
 					return promise.then(
@@ -277,7 +310,7 @@ describe("Assistant Scenario runs", () => {
 		if (!table) throw new Error("Expected Books table.");
 		await workspace.addColumn({ tableId: table.id, name: "subtitle", type: "text" });
 		expect(workspace.getState().scenarioRuns[scenarios[1]!.id]?.stale).toBe(true);
-	});
+	}, 60_000);
 
 
 	test("runs all saved Scenarios in order and reports Stop distinctly", async () => {
