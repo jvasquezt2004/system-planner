@@ -89,8 +89,9 @@ import type {
 import type { SqlPreviewActions } from "./sql-preview";
 import type { ProjectTransferActions } from "./project-transfer";
 import type { ProjectTransferResult } from "../shared/project-portability";
-import type { SystemDesignSvgExportRequest, SystemDesignSvgExportResult } from "../shared/rpc";
+import type { SystemDesignPngExportRequest, SystemDesignSvgExportRequest, SystemDesignExportResult } from "../shared/rpc";
 import type { SystemDesignSvgExports } from "./system-design-svg-export";
+import type { SystemDesignPngExports } from "./system-design-png-export";
 import type { DesignWorkspace } from "./workspace";
 import type { AssistantRuntime } from "./assistant-runtime";
 
@@ -102,7 +103,9 @@ export type RpcHandlerDependencies = {
 	projectTransfers: ProjectTransferActions;
 	pendingProjectTransfers: Map<string, () => Promise<ProjectTransferResult>>;
 	systemDesignSvgExports: SystemDesignSvgExports;
-	pendingSystemDesignSvgExports: Map<string, () => Promise<SystemDesignSvgExportResult>>;
+	pendingSystemDesignSvgExports: Map<string, () => Promise<SystemDesignExportResult>>;
+	systemDesignPngExports: SystemDesignPngExports;
+	pendingSystemDesignPngExports: Map<string, () => Promise<SystemDesignExportResult>>;
 };
 
 export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
@@ -236,6 +239,13 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 			if (!(await deps.workspace).getState().project) throw new Error("Open a project before exporting its System design.");
 			const requestId = crypto.randomUUID();
 			deps.pendingSystemDesignSvgExports.set(requestId, () => deps.systemDesignSvgExports.export({ svg, projectName }));
+			return { requestId };
+		},
+		/** The PNG is rasterized in the view from the same snapshot's SVG, so this request carries exactly what the designer saw. */
+		beginSystemDesignPngExport: async ({ png, projectName }: SystemDesignPngExportRequest): Promise<{ requestId: string }> => {
+			if (!(await deps.workspace).getState().project) throw new Error("Open a project before exporting its System design.");
+			const requestId = crypto.randomUUID();
+			deps.pendingSystemDesignPngExports.set(requestId, () => deps.systemDesignPngExports.export({ png, projectName }));
 			return { requestId };
 		},
 		copySchemaCode: async ({ snapshot }: { snapshot: SchemaCodeSnapshot }): Promise<SqlPreviewCopyResult> => {

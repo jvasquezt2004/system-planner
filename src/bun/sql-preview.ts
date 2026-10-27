@@ -151,13 +151,14 @@ function requireFileName(
 }
 
 /** Writes a file that does not exist yet; an existing file is never overwritten. */
-export async function writeNewFile(path: string, contents: string): Promise<void> {
+export async function writeNewFile(path: string, contents: string | Uint8Array): Promise<void> {
 	let file: FileHandle | null = null;
 	let created = false;
 	try {
 		file = await open(path, "wx");
 		created = true;
-		await file.writeFile(contents, "utf8");
+		if (typeof contents === "string") await file.writeFile(contents, "utf8");
+		else await file.writeFile(contents);
 		await file.sync();
 		await file.close();
 		file = null;

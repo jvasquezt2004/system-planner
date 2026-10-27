@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { errorMessage } from "../shared/error-message";
-import type { SystemDesignSvgExportRequest, SystemDesignSvgExportResult } from "../shared/rpc";
+import type { SystemDesignSvgExportRequest, SystemDesignExportResult } from "../shared/rpc";
 import { writeNewFile } from "./sql-preview";
 
 export type SystemDesignSvgExportDependencies = {
@@ -15,12 +15,12 @@ export type SystemDesignSvgExports = {
 	 * folder the designer picks. Nothing is written on cancellation or failure, and
 	 * an existing file is never overwritten.
 	 */
-	export(request: SystemDesignSvgExportRequest): Promise<SystemDesignSvgExportResult>;
+	export(request: SystemDesignSvgExportRequest): Promise<SystemDesignExportResult>;
 };
 
 export function createSystemDesignSvgExports(dependencies: SystemDesignSvgExportDependencies): SystemDesignSvgExports {
 	return {
-		async export({ svg, projectName }: SystemDesignSvgExportRequest): Promise<SystemDesignSvgExportResult> {
+		async export({ svg, projectName }: SystemDesignSvgExportRequest): Promise<SystemDesignExportResult> {
 			try {
 				const start = typeof svg === "string" ? svg.trimStart() : "";
 				if (!start.startsWith("<svg") && !start.startsWith("<?xml")) {
@@ -41,6 +41,11 @@ export function createSystemDesignSvgExports(dependencies: SystemDesignSvgExport
 
 /** "shop-system-design-2026-10-26T21-00-00-000Z.svg": a new name each export, so a repeat never collides. */
 export function systemDesignSvgFileName(projectName: string, now: Date): string {
+	return systemDesignFileName(projectName, now, "svg");
+}
+
+/** The same naming rule for every System design image format, so a repeat export never collides. */
+export function systemDesignFileName(projectName: string, now: Date, extension: "svg" | "png"): string {
 	const slug = projectName
 		.normalize("NFKD")
 		.replace(/[^\p{L}\p{N}]+/gu, "-")
@@ -48,5 +53,5 @@ export function systemDesignSvgFileName(projectName: string, now: Date): string 
 		.toLowerCase()
 		.slice(0, 60);
 	const stamp = now.toISOString().replace(/[:.]/g, "-");
-	return `${slug || "project"}-system-design-${stamp}.svg`;
+	return `${slug || "project"}-system-design-${stamp}.${extension}`;
 }
