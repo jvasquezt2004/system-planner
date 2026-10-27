@@ -23,6 +23,8 @@ import {
 	type SystemServiceSize,
 } from "../shared/system-design";
 import type { workspaceClient } from "./workspace-client";
+import { selectedWalkthroughHighlight } from "../shared/walkthrough";
+import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
 import {
 	connectionGeometries,
 	labelWidth,
@@ -100,6 +102,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const [connectingFrom, setConnectingFrom] = useState<string | null | undefined>(undefined);
 	const [drag, setDrag] = useState<Drag | null>(null);
 	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
+	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
+	const [walkthroughSelection, setWalkthroughSelection] = useState<WalkthroughSelection | null>(null);
 	const pan = useRef<Pan | null>(null);
 	const interacting = useRef(false);
 	const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -135,6 +139,10 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const selectedService = selection?.kind === "service" ? findSystemService(design, selection.id) ?? null : null;
 	const selectedConnection = selection?.kind === "connection" ? findSystemConnection(design, selection.id) ?? null : null;
 	const serviceNames = new Map(design.services.map((service) => [service.id, service.name]));
+	/** The open walkthrough step's Connection and endpoints, traced in the architecture. */
+	const highlight = walkthroughSelection?.stepId
+		? selectedWalkthroughHighlight(state.walkthroughs ?? [], design, walkthroughSelection.walkthroughId, walkthroughSelection.stepId)
+		: null;
 
 	function scheduleViewportSave(next: CanvasViewport) {
 		interacting.current = true;
@@ -364,6 +372,21 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 
 	return (
 		<div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
+			{walkthroughsOpen && (
+				<WalkthroughEditor
+					walkthroughs={state.walkthroughs ?? []}
+					design={design}
+					save={state.walkthroughSave}
+					client={client}
+					onApply={onApply}
+					selection={walkthroughSelection}
+					onSelect={setWalkthroughSelection}
+					onClose={() => {
+						setWalkthroughsOpen(false);
+						setWalkthroughSelection(null);
+					}}
+				/>
+			)}
 			<div
 				ref={containerRef}
 				data-testid="system-design-canvas"
@@ -398,6 +421,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						{scene.services.map((service) => {
 							const selected = selection?.kind === "service" && selection.id === service.id;
 							const linking = connectingFrom === service.id;
+							const traced = highlight?.endpointIds.includes(service.id) ?? false;
 							const { width, height } = service.size;
 							return (
 								<g
@@ -427,10 +451,10 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										height={height}
 										rx={14}
 										strokeDasharray="7 5"
-										strokeWidth={selected || linking ? 2 : 1.25}
+										strokeWidth={selected || linking || traced ? 2 : 1.25}
 										style={{
 											fill: "var(--color-paper-tint)",
-											stroke: selected || linking ? "var(--color-pencil)" : "var(--color-rule-strong)",
+											stroke: selected || linking || traced ? "var(--color-pencil)" : "var(--color-rule-strong)",
 										}}
 									/>
 									<text x={16} y={24} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
@@ -456,6 +480,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						})}
 						{geometries.map(({ connection, pathString, labelPoint }) => {
 							const selected = selection?.kind === "connection" && selection.id === connection.id;
+							const traced = highlight?.connectionId === connection.id;
 							const width = labelWidth(connection.label);
 							return (
 								<g key={connection.id} data-connection-id={connection.id}>
@@ -476,10 +501,10 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<path
 										d={pathString}
 										fill="none"
-										strokeWidth={selected ? 2.25 : 1.5}
+										strokeWidth={selected || traced ? 2.25 : 1.5}
 										markerEnd={`url(#${ARROW_ID})`}
 										pointerEvents="none"
-										style={{ stroke: selected ? "var(--color-pencil)" : "var(--color-ink-2)" }}
+										style={{ stroke: selected || traced ? "var(--color-pencil)" : "var(--color-ink-2)" }}
 									/>
 									<g
 										transform={`translate(${labelPoint.x} ${labelPoint.y})`}
@@ -499,7 +524,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 											rx={11}
 											style={{
 												fill: "var(--color-paper-raised)",
-												stroke: selected ? "var(--color-pencil)" : "var(--color-rule-strong)",
+												stroke: selected || traced ? "var(--color-pencil)" : "var(--color-rule-strong)",
 											}}
 										/>
 										<text textAnchor="middle" dominantBaseline="central" fontSize={11.5} style={{ fill: "var(--color-ink)" }}>
@@ -512,6 +537,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						{scene.components.map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
 							const linking = connectingFrom === component.id;
+							const traced = highlight?.endpointIds.includes(component.id) ?? false;
 							const detail = component.technology ?? component.description ?? "";
 							const owner = component.serviceId === null ? undefined : serviceNames.get(component.serviceId);
 							return (
@@ -545,9 +571,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										rx={10}
 										style={{
 											fill: "var(--color-paper-raised)",
-											stroke: selected || linking ? "var(--color-pencil)" : "var(--color-rule-strong)",
+											stroke: selected || linking || traced ? "var(--color-pencil)" : "var(--color-rule-strong)",
 										}}
-										strokeWidth={selected || linking ? 2 : 1.25}
+										strokeWidth={selected || linking || traced ? 2 : 1.25}
 									/>
 									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
 										{KIND_LABELS[component.kind].toUpperCase()}
@@ -604,6 +630,15 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					>
 						<Link2 className="size-3.5" />
 						{connectingFrom === undefined ? "Connect" : connectingFrom === null ? "Choose source" : "Choose target"}
+					</Button>
+					<Button
+						type="button"
+						size="sm"
+						variant={walkthroughsOpen ? "pencil" : "outline"}
+						aria-pressed={walkthroughsOpen}
+						onClick={() => setWalkthroughsOpen((open) => !open)}
+					>
+						Walkthroughs
 					</Button>
 					<span className="mx-1 h-5 w-px bg-rule-soft" aria-hidden="true" />
 					<Button type="button" size="icon" variant="ghost" aria-label="Zoom out" onClick={() => zoomBy(1 / 1.2)} className="size-7">
