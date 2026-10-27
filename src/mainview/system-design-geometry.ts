@@ -4,11 +4,16 @@ import type { PlaybackRoute } from "../shared/walkthrough-playback";
 import {
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_GROUP_MIN_SIZE,
+	SYSTEM_SERVICE_COLLAPSED_SIZE,
 	SYSTEM_SERVICE_MIN_SIZE,
+	findSystemComponent,
 	findSystemGroup,
+	findSystemService,
+	isSystemServiceCollapsed,
 	moveSystemGroup,
 	resizeSystemGroup,
 	systemConnectionRouteOffsets,
+	visibleEndpointOf,
 	type SystemComponent,
 	type SystemConnection,
 	type SystemDesign,
@@ -168,27 +173,52 @@ export type ConnectionGeometry = {
 };
 
 /**
- * Routes every Connection between its endpoints' current rectangles. Dragging a
- * Component changes its rectangle, so passing the live positions keeps the
- * paths following it. Connections that share endpoints get distinct offsets.
- * Connections whose endpoint is missing are skipped.
+ * The rectangle an endpoint is drawn with. A Component owned by a collapsed
+ * Service is drawn on that Service's collapsed boundary; a collapsed Service
+ * uses the collapsed size; anything else keeps its own frame or box. Passing the
+ * live positions keeps the drawn rectangle following a drag.
+ */
+export function drawnEndpointRect(design: SystemDesign, endpointId: string, positions?: Map<string, CanvasPoint>): ProofRect | null {
+	const drawnId = visibleEndpointOf(design, endpointId);
+	const service = findSystemService(design, drawnId);
+	if (service) {
+		const position = positions?.get(drawnId) ?? service.position;
+		const size = isSystemServiceCollapsed(design, drawnId) ? SYSTEM_SERVICE_COLLAPSED_SIZE : service.size;
+		return { x: position.x, y: position.y, width: size.width, height: size.height };
+	}
+	const component = findSystemComponent(design, endpointId);
+	if (!component) return null;
+	return componentRect({ position: positions?.get(endpointId) ?? component.position });
+}
+
+/**
+ * How many Connections stay inside a collapsed Service, between two Components
+ * it owns. They have no drawn path while it is collapsed, so the boundary states
+ * the count instead of dropping them silently.
+ */
+export function internalConnectionCount(design: SystemDesign, serviceId: string): number {
+	return design.connections.filter((connection) => (
+		visibleEndpointOf(design, connection.sourceId) === serviceId
+		&& visibleEndpointOf(design, connection.targetId) === serviceId
+	)).length;
+}
+
+/**
+ * Routes every Connection between its drawn endpoints. Dragging a Component
+ * changes its rectangle, so passing the live positions keeps the paths following
+ * it. Connections whose drawn endpoints coincide stay inside one collapsed
+ * Service and are drawn when it expands. Connections that share drawn endpoints
+ * get distinct offsets, so projected parallel Connections stay separate and
+ * selectable. Connections whose endpoint is missing are skipped.
  */
 export function connectionGeometries(design: SystemDesign, positions?: Map<string, CanvasPoint>): ConnectionGeometry[] {
-	const offsets = systemConnectionRouteOffsets(design);
-	const rectFor = (endpointId: string): ProofRect | null => {
-		const service = design.services.find((candidate) => candidate.id === endpointId);
-		if (service) {
-			const position = positions?.get(endpointId) ?? service.position;
-			return { x: position.x, y: position.y, width: service.size.width, height: service.size.height };
-		}
-		const component = design.components.find((candidate) => candidate.id === endpointId);
-		if (!component) return null;
-		return componentRect({ position: positions?.get(endpointId) ?? component.position });
-	};
+	const drawnEndpointOf = (endpointId: string) => visibleEndpointOf(design, endpointId);
+	const offsets = systemConnectionRouteOffsets(design, drawnEndpointOf);
 	const result: ConnectionGeometry[] = [];
 	for (const connection of design.connections) {
-		const source = rectFor(connection.sourceId);
-		const target = rectFor(connection.targetId);
+		if (drawnEndpointOf(connection.sourceId) === drawnEndpointOf(connection.targetId)) continue;
+		const source = drawnEndpointRect(design, connection.sourceId, positions);
+		const target = drawnEndpointRect(design, connection.targetId, positions);
 		if (!source || !target) continue;
 		const route = computeConnectionPath(source, target, offsets.get(connection.id) ?? 0);
 		const labelPoint = sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, 0.5);

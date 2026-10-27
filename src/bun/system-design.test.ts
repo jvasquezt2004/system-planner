@@ -27,9 +27,14 @@ import {
 	removeSystemService,
 	resizeSystemGroup,
 	resizeSystemService,
+	setSystemServiceCollapsed,
 	systemConnectionRouteOffsets,
+	systemDesignContent,
 	updateSystemComponent,
 	updateSystemGroup,
+	visibleEndpointOf,
+	isComponentHiddenByCollapse,
+	withSystemPresentation,
 	type SystemDesign,
 } from "../shared/system-design";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
@@ -868,3 +873,111 @@ function componentIn(workspace: DesignWorkspace, componentId: string) {
 	if (!component) throw new Error(`Missing component ${componentId}`);
 	return component;
 }
+
+describe("System design collapsed Services", () => {
+	test("collapsing is presentation: it names the Service without changing its Components or Connections", () => {
+		let design = servicedDesign();
+		design = addSystemConnection(design, { id: "dispatch", sourceId: "worker", targetId: "queue", label: "Enqueues" });
+		const collapsed = setSystemServiceCollapsed(design, "orders", true);
+
+		expect(collapsed.collapsedServiceIds).toEqual(["orders"]);
+		expect(collapsed.components).toEqual(design.components);
+		expect(collapsed.connections).toEqual(design.connections);
+		expect(systemDesignContent(collapsed)).toEqual(systemDesignContent(design));
+		expect(setSystemServiceCollapsed(collapsed, "orders", true)).toBe(collapsed);
+		expect(setSystemServiceCollapsed(collapsed, "orders", false).collapsedServiceIds).toEqual([]);
+		expect(() => setSystemServiceCollapsed(design, "missing", true)).toThrow("That Service could not be found.");
+	});
+
+	test("an owned Component's endpoint is its collapsed Service, while system-scope and Service endpoints keep their own identity", () => {
+		let design = setSystemServiceCollapsed(servicedDesign(), "orders", true);
+		design = addSystemConnection(design, { id: "dispatch", sourceId: "orders", targetId: "queue", label: "Dispatches" });
+
+		expect(visibleEndpointOf(design, "worker")).toBe("orders");
+		expect(visibleEndpointOf(design, "queue")).toBe("queue");
+		expect(visibleEndpointOf(design, "orders")).toBe("orders");
+		expect(isComponentHiddenByCollapse(design, "worker")).toBe(true);
+		expect(isComponentHiddenByCollapse(design, "queue")).toBe(false);
+		expect(isComponentHiddenByCollapse(setSystemServiceCollapsed(design, "orders", false), "worker")).toBe(false);
+	});
+
+	test("route offsets use drawn endpoints, so Connections projected onto one boundary stay distinct", () => {
+		let design = servicedDesign();
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 300, y: 200 }, serviceId: "orders" });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "writes", sourceId: "cache", targetId: "queue", label: "Writes" });
+		const drawn = (id: string) => visibleEndpointOf(setSystemServiceCollapsed(design, "orders", true), id);
+
+		expect(systemConnectionRouteOffsets(design).get("reads")).toBe(0);
+		const offsets = systemConnectionRouteOffsets(setSystemServiceCollapsed(design, "orders", true), drawn);
+		expect(offsets.get("reads")).not.toBe(offsets.get("writes"));
+	});
+
+	test("removing a Service forgets its collapsed presentation, and loading ignores stale or missing collapse state", () => {
+		const collapsed = setSystemServiceCollapsed(servicedDesign(), "orders", true);
+		expect(removeSystemService(collapsed, "orders").collapsedServiceIds).toEqual([]);
+
+		const legacy = normalizeSystemDesign({
+			services: [{ id: "orders", name: "Orders", position: { x: 0, y: 0 } }],
+			components: [],
+			connections: [],
+		});
+		expect(legacy.collapsedServiceIds).toEqual([]);
+
+		const restored = normalizeSystemDesign({
+			services: [{ id: "orders", name: "Orders", position: { x: 0, y: 0 } }],
+			components: [],
+			connections: [],
+			collapsedServiceIds: ["orders", "orders", "gone", 7],
+		});
+		expect(restored.collapsedServiceIds).toEqual(["orders"]);
+		expect(normalizeSystemDesign(JSON.parse(JSON.stringify(collapsed)))).toEqual(collapsed);
+	});
+
+	test("restoring content keeps the open presentation and drops collapsed Services that no longer exist", () => {
+		const open = setSystemServiceCollapsed(servicedDesign(), "orders", true);
+		const restored = withSystemPresentation(systemDesignContent(removeSystemService(open, "orders")), open);
+		expect(restored.collapsedServiceIds).toEqual([]);
+		expect(restored.viewport).toEqual(open.viewport);
+		expect(withSystemPresentation(systemDesignContent(open), open).collapsedServiceIds).toEqual(["orders"]);
+	});
+});
+
+describe("System design collapsed Services workspace", () => {
+	test("collapsing is saved with the design across reopen and never becomes an undoable action", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Overview" });
+		await first.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await first.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60, serviceId: "orders" });
+		const before = first.getState();
+		const collapsed = await first.setSystemServiceCollapsed({ serviceId: "orders", collapsed: true });
+
+		expect(collapsed.systemDesign?.collapsedServiceIds).toEqual(["orders"]);
+		expect(collapsed.undoActionName).toBe(before.undoActionName);
+		expect(collapsed.undoRedo).toEqual(before.undoRedo);
+		expect(collapsed.systemDesign?.components.find((component) => component.id === "worker")).toMatchObject({ serviceId: "orders" });
+
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+		const reopened = await openWorkspace(databasePath);
+		expect(reopened.getState().systemDesign?.collapsedServiceIds).toEqual(["orders"]);
+	});
+
+	test("Undo reverses content edits but leaves a collapsed Service collapsed, and expanding is not undoable", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Overview" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60, serviceId: "orders" });
+		await workspace.setSystemServiceCollapsed({ serviceId: "orders", collapsed: true });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 360, y: 60 });
+
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.components.map((component) => component.id)).toEqual(["worker"]);
+		expect(workspace.getState().systemDesign?.collapsedServiceIds).toEqual(["orders"]);
+
+		await workspace.setSystemServiceCollapsed({ serviceId: "orders", collapsed: false });
+		expect(workspace.getState().systemDesign?.collapsedServiceIds).toEqual([]);
+		expect(workspace.getState().undoActionName).toBe("Add component “Worker”");
+	});
+});

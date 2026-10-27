@@ -7,6 +7,7 @@ import {
 	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
+	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
 import { Dialog } from "@/components/ui/dialog";
@@ -177,5 +178,44 @@ describe("removal confirmation", () => {
 		const unreferenced: PendingRemoval = { kind: "connection", plan: { connectionId: "reply", connectionLabel: "Reply" }, walkthroughSteps: [] };
 		const plain = renderSummary(unreferenced);
 		expect(plain).not.toContain("Affected Walkthrough steps");
+	});
+});
+
+describe("system overview collapsed Services", () => {
+	function collapsibleOverview(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 600, y: 60 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "fills", sourceId: "cache", targetId: "queue", label: "Fills" });
+		design = addSystemConnection(design, { id: "warms", sourceId: "worker", targetId: "cache", label: "Warms" });
+		return design;
+	}
+
+	test("a collapsed Service hides the Components it owns, says what they contain, and keeps its projected Connections drawn", () => {
+		const html = render(setSystemServiceCollapsed(collapsibleOverview(), "orders", true));
+		expect(html).toContain('data-service-id="orders"');
+		expect(html).toContain('data-collapsed="true"');
+		expect(html).toContain("SERVICE · COLLAPSED");
+		expect(html).toContain("2 components · 1 internal");
+		expect(html).not.toContain('data-component-id="worker"');
+		expect(html).not.toContain('data-component-id="cache"');
+		expect(html).toContain('data-component-id="queue"');
+		expect(html).toContain('data-connection-id="reads"');
+		expect(html).toContain('data-connection-id="fills"');
+		expect(html).not.toContain('data-connection-id="warms"');
+		expect(html.match(/data-testid="service-resize-handle"/g)).toBeNull();
+	});
+
+	test("expanding a Service draws its Components and Connections again with its resize handle", () => {
+		const collapsed = setSystemServiceCollapsed(collapsibleOverview(), "orders", true);
+		const expanded = render(setSystemServiceCollapsed(collapsed, "orders", false));
+		expect(expanded).toContain('data-collapsed="false"');
+		expect(expanded).toContain('data-component-id="worker"');
+		expect(expanded).toContain('data-component-id="cache"');
+		expect(expanded).toContain('data-connection-id="warms"');
+		expect(expanded.match(/data-testid="service-resize-handle"/g)).toHaveLength(1);
 	});
 });
