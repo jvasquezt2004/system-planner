@@ -28,9 +28,10 @@ async function main() {
 
 	const files = findFiles(buildDir);
 	const packagedLauncher = process.platform === "win32"
-		? files.find((file) => /(?:launcher|schema.?designer)\.exe$/i.test(file) && !/setup|uninstall/i.test(file))
+		? files.find((file) => /[\\/]bin[\\/]launcher\.exe$/i.test(file))
 		: files.find((file) => /\/bin\/launcher$/.test(file));
 	if (!packagedLauncher) throw new Error(`No packaged native launcher found under ${buildDir}`);
+	console.log(`Packaged launcher: ${packagedLauncher}`);
 
 	const reportPath = join(root, "build", "webview-proof-report.json");
 	rmSync(reportPath, { force: true });
