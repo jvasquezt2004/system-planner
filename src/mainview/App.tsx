@@ -91,6 +91,7 @@ export function App({
 	});
 	const [assistantCodeTarget, setAssistantCodeTarget] = useState<AssistantCodeTarget | null>(null);
 	const [creatingProject, setCreatingProject] = useState(false);
+	const [designDialog, setDesignDialog] = useState<DesignDialogState | null>(null);
 	const [pendingRemoval, setPendingRemoval] = useState<{
 		target: RemovalTarget;
 		plan: RemovalPlan;
@@ -147,6 +148,7 @@ export function App({
 		const nextProjectId = next.project?.id ?? null;
 		const nextDesignId = next.activeDesignId ?? null;
 		const nextTargetKey = `${nextProjectId ?? ""}\u0000${nextDesignId ?? ""}`;
+		const previousProjectId = projectIdRef.current;
 		if (targetKeyRef.current !== nextTargetKey) {
 			targetKeyRef.current = nextTargetKey;
 			targetVersion.current += 1;
@@ -154,7 +156,14 @@ export function App({
 			designIdRef.current = nextDesignId;
 			projectGeneration.current += 1;
 			resetScenarioExecution();
-			if (next.project) setView(next.activeView === "database" ? "canvas" : "system");
+			// Selection names elements of the design that was shown, so it does not carry over.
+			setSelectedTableId(null);
+			setSelectedColumnId(null);
+			setSelectedRelationshipId(null);
+			setRelating(false);
+			setAssistantCodeTarget(null);
+			// Opening a Project shows its saved view; switching designs keeps the view in place.
+			if (next.project && nextProjectId !== previousProjectId) setView(next.activeView === "database" ? "canvas" : "system");
 		}
 		setState(next);
 		scenarioStateRef.current = next;
@@ -631,6 +640,12 @@ export function App({
 				busy={busy}
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
+				onOpenDesign={(id) => run(() => workspaceClient.openDesign(id))}
+				onNewDesign={() => setDesignDialog({ mode: "create" })}
+				onRenameDesign={() => {
+					const active = state.designs.find((design) => design.id === state.activeDesignId);
+					if (active) setDesignDialog({ mode: "rename", designId: active.id, name: active.name });
+				}}
 				onUndo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.undo(designId)); }}
 				onRedo={() => { const designId = designIdRef.current; if (designId) void run(() => workspaceClient.redo(designId)); }}
 				view={view}
@@ -921,6 +936,19 @@ export function App({
 				onCreate={createProject}
 				onCancel={() => setCreatingProject(false)}
 			/>
+
+			<DesignNameDialog
+				dialog={designDialog}
+				busy={busy}
+				onSubmit={(name) => {
+					const current = designDialog;
+					setDesignDialog(null);
+					if (!current) return;
+					if (current.mode === "create") void run(() => workspaceClient.createDesign(name));
+					else void run(() => workspaceClient.renameDesign(current.designId, name));
+				}}
+				onCancel={() => setDesignDialog(null)}
+			/>
 		</main>
 	);
 }
@@ -935,6 +963,9 @@ export function Masthead({
 	busy,
 	onOpenProject,
 	onNewProject,
+	onOpenDesign,
+	onNewDesign,
+	onRenameDesign,
 	onUndo,
 	onRedo,
 	view,
@@ -944,6 +975,9 @@ export function Masthead({
 	busy: boolean;
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
+	onOpenDesign: (designId: string) => void;
+	onNewDesign: () => void;
+	onRenameDesign: () => void;
 	onUndo: () => void;
 	onRedo: () => void;
 	view: WorkspaceView;
@@ -1011,6 +1045,56 @@ export function Masthead({
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>
+				{project && (
+					<>
+						<span className="hidden h-7 w-px bg-rule md:block" aria-hidden="true" />
+						<DropdownMenu>
+							<DropdownMenuTrigger
+								disabled={busy}
+								data-testid="design-switcher"
+								className="group flex max-w-[14rem] min-w-0 items-baseline gap-1.5 rounded-sm px-1 outline-none focus-visible:ring-2 focus-visible:ring-pencil/30"
+							>
+								<span className="kicker hidden shrink-0 text-ink-3! sm:inline">Design</span>
+								<span className="truncate font-mono text-[12px] text-ink-2" data-testid="active-design-name">
+									{designLabel(state.designs, state.activeDesignId ?? null)}
+								</span>
+								<ChevronDown className="size-3 shrink-0 self-center text-ink-3 group-hover:text-ink" />
+							</DropdownMenuTrigger>
+							<DropdownMenuContent align="start" className="w-64">
+								<DropdownMenuLabel className="flex items-center justify-between">
+									<span className="kicker">Designs</span>
+									<span className="figures font-mono text-[10px] text-ink-4" data-testid="design-count">
+										{state.designs.length} in project
+									</span>
+								</DropdownMenuLabel>
+								<div data-testid="design-list">
+									{state.designs.map((candidate, index) => {
+										const active = candidate.id === state.activeDesignId;
+										return (
+											<DropdownMenuItem
+												key={candidate.id}
+												data-testid="design-option"
+												aria-current={active ? "true" : undefined}
+												disabled={active}
+												onSelect={() => onOpenDesign(candidate.id)}
+												className="justify-between font-display text-[15px] data-[disabled]:opacity-100"
+											>
+												<span className="truncate">{designDisplayName(candidate, index)}</span>
+												{active && <span className="kicker text-pencil!">open</span>}
+											</DropdownMenuItem>
+										);
+									})}
+								</div>
+								<DropdownMenuSeparator />
+								<DropdownMenuItem onSelect={onNewDesign}>
+									<Plus />
+									New design…
+								</DropdownMenuItem>
+								<DropdownMenuItem onSelect={onRenameDesign}>Rename current design…</DropdownMenuItem>
+							</DropdownMenuContent>
+						</DropdownMenu>
+					</>
+				)}
 				{project && (
 					<span className="figures hidden shrink-0 font-mono text-[11px] text-ink-3 md:inline" data-testid="schema-revision">
 						rev. {state.revision}
@@ -1424,6 +1508,75 @@ function ProjectIndex({
 	);
 }
 
+/** The Design shown in the switcher and listed in its menu. */
+function designDisplayName(design: { name: string }, index: number): string {
+	return design.name.trim() || `Design ${index + 1}`;
+}
+
+function designLabel(designs: { id: string; name: string }[], activeDesignId: string | null): string {
+	const index = designs.findIndex((design) => design.id === activeDesignId);
+	if (index < 0) return "None";
+	return designDisplayName(designs[index]!, index);
+}
+
+type DesignDialogState = { mode: "create" } | { mode: "rename"; designId: string; name: string };
+
+/** Names a new Design, or renames the current one. Names are unique within the Project. */
+function DesignNameDialog({
+	dialog,
+	busy,
+	onSubmit,
+	onCancel,
+}: {
+	dialog: DesignDialogState | null;
+	busy: boolean;
+	onSubmit: (name: string) => void;
+	onCancel: () => void;
+}) {
+	const [name, setName] = useState("");
+	useEffect(() => {
+		if (dialog) setName(dialog.mode === "rename" ? dialog.name : "");
+	}, [dialog]);
+	const creating = dialog?.mode !== "rename";
+	return (
+		<Dialog open={dialog !== null} onOpenChange={(next) => !next && onCancel()}>
+			<DialogContent className="sm:max-w-sm">
+				<form
+					onSubmit={(event) => {
+						event.preventDefault();
+						if (name.trim().length === 0) return;
+						onSubmit(name.trim());
+					}}
+					className="flex flex-col gap-4"
+				>
+					<DialogHeader>
+						<p className="kicker">{creating ? "New design" : "Rename design"}</p>
+						<DialogTitle>{creating ? "Name the design" : "Rename this design"}</DialogTitle>
+						<DialogDescription>
+							Each design is its own database, with its own schema, Scenarios, and Edge functions.
+						</DialogDescription>
+					</DialogHeader>
+					<Input
+						autoFocus
+						value={name}
+						onChange={(event) => setName(event.target.value)}
+						aria-label="Design name"
+						placeholder="Orders"
+					/>
+					<DialogFooter>
+						<Button type="button" variant="ghost" onClick={onCancel}>
+							Cancel
+						</Button>
+						<Button type="submit" disabled={busy || name.trim().length === 0}>
+							{creating ? "Create design" : "Save name"}
+						</Button>
+					</DialogFooter>
+				</form>
+			</DialogContent>
+		</Dialog>
+	);
+}
+
 function NewProjectDialog({
 	open,
 	busy,
@@ -1454,7 +1607,7 @@ function NewProjectDialog({
 						<p className="kicker">New project</p>
 						<DialogTitle>Name the design</DialogTitle>
 						<DialogDescription>
-							A project owns exactly one design, saved automatically.
+							A project starts with one design; you can add more later, each saved automatically.
 						</DialogDescription>
 					</DialogHeader>
 					<Input

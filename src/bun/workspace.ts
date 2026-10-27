@@ -49,6 +49,10 @@ import {
 	type UpdateFunctionsAction,
 	type UpdateTriggersAction,
 	type UpdateRelationshipAction,
+	type CreateDesignAction,
+	type DatabaseDesignSummary,
+	type OpenDesignAction,
+	type RenameDesignAction,
 	type CreateScenarioAction,
 	type RenameScenarioAction,
 	type RemoveScenarioAction,
@@ -146,6 +150,11 @@ export interface DesignWorkspace {
 	addTable(action: AddTableAction): Promise<WorkspaceState>;
 	createProject(action: CreateProjectAction): Promise<WorkspaceState>;
 	openProject(action: OpenProjectAction): Promise<WorkspaceState>;
+	/** Adds an independent database design to the open Project and opens it. */
+	createDesign(action: CreateDesignAction): Promise<WorkspaceState>;
+	/** Makes another design of the open Project the active one. */
+	openDesign(action: OpenDesignAction): Promise<WorkspaceState>;
+	renameDesign(action: RenameDesignAction): Promise<WorkspaceState>;
 	createScenario(action: CreateScenarioAction): Promise<WorkspaceState>;
 	renameScenario(action: RenameScenarioAction): Promise<WorkspaceState>;
 	removeScenario(action: RemoveScenarioAction): Promise<WorkspaceState>;
@@ -163,6 +172,8 @@ export interface DesignWorkspace {
 	onAssistantDesignMutation?(listener: (turnId: string, before: Design, after: Design) => void): () => void;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
+		/** The design the Assistant turn changed; restoring any other design is refused. */
+		designId: string;
 		design?: Design;
 		scenarios?: Scenario[];
 		edgeFunctions?: EdgeFunction[];
@@ -255,8 +266,9 @@ export async function createDesignWorkspace(
 
 	const listeners = new Set<WorkspaceListener>();
 	/**
-	 * One Project-wide history per open Project. Histories survive switching
-	 * between Projects within the session and are cleared when the workspace closes.
+	 * One content history per database design. Each design's Undo and Redo
+	 * move only its own content, so switching designs never changes what
+	 * another design's Undo would reverse. Histories last for the session.
 	 */
 	const histories = new Map<string, ProjectHistory<ProjectContent>>();
 
@@ -279,11 +291,11 @@ export async function createDesignWorkspace(
 		after: ProjectContent,
 		structural: boolean,
 	) {
-		if (activeProjectId === null) return;
-		let history = histories.get(activeProjectId);
+		if (activeDesignId === null) return;
+		let history = histories.get(activeDesignId);
 		if (!history) {
 			history = createProjectHistory();
-			histories.set(activeProjectId, history);
+			histories.set(activeDesignId, history);
 		}
 		recordProjectChange(history, {
 			name: action.name,
@@ -300,6 +312,7 @@ export async function createDesignWorkspace(
 		project: null,
 		design: null,
 		activeDesignId: null,
+		designs: [],
 		revision: 0,
 		save: { status: "idle" },
 		sql: { status: "empty", draftRevision: 0, errors: [] },
@@ -362,7 +375,7 @@ export async function createDesignWorkspace(
 				),
 			};
 		}
-		const history = next.project ? histories.get(next.project.id) : undefined;
+		const history = next.project && activeDesignId !== null ? histories.get(activeDesignId) : undefined;
 		const { canUndo, canRedo, undoActionName, redoActionName } = describeProjectHistory(history);
 		next = {
 			...next,
@@ -802,7 +815,7 @@ export async function createDesignWorkspace(
 	 */
 	async function applyHistoryChange(direction: "undo" | "redo", targetDesignId: string) {
 		const { projectId, designId } = requireOpenDesign(targetDesignId);
-		const history = histories.get(projectId);
+		const history = histories.get(designId);
 		if (!history) return state;
 
 		const previousCursor = history.cursor;
@@ -910,14 +923,14 @@ export async function createDesignWorkspace(
 			scenarioRevision = previousRevisions.scenarioRevision;
 			edgeFunctionRevision = previousRevisions.edgeFunctionRevision;
 			systemDocumentRevision = previousRevisions.systemDocumentRevision;
-			setState(current);
+			if (activeDesignId === designId) setState(current);
 			throw error;
 		}
 		const latest = documentRevision === nextDocumentRevision
 			&& scenarioRevision === nextScenarioRevision
 			&& edgeFunctionRevision === nextEdgeFunctionRevision
 			&& systemDocumentRevision === nextSystemDocumentRevision;
-		if (latest && state.project?.id === projectId) {
+		if (latest && state.project?.id === projectId && activeDesignId === designId) {
 			setState({
 				...state,
 				projects: store.listProjects(),
@@ -929,6 +942,110 @@ export async function createDesignWorkspace(
 		}
 		if (schemaChanged) await schedulePreview(projectId, nextRevision, design, designId);
 		return state;
+	}
+
+	/**
+	 * Makes one stored design of a Project the active one. The previous design's
+	 * saves keep their own design identity and finish in the background; only
+	 * what the designer sees changes here.
+	 */
+	async function activateDesign(project: ProjectSummary, designId: string, options: { openingProject?: boolean } = {}) {
+		const record = store.loadDesign(designId);
+		if (!record || record.projectId !== project.id) {
+			throw new Error("That design could not be found in this project.");
+		}
+		const design = normalizeDesign(record.design);
+		const scenarioDocument = store.loadScenarios(project.id, designId);
+		const edgeFunctionDocument = store.loadEdgeFunctions(project.id, designId);
+
+		await disposeActiveScenarioRun();
+		invalidatePreviewWork();
+		activeProjectId = project.id;
+		activeDesignId = designId;
+		edgeFunctionProjectGeneration += 1;
+		documentRevision = record.documentRevision;
+		// Revisions only move forward within a session, so a save still in flight
+		// for an earlier activation can never share a revision with a new one.
+		edgeFunctionRevision = Math.max(edgeFunctionRevision, edgeFunctionDocument.revision);
+		scenarioRevision = scenarioDocument.revision;
+		// The System design belongs to the Project, so it loads only when the Project opens.
+		// Switching designs keeps what is already loaded, along with the view.
+		const systemRecord = options.openingProject ? store.loadSystemDesign(project.id) : null;
+		if (options.openingProject) {
+			systemDocumentRevision = systemRecord?.documentRevision ?? 0;
+		}
+		lastGeneratableSql = null;
+		setState({
+			projects: store.listProjects(),
+			project,
+			designs: store.listDesigns(project.id),
+			design,
+			activeDesignId: designId,
+			revision: record.revision,
+			save: { status: "saved", revision: record.revision, savedAt: record.savedAt, designId },
+			sql: {
+				status: "empty",
+				draftRevision: record.revision,
+				errors: [],
+				designId,
+			},
+			sandbox: { status: "idle" },
+			scenarios: scenarioDocument.scenarios,
+			scenarioSave:
+				scenarioDocument.savedAt === null
+					? { status: "idle" }
+					: {
+							status: "saved",
+							revision: scenarioDocument.revision,
+							savedAt: scenarioDocument.savedAt,
+							designId,
+						},
+			scenarioRuns: {},
+			undoRedo: { canUndo: false, canRedo: false },
+			edgeFunctions: edgeFunctionDocument.edgeFunctions,
+			edgeFunctionSave:
+				edgeFunctionDocument.savedAt === null
+					? { status: "idle" }
+					: {
+							status: "saved",
+							revision: edgeFunctionDocument.revision,
+							savedAt: edgeFunctionDocument.savedAt,
+							designId,
+						},
+			...(options.openingProject
+				? {
+						systemDesign: systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign(),
+						systemSave: systemRecord
+							? { status: "saved" as const, revision: systemRecord.revision, savedAt: systemRecord.savedAt, designId }
+							: { status: "idle" as const },
+						activeView: systemRecord?.lastView ?? "system",
+					}
+				: {}),
+		});
+		if (design.tables.length > 0) {
+			const requestId = ++previewRequestId;
+			await generateAndApply(project.id, record.revision, design, requestId, designId);
+		}
+		return state;
+	}
+
+	/** A design name is trimmed, non-empty, and unique within its Project, ignoring case. */
+	function requireDesignName(value: string, others: DatabaseDesignSummary[]): string {
+		const name = value.trim();
+		if (name.length === 0) throw new Error("Design name is required.");
+		if (others.some((design) => design.name.trim().toLowerCase() === name.toLowerCase())) {
+			throw new Error(`A design named “${name}” already exists in this project.`);
+		}
+		return name;
+	}
+
+	function requireDesignOwner(designId: string): { project: ProjectSummary; design: DatabaseDesignSummary; designs: DatabaseDesignSummary[] } {
+		const project = state.project;
+		if (!project || activeProjectId === null) throw new Error("Open a project before managing its designs.");
+		const designs = store.listDesigns(project.id);
+		const design = designs.find((candidate) => candidate.id === designId);
+		if (!design) throw new Error("That design could not be found in this project.");
+		return { project, design, designs };
 	}
 
 	function requireOpenDesign(targetDesignId: string): { projectId: string; design: Design; designId: string } {
@@ -1042,6 +1159,7 @@ export async function createDesignWorkspace(
 				setState({
 					projects: store.listProjects(),
 					project,
+					designs: store.listDesigns(project.id),
 					design,
 					activeDesignId: designId,
 					revision,
@@ -1065,69 +1183,46 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const record = store.loadProject(action.projectId);
 				if (!record) throw new Error("That project could not be found.");
-				const design = normalizeDesign(record.design);
-				const designId = record.designId;
-				const scenarioDocument = store.loadScenarios(record.project.id, designId);
-
-				await disposeActiveScenarioRun();
-				invalidatePreviewWork();
-				activeProjectId = record.project.id;
-				activeDesignId = designId;
-				edgeFunctionProjectGeneration += 1;
-				documentRevision = record.documentRevision;
-				const edgeFunctionDocument = store.loadEdgeFunctions(record.project.id, designId);
-				edgeFunctionRevision = Math.max(edgeFunctionRevision, edgeFunctionDocument.revision);
-				scenarioRevision = scenarioDocument.revision;
-				const systemRecord = store.loadSystemDesign(record.project.id);
-				const systemDesign = systemRecord ? normalizeSystemDesign(systemRecord.document) : createEmptySystemDesign();
-				systemDocumentRevision = systemRecord?.documentRevision ?? 0;
-				lastGeneratableSql = null;
-				setState({
-					projects: store.listProjects(),
-					project: record.project,
-					design,
-					activeDesignId: designId,
-					revision: record.revision,
-					save: { status: "saved", revision: record.revision, savedAt: record.savedAt, designId },
-					sql: {
-						status: "empty",
-						draftRevision: record.revision,
-						errors: [],
-						designId,
-					},
-					sandbox: { status: "idle" },
-					scenarios: scenarioDocument.scenarios,
-					scenarioSave:
-						scenarioDocument.savedAt === null
-							? { status: "idle" }
-							: {
-									status: "saved",
-									revision: scenarioDocument.revision,
-									savedAt: scenarioDocument.savedAt,
-									designId,
-								},
-					scenarioRuns: {},
-					undoRedo: { canUndo: false, canRedo: false },
-					edgeFunctions: edgeFunctionDocument.edgeFunctions,
-					edgeFunctionSave:
-						edgeFunctionDocument.savedAt === null
-							? { status: "idle" }
-							: {
-									status: "saved",
-									revision: edgeFunctionDocument.revision,
-									savedAt: edgeFunctionDocument.savedAt,
-									designId,
-								},
-					systemDesign,
-					systemSave: systemRecord
-						? { status: "saved", revision: systemRecord.revision, savedAt: systemRecord.savedAt, designId }
-						: { status: "idle" },
-					activeView: systemRecord?.lastView ?? "system",
+				return activateDesign(record.project, record.designId, { openingProject: true });
+			});
+		},
+		createDesign(action) {
+			return runTask(async () => {
+				const project = state.project;
+				if (!project || activeProjectId === null) throw new Error("Open a project before adding a design.");
+				const existing = store.listDesigns(project.id);
+				const name = action.name.trim().length > 0
+					? requireDesignName(action.name, existing)
+					: nextDefaultDesignName(existing);
+				const designId = createId();
+				const savedAt = now();
+				await store.createDesign(project.id, designId, name, createEmptyDesign(), {
+					revision: 1,
+					documentRevision: 1,
+					savedAt,
 				});
-				if (design.tables.length > 0) {
-					const requestId = ++previewRequestId;
-					await generateAndApply(record.project.id, record.revision, design, requestId, designId);
-				}
+				return activateDesign(project, designId);
+			});
+		},
+		openDesign(action) {
+			return runTask(async () => {
+				const project = state.project;
+				if (!project || activeProjectId === null) throw new Error("Open a project before choosing a design.");
+				requireDesignOwner(action.designId);
+				if (action.designId === activeDesignId) return state;
+				return activateDesign(project, action.designId);
+			});
+		},
+		renameDesign(action) {
+			return runTask(async () => {
+				const { project, design, designs } = requireDesignOwner(action.designId);
+				const name = requireDesignName(action.name, designs.filter((candidate) => candidate.id !== design.id));
+				await store.renameDesign(project.id, design.id, name, now());
+				setState({
+					...state,
+					projects: store.listProjects(),
+					designs: store.listDesigns(project.id),
+				});
 				return state;
 			});
 		},
@@ -1459,7 +1554,8 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const current = state;
 				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
-				const designId = activeDesignId!;
+				if (activeDesignId !== input.designId) throw new Error("The Assistant turn belongs to a different design. Open that design to revert it.");
+				const designId = input.designId;
 				let targetDesign = input.design;
 				let targetScenarios = input.scenarios;
 				let targetEdgeFunctions = input.edgeFunctions;
@@ -1498,7 +1594,7 @@ export async function createDesignWorkspace(
 				const nextEdgeFunctionRevision = ++edgeFunctionRevision;
 				const nextSystemDocumentRevision = systemChanged ? ++systemDocumentRevision : systemDocumentRevision;
 				const savedAt = now();
-				const history = histories.get(input.projectId);
+				const history = histories.get(designId);
 				const originalHistory = history ? structuredClone(history) : undefined;
 				recordContentChange(
 					{ name: REVERT_ASSISTANT_TURN_ACTION_NAME },
@@ -1547,8 +1643,8 @@ export async function createDesignWorkspace(
 						scenarioRevision = nextScenarioRevision - 1;
 						edgeFunctionRevision = nextEdgeFunctionRevision - 1;
 						if (systemChanged) systemDocumentRevision = nextSystemDocumentRevision - 1;
-						if (originalHistory) histories.set(input.projectId, originalHistory);
-						else histories.delete(input.projectId);
+						if (originalHistory) histories.set(designId, originalHistory);
+						else histories.delete(designId);
 						setState(current);
 					} else {
 						const currentState = state;
@@ -2232,6 +2328,25 @@ export async function createDesignWorkspace(
 	}
 
 	return workspace;
+}
+
+/** A design with no content yet, placed like a new Project's first design. */
+function createEmptyDesign(): Design {
+	return {
+		tables: [],
+		relationships: [],
+		manyToManyRelationships: [],
+		viewport: { ...DEFAULT_VIEWPORT },
+	};
+}
+
+/** "Design 2", "Design 3", ... — the first such name not already in use. */
+function nextDefaultDesignName(existing: DatabaseDesignSummary[]): string {
+	const taken = new Set(existing.map((design) => design.name.trim().toLowerCase()));
+	for (let number = existing.length + 1; ; number += 1) {
+		const name = `Design ${number}`;
+		if (!taken.has(name.toLowerCase())) return name;
+	}
 }
 
 /**
