@@ -27,18 +27,67 @@ export const COMPUTE_KINDS = ["application", "api", "worker", "scheduled_job", "
 
 export type ComputeKind = (typeof COMPUTE_KINDS)[number];
 
+export const DATA_KINDS = [
+	"database",
+	"cache",
+	"object_storage_bucket",
+	"file_storage",
+	"search_index",
+] as const;
+
+export type DataKind = (typeof DATA_KINDS)[number];
+
+export const MESSAGING_KINDS = ["queue", "topic", "event_bus", "event_stream"] as const;
+
+export type MessagingKind = (typeof MESSAGING_KINDS)[number];
+
+export const SUPPORTING_KINDS = ["identity_provider", "secrets_store", "configuration", "observability"] as const;
+
+export type SupportingKind = (typeof SUPPORTING_KINDS)[number];
+
+export const CUSTOM_KINDS = ["custom"] as const;
+
+/**
+ * The icons or shapes a Custom Component can show. A Custom Component with no
+ * chosen icon draws the rectangle. Only a Custom Component stores one.
+ */
+export const CUSTOM_ICONS = ["rectangle", "hexagon", "diamond", "cylinder", "cloud", "document", "gear"] as const;
+
+export type CustomIcon = (typeof CUSTOM_ICONS)[number];
+
+export const CUSTOM_ICON_LABELS: Record<CustomIcon, string> = {
+	rectangle: "Rectangle",
+	hexagon: "Hexagon",
+	diamond: "Diamond",
+	cylinder: "Cylinder",
+	cloud: "Cloud",
+	document: "Document",
+	gear: "Gear",
+};
+
 /** Every kind registered in the catalog, in palette order. */
-export const CATALOG_KINDS = [...CLIENT_TRAFFIC_KINDS, ...COMPUTE_KINDS] as const;
+export const CATALOG_KINDS = [
+	...CLIENT_TRAFFIC_KINDS,
+	...COMPUTE_KINDS,
+	...DATA_KINDS,
+	...MESSAGING_KINDS,
+	...SUPPORTING_KINDS,
+	...CUSTOM_KINDS,
+] as const;
 
 export type CatalogKind = (typeof CATALOG_KINDS)[number];
 
 /** A catalog kind's family, used to group the palette. */
-export type ComponentFamily = "clients" | "traffic" | "compute";
+export type ComponentFamily = "clients" | "traffic" | "compute" | "data" | "messaging" | "supporting" | "custom";
 
 export const COMPONENT_FAMILY_LABELS: Record<ComponentFamily, string> = {
 	clients: "Actors and clients",
 	traffic: "Traffic and networking",
 	compute: "Compute",
+	data: "Data",
+	messaging: "Messaging",
+	supporting: "Supporting capabilities",
+	custom: "Custom",
 };
 
 /**
@@ -270,6 +319,234 @@ export const COMPONENT_CATALOG: readonly ComponentCatalogEntry[] = [
 		operations: [],
 		reactions: { kind: "serverless_handler", labels: labels("Calls", "Activated", "Processing", "Returned", "Failed") },
 	},
+	{
+		kind: "database",
+		label: "Database",
+		family: "data",
+		artwork: "database",
+		defaultName: "Database",
+		descriptors: [
+			{ key: "Engine", placeholder: "e.g. PostgreSQL, MongoDB" },
+			{ key: "Database kind", placeholder: "e.g. Relational, document, key/value" },
+		],
+		operations: [
+			{ id: "read", label: "Read" },
+			{ id: "write", label: "Write" },
+		],
+		reactions: { kind: "database", labels: labels("Queries", "Query", "Executing", "Returned", "Failed") },
+	},
+	{
+		kind: "cache",
+		label: "Cache",
+		family: "data",
+		artwork: "cache",
+		defaultName: "Cache",
+		descriptors: [
+			{ key: "Engine", placeholder: "e.g. Redis, Memcached" },
+			{ key: "Key description", placeholder: "e.g. Product pages by slug" },
+			{ key: "Expiry policy", placeholder: "e.g. Expire after 10 minutes" },
+		],
+		operations: [
+			{ id: "hit", label: "Hit" },
+			{ id: "miss", label: "Miss" },
+			{ id: "set", label: "Set" },
+			{ id: "invalidate", label: "Invalidate" },
+		],
+		reactions: { kind: "cache", labels: labels("Looks up", "Lookup", "Checking", "Returned", "Failed") },
+	},
+	{
+		kind: "object_storage_bucket",
+		label: "Object-storage bucket",
+		family: "data",
+		artwork: "object_storage_bucket",
+		defaultName: "Object-storage bucket",
+		descriptors: [
+			{ key: "Object purpose", placeholder: "e.g. User avatars" },
+			{ key: "Prefix", placeholder: "e.g. avatars/" },
+			{ key: "Lifecycle description", placeholder: "e.g. Delete after 30 days" },
+		],
+		operations: [
+			{ id: "upload", label: "Upload" },
+			{ id: "download", label: "Download" },
+			{ id: "delete", label: "Delete" },
+		],
+		reactions: { kind: "object_storage_bucket", labels: labels("Sends", "Receives", "Storing", "Stored", "Refused") },
+	},
+	{
+		kind: "file_storage",
+		label: "File storage",
+		family: "data",
+		artwork: "file_storage",
+		defaultName: "File storage",
+		descriptors: [
+			{ key: "Volume", placeholder: "e.g. 500 GB shared volume" },
+			{ key: "Mount", placeholder: "e.g. /srv/uploads" },
+			{ key: "Protocol", placeholder: "e.g. NFS, SMB" },
+		],
+		operations: [
+			{ id: "read", label: "Read" },
+			{ id: "write", label: "Write" },
+		],
+		reactions: { kind: "file_storage", labels: labels("Requests", "Request", "Working", "Returned", "Failed") },
+	},
+	{
+		kind: "search_index",
+		label: "Search index",
+		family: "data",
+		artwork: "search_index",
+		defaultName: "Search index",
+		descriptors: [
+			{ key: "Indexed subject", placeholder: "e.g. Product catalog" },
+			{ key: "Indexing approach", placeholder: "e.g. Near real time from the orders queue" },
+		],
+		operations: [
+			{ id: "index", label: "Index" },
+			{ id: "search", label: "Search" },
+		],
+		reactions: { kind: "search_index", labels: labels("Queries", "Query", "Searching", "Results returned", "Failed") },
+	},
+	{
+		kind: "queue",
+		label: "Queue",
+		family: "messaging",
+		artwork: "queue",
+		defaultName: "Queue",
+		descriptors: [
+			{ key: "Message type", placeholder: "e.g. Order placed" },
+			{ key: "Delivery and retry", placeholder: "e.g. At least once, retry three times" },
+		],
+		operations: [
+			{ id: "enqueue", label: "Enqueue" },
+			{ id: "release", label: "Release" },
+			{ id: "acknowledge", label: "Acknowledge" },
+			{ id: "retry", label: "Retry" },
+		],
+		reactions: { kind: "queue", labels: labels("Sends", "Received", "Queued", "Acknowledged", "Released") },
+	},
+	{
+		kind: "topic",
+		label: "Topic",
+		family: "messaging",
+		artwork: "topic",
+		defaultName: "Topic",
+		descriptors: [
+			{ key: "Event type", placeholder: "e.g. Order placed" },
+			{ key: "Subscriber description", placeholder: "e.g. Billing and email services" },
+		],
+		operations: [
+			{ id: "publish", label: "Publish" },
+			{ id: "deliver", label: "Deliver" },
+		],
+		reactions: { kind: "topic", labels: labels("Publishes", "Published", "Delivering", "Delivered", "Undelivered") },
+	},
+	{
+		kind: "event_bus",
+		label: "Event bus",
+		family: "messaging",
+		artwork: "event_bus",
+		defaultName: "Event bus",
+		descriptors: [
+			{ key: "Event types", placeholder: "e.g. Order and payment events" },
+			{ key: "Routing description", placeholder: "e.g. Route by event type" },
+		],
+		operations: [
+			{ id: "route", label: "Route" },
+			{ id: "deliver", label: "Deliver" },
+		],
+		reactions: { kind: "event_bus", labels: labels("Emits", "Receives", "Routing", "Delivered", "Unrouted") },
+	},
+	{
+		kind: "event_stream",
+		label: "Event stream",
+		family: "messaging",
+		artwork: "event_stream",
+		defaultName: "Event stream",
+		descriptors: [
+			{ key: "Event type", placeholder: "e.g. Click events" },
+			{ key: "Partition and retention", placeholder: "e.g. 12 partitions, keep seven days" },
+		],
+		operations: [
+			{ id: "append", label: "Append" },
+			{ id: "consume", label: "Consume" },
+			{ id: "replay", label: "Replay" },
+		],
+		reactions: { kind: "event_stream", labels: labels("Appends", "Appended", "Consuming", "Consumed", "Failed") },
+	},
+	{
+		kind: "identity_provider",
+		label: "Identity provider",
+		family: "supporting",
+		artwork: "identity_provider",
+		defaultName: "Identity provider",
+		descriptors: [
+			{ key: "Authentication method", placeholder: "e.g. OpenID Connect, SAML" },
+			{ key: "Issuer", placeholder: "e.g. https://login.example.com" },
+		],
+		operations: [
+			{ id: "authenticate", label: "Authenticate" },
+			{ id: "issue-token", label: "Issue token" },
+			{ id: "deny", label: "Deny" },
+		],
+		reactions: { kind: "identity_provider", labels: labels("Requests", "Checks", "Authenticating", "Authenticated", "Denied") },
+	},
+	{
+		kind: "secrets_store",
+		label: "Secrets store",
+		family: "supporting",
+		artwork: "secrets_store",
+		defaultName: "Secrets store",
+		descriptors: [
+			{ key: "Secret references", placeholder: "e.g. payments/api-key, db/password" },
+			{ key: "Consuming roles", placeholder: "e.g. Orders API, Worker" },
+		],
+		operations: [
+			{ id: "retrieve", label: "Retrieve" },
+			{ id: "deny", label: "Deny" },
+		],
+		reactions: { kind: "secrets_store", labels: labels("Requests", "Request", "Retrieving", "Retrieved", "Denied") },
+	},
+	{
+		kind: "configuration",
+		label: "Configuration",
+		family: "supporting",
+		artwork: "configuration",
+		defaultName: "Configuration",
+		descriptors: [
+			{ key: "Configuration scope", placeholder: "e.g. Production, per service" },
+			{ key: "Consumers", placeholder: "e.g. Orders API, Worker" },
+		],
+		operations: [
+			{ id: "fetch", label: "Fetch" },
+			{ id: "deliver-update", label: "Deliver update" },
+		],
+		reactions: { kind: "configuration", labels: labels("Fetches", "Receives", "Loading", "Delivered", "Failed") },
+	},
+	{
+		kind: "observability",
+		label: "Observability",
+		family: "supporting",
+		artwork: "observability",
+		defaultName: "Observability",
+		descriptors: [
+			{ key: "Signals", placeholder: "e.g. Logs, metrics, traces" },
+			{ key: "Alert purpose", placeholder: "e.g. Page on-call when checkout fails" },
+		],
+		operations: [
+			{ id: "record", label: "Record" },
+			{ id: "alert", label: "Alert" },
+		],
+		reactions: { kind: "observability", labels: labels("Sends", "Receives", "Recording", "Recorded", "Failed") },
+	},
+	{
+		kind: "custom",
+		label: "Custom",
+		family: "custom",
+		artwork: "custom",
+		defaultName: "Custom",
+		descriptors: [{ key: "Purpose", placeholder: "e.g. Loyalty points calculator" }],
+		operations: [],
+		reactions: { kind: "custom", labels: labels("Sends", "Receives", "Processing", "Succeeded", "Failed") },
+	},
 ];
 
 const ENTRY_BY_KIND = new Map<string, ComponentCatalogEntry>(COMPONENT_CATALOG.map((entry) => [entry.kind, entry]));
@@ -282,16 +559,13 @@ export function isCatalogKind(value: string): value is CatalogKind {
 	return ENTRY_BY_KIND.has(value);
 }
 
-/** The label for any Component kind, including the original generic and database kinds. */
+/** The label for any Component kind; the generic kind is the only one outside the catalog. */
 export function componentKindLabel(kind: string): string {
-	if (kind === "database") return "Database";
-	if (kind === "generic") return "Component";
 	return ENTRY_BY_KIND.get(kind)?.label ?? "Component";
 }
 
 /** Default name stem for a new Component of the given kind. */
 export function componentDefaultNameStem(kind: string): string {
-	if (kind === "database") return "Database";
 	return ENTRY_BY_KIND.get(kind)?.defaultName ?? "Component";
 }
 

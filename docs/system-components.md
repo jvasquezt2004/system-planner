@@ -60,12 +60,14 @@ and animation implementation remain open.
 ## Catalog registry
 
 `src/shared/component-catalog.ts` is the common registry for the client, traffic,
-and compute kinds: each entry gives the kind, label, family, optional descriptor
+compute, data, messaging, supporting, and Custom kinds: each entry gives the kind, label, family, optional descriptor
 keys stored in the Component's properties, operation presets (such as
 "Cache hit" or "Rejected"), artwork name, and reaction preset. The editor
 palette, the Inspector, playback, and later Assistant tools and exporters read
 kinds from this list. Descriptor values are optional annotations; no entry
-requires a vendor or configures executable network behavior. A Serverless
+requires a vendor or configures executable network behavior. A Custom
+Component may store one icon or shape from `CUSTOM_ICONS` (rectangle by
+default); no other kind stores one. A Serverless
 handler is a descriptive Component only: it never runs or links an Edge function
 (a database Design's server handler), and a Scheduled job's schedule is text
 that playback does not execute.
@@ -84,6 +86,10 @@ every kind (ADR-0010).
   destination's wording when a step names it, such as "Cache hit" on a CDN.
 - Presets style reactions only. A preset cannot change durations, arrival time,
   the route, or the step order.
+- A bucket and a queue draw one transient item that slides in while it receives
+  and out while it sends. The item follows the step's reaction on the shared
+  clock and is absent during the outcome, so playback never shows a stored
+  object count, cache contents, or queue depth.
 
 ## Technology variations
 

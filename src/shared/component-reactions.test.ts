@@ -16,9 +16,9 @@ describe("component reaction registry", () => {
 	});
 
 	test("a kind without its own preset reacts with the generic wording", () => {
-		expect(KIND_REACTION_PRESETS.queue).toBeUndefined();
-		expect(reactionPresetFor("queue")).toBe(GENERIC_REACTION_PRESET);
-		expect(reactionLabel("queue", "fail")).toBe(GENERIC_REACTION_PRESET.labels.fail);
+		expect(KIND_REACTION_PRESETS.generic).toBeUndefined();
+		expect(reactionPresetFor("generic")).toBe(GENERIC_REACTION_PRESET);
+		expect(reactionLabel("generic", "fail")).toBe(GENERIC_REACTION_PRESET.labels.fail);
 	});
 });
 
@@ -40,6 +40,6 @@ describe("client and traffic reaction presets", () => {
 		expect(reactionText("cdn", "send", "cache hit", "sender")).toBe(reactionLabel("cdn", "send"));
 		expect(reactionText("cdn", "receive", "enqueue", "destination")).toBe(reactionLabel("cdn", "receive"));
 		expect(reactionText("browser", "receive", "cache hit", "destination")).toBe(reactionLabel("browser", "receive"));
-		expect(reactionText("queue", "fail", undefined)).toBe(GENERIC_REACTION_PRESET.labels.fail);
+		expect(reactionText("generic", "fail", undefined)).toBe(GENERIC_REACTION_PRESET.labels.fail);
 	});
 });

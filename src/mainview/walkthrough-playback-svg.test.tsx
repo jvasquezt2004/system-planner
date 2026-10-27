@@ -20,7 +20,7 @@ import {
 	type PlaybackRoute,
 	type PlaybackTimeline,
 } from "../shared/walkthrough-playback";
-import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
+import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 
 function design(): SystemDesign {
 	let next = createEmptySystemDesign();
@@ -119,5 +119,47 @@ describe("walkthrough SVG playback", () => {
 
 		const sender = svg(<ReactionTag reaction={{ ...destination, action: "send", role: "sender", phase: "depart", operation: undefined }} kind="cdn" x={0} y={-12} />);
 		expect(sender).toContain(">REQUESTS<");
+	});
+
+	test("a bucket or queue takes its item in on arrival, and the item rests in place at full intensity under reduced motion", () => {
+		const { timeline, routes } = timelineAndRoutes(1000);
+		const arrival = timeline.steps[0]!.arrivalMs;
+		const entering = deriveWalkthroughFrame(timeline, routes, arrival + 20).reactions.queue!;
+		expect(entering).toMatchObject({ phase: "arrive" });
+
+		const entry = svg(<ReceptionItem reaction={entering} kind="queue" width={180} height={84} />);
+		expect(entry).toContain('data-testid="reception-item"');
+		expect(entry).toContain(`opacity="${entering.intensity}"`);
+		expect(entry).toContain(`x="${168 + (1 - entering.intensity) * 26}"`);
+
+		const rest = deriveWalkthroughFrame(timeline, routes, arrival + 20, { reducedMotion: true }).reactions.queue!;
+		expect(svg(<ReceptionItem reaction={rest} kind="queue" width={180} height={84} />)).toContain('x="168"');
+	});
+
+	test("the item leaves a bucket or queue on departure, and holds no item during the outcome", () => {
+		const departing = { action: "send", role: "sender", phase: "depart", intensity: 0.25 } as const;
+		const leaving = svg(<ReceptionItem reaction={departing} kind="object_storage_bucket" width={180} height={84} />);
+		expect(leaving).toContain('data-phase="depart"');
+		expect(leaving).toContain(`x="${168 + 0.75 * 26}"`);
+
+		const outcome = { action: "succeed", role: "destination", phase: "outcome", intensity: 1 } as const;
+		expect(svg(<ReceptionItem reaction={outcome} kind="queue" width={180} height={84} />)).toBe("<svg></svg>");
+	});
+
+	test("kinds other than a bucket or queue draw no reception item", () => {
+		const arriving = { action: "receive", role: "destination", phase: "arrive", intensity: 0.5 } as const;
+		expect(svg(<ReceptionItem reaction={arriving} kind="cache" width={180} height={84} />)).toBe("<svg></svg>");
+		expect(svg(<ReceptionItem reaction={arriving} kind="cdn" width={180} height={84} />)).toBe("<svg></svg>");
+	});
+
+	test("a supporting or Custom reaction tag shows its preset wording, and an operation preset replaces the destination's", () => {
+		const denied = { action: "fail", role: "destination", phase: "outcome", intensity: 1, operation: "deny" } as const;
+		expect(svg(<ReactionTag reaction={denied} kind="identity_provider" x={0} y={-12} />)).toContain(">DENY<");
+
+		const retrieving = { action: "receive", role: "destination", phase: "arrive", intensity: 0.5 } as const;
+		expect(svg(<ReactionTag reaction={retrieving} kind="secrets_store" x={0} y={-12} />)).toContain(">REQUEST<");
+
+		const custom = { action: "succeed", role: "destination", phase: "outcome", intensity: 1 } as const;
+		expect(svg(<ReactionTag reaction={custom} kind="custom" x={0} y={-12} />)).toContain(">SUCCEEDED<");
 	});
 });
