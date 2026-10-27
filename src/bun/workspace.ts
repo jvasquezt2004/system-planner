@@ -92,6 +92,10 @@ import {
 	type ProjectHistory,
 } from "./project-history";
 import {
+	applySystemLayout,
+	type SystemLayoutAction,
+} from "../shared/system-layout";
+import {
 	addSystemComponent,
 	addSystemConnection,
 	addSystemGroup,
@@ -336,6 +340,8 @@ export interface DesignWorkspace {
 	addSystemComponent(action: AddSystemComponentAction): Promise<WorkspaceState>;
 	updateSystemComponent(action: UpdateSystemComponentAction): Promise<WorkspaceState>;
 	moveSystemComponent(action: MoveSystemComponentAction): Promise<WorkspaceState>;
+	/** Applies one explicit layout arrangement as a single Project-history action. */
+	arrangeSystemLayout(action: SystemLayoutAction): Promise<WorkspaceState>;
 	removeSystemComponent(action: RemoveSystemComponentAction): Promise<WorkspaceState>;
 	/** Lists the Connections and Walkthrough steps that removing the Component would affect, before anything changes. */
 	describeSystemComponentRemoval(componentId: string): SystemComponentRemovalPlan & WalkthroughRemovalImpact;
@@ -2659,6 +2665,14 @@ export async function createDesignWorkspace(
 						next: removeSystemGroup(design, action.groupId),
 						action: attributed(action, { name: `Remove group “${removed.name}”` }),
 					};
+				});
+			});
+		},
+		arrangeSystemLayout(action) {
+			return runTask(async () => {
+				return applySystemDesignChange((design) => {
+					const next = applySystemLayout(design, action.placement);
+					return { next, action: attributed(action, { name: "Arrange layout" }) };
 				});
 			});
 		},

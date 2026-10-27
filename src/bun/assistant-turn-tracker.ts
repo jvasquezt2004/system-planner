@@ -12,6 +12,10 @@ import type {
 import type { StoredScenario } from "./store";
 import { keepSystemGroupMembers, type SystemComponent, type SystemConnection, type SystemContent, type SystemGroup, type SystemService } from "../shared/system-design";
 
+type SystemItemKind = "service" | "group" | "component" | "connection";
+type SystemItem = SystemService | SystemGroup | SystemComponent | SystemConnection;
+type SystemRestoration = { services: SystemService[]; groups: SystemGroup[]; components: SystemComponent[]; connections: SystemConnection[] };
+
 type Node = Record<string, any>;
 const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
 const nodeName = (node: Node | undefined): string | undefined => node?.String?.sval ?? node?.sval ?? node?.name;
@@ -22,8 +26,8 @@ export type RestorationResult =
 			design: Design;
 			scenarios: StoredScenario[];
 			edgeFunctions: EdgeFunction[];
-			/** Present when the turn changed Components or Connections. Services and Groups are kept as they are now. */
-			systemDesign?: { services: SystemService[]; groups: SystemGroup[]; components: SystemComponent[]; connections: SystemConnection[] };
+			/** Present when the turn changed any System design item. Restores every item the turn touched, together. */
+			systemDesign?: SystemRestoration;
 	  }
 	| {
 			ok: false;
@@ -77,15 +81,17 @@ export class TurnTracker {
 	readonly addedEdgeFunctionsSnapshot = new Map<string, EdgeFunction>();
 
 	/**
-	 * System design Components and Connections the turn changed, keyed by kind and
-	 * id. `original` is the value before the turn (null when the turn added it);
-	 * `last` is the value the turn left (null when the turn removed it).
+	 * System design Services, Groups, Components, and Connections the turn
+	 * changed, keyed by kind and id. `original` is the value before the turn (null
+	 * when the turn added it); `last` is the value the turn left (null when the
+	 * turn removed it). A Group whose membership a removal pruned is recorded too,
+	 * so Revert restores it with the item it names.
 	 */
 	readonly systemChanges = new Map<string, {
-		kind: "component" | "connection";
+		kind: SystemItemKind;
 		id: string;
-		original: SystemComponent | SystemConnection | null;
-		last: SystemComponent | SystemConnection | null;
+		original: SystemItem | null;
+		last: SystemItem | null;
 	}>();
 
 	constructor(turnId: string, projectId: string) {
@@ -95,7 +101,7 @@ export class TurnTracker {
 
 	/** Records one Assistant edit to the System design; net-zero changes leave no trace. */
 	recordSystemMutation(before: SystemContent, after: SystemContent) {
-		const compare = (kind: "component" | "connection", previous: (SystemComponent | SystemConnection)[], next: (SystemComponent | SystemConnection)[]) => {
+		const compare = (kind: SystemItemKind, previous: SystemItem[], next: SystemItem[]) => {
 			const ids = new Set([...previous.map((item) => item.id), ...next.map((item) => item.id)]);
 			for (const id of ids) {
 				const prior = previous.find((item) => item.id === id) ?? null;
@@ -109,6 +115,8 @@ export class TurnTracker {
 				else this.systemChanges.set(key, entry);
 			}
 		};
+		compare("service", before.services, after.services);
+		compare("group", before.groups, after.groups);
 		compare("component", before.components, after.components);
 		compare("connection", before.connections, after.connections);
 	}
@@ -854,35 +862,29 @@ export class TurnTracker {
 	 * Restores the System design items the turn changed. A later manual edit to
 	 * one of them is a conflict, reported by name; untouched items are left alone.
 	 */
-	private restoreSystemDesign(
-		currentState: WorkspaceState,
-	): { services: SystemService[]; groups: SystemGroup[]; components: SystemComponent[]; connections: SystemConnection[] } | string | null {
+	private restoreSystemDesign(currentState: WorkspaceState): SystemRestoration | string | null {
 		if (this.systemChanges.size === 0) return null;
-		const services = structuredClone(currentState.systemDesign?.services ?? []);
-		const components = structuredClone(currentState.systemDesign?.components ?? []);
-		const connections = structuredClone(currentState.systemDesign?.connections ?? []);
+		const lists = {
+			service: structuredClone(currentState.systemDesign?.services ?? []),
+			group: structuredClone(currentState.systemDesign?.groups ?? []),
+			component: structuredClone(currentState.systemDesign?.components ?? []),
+			connection: structuredClone(currentState.systemDesign?.connections ?? []),
+		};
 		const conflicts: string[] = [];
 		for (const change of this.systemChanges.values()) {
-			const current = change.kind === "component"
-				? components.find((item) => item.id === change.id) ?? null
-				: connections.find((item) => item.id === change.id) ?? null;
+			const current = (lists[change.kind] as SystemItem[]).find((item) => item.id === change.id) ?? null;
 			if (JSON.stringify(current) !== JSON.stringify(change.last)) {
 				conflicts.push(`${describeSystemChange(change)} was modified after this Assistant turn`);
 			}
 		}
 		if (conflicts.length > 0) return conflicts.join("; ");
 		for (const change of this.systemChanges.values()) {
-			if (change.kind === "component") {
-				restoreSystemItem(components, change.id, change.original as SystemComponent | null);
-			} else {
-				restoreSystemItem(connections, change.id, change.original as SystemConnection | null);
-			}
+			restoreSystemItem(lists[change.kind] as SystemItem[], change.id, change.original);
 		}
-		// Groups keep their current membership, minus any Component the revert removed.
-		const currentGroups = currentState.systemDesign?.groups ?? [];
-		const liveIds = new Set([...services, ...components, ...currentGroups].map((item) => item.id));
-		const groups = structuredClone(keepSystemGroupMembers(currentGroups, liveIds));
-		return { services, groups, components, connections };
+		// Groups keep any membership the turn did not change, minus items that no longer exist.
+		const liveIds = new Set([...lists.service, ...lists.component, ...lists.group].map((item) => item.id));
+		const groups = structuredClone(keepSystemGroupMembers(lists.group, liveIds));
+		return { services: lists.service, groups, components: lists.component, connections: lists.connection };
 	}
 }
 
@@ -1186,7 +1188,7 @@ export function checkCodeRelevantContent(
 }
 
 /** Puts an item back to its original value, or removes it when the turn added it. */
-function restoreSystemItem<T extends { id: string }>(list: T[], id: string, original: T | null) {
+function restoreSystemItem<T extends SystemItem>(list: T[], id: string, original: T | null) {
 	const index = list.findIndex((item) => item.id === id);
 	if (original === null) {
 		if (index >= 0) list.splice(index, 1);
@@ -1197,8 +1199,12 @@ function restoreSystemItem<T extends { id: string }>(list: T[], id: string, orig
 	}
 }
 
-function describeSystemChange(change: { kind: "component" | "connection"; original: SystemComponent | SystemConnection | null; last: SystemComponent | SystemConnection | null }): string {
+function describeSystemChange(change: { kind: SystemItemKind; original: SystemItem | null; last: SystemItem | null }): string {
 	const item = change.last ?? change.original;
-	if (change.kind === "component") return `Component "${(item as SystemComponent).name}"`;
-	return `Connection "${(item as SystemConnection).label}"`;
+	switch (change.kind) {
+		case "service": return `Service "${(item as SystemService).name}"`;
+		case "group": return `Group "${(item as SystemGroup).name}"`;
+		case "component": return `Component "${(item as SystemComponent).name}"`;
+		case "connection": return `Connection "${(item as SystemConnection).label}"`;
+	}
 }
