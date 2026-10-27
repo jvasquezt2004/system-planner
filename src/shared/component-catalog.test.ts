@@ -16,7 +16,7 @@ import { KIND_REACTION_PRESETS } from "./component-reactions";
 import { WALKTHROUGH_ACTIONS } from "./walkthrough";
 
 describe("client and traffic catalog registry", () => {
-	test("registers the nine agreed client and traffic kinds, then the five compute kinds, each once, with its own artwork and reaction preset", () => {
+	test("registers every agreed catalog kind in palette order, each once, with its own artwork and reaction preset", () => {
 		expect([...CLIENT_TRAFFIC_KINDS]).toEqual([
 			"person",
 			"browser",
@@ -29,6 +29,7 @@ describe("client and traffic catalog registry", () => {
 			"proxy",
 		]);
 		expect(COMPONENT_CATALOG.map((entry) => entry.kind)).toEqual([...CATALOG_KINDS]);
+		expect(CATALOG_KINDS).toHaveLength(23);
 		expect(new Set(CATALOG_KINDS).size).toBe(CATALOG_KINDS.length);
 		for (const entry of COMPONENT_CATALOG) {
 			expect(entry.artwork).toBe(entry.kind);
@@ -55,6 +56,15 @@ describe("client and traffic catalog registry", () => {
 			"Worker",
 			"Scheduled job",
 			"Serverless handler",
+			"Database",
+			"Cache",
+			"Object-storage bucket",
+			"File storage",
+			"Search index",
+			"Queue",
+			"Topic",
+			"Event bus",
+			"Event stream",
 		]);
 		expect(componentKindLabel("database")).toBe("Database");
 		expect(componentKindLabel("generic")).toBe("Component");
