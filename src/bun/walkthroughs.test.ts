@@ -294,6 +294,31 @@ describe("Walkthrough workspace", () => {
 		await expect(openWorkspace(databasePath)).rejects.toThrow("Step connection is required.");
 	});
 
+	test("switching database designs keeps the Project's Walkthroughs and System design, and they save with the Project", async () => {
+		const databasePath = databasePathForTest();
+		const workspace = await openWorkspace(databasePath);
+		await openImageUploadProject(workspace);
+		await workspace.createWalkthrough({ id: "w", name: "Upload" });
+		await workspace.addWalkthroughStep({ id: "s", walkthroughId: "w", connectionId: "upload", explanation: "Kept" });
+		const firstDesign = activeDesign(workspace);
+
+		await workspace.createDesign({ name: "Billing" });
+		expect(activeDesign(workspace)).not.toBe(firstDesign);
+		expect(workspace.getState().systemDesign?.connections.map((connection) => connection.id)).toEqual(["upload", "enqueue"]);
+		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s"]);
+
+		await workspace.createWalkthrough({ id: "w2", name: "Billing run" });
+		await workspace.openDesign({ designId: firstDesign });
+		expect(walkthroughsOf(workspace).map((walkthrough) => walkthrough.name)).toEqual(["Upload", "Billing run"]);
+		expect(workspace.getState().systemDesign?.components).toHaveLength(3);
+
+		await workspace.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
+		const reopened = await openWorkspace(databasePath);
+		expect(walkthroughsOf(reopened).map((walkthrough) => walkthrough.name)).toEqual(["Upload", "Billing run"]);
+		expect(walkthroughsOf(reopened)[0]!.steps[0]!.explanation).toBe("Kept");
+	});
+
 	test("Walkthrough edits are refused when no Project is open", async () => {
 		const workspace = await openWorkspace(databasePathForTest());
 		await expect(workspace.createWalkthrough({ name: "Orphan" })).rejects.toThrow("Open a project before editing its System design.");

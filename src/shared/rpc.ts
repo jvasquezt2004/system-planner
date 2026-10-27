@@ -10,10 +10,12 @@ import type {
 	AddColumnAction,
 	AddRelationshipAction,
 	AddTableAction,
+	CreateDesignAction,
 	CreateEdgeFunctionAction,
 	CreateScenarioAction,
 	DisplayedSqlPreview,
 	MoveTableAction,
+	OpenDesignAction,
 	RemovalPlan,
 	RemovalTarget,
 	RemoveColumnAction,
@@ -22,6 +24,7 @@ import type {
 	RemoveRelationshipAction,
 	RemoveScenarioAction,
 	RemoveTableAction,
+	RenameDesignAction,
 	RenameEdgeFunctionAction,
 	RenameScenarioAction,
 	RenameTableAction,
@@ -48,14 +51,20 @@ import type { SchemaCodeSnapshot } from "./schema-code";
 import type {
 	AddSystemComponentAction,
 	AddSystemConnectionAction,
+	AddSystemServiceAction,
 	MoveSystemComponentAction,
+	MoveSystemServiceAction,
 	RemoveSystemComponentAction,
 	RemoveSystemConnectionAction,
+	RemoveSystemServiceAction,
+	ResizeSystemServiceAction,
 	SetActiveViewAction,
 	SetSystemViewportAction,
 	SystemComponentRemovalPlan,
+	SystemServiceRemovalPlan,
 	UpdateSystemComponentAction,
 	UpdateSystemConnectionAction,
+	UpdateSystemServiceAction,
 } from "./system-design";
 import type {
 	AddWalkthroughStepAction,
@@ -97,6 +106,9 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: { projectId: string };
 				response: WorkspaceState;
 			};
+			createDesign: { params: CreateDesignAction; response: WorkspaceState };
+			openDesign: { params: OpenDesignAction; response: WorkspaceState };
+			renameDesign: { params: RenameDesignAction; response: WorkspaceState };
 			createScenario: { params: CreateScenarioAction; response: WorkspaceState };
 			renameScenario: { params: RenameScenarioAction; response: WorkspaceState };
 			removeScenario: { params: RemoveScenarioAction; response: WorkspaceState };
@@ -171,6 +183,12 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 				params: SetViewportAction;
 				response: WorkspaceState;
 			};
+			addSystemService: { params: AddSystemServiceAction; response: WorkspaceState };
+			updateSystemService: { params: UpdateSystemServiceAction; response: WorkspaceState };
+			moveSystemService: { params: MoveSystemServiceAction; response: WorkspaceState };
+			resizeSystemService: { params: ResizeSystemServiceAction; response: WorkspaceState };
+			removeSystemService: { params: RemoveSystemServiceAction; response: WorkspaceState };
+			describeSystemServiceRemoval: { params: { serviceId: string }; response: SystemServiceRemovalPlan };
 			addSystemComponent: { params: AddSystemComponentAction; response: WorkspaceState };
 			updateSystemComponent: { params: UpdateSystemComponentAction; response: WorkspaceState };
 			moveSystemComponent: { params: MoveSystemComponentAction; response: WorkspaceState };

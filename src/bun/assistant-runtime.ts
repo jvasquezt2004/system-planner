@@ -375,7 +375,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const turnIds = new Map<string, string>();
 	const turnTrackers = new Map<string, TurnTracker>();
 	const conversationReadStates = new Map<string, { revision: number; design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[]; systemDesign?: SystemContent }>();
-	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
+	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; designId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
 	const latestTurnByProject = new Map<string, string>();
 	workspace.onAssistantDesignMutation?.((turnId, before, after) => {
 		const tracker = turnTrackers.get(turnId);
@@ -398,6 +398,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const lastConfirmedDrops = new Map<string, ConfirmedDropGuard>();
 	type AssistantTarget = { projectId: string; designId: string };
 	const pendingDdlTargets = new Map<string, AssistantTarget>();
+	/** The Design each conversation's current turn was started on. Its tools never retarget. */
+	const turnTargets = new Map<string, AssistantTarget>();
 	const turnUsages = new Map<string, {
 		inputTokens: number;
 		outputTokens: number;
@@ -588,7 +590,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	function assertTargetState(state: ReturnType<DesignWorkspace["getState"]>, target: AssistantTarget, message: string) {
 		if (!stateMatchesTarget(state, target)) throw new Error(message);
 	}
-	function requireBoundState(conversationId: string) {
+	/** The Project and Design shown now, which is where a new turn starts. */
+	function currentBoundState(conversationId: string) {
 		const conversation = store.loadConversation(conversationId);
 		if (!conversation) throw new Error("Conversation not found.");
 		const state = workspace.getState();
@@ -600,6 +603,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			state: state as BoundWorkspaceState,
 			target: { projectId: conversation.project_id, designId: state.activeDesignId } satisfies AssistantTarget,
 		};
+	}
+	/**
+	 * Tools and confirmations act on the Design their turn started on, never on
+	 * whichever Design is open. Opening a different Design makes them refuse.
+	 */
+	function requireBoundState(conversationId: string) {
+		const current = currentBoundState(conversationId);
+		const bound = turnTargets.get(conversationId);
+		if (!bound) return current;
+		if (bound.projectId !== current.target.projectId || bound.designId !== current.target.designId) {
+			throw new Error("This Assistant turn works on another design. Open that design to continue it.");
+		}
+		return { ...current, target: bound };
 	}
 	function projectSnapshot(state: ReturnType<DesignWorkspace["getState"]>): string {
 		return JSON.stringify({
@@ -1334,8 +1350,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) throw new Error("This Assistant turn is no longer available to revert.");
 			const tracker = turnTrackers.get(checkpoint.turnId);
 			if (!tracker || !tracker.hasChanges()) throw new Error("This Assistant turn has no changes to revert.");
+			assertTargetState(workspace.getState(), { projectId: checkpoint.projectId, designId: checkpoint.designId }, "Open the design this Assistant turn changed to revert it.");
 			await workspace.restoreAssistantProjectSnapshot({
 				projectId: checkpoint.projectId,
+				designId: checkpoint.designId,
 				validateAndRestore: (current) => tracker.computeRestoration(current),
 			});
 			turnCheckpoints.delete(conversationId);
@@ -1639,7 +1657,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		async sendMessage(conversationId: string, text: string, modelId: string, thinkingLevel: ThinkingLevel = "medium", connectionId?: string, options?: { waitForCompletion?: boolean }): Promise<any> {
 			const waitForCompletion = options?.waitForCompletion ?? true;
 			await ensureLegacyCredentialsMigrated();
-			const conversation = requireBoundState(conversationId).conversation;
+			const conversation = currentBoundState(conversationId).conversation;
 			if (pendingConfirmations.has(conversationId)) throw new Error("Confirm or reject the pending destructive DDL plan before sending another message.");
 			const effectiveConnectionId = connectionId ?? conversation.connection_id;
 			let targetConn = effectiveConnectionId ? store.getConnection(effectiveConnectionId) : null;
@@ -1695,7 +1713,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			} else {
 				throw new Error("No provider connection selected for this conversation. Choose a connection and model to continue.");
 			}
-			const currentState = requireBoundState(conversationId).state;
+			const startBound = currentBoundState(conversationId);
+			const startTarget = startBound.target;
+			const currentState = startBound.state;
 			let changeNote: { role: "user"; content: string; timestamp: number } | undefined;
 			const currentSnapshot = projectSnapshot(currentState);
 			const previousSnapshot = store.observeProjectSnapshot(conversationId, currentSnapshot, currentState.revision);
@@ -1874,10 +1894,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			turnUsages.set(conversationId, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null });
 			const turnId = crypto.randomUUID();
 			turnIds.set(conversationId, turnId);
+			turnTargets.set(conversationId, startTarget);
 			turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
 			turnCheckpoints.set(conversationId, {
 				turnId,
 				projectId: conversation.project_id,
+				designId: startTarget.designId,
 				before: checkpointBefore,
 			});
 			if (!conversationReadStates.has(conversationId)) {

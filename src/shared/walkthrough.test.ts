@@ -2,9 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemService,
 	createEmptySystemDesign,
 	removeSystemConnection,
 	removeSystemComponent,
+	removeSystemService,
 	updateSystemComponent,
 	updateSystemConnection,
 	type SystemDesign,
@@ -89,7 +91,7 @@ describe("Walkthrough model", () => {
 		expect(walkthroughRepairCount(walkthroughs[0]!, design)).toBe(1);
 
 		// The dangling step still shows the Components it used, but no Connection.
-		expect(walkthroughStepHighlight(first!, design)).toEqual({ connectionId: null, componentIds: ["client", "api"] });
+		expect(walkthroughStepHighlight(first!, design)).toEqual({ connectionId: null, endpointIds: ["client", "api"] });
 
 		const repaired = repairWalkthroughStep(walkthroughs, "w-upload", "s-upload", "enqueue", design);
 		expect(repaired[0]!.steps[0]).toMatchObject({ connectionId: "enqueue", route: { sourceId: "api", targetId: "queue" }, title: "Upload" });
@@ -103,7 +105,7 @@ describe("Walkthrough model", () => {
 
 		const step = walkthroughs[0]!.steps[0]!;
 		expect(walkthroughStepStatus(step, design)).toEqual({ status: "redirected", sourceId: "client", targetId: "queue" });
-		expect(walkthroughStepHighlight(step, design)).toEqual({ connectionId: "upload", componentIds: ["client", "queue"] });
+		expect(walkthroughStepHighlight(step, design)).toEqual({ connectionId: "upload", endpointIds: ["client", "queue"] });
 
 		const accepted = repairWalkthroughStep(walkthroughs, "w-upload", "s-upload", "upload", design);
 		expect(walkthroughStepStatus(accepted[0]!.steps[0]!, design)).toEqual({ status: "ok" });
@@ -118,7 +120,7 @@ describe("Walkthrough model", () => {
 		expect(walkthroughStepStatus(step, design)).toEqual({ status: "ok" });
 		expect(selectedWalkthroughHighlight(walkthroughs, design, "w-upload", "s-upload")).toEqual({
 			connectionId: "upload",
-			componentIds: ["client", "api"],
+			endpointIds: ["client", "api"],
 		});
 	});
 
@@ -127,7 +129,7 @@ describe("Walkthrough model", () => {
 		const walkthroughs = withUploadStep(uploadSystem());
 		const step = walkthroughs[0]!.steps[0]!;
 		expect(walkthroughStepStatus(step, design)).toEqual({ status: "dangling" });
-		expect(walkthroughStepHighlight(step, design)).toEqual({ connectionId: null, componentIds: ["client"] });
+		expect(walkthroughStepHighlight(step, design)).toEqual({ connectionId: null, endpointIds: ["client"] });
 	});
 
 	test("updates clear optional text with empty strings and clear the duration with null", () => {
@@ -171,6 +173,23 @@ describe("Walkthrough model", () => {
 		expect(() => updateWalkthroughStep(draft, "w", "s", { durationMs: 1.5 })).toThrow("whole number");
 		expect(() => updateWalkthroughStep(draft, "w", "s", { action: "retry" as never })).toThrow('Unsupported step action "retry".');
 		expect(() => updateWalkthroughStep(draft, "w", "s", { title: "x".repeat(121) })).toThrow("Step title must be 120 characters or fewer.");
+	});
+
+	test("a step can play a Connection whose endpoint is a Service, and reports that Service as its endpoint", () => {
+		let design = uploadSystem();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: -200 } });
+		design = updateSystemComponent(design, "api", { serviceId: "orders" });
+		design = addSystemConnection(design, { id: "dispatch", sourceId: "orders", targetId: "queue", label: "Dispatches" });
+		const walkthroughs = addWalkthroughStep(addWalkthrough([], { id: "w", name: "Dispatch" }), "w", { id: "s", connectionId: "dispatch" }, design);
+
+		const step = walkthroughs[0]!.steps[0]!;
+		expect(walkthroughStepStatus(step, design)).toEqual({ status: "ok" });
+		expect(walkthroughStepHighlight(step, design)).toEqual({ connectionId: "dispatch", endpointIds: ["orders", "queue"] });
+
+		// Removing the Service deletes its Connection; the step keeps the endpoint that still exists.
+		const withoutService = removeSystemService(design, "orders");
+		expect(walkthroughStepStatus(step, withoutService)).toEqual({ status: "dangling" });
+		expect(walkthroughStepHighlight(step, withoutService)).toEqual({ connectionId: null, endpointIds: ["queue"] });
 	});
 
 	test("steps can be reordered and removed without touching their neighbours", () => {

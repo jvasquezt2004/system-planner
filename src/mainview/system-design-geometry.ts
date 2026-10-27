@@ -2,14 +2,65 @@ import { CANVAS_MAX_ZOOM, CANVAS_MIN_ZOOM, type CanvasPoint, type CanvasViewport
 import { computeConnectionPath, sampleCubicBezier, type ProofPoint, type ProofRect } from "../shared/architecture-proof";
 import {
 	SYSTEM_COMPONENT_SIZE,
+	SYSTEM_SERVICE_MIN_SIZE,
 	systemConnectionRouteOffsets,
 	type SystemComponent,
 	type SystemConnection,
 	type SystemDesign,
+	type SystemServiceSize,
 } from "../shared/system-design";
 
 /** Pixel distance a pointer must travel before a press becomes a drag. */
 export const DRAG_THRESHOLD_PX = 3;
+
+/** A gesture in progress, shown before the workspace saves it. */
+export type SceneDrag =
+	| { mode: "component"; id: string; position: CanvasPoint }
+	| { mode: "service"; id: string; position: CanvasPoint }
+	| { mode: "resize"; id: string; size: SystemServiceSize };
+
+/**
+ * The design as it will look once the drag is saved. Moving a Service carries
+ * the Components it owns by the same offset; ownership itself never changes.
+ */
+export function previewScene(design: SystemDesign, drag: SceneDrag | null): SystemDesign {
+	if (!drag) return design;
+	if (drag.mode === "component") {
+		return {
+			...design,
+			components: design.components.map((component) => (
+				component.id === drag.id ? { ...component, position: drag.position } : component
+			)),
+		};
+	}
+	if (drag.mode === "resize") {
+		return {
+			...design,
+			services: design.services.map((service) => (service.id === drag.id ? { ...service, size: drag.size } : service)),
+		};
+	}
+	const service = design.services.find((candidate) => candidate.id === drag.id);
+	if (!service) return design;
+	const dx = drag.position.x - service.position.x;
+	const dy = drag.position.y - service.position.y;
+	return {
+		...design,
+		services: design.services.map((candidate) => (candidate.id === drag.id ? { ...candidate, position: drag.position } : candidate)),
+		components: design.components.map((component) => (
+			component.serviceId === drag.id
+				? { ...component, position: { x: component.position.x + dx, y: component.position.y + dy } }
+				: component
+		)),
+	};
+}
+
+/** The size a Service boundary takes when its corner moves by the pointer offset, never below the minimum. */
+export function resizedServiceSize(origin: SystemServiceSize, dx: number, dy: number): SystemServiceSize {
+	return {
+		width: Math.max(SYSTEM_SERVICE_MIN_SIZE.width, Math.round(origin.width + dx)),
+		height: Math.max(SYSTEM_SERVICE_MIN_SIZE.height, Math.round(origin.height + dy)),
+	};
+}
 
 export function clampZoom(zoom: number): number {
 	return Math.min(CANVAS_MAX_ZOOM, Math.max(CANVAS_MIN_ZOOM, zoom));
@@ -55,10 +106,15 @@ export type ConnectionGeometry = {
  */
 export function connectionGeometries(design: SystemDesign, positions?: Map<string, CanvasPoint>): ConnectionGeometry[] {
 	const offsets = systemConnectionRouteOffsets(design);
-	const rectFor = (componentId: string): ProofRect | null => {
-		const component = design.components.find((candidate) => candidate.id === componentId);
+	const rectFor = (endpointId: string): ProofRect | null => {
+		const service = design.services.find((candidate) => candidate.id === endpointId);
+		if (service) {
+			const position = positions?.get(endpointId) ?? service.position;
+			return { x: position.x, y: position.y, width: service.size.width, height: service.size.height };
+		}
+		const component = design.components.find((candidate) => candidate.id === endpointId);
 		if (!component) return null;
-		return componentRect({ position: positions?.get(componentId) ?? component.position });
+		return componentRect({ position: positions?.get(endpointId) ?? component.position });
 	};
 	const result: ConnectionGeometry[] = [];
 	for (const connection of design.connections) {

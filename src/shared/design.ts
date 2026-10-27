@@ -445,6 +445,8 @@ export type WorkspaceState = {
 	design: Design | null;
 	/** Stable identity of the active database design when a project is open. */
 	activeDesignId?: string | null;
+	/** Every database design of the open Project, in creation order. */
+	designs: DatabaseDesignSummary[];
 	revision: number;
 	save: SaveState;
 	sql: SqlState;
@@ -577,6 +579,11 @@ export function getSqlPreviewValidationStatus(
 
 export type CreateProjectAction = { name: string };
 export type OpenProjectAction = { projectId: string };
+/** Creates a database design in the open Project and opens it. */
+export type CreateDesignAction = { name: string };
+/** Makes another database design of the open Project the active one. */
+export type OpenDesignAction = { designId: string };
+export type RenameDesignAction = { designId: string; name: string };
 export type AddTableAction = { name: string; position?: CanvasPoint; designId: string };
 export type UpdateIndexesAction = { tableId: string; indexes: DesignIndex[]; designId: string };
 export type UpdateUniqueConstraintsAction = { tableId: string; uniqueConstraints: DesignUniqueConstraint[]; designId: string };

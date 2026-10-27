@@ -8,9 +8,13 @@ import type {
 } from "../shared/walkthrough";
 import type {
 	AddSystemComponentAction,
+	AddSystemServiceAction,
 	SystemComponentChanges,
 	SystemComponentRemovalPlan,
 	SystemConnectionChanges,
+	SystemServiceChanges,
+	SystemServiceRemovalPlan,
+	SystemServiceSize,
 	SystemViewName,
 } from "../shared/system-design";
 import type {
@@ -107,6 +111,15 @@ export const workspaceClient = {
 	},
 	createProject(name: string): Promise<WorkspaceState> {
 		return rpc.request.createProject({ name });
+	},
+	createDesign(name: string): Promise<WorkspaceState> {
+		return rpc.request.createDesign({ name });
+	},
+	openDesign(designId: string): Promise<WorkspaceState> {
+		return rpc.request.openDesign({ designId });
+	},
+	renameDesign(designId: string, name: string): Promise<WorkspaceState> {
+		return rpc.request.renameDesign({ designId, name });
 	},
 	createScenario(request: { name: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.createScenario(request);
@@ -222,6 +235,24 @@ export const workspaceClient = {
 	},
 	setViewport(designId: string, viewport: CanvasViewport): Promise<WorkspaceState> {
 		return rpc.request.setViewport({ ...viewport, designId });
+	},
+	addSystemService(service: AddSystemServiceAction): Promise<WorkspaceState> {
+		return rpc.request.addSystemService(service);
+	},
+	updateSystemService(serviceId: string, changes: SystemServiceChanges): Promise<WorkspaceState> {
+		return rpc.request.updateSystemService({ serviceId, changes });
+	},
+	moveSystemService(serviceId: string, point: CanvasPoint): Promise<WorkspaceState> {
+		return rpc.request.moveSystemService({ serviceId, x: point.x, y: point.y });
+	},
+	resizeSystemService(serviceId: string, size: SystemServiceSize): Promise<WorkspaceState> {
+		return rpc.request.resizeSystemService({ serviceId, width: size.width, height: size.height });
+	},
+	removeSystemService(serviceId: string): Promise<WorkspaceState> {
+		return rpc.request.removeSystemService({ serviceId });
+	},
+	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan> {
+		return rpc.request.describeSystemServiceRemoval({ serviceId });
 	},
 	addSystemComponent(component: AddSystemComponentAction): Promise<WorkspaceState> {
 		return rpc.request.addSystemComponent(component);

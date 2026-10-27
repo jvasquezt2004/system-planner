@@ -1,19 +1,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowRight, Link2, Minus, Plus, Trash2, X } from "lucide-react";
+import { ArrowRight, Frame, Link2, Minus, Plus, Trash2, X } from "lucide-react";
 import type { CanvasPoint, CanvasViewport, WorkspaceState } from "../shared/design";
 import {
 	DEFAULT_SYSTEM_CONNECTION_LABEL,
 	SYSTEM_COMPONENT_KINDS,
 	SYSTEM_COMPONENT_SIZE,
+	SYSTEM_SERVICE_MIN_SIZE,
 	describeSystemComponentRemoval,
+	describeSystemServiceRemoval,
+	openServiceSpotNear,
 	openSpotNear,
 	findSystemComponent,
 	findSystemConnection,
+	findSystemService,
 	type SystemComponent,
 	type SystemComponentKind,
 	type SystemComponentRemovalPlan,
 	type SystemConnection,
 	type SystemDesign,
+	type SystemService,
+	type SystemServiceRemovalPlan,
+	type SystemServiceSize,
 } from "../shared/system-design";
 import type { workspaceClient } from "./workspace-client";
 import { selectedWalkthroughHighlight } from "../shared/walkthrough";
@@ -22,9 +29,12 @@ import {
 	connectionGeometries,
 	labelWidth,
 	movedBeyondThreshold,
+	previewScene,
+	resizedServiceSize,
 	screenToWorld,
 	truncateLabel,
 	zoomAroundPoint,
+	type SceneDrag,
 } from "./system-design-geometry";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,15 +50,24 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 type Client = typeof workspaceClient;
-type Selection = { kind: "component"; id: string } | { kind: "connection"; id: string } | null;
+type Selection =
+	| { kind: "component"; id: string }
+	| { kind: "service"; id: string }
+	| { kind: "connection"; id: string }
+	| null;
 type Drag = {
-	componentId: string;
+	scene: SceneDrag;
 	pointerStart: CanvasPoint;
-	originWorld: CanvasPoint;
-	current: CanvasPoint;
+	/** The moved item's position when the press began. */
+	origin: CanvasPoint;
+	/** The Service's size when the press began; only resizing reads it. */
+	originSize: SystemServiceSize;
 	moved: boolean;
 };
 type Pan = { pointerStart: CanvasPoint; viewportStart: CanvasViewport; moved: boolean };
+type PendingRemoval =
+	| { kind: "component"; plan: SystemComponentRemovalPlan }
+	| { kind: "service"; plan: SystemServiceRemovalPlan };
 
 const KIND_LABELS: Record<SystemComponentKind, string> = {
 	generic: "Component",
@@ -69,10 +88,11 @@ export type SystemDesignViewProps = {
 };
 
 /**
- * The architecture overview: generic Components and directed, labeled
- * Connections of the Project's System design. Pan, zoom, and drag change the
- * view or one Component; every edit goes through the workspace so it is saved,
- * undoable, and visible to the Assistant the same way.
+ * The architecture overview: Services that own Components, generic and database
+ * Components, and directed, labeled Connections between Components and
+ * Services. Pan, zoom, and drag change the view or one item; every edit goes
+ * through the workspace so it is saved, undoable, and visible to the Assistant
+ * the same way.
  */
 export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatabase }: SystemDesignViewProps) {
 	const design = state.systemDesign ?? null;
@@ -81,7 +101,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	const [selection, setSelection] = useState<Selection>(null);
 	const [connectingFrom, setConnectingFrom] = useState<string | null | undefined>(undefined);
 	const [drag, setDrag] = useState<Drag | null>(null);
-	const [pendingRemoval, setPendingRemoval] = useState<SystemComponentRemovalPlan | null>(null);
+	const [pendingRemoval, setPendingRemoval] = useState<PendingRemoval | null>(null);
 	const [walkthroughsOpen, setWalkthroughsOpen] = useState(false);
 	const [walkthroughSelection, setWalkthroughSelection] = useState<WalkthroughSelection | null>(null);
 	const pan = useRef<Pan | null>(null);
@@ -103,13 +123,11 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if (saveTimer.current) clearTimeout(saveTimer.current);
 	}, []);
 
-	const positions = useMemo(() => {
-		if (!drag) return undefined;
-		return new Map([[drag.componentId, drag.current]]);
-	}, [drag]);
-	const geometries = useMemo(() => (design ? connectionGeometries(design, positions) : []), [design, positions]);
+	// The drawn scene is the saved design with any gesture in progress applied.
+	const scene = useMemo(() => (design ? previewScene(design, drag?.scene ?? null) : null), [design, drag]);
+	const geometries = useMemo(() => (scene ? connectionGeometries(scene) : []), [scene]);
 
-	if (!design) {
+	if (!design || !scene) {
 		return (
 			<div className="flex h-full items-center justify-center text-ink-3">
 				<p className="font-display italic text-[17px]">Opening the system overview…</p>
@@ -118,7 +136,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	}
 
 	const selectedComponent = selection?.kind === "component" ? findSystemComponent(design, selection.id) ?? null : null;
+	const selectedService = selection?.kind === "service" ? findSystemService(design, selection.id) ?? null : null;
 	const selectedConnection = selection?.kind === "connection" ? findSystemConnection(design, selection.id) ?? null : null;
+	const serviceNames = new Map(design.services.map((service) => [service.id, service.name]));
 	/** The open walkthrough step's Connection and endpoints, traced in the architecture. */
 	const highlight = walkthroughSelection?.stepId
 		? selectedWalkthroughHighlight(state.walkthroughs ?? [], design, walkthroughSelection.walkthroughId, walkthroughSelection.stepId)
@@ -164,9 +184,8 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 			const zoom = latestViewport.current.zoom;
 			const dx = (point.x - drag.pointerStart.x) / zoom;
 			const dy = (point.y - drag.pointerStart.y) / zoom;
-			const current = { x: Math.round(drag.originWorld.x + dx), y: Math.round(drag.originWorld.y + dy) };
 			const moved = drag.moved || movedBeyondThreshold(drag.pointerStart, point);
-			setDrag({ ...drag, current, moved });
+			setDrag({ ...drag, moved, scene: sceneAfterPointer(drag, dx, dy) });
 			return;
 		}
 		const active = pan.current;
@@ -186,9 +205,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		if (drag) {
 			const finished = drag;
 			setDrag(null);
-			if (finished.moved) {
-				onApply(() => client.moveSystemComponent(finished.componentId, finished.current));
-			}
+			if (finished.moved) commitScene(finished.scene);
 		}
 		const active = pan.current;
 		pan.current = null;
@@ -200,34 +217,72 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		}
 	}
 
+	/** Saves a finished gesture as one action: a move, a Service move, or a Service resize. */
+	function commitScene(gesture: SceneDrag) {
+		if (gesture.mode === "component") {
+			const { id, position } = gesture;
+			onApply(() => client.moveSystemComponent(id, position));
+		} else if (gesture.mode === "service") {
+			const { id, position } = gesture;
+			onApply(() => client.moveSystemService(id, position));
+		} else {
+			const { id, size } = gesture;
+			onApply(() => client.resizeSystemService(id, size));
+		}
+	}
+
+	function startDrag(event: React.PointerEvent<SVGElement>, gesture: SceneDrag, origin: CanvasPoint, originSize: SystemServiceSize) {
+		event.currentTarget.setPointerCapture(event.pointerId);
+		setDrag({ scene: gesture, pointerStart: pointerInContainer(event), origin, originSize, moved: false });
+	}
+
 	function handleComponentPointerDown(event: React.PointerEvent<SVGGElement>, component: SystemComponent) {
 		event.stopPropagation();
 		if (event.button !== 0 || connectingFrom !== undefined) return;
-		event.currentTarget.setPointerCapture(event.pointerId);
-		setDrag({
-			componentId: component.id,
-			pointerStart: pointerInContainer(event),
-			originWorld: component.position,
-			current: component.position,
-			moved: false,
-		});
+		startDrag(
+			event,
+			{ mode: "component", id: component.id, position: component.position },
+			component.position,
+			SYSTEM_SERVICE_MIN_SIZE,
+		);
+	}
+
+	function handleServicePointerDown(event: React.PointerEvent<SVGGElement>, service: SystemService) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		startDrag(event, { mode: "service", id: service.id, position: service.position }, service.position, service.size);
+	}
+
+	function handleResizePointerDown(event: React.PointerEvent<SVGRectElement>, service: SystemService) {
+		event.stopPropagation();
+		if (event.button !== 0 || connectingFrom !== undefined) return;
+		startDrag(event, { mode: "resize", id: service.id, size: service.size }, service.position, service.size);
 	}
 
 	function handleComponentClick(component: SystemComponent) {
 		if (connectingFrom !== undefined) {
-			connectComponent(component.id);
+			connectEndpoint(component.id);
 			return;
 		}
 		setSelection({ kind: "component", id: component.id });
 	}
 
-	function connectComponent(componentId: string) {
-		if (connectingFrom === undefined) return;
-		if (connectingFrom === null) {
-			setConnectingFrom(componentId);
+	function handleServiceClick(service: SystemService) {
+		if (connectingFrom !== undefined) {
+			connectEndpoint(service.id);
 			return;
 		}
-		if (connectingFrom === componentId) {
+		setSelection({ kind: "service", id: service.id });
+	}
+
+	/** Connect mode accepts a Component or a Service as either end of the interaction. */
+	function connectEndpoint(endpointId: string) {
+		if (connectingFrom === undefined) return;
+		if (connectingFrom === null) {
+			setConnectingFrom(endpointId);
+			return;
+		}
+		if (connectingFrom === endpointId) {
 			setConnectingFrom(null);
 			return;
 		}
@@ -235,32 +290,49 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 		const sourceId = connectingFrom;
 		setConnectingFrom(undefined);
 		setSelection({ kind: "connection", id });
-		onApply(() => client.addSystemConnection({ id, sourceId, targetId: componentId, label: DEFAULT_SYSTEM_CONNECTION_LABEL }));
+		onApply(() => client.addSystemConnection({ id, sourceId, targetId: endpointId, label: DEFAULT_SYSTEM_CONNECTION_LABEL }));
+	}
+
+	function visibleCenter(): CanvasPoint {
+		const rect = containerRef.current?.getBoundingClientRect();
+		return screenToWorld({ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 }, latestViewport.current);
 	}
 
 	function addComponent() {
-		const rect = containerRef.current?.getBoundingClientRect();
-		const center = screenToWorld(
-			{ x: (rect?.width ?? 800) / 2, y: (rect?.height ?? 600) / 2 },
-			latestViewport.current,
-		);
-		const spot = openSpotNear(design!, center);
+		const spot = openSpotNear(design!, visibleCenter());
 		const id = crypto.randomUUID();
 		setSelection({ kind: "component", id });
 		onApply(() => client.addSystemComponent({ id, kind: "generic", x: spot.x, y: spot.y }));
 	}
 
-	function confirmComponentRemoval() {
-		if (!pendingRemoval) return;
-		const componentId = pendingRemoval.componentId;
-		setPendingRemoval(null);
-		setSelection(null);
-		onApply(() => client.removeSystemComponent(componentId));
+	function addService() {
+		const spot = openServiceSpotNear(design!, visibleCenter());
+		const id = crypto.randomUUID();
+		setSelection({ kind: "service", id });
+		onApply(() => client.addSystemService({ id, x: spot.x, y: spot.y }));
 	}
 
-	/** Lists what the removal deletes from the displayed design; the workspace checks again on confirm. */
-	function openRemoval(componentId: string) {
-		setPendingRemoval(describeSystemComponentRemoval(design!, componentId));
+	function confirmRemoval() {
+		if (!pendingRemoval) return;
+		const removal = pendingRemoval;
+		setPendingRemoval(null);
+		setSelection(null);
+		if (removal.kind === "component") {
+			const componentId = removal.plan.componentId;
+			onApply(() => client.removeSystemComponent(componentId));
+		} else {
+			const serviceId = removal.plan.serviceId;
+			onApply(() => client.removeSystemService(serviceId));
+		}
+	}
+
+	/** Lists what the removal changes in the displayed design; the workspace checks again on confirm. */
+	function openComponentRemoval(componentId: string) {
+		setPendingRemoval({ kind: "component", plan: describeSystemComponentRemoval(design!, componentId) });
+	}
+
+	function openServiceRemoval(serviceId: string) {
+		setPendingRemoval({ kind: "service", plan: describeSystemServiceRemoval(design!, serviceId) });
 	}
 
 	function handleBackgroundClick() {
@@ -287,13 +359,16 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				const id = selection.id;
 				setSelection(null);
 				onApply(() => client.removeSystemConnection(id));
+			} else if (selection.kind === "service") {
+				openServiceRemoval(selection.id);
 			} else {
-				openRemoval(selection.id);
+				openComponentRemoval(selection.id);
 			}
 		}
 	}
 
-	const hasComponents = design.components.length > 0;
+	const hasItems = design.components.length > 0 || design.services.length > 0;
+	const endpointCount = design.components.length + design.services.length;
 
 	return (
 		<div className="relative flex h-full min-h-0 min-w-0 overflow-hidden">
@@ -343,6 +418,66 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						</marker>
 					</defs>
 					<g transform={`translate(${viewport.x} ${viewport.y}) scale(${viewport.zoom})`}>
+						{scene.services.map((service) => {
+							const selected = selection?.kind === "service" && selection.id === service.id;
+							const linking = connectingFrom === service.id;
+							const traced = highlight?.endpointIds.includes(service.id) ?? false;
+							const { width, height } = service.size;
+							return (
+								<g
+									key={service.id}
+									data-service-id={service.id}
+									transform={`translate(${service.position.x} ${service.position.y})`}
+									role="button"
+									tabIndex={0}
+									aria-label={`Service: ${service.name}`}
+									aria-pressed={selected}
+									className="cursor-pointer"
+									onPointerDown={(event) => handleServicePointerDown(event, service)}
+									onClick={(event) => {
+										event.stopPropagation();
+										handleServiceClick(service);
+									}}
+									onKeyDown={(event) => {
+										if (event.key === "Enter" || event.key === " ") {
+											event.preventDefault();
+											handleServiceClick(service);
+										}
+									}}
+								>
+									<title>{service.name}</title>
+									<rect
+										width={width}
+										height={height}
+										rx={14}
+										strokeDasharray="7 5"
+										strokeWidth={selected || linking || traced ? 2 : 1.25}
+										style={{
+											fill: "var(--color-paper-tint)",
+											stroke: selected || linking || traced ? "var(--color-pencil)" : "var(--color-rule-strong)",
+										}}
+									/>
+									<text x={16} y={24} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
+										SERVICE
+									</text>
+									<text x={16} y={46} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
+										{truncateLabel(service.name, 32)}
+									</text>
+									<rect
+										data-testid="service-resize-handle"
+										x={width - 14}
+										y={height - 14}
+										width={10}
+										height={10}
+										rx={2}
+										className="cursor-nwse-resize"
+										style={{ fill: selected ? "var(--color-pencil)" : "var(--color-rule-strong)" }}
+										onPointerDown={(event) => handleResizePointerDown(event, service)}
+										onClick={(event) => event.stopPropagation()}
+									/>
+								</g>
+							);
+						})}
 						{geometries.map(({ connection, pathString, labelPoint }) => {
 							const selected = selection?.kind === "connection" && selection.id === connection.id;
 							const traced = highlight?.connectionId === connection.id;
@@ -399,18 +534,19 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 								</g>
 							);
 						})}
-						{design.components.map((component) => {
-							const position = drag?.componentId === component.id ? drag.current : component.position;
+						{scene.components.map((component) => {
 							const selected = selection?.kind === "component" && selection.id === component.id;
 							const linking = connectingFrom === component.id;
-							const traced = highlight?.componentIds.includes(component.id) ?? false;
+							const traced = highlight?.endpointIds.includes(component.id) ?? false;
 							const detail = component.technology ?? component.description ?? "";
+							const owner = component.serviceId === null ? undefined : serviceNames.get(component.serviceId);
 							return (
 								<g
 									key={component.id}
 									data-component-id={component.id}
 									data-kind={component.kind}
-									transform={`translate(${position.x} ${position.y})`}
+									data-service-id={component.serviceId ?? undefined}
+									transform={`translate(${component.position.x} ${component.position.y})`}
 									role="button"
 									tabIndex={0}
 									aria-label={`${KIND_LABELS[component.kind]}: ${component.name}`}
@@ -453,24 +589,33 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 											LINKED
 										</text>
 									)}
+									{owner !== undefined && (
+										<text x={SYSTEM_COMPONENT_SIZE.width - 14} y={SYSTEM_COMPONENT_SIZE.height - 10} textAnchor="end" fontSize={10} style={{ fill: "var(--color-ink-3)" }}>
+											{truncateLabel(`in ${owner}`, 26)}
+										</text>
+									)}
 								</g>
 							);
 						})}
 					</g>
 				</svg>
 
-				{!hasComponents && (
+				{!hasItems && (
 					<div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 text-center">
 						<div className="max-w-sm">
 							<p className="font-display text-[20px] italic text-ink-2">Sketch the system</p>
 							<p className="mt-2 text-[13px] text-ink-3">
-								Add components, then connect them with labeled interactions. Each connection describes one way the parts talk.
+								Add services and components, then connect them with labeled interactions. Each connection describes one way the parts talk.
 							</p>
 						</div>
 					</div>
 				)}
 
 				<div className="absolute left-4 top-4 flex flex-wrap items-center gap-1.5 rounded-md border border-rule-soft bg-paper-raised/95 p-1.5 shadow-xs">
+					<Button type="button" size="sm" variant="outline" onClick={addService}>
+						<Frame className="size-3.5" />
+						Add service
+					</Button>
 					<Button type="button" size="sm" variant="outline" onClick={addComponent}>
 						<Plus className="size-3.5" />
 						Add component
@@ -481,7 +626,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 						variant={connectingFrom !== undefined ? "pencil" : "outline"}
 						aria-pressed={connectingFrom !== undefined}
 						onClick={() => setConnectingFrom(connectingFrom === undefined ? null : undefined)}
-						disabled={design.components.length < 2}
+						disabled={endpointCount < 2}
 					>
 						<Link2 className="size-3.5" />
 						{connectingFrom === undefined ? "Connect" : connectingFrom === null ? "Choose source" : "Choose target"}
@@ -512,13 +657,13 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				{connectingFrom !== undefined && (
 					<p className="absolute bottom-4 left-4 rounded-md bg-paper-raised/95 px-3 py-1.5 text-[12px] text-ink-2 shadow-xs">
 						{connectingFrom === null
-							? "Choose the component where the interaction starts. Press Escape to cancel."
-							: "Choose the component the interaction reaches. Press Escape to cancel."}
+							? "Choose the component or service where the interaction starts. Press Escape to cancel."
+							: "Choose the component or service the interaction reaches. Press Escape to cancel."}
 					</p>
 				)}
 			</div>
 
-			{(selectedComponent || selectedConnection) && (
+			{(selectedComponent || selectedService || selectedConnection) && (
 				<aside
 					aria-label="Selection"
 					className="absolute right-4 top-4 bottom-4 flex w-[300px] max-w-[calc(100%-2rem)] flex-col overflow-y-auto rounded-md border border-rule-soft bg-paper-raised p-4 shadow-sm"
@@ -532,8 +677,21 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							onApply={onApply}
 							client={client}
 							onSelectConnection={(id) => setSelection({ kind: "connection", id })}
-							onRequestRemove={() => openRemoval(selectedComponent.id)}
+							onRequestRemove={() => openComponentRemoval(selectedComponent.id)}
 							onOpenDatabase={onOpenDatabase}
+						/>
+					)}
+					{selectedService && (
+						<ServiceInspector
+							key={selectedService.id}
+							service={selectedService}
+							design={design}
+							client={client}
+							onApply={onApply}
+							onClose={() => setSelection(null)}
+							onSelectComponent={(id) => setSelection({ kind: "component", id })}
+							onSelectConnection={(id) => setSelection({ kind: "connection", id })}
+							onRequestRemove={() => openServiceRemoval(selectedService.id)}
 						/>
 					)}
 					{selectedConnection && (
@@ -556,32 +714,78 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 
 			<Dialog open={pendingRemoval !== null} onOpenChange={(open) => !open && setPendingRemoval(null)}>
 				<DialogContent>
-					<DialogHeader>
-						<DialogTitle>Remove “{pendingRemoval?.componentName}”?</DialogTitle>
-						<DialogDescription>
-							{pendingRemoval && pendingRemoval.connections.length > 0
-								? `This also removes ${pendingRemoval.connections.length} connection${pendingRemoval.connections.length === 1 ? "" : "s"}:`
-								: "No connections use this component."}
-						</DialogDescription>
-					</DialogHeader>
-					{pendingRemoval && pendingRemoval.connections.length > 0 && (
-						<ul className="max-h-48 space-y-1 overflow-y-auto text-[13px] text-ink-2">
-							{pendingRemoval.connections.map((connection) => (
-								<li key={connection.id} className="rounded-sm bg-paper-tint px-2 py-1">
-									{connection.label}
-								</li>
-							))}
-						</ul>
-					)}
+					{pendingRemoval && <RemovalSummary removal={pendingRemoval} />}
 					<DialogFooter>
 						<Button type="button" variant="outline" onClick={() => setPendingRemoval(null)}>Cancel</Button>
-						<Button type="button" variant="destructive" onClick={confirmComponentRemoval}>
-							Remove component
+						<Button type="button" variant="destructive" onClick={confirmRemoval}>
+							{pendingRemoval?.kind === "service" ? "Remove service" : "Remove component"}
 						</Button>
 					</DialogFooter>
 				</DialogContent>
 			</Dialog>
 		</div>
+	);
+}
+
+/** The Service or Component a drag is moving, updated from the pointer's offset since the press. */
+function sceneAfterPointer(drag: Drag, dx: number, dy: number): SceneDrag {
+	const { scene } = drag;
+	if (scene.mode === "resize") {
+		return { mode: "resize", id: scene.id, size: resizedServiceSize(drag.originSize, dx, dy) };
+	}
+	const position = { x: Math.round(drag.origin.x + dx), y: Math.round(drag.origin.y + dy) };
+	return scene.mode === "component"
+		? { mode: "component", id: scene.id, position }
+		: { mode: "service", id: scene.id, position };
+}
+
+function RemovalSummary({ removal }: { removal: PendingRemoval }) {
+	const connections = removal.plan.connections;
+	const connectionText = connections.length === 0
+		? ""
+		: `This also removes ${connections.length} connection${connections.length === 1 ? "" : "s"}:`;
+	if (removal.kind === "component") {
+		return (
+			<>
+				<DialogHeader>
+					<DialogTitle>Remove “{removal.plan.componentName}”?</DialogTitle>
+					<DialogDescription>{connectionText || "No connections use this component."}</DialogDescription>
+				</DialogHeader>
+				{connections.length > 0 && <ConnectionList connections={connections} />}
+			</>
+		);
+	}
+	const released = removal.plan.releasedComponents;
+	const releasedText = released.length === 0
+		? "It owns no components."
+		: `${released.length} component${released.length === 1 ? "" : "s"} will be released to system scope and keep their positions and connections.`;
+	return (
+		<>
+			<DialogHeader>
+				<DialogTitle>Remove “{removal.plan.serviceName}”?</DialogTitle>
+				<DialogDescription>{[releasedText, connectionText].filter(Boolean).join(" ")}</DialogDescription>
+			</DialogHeader>
+			{released.length > 0 && (
+				<ul className="max-h-40 space-y-1 overflow-y-auto text-[13px] text-ink-2" aria-label="Released components">
+					{released.map((component) => (
+						<li key={component.id} className="rounded-sm bg-paper-tint px-2 py-1">{component.name}</li>
+					))}
+				</ul>
+			)}
+			{connections.length > 0 && <ConnectionList connections={connections} />}
+		</>
+	);
+}
+
+function ConnectionList({ connections }: { connections: SystemComponentRemovalPlan["connections"] }) {
+	return (
+		<ul className="max-h-48 space-y-1 overflow-y-auto text-[13px] text-ink-2">
+			{connections.map((connection) => (
+				<li key={connection.id} className="rounded-sm bg-paper-tint px-2 py-1">
+					{connection.label}
+				</li>
+			))}
+		</ul>
 	);
 }
 
@@ -688,6 +892,20 @@ function ComponentInspector({
 				</select>
 			</label>
 			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Owner</span>
+				<select
+					aria-label="Owning service"
+					value={component.serviceId ?? ""}
+					onChange={(event) => onApply(() => client.updateSystemComponent(component.id, { serviceId: event.target.value || null }))}
+					className="h-8 rounded-md border border-input bg-paper-raised px-2"
+				>
+					<option value="">System scope (shared or independent)</option>
+					{design.services.map((service) => (
+						<option key={service.id} value={service.id}>{service.name}</option>
+					))}
+				</select>
+			</label>
+			<label className="flex flex-col gap-1">
 				<span className="text-ink-3">Technology</span>
 				<Input value={technology} maxLength={500} placeholder="Optional, e.g. PostgreSQL" onChange={(event) => setTechnology(event.target.value)} onBlur={commitDetails} />
 			</label>
@@ -783,6 +1001,129 @@ function ComponentInspector({
 	);
 }
 
+function ServiceInspector({
+	service,
+	design,
+	client,
+	onApply,
+	onClose,
+	onSelectComponent,
+	onSelectConnection,
+	onRequestRemove,
+}: {
+	service: SystemService;
+	design: SystemDesign;
+	client: Client;
+	onApply: (action: () => Promise<WorkspaceState>) => void;
+	onClose: () => void;
+	onSelectComponent: (id: string) => void;
+	onSelectConnection: (id: string) => void;
+	onRequestRemove: () => void;
+}) {
+	const [name, setName] = useState(service.name);
+	const owned = design.components.filter((component) => component.serviceId === service.id);
+	const assignable = design.components.filter((component) => component.serviceId !== service.id);
+	const related = design.connections.filter((connection) => connection.sourceId === service.id || connection.targetId === service.id);
+	const serviceNames = new Map(design.services.map((item) => [item.id, item.name]));
+
+	function commitName() {
+		const trimmed = name.trim();
+		if (trimmed.length === 0) {
+			setName(service.name);
+			return;
+		}
+		if (trimmed !== service.name) onApply(() => client.updateSystemService(service.id, { name: trimmed }));
+	}
+
+	return (
+		<div className="flex flex-col gap-3 text-[13px]">
+			<div className="flex items-center justify-between">
+				<span className="kicker">Service</span>
+				<Button type="button" size="icon" variant="ghost" aria-label="Close inspector" className="size-7" onClick={onClose}>
+					<X className="size-3.5" />
+				</Button>
+			</div>
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Name</span>
+				<Input
+					value={name}
+					maxLength={80}
+					aria-label="Service name"
+					onChange={(event) => setName(event.target.value)}
+					onBlur={commitName}
+					onKeyDown={(event) => {
+						if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+					}}
+				/>
+			</label>
+			<div className="flex flex-col gap-1.5">
+				<span className="text-ink-3">Owns ({owned.length})</span>
+				{owned.length === 0 && <p className="text-ink-3">No components yet. Assign one below or from a component’s Owner field.</p>}
+				{owned.map((component) => (
+					<div key={component.id} className="flex items-center justify-between gap-2 rounded-sm px-2 py-1 hover:bg-paper-tint">
+						<button type="button" onClick={() => onSelectComponent(component.id)} className="min-w-0 truncate text-left">
+							{component.name}
+						</button>
+						<Button
+							type="button"
+							size="xs"
+							variant="outline"
+							onClick={() => onApply(() => client.updateSystemComponent(component.id, { serviceId: null }))}
+						>
+							Release
+						</Button>
+					</div>
+				))}
+				{assignable.length > 0 && (
+					<label className="flex flex-col gap-1 pt-1">
+						<span className="text-ink-3">Assign a component</span>
+						<select
+							aria-label="Assign a component to this service"
+							value=""
+							onChange={(event) => {
+								const componentId = event.target.value;
+								if (componentId) onApply(() => client.updateSystemComponent(componentId, { serviceId: service.id }));
+							}}
+							className="h-8 rounded-md border border-input bg-paper-raised px-2"
+						>
+							<option value="">Choose a component…</option>
+							{assignable.map((component) => (
+								<option key={component.id} value={component.id}>
+									{component.serviceId === null
+										? `${component.name} (system scope)`
+										: `${component.name} (owned by ${serviceNames.get(component.serviceId) ?? "another service"})`}
+								</option>
+							))}
+						</select>
+					</label>
+				)}
+			</div>
+			<div className="flex flex-col gap-1">
+				<span className="text-ink-3">Connections ({related.length})</span>
+				{related.length === 0 && <p className="text-ink-3">None yet. Use Connect to draw one.</p>}
+				{related.map((connection) => (
+					<button
+						key={connection.id}
+						type="button"
+						onClick={() => onSelectConnection(connection.id)}
+						className="rounded-sm px-2 py-1 text-left hover:bg-paper-tint"
+					>
+						{connection.sourceId === service.id ? "→" : "←"} {connection.label}
+					</button>
+				))}
+			</div>
+			<Button type="button" variant="strike" size="sm" className="mt-1 self-start" onClick={onRequestRemove}>
+				<Trash2 className="size-3.5" />
+				Remove service
+			</Button>
+		</div>
+	);
+}
+
+function endpointName(design: SystemDesign, endpointId: string): string {
+	return findSystemComponent(design, endpointId)?.name ?? findSystemService(design, endpointId)?.name ?? "Missing";
+}
+
 function ConnectionInspector({
 	connection,
 	design,
@@ -799,9 +1140,10 @@ function ConnectionInspector({
 	onRemove: () => void;
 }) {
 	const [label, setLabel] = useState(connection.label);
+	const [interactionType, setInteractionType] = useState(connection.interactionType ?? "");
 	const [protocol, setProtocol] = useState(connection.protocol ?? "");
-	const source = findSystemComponent(design, connection.sourceId)?.name ?? "Missing";
-	const target = findSystemComponent(design, connection.targetId)?.name ?? "Missing";
+	const source = endpointName(design, connection.sourceId);
+	const target = endpointName(design, connection.targetId);
 
 	function commitLabel() {
 		const trimmed = label.trim();
@@ -810,6 +1152,11 @@ function ConnectionInspector({
 			return;
 		}
 		if (trimmed !== connection.label) onApply(() => client.updateSystemConnection(connection.id, { label: trimmed }));
+	}
+	function commitInteractionType() {
+		const trimmed = interactionType.trim();
+		if (trimmed === (connection.interactionType ?? "")) return;
+		onApply(() => client.updateSystemConnection(connection.id, { interactionType: trimmed }));
 	}
 	function commitProtocol() {
 		const trimmed = protocol.trim();
@@ -839,6 +1186,16 @@ function ConnectionInspector({
 					onKeyDown={(event) => {
 						if (event.key === "Enter") (event.target as HTMLInputElement).blur();
 					}}
+				/>
+			</label>
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Interaction type (optional)</span>
+				<Input
+					value={interactionType}
+					maxLength={500}
+					placeholder="e.g. Synchronous request, Event"
+					onChange={(event) => setInteractionType(event.target.value)}
+					onBlur={commitInteractionType}
 				/>
 			</label>
 			<label className="flex flex-col gap-1">

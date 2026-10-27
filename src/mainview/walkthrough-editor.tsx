@@ -1,11 +1,7 @@
 import { useState } from "react";
 import { ArrowDown, ArrowUp, Plus, Trash2, X } from "lucide-react";
 import type { SaveState, WorkspaceState } from "../shared/design";
-import {
-	findSystemComponent,
-	type SystemConnection,
-	type SystemDesign,
-} from "../shared/system-design";
+import type { SystemConnection, SystemDesign } from "../shared/system-design";
 import {
 	WALKTHROUGH_ACTIONS,
 	WALKTHROUGH_DURATION_MAX_MS,
@@ -16,6 +12,7 @@ import {
 	WALKTHROUGH_NAME_LIMIT,
 	WALKTHROUGH_OPERATION_LIMIT,
 	WALKTHROUGH_TITLE_LIMIT,
+	findSystemEndpoint,
 	findWalkthrough,
 	walkthroughRepairCount,
 	walkthroughStepStatus,
@@ -233,12 +230,13 @@ function countLabel(count: number, noun: string): string {
 	return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function componentName(design: SystemDesign, componentId: string): string {
-	return findSystemComponent(design, componentId)?.name ?? "Missing component";
+/** A Connection endpoint may be a Component or a Service. */
+function endpointName(design: SystemDesign, endpointId: string): string {
+	return findSystemEndpoint(design, endpointId)?.name ?? "Missing endpoint";
 }
 
 function connectionRoute(design: SystemDesign, sourceId: string, targetId: string): string {
-	return `${componentName(design, sourceId)} → ${componentName(design, targetId)}`;
+	return `${endpointName(design, sourceId)} → ${endpointName(design, targetId)}`;
 }
 
 function connectionOptionLabel(design: SystemDesign, connection: SystemConnection): string {

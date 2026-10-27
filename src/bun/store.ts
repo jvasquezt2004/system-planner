@@ -38,6 +38,9 @@ export interface ProjectRecord {
 export interface DesignStore extends ScenarioStore, EdgeFunctionStore {
 	listProjects(): ProjectSummary[];
 	createProject(project: ProjectSummary, design: Design, save: DesignSave, designId: string): void | Promise<void>;
+	/** Adds an independent database design to an existing project. */
+	createDesign(projectId: string, designId: string, name: string, design: Design, save: DesignSave): void | Promise<void>;
+	renameDesign(projectId: string, designId: string, name: string, savedAt: number): void | Promise<void>;
 	saveDesign(projectId: string, design: Design, save: DesignSave, designId: string): void | Promise<void>;
 	saveProjectArtifacts(input: {
 		projectId: string;
@@ -163,14 +166,14 @@ const SCHEMA = `
 		position INTEGER NOT NULL,
 		name TEXT NOT NULL,
 		source TEXT NOT NULL,
-		PRIMARY KEY (project_id, id)
+		PRIMARY KEY (design_id, id)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_scenarios_design_id ON scenarios(design_id);
 
 	CREATE TABLE IF NOT EXISTS scenario_documents (
-		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
+		design_id TEXT PRIMARY KEY REFERENCES designs(id) ON DELETE CASCADE,
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
@@ -182,15 +185,15 @@ const SCHEMA = `
 		position INTEGER NOT NULL,
 		name TEXT NOT NULL,
 		source TEXT NOT NULL,
-		PRIMARY KEY (project_id, id),
-		UNIQUE (project_id, name)
+		PRIMARY KEY (design_id, id),
+		UNIQUE (design_id, name)
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_edge_functions_design_id ON edge_functions(design_id);
 
 	CREATE TABLE IF NOT EXISTS edge_function_documents (
-		project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
-		design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
+		design_id TEXT PRIMARY KEY REFERENCES designs(id) ON DELETE CASCADE,
+		project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
 		revision INTEGER NOT NULL,
 		updated_at INTEGER NOT NULL
 	);
@@ -212,6 +215,13 @@ const SCHEMA = `
 	);
 `;
 
+/**
+ * Schema version that scopes scenario and Edge function keys to their owning
+ * Design. Version 1 (and unversioned databases) keyed them by Project, so two
+ * Designs could not share a handler name or each keep a revision row.
+ */
+const DESIGN_SCOPED_ARTIFACTS_VERSION = 2;
+
 export function openDesignStore(
 	databasePath: string,
 	options?: OpenDesignStoreOptions,
@@ -221,12 +231,15 @@ export function openDesignStore(
 
 	// Check if existing database requires migration to explicit design identity
 	migrateToExplicitDesignIdentity(database, options);
+	migrateDesignScopedArtifacts(database);
 
 	database.exec(SCHEMA);
+	database.exec(`PRAGMA user_version = ${DESIGN_SCOPED_ARTIFACTS_VERSION}`);
 
 	const selectDesignByIdAndProject = database.query<{ id: string }, [string, string]>(
 		`SELECT id FROM designs WHERE id = ? AND project_id = ?`,
 	);
+	const selectProjectById = database.query<{ id: string }, [string]>(`SELECT id FROM projects WHERE id = ?`);
 
 	const listScenariosByDesign = database.query<{ id: string; name: string; source: string; design_id: string | null }, [string]>(`
 		SELECT id, name, source, design_id FROM scenarios WHERE design_id = ? ORDER BY position ASC
@@ -243,7 +256,7 @@ export function openDesignStore(
 	);
 	const upsertScenarioRevision = database.query(
 		`INSERT INTO scenario_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, design_id = excluded.design_id
+		 ON CONFLICT(design_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, project_id = excluded.project_id
 		 WHERE scenario_documents.revision < excluded.revision`,
 	);
 
@@ -279,7 +292,7 @@ export function openDesignStore(
 	);
 	const upsertEdgeFunctionRevision = database.query(
 		`INSERT INTO edge_function_documents (project_id, design_id, revision, updated_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(project_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, design_id = excluded.design_id
+		 ON CONFLICT(design_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at, project_id = excluded.project_id
 		 WHERE edge_function_documents.revision < excluded.revision`,
 	);
 	const saveEdgeFunctionsTransaction = database.transaction(
@@ -368,6 +381,35 @@ export function openDesignStore(
 		},
 	);
 
+	const renameDesignByIdAndProject = database.query(
+		`UPDATE designs SET name = ? WHERE id = ? AND project_id = ?`,
+	);
+	const createDesignTransaction = database.transaction(
+		(projectId: string, designId: string, name: string, design: Design, save: DesignSave) => {
+			if (!selectProjectById.get(projectId)) {
+				throw new Error(`Project "${projectId}" does not exist.`);
+			}
+			insertDesign.run(
+				designId,
+				projectId,
+				name,
+				save.revision,
+				save.documentRevision,
+				JSON.stringify(design),
+				save.savedAt,
+			);
+			touchProject.run(save.savedAt, projectId);
+		},
+	);
+	const renameDesignTransaction = database.transaction(
+		(projectId: string, designId: string, name: string, savedAt: number) => {
+			const result = renameDesignByIdAndProject.run(name, designId, projectId);
+			if (result.changes === 0) {
+				throw new Error(`Database design "${designId}" does not belong to project "${projectId}".`);
+			}
+			touchProject.run(savedAt, projectId);
+		},
+	);
 	const selectSystemDesign = database.query<{
 		document: string;
 		revision: number;
@@ -493,6 +535,12 @@ export function openDesignStore(
 		},
 		createProject(project, design, save, designId) {
 			createProjectTransaction(project, design, save, designId);
+		},
+		createDesign(projectId, designId, name, design, save) {
+			createDesignTransaction(projectId, designId, name, design, save);
+		},
+		renameDesign(projectId, designId, name, savedAt) {
+			renameDesignTransaction(projectId, designId, name, savedAt);
 		},
 		saveDesign(projectId, design, save, designId) {
 			saveDesignTransaction(projectId, design, save, designId);
@@ -789,4 +837,95 @@ function migrateDocumentRevision(database: Database) {
 		`ALTER TABLE designs ADD COLUMN document_revision INTEGER NOT NULL DEFAULT 0`,
 	);
 	database.exec(`UPDATE designs SET document_revision = revision WHERE document_revision = 0`);
+}
+
+/**
+ * Re-keys scenario and Edge function storage by owning Design (version 2).
+ * Earlier databases keyed each document row by Project and made Edge function
+ * names unique per Project, so a second Design could neither keep its own
+ * revision nor reuse a handler name. Rows whose Design is missing are attached
+ * to the Project's first Design, the owner earlier migrations already assigned.
+ * The DDL below is the frozen version-2 shape and is independent of SCHEMA.
+ */
+function migrateDesignScopedArtifacts(database: Database) {
+	const version = database.query<{ user_version: number }, []>(`PRAGMA user_version`).get()?.user_version ?? 0;
+	if (version >= DESIGN_SCOPED_ARTIFACTS_VERSION) return;
+
+	const tableNames = new Set(
+		database.query<{ name: string }, []>(`SELECT name FROM sqlite_master WHERE type = 'table'`).all().map((table) => table.name),
+	);
+	// A database without a designs table is new; SCHEMA creates the scoped tables directly.
+	if (!tableNames.has("designs")) return;
+
+	const migrations: Array<{ table: string; columns: string[]; ddl: string }> = [
+		{
+			table: "scenarios",
+			columns: ["project_id", "id", "position", "name", "source"],
+			ddl: `(
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
+				id TEXT NOT NULL,
+				position INTEGER NOT NULL,
+				name TEXT NOT NULL,
+				source TEXT NOT NULL,
+				PRIMARY KEY (design_id, id)
+			)`,
+		},
+		{
+			table: "scenario_documents",
+			columns: ["project_id", "revision", "updated_at"],
+			ddl: `(
+				design_id TEXT PRIMARY KEY REFERENCES designs(id) ON DELETE CASCADE,
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)`,
+		},
+		{
+			table: "edge_functions",
+			columns: ["project_id", "id", "position", "name", "source"],
+			ddl: `(
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				design_id TEXT REFERENCES designs(id) ON DELETE CASCADE,
+				id TEXT NOT NULL,
+				position INTEGER NOT NULL,
+				name TEXT NOT NULL,
+				source TEXT NOT NULL,
+				PRIMARY KEY (design_id, id),
+				UNIQUE (design_id, name)
+			)`,
+		},
+		{
+			table: "edge_function_documents",
+			columns: ["project_id", "revision", "updated_at"],
+			ddl: `(
+				design_id TEXT PRIMARY KEY REFERENCES designs(id) ON DELETE CASCADE,
+				project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+				revision INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)`,
+		},
+	];
+
+	database.transaction(() => {
+		for (const { table, columns, ddl } of migrations) {
+			if (!tableNames.has(table)) continue;
+			const existing = new Set(
+				database.query<{ name: string }, []>(`PRAGMA table_info(${table})`).all().map((column) => column.name),
+			);
+			const firstDesign = `(SELECT d.id FROM designs d WHERE d.project_id = t.project_id ORDER BY d.rowid LIMIT 1)`;
+			const owner = existing.has("design_id") ? `COALESCE(t.design_id, ${firstDesign})` : firstDesign;
+			const staging = `${table}_design_scoped`;
+			database.exec(`DROP TABLE IF EXISTS ${staging}`);
+			database.exec(`CREATE TABLE ${staging} ${ddl}`);
+			database.exec(`
+				INSERT INTO ${staging} (design_id, ${columns.join(", ")})
+				SELECT owner_id, ${columns.join(", ")} FROM (
+					SELECT ${owner} AS owner_id, ${columns.map((column) => `t.${column}`).join(", ")} FROM ${table} t
+				) WHERE owner_id IS NOT NULL
+			`);
+			database.exec(`DROP TABLE ${table}`);
+			database.exec(`ALTER TABLE ${staging} RENAME TO ${table}`);
+		}
+	})();
 }
