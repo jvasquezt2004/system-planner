@@ -257,6 +257,7 @@ describe("RPC request handlers", () => {
 			moveWalkthroughStep: record("moveWalkthroughStep"),
 			removeWalkthroughStep: record("removeWalkthroughStep"),
 			repairWalkthroughStep: record("repairWalkthroughStep"),
+			acceptWalkthroughStepRedirection: record("acceptWalkthroughStepRedirection"),
 		} as unknown as DesignWorkspace;
 
 		const handlers = createRpcRequestHandlers({
@@ -282,6 +283,7 @@ describe("RPC request handlers", () => {
 		await handlers.moveWalkthroughStep({ walkthroughId: "w-1", stepId: "s-1", toIndex: 0 });
 		await handlers.removeWalkthroughStep({ walkthroughId: "w-1", stepId: "s-1" });
 		await handlers.repairWalkthroughStep({ walkthroughId: "w-1", stepId: "s-2", connectionId: "c-2" });
+		await handlers.acceptWalkthroughStepRedirection({ walkthroughId: "w-1", stepId: "s-2" });
 		await handlers.removeWalkthrough({ walkthroughId: "w-1" });
 
 		expect(calls).toEqual([
@@ -296,6 +298,7 @@ describe("RPC request handlers", () => {
 			{ method: "moveWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-1", toIndex: 0 } },
 			{ method: "removeWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-1" } },
 			{ method: "repairWalkthroughStep", action: { walkthroughId: "w-1", stepId: "s-2", connectionId: "c-2" } },
+			{ method: "acceptWalkthroughStepRedirection", action: { walkthroughId: "w-1", stepId: "s-2" } },
 			{ method: "removeWalkthrough", action: { walkthroughId: "w-1" } },
 		]);
 	});

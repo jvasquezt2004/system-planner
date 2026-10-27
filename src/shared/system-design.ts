@@ -218,6 +218,11 @@ export type SystemServiceRemovalPlan = {
 	connections: AffectedSystemConnection[];
 };
 
+export type SystemConnectionRemovalPlan = {
+	connectionId: string;
+	connectionLabel: string;
+};
+
 export function findSystemService(design: SystemDesign, serviceId: string): SystemService | undefined {
 	return design.services.find((service) => service.id === serviceId);
 }
@@ -512,6 +517,11 @@ export function describeSystemComponentRemoval(design: SystemDesign, componentId
 			.filter((connection) => connection.sourceId === componentId || connection.targetId === componentId)
 			.map(({ id, label, sourceId, targetId }) => ({ id, label, sourceId, targetId })),
 	};
+}
+
+export function describeSystemConnectionRemoval(design: SystemDesign, connectionId: string): SystemConnectionRemovalPlan {
+	const connection = requireSystemConnection(design, connectionId);
+	return { connectionId, connectionLabel: connection.label };
 }
 
 /** Removes the Component, its Connections, and its Group memberships. */

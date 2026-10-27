@@ -68,6 +68,7 @@ import type {
 	SetActiveViewAction,
 	SetSystemViewportAction,
 	SystemComponentRemovalPlan,
+	SystemConnectionRemovalPlan,
 	SystemServiceRemovalPlan,
 	UpdateSystemComponentAction,
 	UpdateSystemConnectionAction,
@@ -81,8 +82,10 @@ import type {
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
+	AcceptWalkthroughStepRedirectionAction,
 	RepairWalkthroughStepAction,
 	UpdateWalkthroughStepAction,
+	WalkthroughRemovalImpact,
 } from "./walkthrough";
 export type SqlPreviewExportRequest = Readonly<{
 	preview: DisplayedSqlPreview;
@@ -195,7 +198,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			moveSystemService: { params: MoveSystemServiceAction; response: WorkspaceState };
 			resizeSystemService: { params: ResizeSystemServiceAction; response: WorkspaceState };
 			removeSystemService: { params: RemoveSystemServiceAction; response: WorkspaceState };
-			describeSystemServiceRemoval: { params: { serviceId: string }; response: SystemServiceRemovalPlan };
+			describeSystemServiceRemoval: {
+				params: { serviceId: string };
+				response: SystemServiceRemovalPlan & WalkthroughRemovalImpact;
+			};
 			addSystemGroup: { params: AddSystemGroupAction; response: WorkspaceState };
 			updateSystemGroup: { params: UpdateSystemGroupAction; response: WorkspaceState };
 			moveSystemGroup: { params: MoveSystemGroupAction; response: WorkspaceState };
@@ -205,7 +211,14 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			updateSystemComponent: { params: UpdateSystemComponentAction; response: WorkspaceState };
 			moveSystemComponent: { params: MoveSystemComponentAction; response: WorkspaceState };
 			removeSystemComponent: { params: RemoveSystemComponentAction; response: WorkspaceState };
-			describeSystemComponentRemoval: { params: { componentId: string }; response: SystemComponentRemovalPlan };
+			describeSystemComponentRemoval: {
+				params: { componentId: string };
+				response: SystemComponentRemovalPlan & WalkthroughRemovalImpact;
+			};
+			describeSystemConnectionRemoval: {
+				params: { connectionId: string };
+				response: SystemConnectionRemovalPlan & WalkthroughRemovalImpact;
+			};
 			addSystemConnection: { params: AddSystemConnectionAction; response: WorkspaceState };
 			updateSystemConnection: { params: UpdateSystemConnectionAction; response: WorkspaceState };
 			removeSystemConnection: { params: RemoveSystemConnectionAction; response: WorkspaceState };
@@ -222,6 +235,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			moveWalkthroughStep: { params: MoveWalkthroughStepAction; response: WorkspaceState };
 			removeWalkthroughStep: { params: RemoveWalkthroughStepAction; response: WorkspaceState };
 			repairWalkthroughStep: { params: RepairWalkthroughStepAction; response: WorkspaceState };
+			acceptWalkthroughStepRedirection: { params: AcceptWalkthroughStepRedirectionAction; response: WorkspaceState };
 			copySqlPreview: {
 				params: { preview: DisplayedSqlPreview };
 				response: SqlPreviewCopyResult;

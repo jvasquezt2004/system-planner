@@ -26,6 +26,7 @@ import {
 	removeSystemConnection,
 	resizeSystemGroup,
 	updateSystemComponent,
+	updateSystemConnection,
 	type SystemDesign,
 } from "./system-design";
 import { addWalkthrough, addWalkthroughStep, updateWalkthroughStep, type Walkthrough } from "./walkthrough";
@@ -386,5 +387,40 @@ describe("Walkthrough playback key", () => {
 
 		const edited = updateWalkthroughStep(walkthroughs, "upload", "s1", { explanation: "Now explained" });
 		expect(walkthroughPlaybackKey(edited[0]!, design)).not.toBe(key);
+	});
+});
+
+describe("Walkthrough playback after architecture changes", () => {
+	test("a redirected step blocks only its own Walkthrough, and an unaffected Walkthrough still plays", () => {
+		const design = fixtureDesign();
+		let walkthroughs = addWalkthrough([], { id: "upload", name: "Upload" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u1", connectionId: "upload", title: "Send" }, design);
+		walkthroughs = addWalkthrough(walkthroughs, { id: "reply", name: "Reply" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "reply", { id: "r1", connectionId: "reply", title: "Answer" }, design);
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u2", connectionId: "enqueue", title: "Queue" }, design);
+
+		// Retaining the Connection id alone does not accept its new endpoints.
+		const redirected = updateSystemConnection(design, "enqueue", { sourceId: "client" });
+		const affected = compileWalkthroughPlayback(walkthroughs[0]!, redirected);
+		expect(affected.ok).toBe(false);
+		if (affected.ok) throw new Error("Expected the redirected Walkthrough to be blocked.");
+		expect(affected.problems).toEqual(["Step 2 now runs a changed route. Accept the current route or repair the step."]);
+
+		expect(compileWalkthroughPlayback(walkthroughs[1]!, redirected).ok).toBe(true);
+	});
+
+	test("a removed Connection blocks only the Walkthroughs that play it", () => {
+		const design = fixtureDesign();
+		let walkthroughs = addWalkthrough([], { id: "upload", name: "Upload" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "upload", { id: "u1", connectionId: "upload", title: "Send" }, design);
+		walkthroughs = addWalkthrough(walkthroughs, { id: "reply", name: "Reply" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "reply", { id: "r1", connectionId: "reply", title: "Answer" }, design);
+
+		const removed = removeSystemConnection(design, "upload");
+		const blocked = compileWalkthroughPlayback(walkthroughs[0]!, removed);
+		expect(blocked.ok).toBe(false);
+		if (blocked.ok) throw new Error("Expected the dangling Walkthrough to be blocked.");
+		expect(blocked.problems).toEqual(["Step 1 plays a Connection that was removed. Choose a Connection to repair it."]);
+		expect(compileWalkthroughPlayback(walkthroughs[1]!, removed).ok).toBe(true);
 	});
 });
