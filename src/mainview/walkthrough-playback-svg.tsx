@@ -1,4 +1,4 @@
-import { reactionLabel } from "../shared/component-reactions";
+import { reactionText } from "../shared/component-reactions";
 import type { PlaybackMessage, PlaybackReaction } from "../shared/walkthrough-playback";
 
 /**
@@ -38,7 +38,7 @@ export function ReactionTag({ reaction, kind, x, y }: { reaction: PlaybackReacti
 			pointerEvents="none"
 			style={{ fill: "var(--color-pencil)" }}
 		>
-			{reactionLabel(kind, reaction.action).toUpperCase()}
+			{reactionText(kind, reaction.action, reaction.operation, reaction.role).toUpperCase()}
 		</text>
 	);
 }

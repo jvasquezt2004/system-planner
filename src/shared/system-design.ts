@@ -1,4 +1,5 @@
 import type { CanvasPoint, CanvasViewport } from "./design";
+import { CLIENT_TRAFFIC_KINDS, componentDefaultNameStem, type ClientTrafficKind } from "./component-catalog";
 
 /**
  * The authoritative System design of one Project: Services that own Components,
@@ -15,7 +16,8 @@ import type { CanvasPoint, CanvasViewport } from "./design";
  * never changes ownership.
  */
 
-export type SystemComponentKind = "generic" | "database";
+/** "generic" and "database" are the original kinds; the rest are registered in the catalog. */
+export type SystemComponentKind = "generic" | "database" | ClientTrafficKind;
 
 export type SystemComponentProperty = {
 	key: string;
@@ -101,7 +103,7 @@ export type SystemContent = Omit<SystemDesign, "viewport">;
 
 export type SystemViewName = "system" | "database";
 
-export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database"];
+export const SYSTEM_COMPONENT_KINDS: readonly SystemComponentKind[] = ["generic", "database", ...CLIENT_TRAFFIC_KINDS];
 export const DEFAULT_SYSTEM_CONNECTION_LABEL = "Interaction";
 export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;
@@ -844,7 +846,7 @@ function requireOwnerService(design: SystemDesign, serviceId: string | null | un
 }
 
 function defaultComponentName(design: SystemDesign, kind: SystemComponentKind): string {
-	return nextDefaultName(kind === "database" ? "Database" : "Component", design.components.map((component) => component.name));
+	return nextDefaultName(componentDefaultNameStem(kind), design.components.map((component) => component.name));
 }
 
 function nextDefaultName(base: string, names: string[]): string {
