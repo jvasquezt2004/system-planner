@@ -141,6 +141,47 @@ describe("RPC request handlers", () => {
 		});
 	});
 
+	test("System design Service requests forward their complete parameters to the workspace", async () => {
+		const captured: Record<string, unknown> = {};
+		const record = (name: string) => async (action: unknown) => {
+			captured[name] = action;
+			return {} as WorkspaceState;
+		};
+		const fakeWorkspace = {
+			addSystemService: record("addSystemService"),
+			updateSystemService: record("updateSystemService"),
+			moveSystemService: record("moveSystemService"),
+			resizeSystemService: record("resizeSystemService"),
+			removeSystemService: record("removeSystemService"),
+			describeSystemServiceRemoval: (serviceId: string) => {
+				captured.describeSystemServiceRemoval = serviceId;
+				return { serviceId, serviceName: "Orders", releasedComponents: [], connections: [] };
+			},
+		} as unknown as DesignWorkspace;
+
+		const handlers = createRpcRequestHandlers({
+			workspace: fakeWorkspace,
+			assistant: {} as AssistantRuntime,
+			sqlPreviewActions: {} as SqlPreviewActions,
+			pendingSqlExports: new Map(),
+		});
+
+		await handlers.addSystemService({ id: "orders", name: "Orders", x: 40, y: 40 });
+		expect(captured.addSystemService).toEqual({ id: "orders", name: "Orders", x: 40, y: 40 });
+		await handlers.updateSystemService({ serviceId: "orders", changes: { name: "Order API" } });
+		expect(captured.updateSystemService).toEqual({ serviceId: "orders", changes: { name: "Order API" } });
+		await handlers.moveSystemService({ serviceId: "orders", x: 60, y: 30 });
+		expect(captured.moveSystemService).toEqual({ serviceId: "orders", x: 60, y: 30 });
+		await handlers.resizeSystemService({ serviceId: "orders", width: 500, height: 320 });
+		expect(captured.resizeSystemService).toEqual({ serviceId: "orders", width: 500, height: 320 });
+		await handlers.removeSystemService({ serviceId: "orders" });
+		expect(captured.removeSystemService).toEqual({ serviceId: "orders" });
+
+		const plan = await handlers.describeSystemServiceRemoval({ serviceId: "orders" });
+		expect(captured.describeSystemServiceRemoval).toBe("orders");
+		expect(plan.serviceName).toBe("Orders");
+	});
+
 	test("undo, redo, layout, and routine requests forward the explicit designId to the workspace", async () => {
 		const captured: Array<{ method: string; args: unknown[] }> = [];
 		const record = (method: string) => async (...args: unknown[]) => {

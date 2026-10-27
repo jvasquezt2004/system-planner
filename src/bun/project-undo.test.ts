@@ -271,4 +271,28 @@ describe("Project-wide content history", () => {
 		await workspace.openProject({ projectId: firstProject });
 		expect(workspace.getState().undoActionName).toBe("Add table “Alpha”");
 	});
+
+
+	test("Service ownership and boundary edits share the Project-wide history with Design edits", async () => {
+		const { workspace } = await openClockedWorkspace();
+		await workspace.createProject({ name: "Shared history" });
+		await workspace.addTable({ designId: designId(workspace), name: "Orders" });
+		await workspace.addSystemService({ id: "api", name: "API", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "writer", name: "Order writer", x: 40, y: 60 });
+		const owned = await workspace.updateSystemComponent({ componentId: "writer", changes: { serviceId: "api" } });
+		expect(owned.undoActionName).toBe("Assign “Order writer” to “API”");
+
+		const undoneAssignment = await workspace.undo({ designId: designId(workspace) });
+		expect(undoneAssignment.systemDesign?.components[0]!.serviceId).toBeNull();
+		expect(undoneAssignment.undoActionName).toBe("Add component “Order writer”");
+
+		const undoneComponent = await workspace.undo({ designId: designId(workspace) });
+		expect(undoneComponent.systemDesign?.components).toEqual([]);
+		expect(undoneComponent.undoActionName).toBe("Add service “API”");
+
+		const undoneService = await workspace.undo({ designId: designId(workspace) });
+		expect(undoneService.systemDesign?.services).toEqual([]);
+		expect(undoneService.undoActionName).toBe("Add table “Orders”");
+		expect(requireTable(undoneService.design, "Orders")).toBeDefined();
+	});
 });

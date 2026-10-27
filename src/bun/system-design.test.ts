@@ -6,11 +6,17 @@ import { join } from "node:path";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemService,
 	createEmptySystemDesign,
 	createMigratedSystemDesign,
 	describeSystemComponentRemoval,
+	describeSystemServiceRemoval,
+	moveSystemComponent,
+	moveSystemService,
 	normalizeSystemDesign,
 	removeSystemComponent,
+	removeSystemService,
+	resizeSystemService,
 	systemConnectionRouteOffsets,
 	updateSystemComponent,
 	type SystemDesign,
@@ -251,5 +257,218 @@ describe("System design workspace", () => {
 			expect.objectContaining({ kind: "database", name: "Database", designId }),
 		]);
 		expect(state.design).not.toBeNull();
+	});
+});
+
+/** Two Services and a Component each side, with one Service boundary owning the worker. */
+function servicedDesign(): SystemDesign {
+	let design = createEmptySystemDesign();
+	design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+	design = addSystemService(design, { id: "billing", name: "Billing", position: { x: 600, y: 0 } });
+	design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+	design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 300, y: 60 } });
+	return design;
+}
+
+describe("System design Services", () => {
+	test("a Component is owned only by an explicit assignment, never by placing it inside a boundary", () => {
+		let design = addSystemService(createEmptySystemDesign(), { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", position: { x: 40, y: 60 } });
+		expect(design.components[0]!.serviceId).toBeNull();
+
+		design = moveSystemComponent(design, "worker", { x: 60, y: 80 });
+		expect(design.components[0]!.serviceId).toBeNull();
+
+		design = updateSystemComponent(design, "worker", { serviceId: "orders" });
+		expect(design.components[0]!.serviceId).toBe("orders");
+		design = addSystemService(design, { id: "billing", name: "Billing", position: { x: 600, y: 0 } });
+		design = updateSystemComponent(design, "worker", { serviceId: "billing" });
+		expect(design.components[0]!.serviceId).toBe("billing");
+		design = updateSystemComponent(design, "worker", { serviceId: null });
+		expect(design.components[0]!.serviceId).toBeNull();
+		expect(() => updateSystemComponent(design, "worker", { serviceId: "missing" })).toThrow("That Service could not be found.");
+	});
+
+	test("Component and Service ids share one namespace so a Connection endpoint is never ambiguous", () => {
+		const withService = addSystemService(createEmptySystemDesign(), { id: "orders", position: { x: 0, y: 0 } });
+		expect(() => addSystemComponent(withService, { id: "orders", position: { x: 0, y: 0 } })).toThrow('"orders" is already used by a Service.');
+		const withComponent = addSystemComponent(withService, { id: "worker", position: { x: 0, y: 0 } });
+		expect(() => addSystemService(withComponent, { id: "worker", position: { x: 0, y: 0 } })).toThrow('"worker" is already used by a Component.');
+	});
+
+	test("Connections join Services and Components directly, with parallel pairs and optional interaction detail", () => {
+		let design = servicedDesign();
+		design = addSystemConnection(design, {
+			id: "charge",
+			sourceId: "orders",
+			targetId: "billing",
+			label: "Charges",
+			interactionType: "Synchronous request",
+			protocol: "HTTPS",
+		});
+		design = addSystemConnection(design, { id: "notify", sourceId: "orders", targetId: "billing", label: "Notifies" });
+		design = addSystemConnection(design, { id: "dispatch", sourceId: "worker", targetId: "orders", label: "Reports" });
+
+		expect(design.connections.map((connection) => connection.id)).toEqual(["charge", "notify", "dispatch"]);
+		expect(design.connections[0]).toMatchObject({ interactionType: "Synchronous request", protocol: "HTTPS" });
+		expect(design.connections[1]!.interactionType).toBeUndefined();
+		const offsets = systemConnectionRouteOffsets(design);
+		expect([offsets.get("charge"), offsets.get("notify")].sort((a, b) => a! - b!)).toEqual([-0.5, 0.5]);
+		expect(() => addSystemConnection(design, { id: "loop", sourceId: "orders", targetId: "orders" })).toThrow(
+			"A Connection must join two different Components.",
+		);
+		expect(() => addSystemConnection(design, { id: "ghost", sourceId: "orders", targetId: "nowhere" })).toThrow(
+			"The Connection target Component could not be found.",
+		);
+	});
+
+	test("moving a Service carries the Components it owns without changing ownership, and resizing keeps the minimum size", () => {
+		const moved = moveSystemService(servicedDesign(), "orders", { x: 100, y: 50 });
+		expect(moved.services.find((service) => service.id === "orders")!.position).toEqual({ x: 100, y: 50 });
+		expect(moved.components.find((component) => component.id === "worker")).toMatchObject({
+			position: { x: 140, y: 110 },
+			serviceId: "orders",
+		});
+		expect(moved.components.find((component) => component.id === "queue")).toMatchObject({
+			position: { x: 300, y: 60 },
+			serviceId: null,
+		});
+
+		const resized = resizeSystemService(moved, "orders", { width: 10, height: 900 });
+		expect(resized.services.find((service) => service.id === "orders")!.size).toEqual({ width: 240, height: 900 });
+		expect(resizeSystemService(resized, "orders", { width: 240, height: 900 })).toBe(resized);
+	});
+
+	test("removing a Service releases its Components, keeps Component-to-Component Connections, and lists the Service-endpoint Connections it deletes", () => {
+		let design = servicedDesign();
+		design = addSystemComponent(design, { id: "db", name: "Database", position: { x: 40, y: 220 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "orders", targetId: "db", label: "Reads" });
+		design = addSystemConnection(design, { id: "charge", sourceId: "orders", targetId: "billing", label: "Charges" });
+		design = addSystemConnection(design, { id: "writes", sourceId: "worker", targetId: "db", label: "Writes" });
+
+		const plan = describeSystemServiceRemoval(design, "orders");
+		expect(plan.serviceName).toBe("Orders");
+		expect(plan.releasedComponents).toEqual([{ id: "worker", name: "Worker" }]);
+		expect(plan.connections.map((connection) => connection.id).sort()).toEqual(["charge", "reads"]);
+
+		const after = removeSystemService(design, "orders");
+		expect(after.services.map((service) => service.id)).toEqual(["billing"]);
+		expect(after.components.find((component) => component.id === "worker")).toMatchObject({
+			serviceId: null,
+			position: { x: 40, y: 60 },
+		});
+		expect(after.connections.map((connection) => connection.id)).toEqual(["writes"]);
+	});
+
+	test("a design saved before Services loads with every Component at system scope, and a dangling owner is rejected", () => {
+		const legacy = normalizeSystemDesign({
+			components: [{ id: "a", kind: "generic", name: "A", properties: [], position: { x: 0, y: 0 } }],
+			connections: [],
+			viewport: { x: 0, y: 0, zoom: 1 },
+		});
+		expect(legacy.services).toEqual([]);
+		expect(legacy.components[0]!.serviceId).toBeNull();
+
+		const design = servicedDesign();
+		expect(normalizeSystemDesign(JSON.parse(JSON.stringify(design)))).toEqual(design);
+		expect(() => normalizeSystemDesign({
+			services: [],
+			components: [{ id: "a", kind: "generic", name: "A", properties: [], position: { x: 0, y: 0 }, serviceId: "gone" }],
+			connections: [],
+		})).toThrow('Component "a" belongs to a Service that does not exist.');
+	});
+});
+
+describe("System design Services workspace", () => {
+	test("Services, Component ownership, boundary geometry, and Service Connections persist across reopen", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Checkout" });
+		await first.addSystemService({ id: "orders", name: "Orders", x: 40, y: 40 });
+		await first.addSystemComponent({ id: "worker", name: "Worker", kind: "generic", x: 80, y: 120, serviceId: "orders" });
+		await first.addSystemComponent({ id: "queue", name: "Queue", kind: "generic", x: 360, y: 120 });
+		await first.moveSystemService({ serviceId: "orders", x: 60, y: 30 });
+		await first.resizeSystemService({ serviceId: "orders", width: 500, height: 320 });
+		await first.addSystemConnection({ id: "dispatch", sourceId: "orders", targetId: "queue", label: "Enqueues" });
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const system = reopened.getState().systemDesign!;
+		expect(system.services).toEqual([{ id: "orders", name: "Orders", position: { x: 60, y: 30 }, size: { width: 500, height: 320 } }]);
+		expect(system.components.find((component) => component.id === "worker")).toMatchObject({
+			serviceId: "orders",
+			position: { x: 100, y: 110 },
+		});
+		expect(system.components.find((component) => component.id === "queue")!.serviceId).toBeNull();
+		expect(system.connections.map((connection) => connection.id)).toEqual(["dispatch"]);
+	});
+
+	test("assigning, transferring, and releasing a Component are separate named actions that Undo steps through", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Ownership" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await workspace.addSystemService({ id: "billing", name: "Billing", x: 600, y: 0 });
+		await workspace.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60 });
+
+		const assigned = await workspace.updateSystemComponent({ componentId: "worker", changes: { serviceId: "orders" } });
+		expect(assigned.undoActionName).toBe("Assign “Worker” to “Orders”");
+		const transferred = await workspace.updateSystemComponent({ componentId: "worker", changes: { serviceId: "billing" } });
+		expect(transferred.undoActionName).toBe("Assign “Worker” to “Billing”");
+		const released = await workspace.updateSystemComponent({ componentId: "worker", changes: { serviceId: null } });
+		expect(released.undoActionName).toBe("Release “Worker” to system scope");
+		expect(released.systemDesign?.components[0]!.serviceId).toBeNull();
+
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.components[0]!.serviceId).toBe("billing");
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.components[0]!.serviceId).toBe("orders");
+	});
+
+	test("removing a Service is one undoable action that restores its boundary, ownership, and Connections", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Removal" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await workspace.addSystemService({ id: "billing", name: "Billing", x: 600, y: 0 });
+		await workspace.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60, serviceId: "orders" });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 300, y: 60 });
+		await workspace.addSystemConnection({ id: "charge", sourceId: "orders", targetId: "billing", label: "Charges" });
+		await workspace.addSystemConnection({ id: "writes", sourceId: "worker", targetId: "queue", label: "Writes" });
+
+		expect(workspace.describeSystemServiceRemoval("orders")).toMatchObject({
+			releasedComponents: [{ id: "worker", name: "Worker" }],
+			connections: [expect.objectContaining({ id: "charge" })],
+		});
+		const removed = await workspace.removeSystemService({ serviceId: "orders" });
+		expect(removed.undoActionName).toBe("Remove service “Orders”");
+		expect(removed.systemDesign?.services.map((service) => service.id)).toEqual(["billing"]);
+		expect(removed.systemDesign?.components.find((component) => component.id === "worker")!.serviceId).toBeNull();
+		expect(removed.systemDesign?.connections.map((connection) => connection.id)).toEqual(["writes"]);
+
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		const restored = workspace.getState().systemDesign!;
+		expect(restored.services.map((service) => service.id).sort()).toEqual(["billing", "orders"]);
+		expect(restored.components.find((component) => component.id === "worker")!.serviceId).toBe("orders");
+		expect(restored.connections.map((connection) => connection.id).sort()).toEqual(["charge", "writes"]);
+	});
+
+	test("moving and resizing a Service are separate named actions, and Undo restores the boundary with its owned Components", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Geometry" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 40, y: 40 });
+		await workspace.addSystemComponent({ id: "worker", name: "Worker", x: 80, y: 120, serviceId: "orders" });
+
+		const moved = await workspace.moveSystemService({ serviceId: "orders", x: 100, y: 100 });
+		expect(moved.undoActionName).toBe("Move service “Orders”");
+		expect(moved.systemDesign?.components[0]!.position).toEqual({ x: 140, y: 180 });
+		const resized = await workspace.resizeSystemService({ serviceId: "orders", width: 300, height: 200 });
+		expect(resized.undoActionName).toBe("Resize service “Orders”");
+		expect(resized.systemDesign?.services[0]!.size).toEqual({ width: 300, height: 200 });
+
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.services[0]!.size).toEqual({ width: 420, height: 280 });
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.services[0]!.position).toEqual({ x: 40, y: 40 });
+		expect(workspace.getState().systemDesign?.components[0]!.position).toEqual({ x: 80, y: 120 });
 	});
 });

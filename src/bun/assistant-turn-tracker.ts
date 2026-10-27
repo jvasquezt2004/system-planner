@@ -10,7 +10,7 @@ import type {
 	WorkspaceState,
 } from "../shared/design";
 import type { StoredScenario } from "./store";
-import type { SystemComponent, SystemConnection, SystemContent } from "../shared/system-design";
+import type { SystemComponent, SystemConnection, SystemContent, SystemService } from "../shared/system-design";
 
 type Node = Record<string, any>;
 const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
@@ -22,8 +22,8 @@ export type RestorationResult =
 			design: Design;
 			scenarios: StoredScenario[];
 			edgeFunctions: EdgeFunction[];
-			/** Present when the turn changed Components or Connections. */
-			systemDesign?: { components: SystemComponent[]; connections: SystemConnection[] };
+			/** Present when the turn changed Components or Connections. Services are kept as they are now. */
+			systemDesign?: { services: SystemService[]; components: SystemComponent[]; connections: SystemConnection[] };
 	  }
 	| {
 			ok: false;
@@ -856,8 +856,9 @@ export class TurnTracker {
 	 */
 	private restoreSystemDesign(
 		currentState: WorkspaceState,
-	): { components: SystemComponent[]; connections: SystemConnection[] } | string | null {
+	): { services: SystemService[]; components: SystemComponent[]; connections: SystemConnection[] } | string | null {
 		if (this.systemChanges.size === 0) return null;
+		const services = structuredClone(currentState.systemDesign?.services ?? []);
 		const components = structuredClone(currentState.systemDesign?.components ?? []);
 		const connections = structuredClone(currentState.systemDesign?.connections ?? []);
 		const conflicts: string[] = [];
@@ -877,7 +878,7 @@ export class TurnTracker {
 				restoreSystemItem(connections, change.id, change.original as SystemConnection | null);
 			}
 		}
-		return { components, connections };
+		return { services, components, connections };
 	}
 }
 

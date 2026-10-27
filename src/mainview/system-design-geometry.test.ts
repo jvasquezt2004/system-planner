@@ -2,14 +2,18 @@ import { describe, expect, test } from "bun:test";
 import {
 	addSystemComponent,
 	addSystemConnection,
+	addSystemService,
 	createEmptySystemDesign,
 	moveSystemComponent,
 	openSpotNear,
+	type SystemDesign,
 } from "../shared/system-design";
 import {
 	clampZoom,
 	connectionGeometries,
 	movedBeyondThreshold,
+	previewScene,
+	resizedServiceSize,
 	screenToWorld,
 	truncateLabel,
 	zoomAroundPoint,
@@ -74,4 +78,44 @@ describe("system design overview geometry", () => {
 		expect(truncateLabel("Short", 10)).toBe("Short");
 		expect(truncateLabel("A very long interaction label", 10)).toBe("A very lo…");
 	});
+
+	test("moving a Service previews the Components it owns by the same offset and leaves other Components alone", () => {
+		const design = ownedServiceDesign();
+		const scene = previewScene(design, { mode: "service", id: "orders", position: { x: 100, y: 50 } });
+		expect(scene.services[0]!.position).toEqual({ x: 100, y: 50 });
+		expect(scene.components.find((component) => component.id === "worker")).toMatchObject({
+			position: { x: 140, y: 110 },
+			serviceId: "orders",
+		});
+		expect(scene.components.find((component) => component.id === "queue")!.position).toEqual({ x: 600, y: 60 });
+	});
+
+	test("resizing previews the new size, and the minimum holds however far the corner is dragged", () => {
+		const design = ownedServiceDesign();
+		const shrunk = previewScene(design, { mode: "resize", id: "orders", size: resizedServiceSize({ width: 420, height: 280 }, -400, -300) });
+		expect(shrunk.services[0]!.size).toEqual({ width: 240, height: 160 });
+		expect(resizedServiceSize({ width: 420, height: 280 }, 80.4, 10)).toEqual({ width: 500, height: 290 });
+	});
+
+	test("a Connection from a Service attaches to its boundary, so resizing the boundary reroutes it", () => {
+		const design = ownedServiceDesign();
+		const before = connectionGeometries(design).find((geometry) => geometry.connection.id === "dispatch")!;
+		const widened = previewScene(design, { mode: "resize", id: "orders", size: { width: 900, height: 280 } });
+		const after = connectionGeometries(widened).find((geometry) => geometry.connection.id === "dispatch")!;
+		expect(after.pathString).not.toBe(before.pathString);
+	});
+
+	test("with no gesture in progress the saved design is previewed unchanged", () => {
+		const design = ownedServiceDesign();
+		expect(previewScene(design, null)).toBe(design);
+	});
 });
+
+function ownedServiceDesign(): SystemDesign {
+	let design = createEmptySystemDesign();
+	design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+	design = addSystemComponent(design, { id: "worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+	design = addSystemComponent(design, { id: "queue", position: { x: 600, y: 60 } });
+	design = addSystemConnection(design, { id: "dispatch", sourceId: "orders", targetId: "queue", label: "Dispatches" });
+	return design;
+}
