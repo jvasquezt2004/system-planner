@@ -62,6 +62,7 @@ import type {
 	RemoveSystemConnectionAction,
 	RemoveSystemGroupAction,
 	RemoveSystemServiceAction,
+	SetSystemServiceCollapsedAction,
 	ResizeSystemGroupAction,
 	ResizeSystemServiceAction,
 	UpdateSystemGroupAction,
@@ -75,10 +76,15 @@ import type {
 	UpdateSystemServiceAction,
 } from "./system-design";
 import type {
+	AddWalkthroughBlockAction,
+	AddWalkthroughParallelBranchAction,
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
 	MoveWalkthroughAction,
+	MoveWalkthroughBlockAction,
 	MoveWalkthroughStepAction,
+	RemoveWalkthroughBlockAction,
+	UpdateWalkthroughRepeatAction,
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
@@ -198,6 +204,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			moveSystemService: { params: MoveSystemServiceAction; response: WorkspaceState };
 			resizeSystemService: { params: ResizeSystemServiceAction; response: WorkspaceState };
 			removeSystemService: { params: RemoveSystemServiceAction; response: WorkspaceState };
+			setSystemServiceCollapsed: { params: SetSystemServiceCollapsedAction; response: WorkspaceState };
 			describeSystemServiceRemoval: {
 				params: { serviceId: string };
 				response: SystemServiceRemovalPlan & WalkthroughRemovalImpact;
@@ -234,6 +241,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			updateWalkthroughStep: { params: UpdateWalkthroughStepAction; response: WorkspaceState };
 			moveWalkthroughStep: { params: MoveWalkthroughStepAction; response: WorkspaceState };
 			removeWalkthroughStep: { params: RemoveWalkthroughStepAction; response: WorkspaceState };
+			addWalkthroughBlock: { params: AddWalkthroughBlockAction; response: WorkspaceState };
+			addWalkthroughParallelBranch: { params: AddWalkthroughParallelBranchAction; response: WorkspaceState };
+			updateWalkthroughRepeat: { params: UpdateWalkthroughRepeatAction; response: WorkspaceState };
+			moveWalkthroughBlock: { params: MoveWalkthroughBlockAction; response: WorkspaceState };
+			removeWalkthroughBlock: { params: RemoveWalkthroughBlockAction; response: WorkspaceState };
 			repairWalkthroughStep: { params: RepairWalkthroughStepAction; response: WorkspaceState };
 			acceptWalkthroughStepRedirection: { params: AcceptWalkthroughStepRedirectionAction; response: WorkspaceState };
 			copySqlPreview: {

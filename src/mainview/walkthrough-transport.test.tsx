@@ -42,7 +42,7 @@ function controls(overrides: Partial<WalkthroughPlaybackControls> = {}): Walkthr
 function activeAt(stepIndex: number, playing: boolean) {
 	const step = timeline.steps[stepIndex]!;
 	return {
-		frame: { stepIndex, step, complete: false } as unknown as PlaybackFrame,
+		frame: { stepIndex, step, complete: false, activeStepIndexes: [stepIndex] } as unknown as PlaybackFrame,
 		playing,
 		speed: 1 as const,
 	};

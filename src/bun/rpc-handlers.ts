@@ -54,6 +54,7 @@ import type {
 	RemoveSystemConnectionAction,
 	RemoveSystemGroupAction,
 	RemoveSystemServiceAction,
+	SetSystemServiceCollapsedAction,
 	ResizeSystemGroupAction,
 	ResizeSystemServiceAction,
 	UpdateSystemGroupAction,
@@ -67,10 +68,15 @@ import type {
 	UpdateSystemServiceAction,
 } from "../shared/system-design";
 import type {
+	AddWalkthroughBlockAction,
+	AddWalkthroughParallelBranchAction,
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
 	MoveWalkthroughAction,
+	MoveWalkthroughBlockAction,
 	MoveWalkthroughStepAction,
+	RemoveWalkthroughBlockAction,
+	UpdateWalkthroughRepeatAction,
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
@@ -150,6 +156,8 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		moveSystemService: async (action: MoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemService(action),
 		resizeSystemService: async (action: ResizeSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).resizeSystemService(action),
 		removeSystemService: async (action: RemoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemService(action),
+		setSystemServiceCollapsed: async (action: SetSystemServiceCollapsedAction): Promise<WorkspaceState> =>
+			(await deps.workspace).setSystemServiceCollapsed(action),
 		describeSystemServiceRemoval: async ({ serviceId }: { serviceId: string }): Promise<SystemServiceRemovalPlan & WalkthroughRemovalImpact> =>
 			(await deps.workspace).describeSystemServiceRemoval(serviceId),
 		addSystemGroup: async (action: AddSystemGroupAction): Promise<WorkspaceState> => (await deps.workspace).addSystemGroup(action),
@@ -181,6 +189,14 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		updateWalkthroughStep: async (action: UpdateWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).updateWalkthroughStep(action),
 		moveWalkthroughStep: async (action: MoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughStep(action),
 		removeWalkthroughStep: async (action: RemoveWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).removeWalkthroughStep(action),
+		addWalkthroughBlock: async (action: AddWalkthroughBlockAction): Promise<WorkspaceState> => (await deps.workspace).addWalkthroughBlock(action),
+		addWalkthroughParallelBranch: async (action: AddWalkthroughParallelBranchAction): Promise<WorkspaceState> =>
+			(await deps.workspace).addWalkthroughParallelBranch(action),
+		updateWalkthroughRepeat: async (action: UpdateWalkthroughRepeatAction): Promise<WorkspaceState> =>
+			(await deps.workspace).updateWalkthroughRepeat(action),
+		moveWalkthroughBlock: async (action: MoveWalkthroughBlockAction): Promise<WorkspaceState> => (await deps.workspace).moveWalkthroughBlock(action),
+		removeWalkthroughBlock: async (action: RemoveWalkthroughBlockAction): Promise<WorkspaceState> =>
+			(await deps.workspace).removeWalkthroughBlock(action),
 		repairWalkthroughStep: async (action: RepairWalkthroughStepAction): Promise<WorkspaceState> => (await deps.workspace).repairWalkthroughStep(action),
 		acceptWalkthroughStepRedirection: async (action: AcceptWalkthroughStepRedirectionAction): Promise<WorkspaceState> =>
 			(await deps.workspace).acceptWalkthroughStepRedirection(action),

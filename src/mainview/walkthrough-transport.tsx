@@ -23,6 +23,8 @@ export function WalkthroughTransport({
 	const finished = active?.frame.complete ?? false;
 	const totalMs = timeline?.totalMs ?? 0;
 	const timeMs = active?.frame.timeMs ?? 0;
+	const running = active?.frame.activeStepIndexes.length ?? 0;
+	const repetition = active?.frame.step.repetition;
 
 	return (
 		<section aria-label="Playback" className="flex flex-col gap-2 rounded-md border border-rule-soft p-3">
@@ -143,7 +145,12 @@ export function WalkthroughTransport({
 
 			<p className="text-[11.5px] text-ink-3" aria-live="polite">
 				{active
-					? `Step ${stepIndex + 1} of ${timeline?.steps.length ?? 0}${finished ? " · Finished" : ""}`
+					? [
+						`Step ${stepIndex + 1} of ${timeline?.steps.length ?? 0}`,
+						repetition ? `Pass ${repetition.iteration} of ${repetition.count}` : null,
+						running > 1 ? `${running} steps running together` : null,
+						finished ? "Finished" : null,
+					].filter(Boolean).join(" · ")
 					: "Not started"}
 				{" · Illustrative timing; no infrastructure runs"}
 			</p>

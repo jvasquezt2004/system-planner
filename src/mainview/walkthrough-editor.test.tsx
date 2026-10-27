@@ -8,7 +8,13 @@ import {
 	updateSystemConnection,
 	type SystemDesign,
 } from "../shared/system-design";
-import { addWalkthrough, addWalkthroughStep, type Walkthrough } from "../shared/walkthrough";
+import {
+	addWalkthrough,
+	addWalkthroughBlock,
+	addWalkthroughStep,
+	updateWalkthroughRepeat,
+	type Walkthrough,
+} from "../shared/walkthrough";
 import type { WalkthroughPlaybackControls } from "./use-walkthrough-playback";
 import { WalkthroughEditor } from "./walkthrough-editor";
 
@@ -91,5 +97,51 @@ describe("Walkthrough editor repair", () => {
 		expect(html).not.toContain("Accept current route");
 		expect(html).not.toContain("to repair");
 		expect(html).not.toContain("Route changed");
+	});
+});
+
+describe("Walkthrough editor blocks", () => {
+	/** Two parallel branches, then a repeated retry that fails twice before it succeeds. */
+	function blockWalkthrough(design: SystemDesign): Walkthrough[] {
+		let walkthroughs = addWalkthrough([], { id: "w", name: "Retry" });
+		walkthroughs = addWalkthroughBlock(walkthroughs, "w", { id: "p", kind: "parallel" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "w", { id: "a", connectionId: "upload", title: "Upload", sequence: { blockId: "p", branch: 0 } }, design);
+		walkthroughs = addWalkthroughStep(walkthroughs, "w", { id: "b", connectionId: "enqueue", title: "Queue", sequence: { blockId: "p", branch: 1 } }, design);
+		walkthroughs = addWalkthroughBlock(walkthroughs, "w", { id: "r", kind: "repeat" });
+		walkthroughs = updateWalkthroughRepeat(walkthroughs, "w", "r", 3);
+		return addWalkthroughStep(walkthroughs, "w", { id: "t", connectionId: "upload", title: "Attempt fails", action: "fail", sequence: { blockId: "r" } }, design);
+	}
+
+	test("shows parallel branches and a repeated body as nested, numbered steps", () => {
+		const design = uploadDesign();
+		const html = renderToStaticMarkup(
+			<WalkthroughEditor
+				walkthroughs={blockWalkthrough(design)}
+				design={design}
+				client={{} as never}
+				onApply={() => {}}
+				selection={{ walkthroughId: "w", stepId: null }}
+				onSelect={() => {}}
+				onClose={() => {}}
+				playback={playback}
+				followCamera={{ enabled: false, onChange: () => {} }}
+			/>,
+		);
+
+		expect(html).toContain("Parallel 1");
+		expect(html).toContain("2 branches run together");
+		expect(html).toContain('aria-label="Parallel 1 branch 1"');
+		expect(html).toContain('aria-label="Parallel 1 branch 2"');
+		expect(html).toContain("Repeat 1");
+		expect(html).toContain('aria-label="Repeat 1 count"');
+		expect(html).toContain('value="3"');
+		expect(html).toContain("runs its steps in order");
+		expect(html).toContain("Add branch");
+		expect(html).toContain("Parallel block");
+		expect(html).toContain("Repeated block");
+		expect(html).toContain('aria-label="Add to"');
+		expect(html).toContain("Repeat 1 body");
+		expect(html).toContain("Attempt fails");
+		expect(html).toContain('aria-label="Move step 3 up"');
 	});
 });
