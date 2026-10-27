@@ -20,7 +20,7 @@ Build a desktop tool for designing database structures on an infinite canvas. Th
 | Relationship creation | Users relate tables, not manually prepared columns. Automatically generate a matching foreign-key column referencing the other table's primary key, initially id. The generated column remains visible in the card, side panel, and SQL. Existing-column selection is not required in the initial workflow. |
 | Relationship optionality | References are required by default. A Required toggle makes a reference optional by allowing the foreign-key column to be nullable. One-to-one means at most one match on each side; parent participation is not enforced. |
 | Referential actions | Generate NO ACTION for foreign-key updates and deletes; configurable actions come later. |
-| Project organization | Each project contains exactly one design. |
+| Project organization | Each project contains one or more independent designs, each with its own schema, Scenarios, and Edge functions. |
 | Persistence | Autosave projects and their designs locally in SQLite, including unfinished drafts and canvas layout. Reopening restores the latest saved design, not an earlier version. |
 | Deletion safeguards | Warn and list affected relationships before deleting a referenced table or column. Confirmation may remove those relationships, but must not silently delete other tables or their columns. Removing a relationship keeps the underlying columns and does not silently delete its junction table. |
 | Undo/redo | Support design edits and canvas moves during the current session. Persisting undo history across restarts is deferred. Autosave is not an undo mechanism. |

@@ -107,6 +107,15 @@ export const workspaceClient = {
 	createProject(name: string): Promise<WorkspaceState> {
 		return rpc.request.createProject({ name });
 	},
+	createDesign(name: string): Promise<WorkspaceState> {
+		return rpc.request.createDesign({ name });
+	},
+	openDesign(designId: string): Promise<WorkspaceState> {
+		return rpc.request.openDesign({ designId });
+	},
+	renameDesign(designId: string, name: string): Promise<WorkspaceState> {
+		return rpc.request.renameDesign({ designId, name });
+	},
 	createScenario(request: { name: string; designId: string }): Promise<WorkspaceState> {
 		return rpc.request.createScenario(request);
 	},

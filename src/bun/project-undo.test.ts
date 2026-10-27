@@ -249,6 +249,7 @@ describe("Project-wide content history", () => {
 
 		const reverted = await workspace.restoreAssistantProjectSnapshot({
 			projectId: workspace.getState().project!.id,
+			designId: id,
 			design: beforeDesign,
 			scenarios: beforeScenarios,
 			edgeFunctions: [],
