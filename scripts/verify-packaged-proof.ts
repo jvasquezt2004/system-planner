@@ -51,15 +51,18 @@ async function main() {
 		// Electrobun's Windows setup rejects NSIS-style "/S" (InvalidArguments) and treats "--quiet" as an
 		// uninstall request (InvalidUninstallLocation), so it runs with no arguments, matching the Linux self-extractor.
 		const installer = Bun.spawn([setup], { cwd: root, env, stdout: "inherit", stderr: "inherit" });
-		const timedOut = await Promise.race([
-			installer.exited.then(() => false),
-			Bun.sleep(180_000).then(() => true),
+		const exitedInTime = await Promise.race([
+			installer.exited.then(() => true),
+			Bun.sleep(60_000).then(() => false),
 		]);
-		if (timedOut) {
+		if (!exitedInTime) {
+			// The setup logs "Installation completed successfully!" and then keeps a completion window open until
+			// dismissed. CI cannot dismiss it, so stop the setup once its files are on disk and verify them below.
 			installer.kill();
-			throw new Error("Packaged Windows installer did not finish within 180 seconds; it may be waiting on an interactive dialog");
+			await Promise.race([installer.exited, Bun.sleep(10_000)]);
+		} else if (installer.exitCode !== 0) {
+			throw new Error(`Packaged Windows installer exited ${installer.exitCode}`);
 		}
-		if (installer.exitCode !== 0) throw new Error(`Packaged Windows installer exited ${installer.exitCode}`);
 		const installRoot = join(process.env.LOCALAPPDATA ?? "", "com.dbplanner.schema-designer");
 		const installedLauncher = findFiles(installRoot).find((file) => /[\\/]app[\\/]bin[\\/]launcher\.exe$/i.test(file));
 		if (!installedLauncher) throw new Error(`Packaged application was not installed under ${installRoot}`);
