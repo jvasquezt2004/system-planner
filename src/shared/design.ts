@@ -38,10 +38,10 @@ export type Scenario = { id: string; name: string; source: string; designId?: st
 export type EdgeFunction = { id: string; name: string; source: string; designId?: string };
 
 export type EdgeFunctionSaveState = ScenarioSaveState;
-export type CreateEdgeFunctionAction = { name: string; designId: string };
-export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string; designId: string };
-export type RemoveEdgeFunctionAction = { edgeFunctionId: string; designId: string };
-export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string; designId: string };
+export type CreateEdgeFunctionAction = { name: string; designId: string; assistantTurnId?: string };
+export type RenameEdgeFunctionAction = { edgeFunctionId: string; name: string; designId: string; assistantTurnId?: string };
+export type RemoveEdgeFunctionAction = { edgeFunctionId: string; designId: string; assistantTurnId?: string };
+export type UpdateEdgeFunctionSourceAction = { edgeFunctionId: string; source: string; designId: string; assistantTurnId?: string };
 
 export type ScenarioExpectationResult = {
 	description: string;
@@ -99,10 +99,10 @@ export type ScenarioSaveState =
 	| { status: "saved"; revision: number; savedAt: number; designId?: string }
 	| { status: "failed"; revision: number; error: string; designId?: string };
 
-export type CreateScenarioAction = { name: string; designId: string };
-export type RenameScenarioAction = { scenarioId: string; name: string; designId: string };
-export type RemoveScenarioAction = { scenarioId: string; designId: string };
-export type UpdateScenarioSourceAction = { scenarioId: string; source: string; designId: string };
+export type CreateScenarioAction = { name: string; designId: string; assistantTurnId?: string };
+export type RenameScenarioAction = { scenarioId: string; name: string; designId: string; assistantTurnId?: string };
+export type RemoveScenarioAction = { scenarioId: string; designId: string; assistantTurnId?: string };
+export type UpdateScenarioSourceAction = { scenarioId: string; source: string; designId: string; assistantTurnId?: string };
 
 
 export type CanvasPoint = {
@@ -452,8 +452,12 @@ export type WorkspaceState = {
 	edgeFunctionSave: EdgeFunctionSaveState;
 	scenarioSave: ScenarioSaveState;
 	scenarioRuns: Record<string, ScenarioRun | null>;
-	/** In-memory undo/redo availability for the currently open Design only. */
+	/** In-memory undo/redo availability for the open Project's session history. */
 	undoRedo: { canUndo: boolean; canRedo: boolean };
+	/** Name of the action Undo will reverse, when one exists. */
+	undoActionName?: string;
+	/** Name of the action Redo will reapply, when one exists. */
+	redoActionName?: string;
 };
 
 /** How the displayed SQL relates to sandbox validation for the current draft. */
