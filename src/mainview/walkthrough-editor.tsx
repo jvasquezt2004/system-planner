@@ -443,6 +443,10 @@ function StepEditor({
 		if (!connectionId) return;
 		onApply(() => client.repairWalkthroughStep(walkthroughId, step.id, connectionId));
 	}
+	/** Accepts the endpoints the Connection now joins. Choosing a different Connection repairs the step instead. */
+	function commitAcceptRedirection() {
+		onApply(() => client.acceptWalkthroughStepRedirection(walkthroughId, step.id));
+	}
 	function commitText(
 		key: "title" | "explanation" | "operation" | "exampleMessage" | "examplePayload",
 		draft: string,
@@ -496,7 +500,7 @@ function StepEditor({
 						size="sm"
 						variant="outline"
 						className="self-start"
-						onClick={() => commitRepair(step.connectionId)}
+						onClick={commitAcceptRedirection}
 					>
 						Accept current route
 					</Button>

@@ -9,7 +9,8 @@ import {
 	createEmptySystemDesign,
 	type SystemDesign,
 } from "../shared/system-design";
-import { SystemDesignView } from "./system-design-view";
+import { Dialog } from "@/components/ui/dialog";
+import { RemovalSummary, SystemDesignView, type PendingRemoval } from "./system-design-view";
 
 function render(design: SystemDesign): string {
 	const state = {
@@ -115,5 +116,49 @@ describe("system overview rendering", () => {
 		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
 		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
 		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+	});
+});
+
+/** The summary sits inside the confirmation dialog, which needs its context to render. */
+function renderSummary(removal: PendingRemoval): string {
+	return renderToStaticMarkup(
+		<Dialog open onOpenChange={() => {}}>
+			<RemovalSummary removal={removal} />
+		</Dialog>,
+	);
+}
+
+describe("removal confirmation", () => {
+	test("removing a Component lists the Walkthrough steps it leaves dangling", () => {
+		const removal: PendingRemoval = {
+			kind: "component",
+			plan: {
+				componentId: "api",
+				componentName: "API",
+				connections: [{ id: "upload", label: "Upload", sourceId: "client", targetId: "api" }],
+			},
+			walkthroughSteps: [{ walkthroughId: "w", walkthroughName: "Upload flow", stepId: "s", title: "Send", connectionId: "upload" }],
+		};
+		const html = renderSummary(removal);
+		expect(html).toContain("Remove “API”?");
+		expect(html).toContain("1 Walkthrough step will become dangling and keep its text.");
+		expect(html).toContain('aria-label="Affected Walkthrough steps"');
+		expect(html).toContain("Upload flow: Send");
+	});
+
+	test("removing a Connection that a step plays names that step; a Connection with no steps lists none", () => {
+		const affected: PendingRemoval = {
+			kind: "connection",
+			plan: { connectionId: "enqueue", connectionLabel: "Enqueue" },
+			walkthroughSteps: [{ walkthroughId: "w", walkthroughName: "Upload flow", stepId: "t", title: "Queue", connectionId: "enqueue" }],
+		};
+		const html = renderSummary(affected);
+		expect(html).toContain("Remove “Enqueue”?");
+		expect(html).toContain("1 Walkthrough step play this connection.");
+		expect(html).toContain("Upload flow: Queue");
+
+		const unreferenced: PendingRemoval = { kind: "connection", plan: { connectionId: "reply", connectionLabel: "Reply" }, walkthroughSteps: [] };
+		const plain = renderSummary(unreferenced);
+		expect(plain).not.toContain("Affected Walkthrough steps");
 	});
 });

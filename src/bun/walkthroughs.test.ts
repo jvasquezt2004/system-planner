@@ -190,6 +190,108 @@ describe("Walkthrough workspace", () => {
 		expect(walkthroughsOf(workspace)[0]!.steps[0]!.title).toBe("Send");
 	});
 
+	test("removal impact names the affected steps of every Walkthrough before anything changes", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await openImageUploadProject(workspace);
+		await workspace.addSystemService({ id: "edge", name: "Edge", x: 0, y: 220 });
+		await workspace.addSystemConnection({ id: "serve", sourceId: "edge", targetId: "client", label: "Serve" });
+		await workspace.createWalkthrough({ id: "w", name: "Upload" });
+		await workspace.createWalkthrough({ id: "v", name: "Serve" });
+		await workspace.addWalkthroughStep({ id: "s", walkthroughId: "w", connectionId: "upload", title: "Send", explanation: "Browser posts." });
+		await workspace.addWalkthroughStep({ id: "t", walkthroughId: "w", connectionId: "enqueue", title: "Queue" });
+		await workspace.addWalkthroughStep({ id: "u", walkthroughId: "v", connectionId: "serve", title: "Serve it" });
+
+		const names = (impact: { walkthroughSteps: Array<{ walkthroughName: string; stepId: string }> }) =>
+			impact.walkthroughSteps.map((step) => `${step.walkthroughName}:${step.stepId}`);
+		const apiImpact = workspace.describeSystemComponentRemoval("api");
+		expect(apiImpact.connections.map((connection) => connection.id)).toEqual(["upload", "enqueue"]);
+		expect(names(apiImpact)).toEqual(["Upload:s", "Upload:t"]);
+		expect(names(workspace.describeSystemComponentRemoval("client"))).toEqual(["Upload:s", "Serve:u"]);
+		expect(names(workspace.describeSystemServiceRemoval("edge"))).toEqual(["Serve:u"]);
+		expect(names(workspace.describeSystemConnectionRemoval("enqueue"))).toEqual(["Upload:t"]);
+		expect(workspace.describeSystemConnectionRemoval("enqueue").connectionLabel).toBe("Enqueue");
+		expect(names(workspace.describeSystemConnectionRemoval("serve"))).toEqual(["Serve:u"]);
+		expect(names(workspace.describeSystemConnectionRemoval("upload"))).toEqual(["Upload:s"]);
+		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
+		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
+
+		await workspace.removeSystemComponent({ componentId: "api" });
+		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s", "t"]);
+		expect(walkthroughsOf(workspace)[0]!.steps[0]!.explanation).toBe("Browser posts.");
+		expect(statusOf(workspace, "w", "s")).toEqual({ status: "dangling" });
+		expect(statusOf(workspace, "v", "u")).toEqual({ status: "ok" });
+		expect(names(workspace.describeSystemServiceRemoval("edge"))).toEqual(["Serve:u"]);
+	});
+
+	test("an unaffected Walkthrough stays playable while the affected one is blocked until its step is repaired", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await openImageUploadProject(workspace);
+		await workspace.addSystemService({ id: "edge", name: "Edge", x: 0, y: 220 });
+		await workspace.addSystemConnection({ id: "serve", sourceId: "edge", targetId: "client", label: "Serve" });
+		await workspace.createWalkthrough({ id: "w", name: "Upload" });
+		await workspace.createWalkthrough({ id: "v", name: "Serve" });
+		await workspace.addWalkthroughStep({ id: "s", walkthroughId: "w", connectionId: "upload", title: "Send" });
+		await workspace.addWalkthroughStep({ id: "t", walkthroughId: "w", connectionId: "enqueue", title: "Queue" });
+		await workspace.addWalkthroughStep({ id: "u", walkthroughId: "v", connectionId: "serve", title: "Serve it" });
+
+		await workspace.removeSystemConnection({ connectionId: "enqueue" });
+		const playable = (id: string) => {
+			const design = workspace.getState().systemDesign!;
+			const walkthrough = walkthroughsOf(workspace).find((item) => item.id === id)!;
+			return compileWalkthroughPlayback(walkthrough, design).ok;
+		};
+		expect(playable("w")).toBe(false);
+		expect(playable("v")).toBe(true);
+
+		await workspace.repairWalkthroughStep({ walkthroughId: "w", stepId: "t", connectionId: "serve" });
+		expect(playable("w")).toBe(true);
+	});
+
+	test("a redirected step needs an explicit acceptance, recorded as one named action that Undo reverses", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await openImageUploadProject(workspace);
+		await workspace.createWalkthrough({ id: "w", name: "Upload" });
+		await workspace.addWalkthroughStep({ id: "s", walkthroughId: "w", connectionId: "upload", title: "Send" });
+		await workspace.addWalkthroughStep({ id: "t", walkthroughId: "w", connectionId: "enqueue", title: "Queue", explanation: "Work is queued." });
+
+		// Keeping the Connection id is not enough once its endpoints change.
+		await workspace.updateSystemConnection({ connectionId: "enqueue", changes: { sourceId: "client" } });
+		expect(statusOf(workspace, "w", "t")).toEqual({ status: "redirected", sourceId: "client", targetId: "queue" });
+		await expect(workspace.acceptWalkthroughStepRedirection({ walkthroughId: "w", stepId: "s" })).rejects.toThrow(
+			"This step does not run a changed route to accept.",
+		);
+
+		await workspace.acceptWalkthroughStepRedirection({ walkthroughId: "w", stepId: "t" });
+		expect(workspace.getState().undoActionName).toBe("Accept route for step “Queue”");
+		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
+		expect(walkthroughsOf(workspace)[0]!.steps[1]).toMatchObject({
+			connectionId: "enqueue",
+			route: { sourceId: "client", targetId: "queue" },
+			explanation: "Work is queued.",
+		});
+
+		await workspace.undo({ designId: activeDesign(workspace) });
+		expect(statusOf(workspace, "w", "t")).toEqual({ status: "redirected", sourceId: "client", targetId: "queue" });
+	});
+
+	test("renaming and moving architecture keeps every step's reference without repair", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await openImageUploadProject(workspace);
+		await workspace.createWalkthrough({ id: "w", name: "Upload" });
+		await workspace.addWalkthroughStep({ id: "s", walkthroughId: "w", connectionId: "upload" });
+		await workspace.addWalkthroughStep({ id: "t", walkthroughId: "w", connectionId: "enqueue" });
+
+		await workspace.updateSystemComponent({ componentId: "queue", changes: { name: "Broker" } });
+		await workspace.moveSystemComponent({ componentId: "queue", x: 900, y: 140 });
+		await workspace.moveSystemComponent({ componentId: "api", x: 320, y: 40 });
+		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
+		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
+		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.route)).toEqual([
+			{ sourceId: "client", targetId: "api" },
+			{ sourceId: "api", targetId: "queue" },
+		]);
+	});
+
 	test("refused repairs and unknown Connections change nothing", async () => {
 		const workspace = await openWorkspace(databasePathForTest());
 		await openImageUploadProject(workspace);

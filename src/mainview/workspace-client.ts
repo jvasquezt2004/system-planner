@@ -4,6 +4,7 @@ import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
+	WalkthroughRemovalImpact,
 	WalkthroughStepChanges,
 } from "../shared/walkthrough";
 import type {
@@ -15,6 +16,7 @@ import type {
 	SystemComponentChanges,
 	SystemComponentRemovalPlan,
 	SystemConnectionChanges,
+	SystemConnectionRemovalPlan,
 	SystemGroupChanges,
 	SystemServiceChanges,
 	SystemServiceRemovalPlan,
@@ -255,7 +257,7 @@ export const workspaceClient = {
 	removeSystemService(serviceId: string): Promise<WorkspaceState> {
 		return rpc.request.removeSystemService({ serviceId });
 	},
-	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan> {
+	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan & WalkthroughRemovalImpact> {
 		return rpc.request.describeSystemServiceRemoval({ serviceId });
 	},
 	addSystemGroup(group: AddSystemGroupAction): Promise<WorkspaceState> {
@@ -285,8 +287,11 @@ export const workspaceClient = {
 	removeSystemComponent(componentId: string): Promise<WorkspaceState> {
 		return rpc.request.removeSystemComponent({ componentId });
 	},
-	describeSystemComponentRemoval(componentId: string): Promise<SystemComponentRemovalPlan> {
+	describeSystemComponentRemoval(componentId: string): Promise<SystemComponentRemovalPlan & WalkthroughRemovalImpact> {
 		return rpc.request.describeSystemComponentRemoval({ componentId });
+	},
+	describeSystemConnectionRemoval(connectionId: string): Promise<SystemConnectionRemovalPlan & WalkthroughRemovalImpact> {
+		return rpc.request.describeSystemConnectionRemoval({ connectionId });
 	},
 	addSystemConnection(connection: { id: string; sourceId: string; targetId: string; label?: string }): Promise<WorkspaceState> {
 		return rpc.request.addSystemConnection(connection);
@@ -335,6 +340,9 @@ export const workspaceClient = {
 	},
 	repairWalkthroughStep(walkthroughId: string, stepId: string, connectionId: string): Promise<WorkspaceState> {
 		return rpc.request.repairWalkthroughStep({ walkthroughId, stepId, connectionId });
+	},
+	acceptWalkthroughStepRedirection(walkthroughId: string, stepId: string): Promise<WorkspaceState> {
+		return rpc.request.acceptWalkthroughStepRedirection({ walkthroughId, stepId });
 	},
 	copySqlPreview(preview: DisplayedSqlPreview): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySqlPreview({ preview });
