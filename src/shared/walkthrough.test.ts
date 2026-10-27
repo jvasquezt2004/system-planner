@@ -166,6 +166,24 @@ describe("Walkthrough model", () => {
 		expect(cleared).not.toHaveProperty("examplePayload");
 	});
 
+	test("a step's travel share is a whole percent from 10 to 90, can be cleared to the default, and is kept on save", () => {
+		const design = uploadSystem();
+		const draft = withUploadStep(design);
+		const shaped = updateWalkthroughStep(draft, "w-upload", "s-upload", { travelPercent: 25 });
+		expect(shaped[0]!.steps[0]).toMatchObject({ travelPercent: 25 });
+		expect(normalizeWalkthroughs(shaped)).toEqual(shaped);
+
+		expect(() => updateWalkthroughStep(draft, "w-upload", "s-upload", { travelPercent: 5 })).toThrow(
+			"Step travel share must be a whole percent from 10 to 90.",
+		);
+		expect(() => updateWalkthroughStep(draft, "w-upload", "s-upload", { travelPercent: 90.5 })).toThrow("whole percent");
+		expect(() => normalizeWalkthroughs([{ id: "w", name: "W", steps: [{ ...shaped[0]!.steps[0], travelPercent: 95 }] }]))
+			.toThrow("Step travel share must be");
+
+		const cleared = updateWalkthroughStep(shaped, "w-upload", "s-upload", { travelPercent: null });
+		expect(cleared[0]!.steps[0]).not.toHaveProperty("travelPercent");
+	});
+
 	test("incomplete drafts with empty title and explanation are accepted, while out-of-range timing and unknown actions are refused", () => {
 		const design = uploadSystem();
 		const draft = addWalkthroughStep(addWalkthrough([], { id: "w" }), "w", { id: "s", connectionId: "upload", title: "" }, design);

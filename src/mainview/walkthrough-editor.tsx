@@ -10,6 +10,8 @@ import {
 	WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT,
 	WALKTHROUGH_EXPLANATION_LIMIT,
 	WALKTHROUGH_NAME_LIMIT,
+	WALKTHROUGH_TRAVEL_PERCENT_MAX,
+	WALKTHROUGH_TRAVEL_PERCENT_MIN,
 	WALKTHROUGH_OPERATION_LIMIT,
 	WALKTHROUGH_TITLE_LIMIT,
 	findSystemEndpoint,
@@ -44,6 +46,7 @@ export type WalkthroughEditorProps = {
 	onSelect: (selection: WalkthroughSelection | null) => void;
 	onClose: () => void;
 	playback: WalkthroughPlaybackControls;
+	followCamera: { enabled: boolean; onChange: (enabled: boolean) => void };
 };
 
 /**
@@ -61,6 +64,7 @@ export function WalkthroughEditor({
 	onSelect,
 	onClose,
 	playback,
+	followCamera,
 }: WalkthroughEditorProps) {
 	const walkthrough = selection ? findWalkthrough(walkthroughs, selection.walkthroughId) ?? null : null;
 	const step = walkthrough && selection?.stepId
@@ -188,7 +192,7 @@ export function WalkthroughEditor({
 							</ol>
 						</div>
 
-						<WalkthroughTransport controls={playback} />
+						<WalkthroughTransport controls={playback} follow={followCamera} />
 
 						<AddStepControl
 							walkthroughId={walkthrough.id}
@@ -424,6 +428,7 @@ function StepEditor({
 	const [explanation, setExplanation] = useState(step.explanation);
 	const [operation, setOperation] = useState(step.operation ?? "");
 	const [duration, setDuration] = useState(step.durationMs === undefined ? "" : String(step.durationMs));
+	const [travelPercent, setTravelPercent] = useState(step.travelPercent === undefined ? "" : String(step.travelPercent));
 	const [exampleMessage, setExampleMessage] = useState(step.exampleMessage ?? "");
 	const [examplePayload, setExamplePayload] = useState(step.examplePayload ?? "");
 
@@ -459,6 +464,19 @@ function StepEditor({
 			return;
 		}
 		if (value !== step.durationMs) commit({ durationMs: value });
+	}
+	function commitTravelPercent() {
+		const trimmed = travelPercent.trim();
+		if (trimmed.length === 0) {
+			if (step.travelPercent !== undefined) commit({ travelPercent: null });
+			return;
+		}
+		const value = Number(trimmed);
+		if (!Number.isInteger(value)) {
+			setTravelPercent(step.travelPercent === undefined ? "" : String(step.travelPercent));
+			return;
+		}
+		if (value !== step.travelPercent) commit({ travelPercent: value });
 	}
 
 	return (
@@ -558,6 +576,22 @@ function StepEditor({
 					/>
 				</label>
 			</div>
+
+			<label className="flex flex-col gap-1">
+				<span className="text-ink-3">Travel share (%)</span>
+				<Input
+					type="number"
+					inputMode="numeric"
+					min={WALKTHROUGH_TRAVEL_PERCENT_MIN}
+					max={WALKTHROUGH_TRAVEL_PERCENT_MAX}
+					value={travelPercent}
+					aria-label="Step travel share in percent"
+					placeholder="Default 60"
+					onChange={(event) => setTravelPercent(event.target.value)}
+					onBlur={commitTravelPercent}
+				/>
+				<span className="text-[11.5px] text-ink-3">The part of the duration spent travelling before the message arrives.</span>
+			</label>
 
 			<label className="flex flex-col gap-1">
 				<span className="text-ink-3">Operation</span>

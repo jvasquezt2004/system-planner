@@ -23,6 +23,9 @@ export const WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT = 500;
 export const WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT = 4000;
 export const WALKTHROUGH_DURATION_MIN_MS = 100;
 export const WALKTHROUGH_DURATION_MAX_MS = 10_000;
+/** Share of a step spent travelling before the message arrives; the rest shows arrival and outcome. */
+export const WALKTHROUGH_TRAVEL_PERCENT_MIN = 10;
+export const WALKTHROUGH_TRAVEL_PERCENT_MAX = 90;
 export const WALKTHROUGH_LIMIT = 50;
 export const WALKTHROUGH_STEP_LIMIT = 200;
 
@@ -39,6 +42,8 @@ export type WalkthroughStep = {
 	operation?: string;
 	/** Illustrative duration in milliseconds. */
 	durationMs?: number;
+	/** Whole percent of the step's duration spent travelling, from 10 to 90. Defaults to the playback default. */
+	travelPercent?: number;
 	exampleMessage?: string;
 	examplePayload?: string;
 };
@@ -56,6 +61,8 @@ export type WalkthroughStepDraft = {
 	action?: WalkthroughAction;
 	operation?: string;
 	durationMs?: number | null;
+	/** Null clears the share, returning the step to the playback default. */
+	travelPercent?: number | null;
 	exampleMessage?: string;
 	examplePayload?: string;
 };
@@ -339,6 +346,7 @@ export function normalizeWalkthroughs(value: unknown): Walkthrough[] {
 				action: requireAction(stepItem.action),
 				operation: optionalStoredText(stepItem.operation, WALKTHROUGH_OPERATION_LIMIT, "Step operation"),
 				durationMs: optionalStoredDuration(stepItem.durationMs),
+				travelPercent: optionalStoredTravelPercent(stepItem.travelPercent),
 				exampleMessage: optionalStoredText(stepItem.exampleMessage, WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT, "Example message"),
 				examplePayload: optionalStoredText(stepItem.examplePayload, WALKTHROUGH_EXAMPLE_PAYLOAD_LIMIT, "Example payload"),
 			});
@@ -358,6 +366,9 @@ function applyStepChanges(step: WalkthroughStep, changes: WalkthroughStepDraft):
 		next.operation = optionalText(changes.operation, WALKTHROUGH_OPERATION_LIMIT, "Step operation");
 	}
 	if (changes.durationMs !== undefined) next.durationMs = changes.durationMs === null ? undefined : requireDuration(changes.durationMs);
+	if (changes.travelPercent !== undefined) {
+		next.travelPercent = changes.travelPercent === null ? undefined : requireTravelPercent(changes.travelPercent);
+	}
 	if (changes.exampleMessage !== undefined) {
 		next.exampleMessage = optionalText(changes.exampleMessage, WALKTHROUGH_EXAMPLE_MESSAGE_LIMIT, "Example message");
 	}
@@ -461,6 +472,21 @@ function requireDuration(value: unknown): number {
 function optionalStoredDuration(value: unknown): number | undefined {
 	if (value === undefined) return undefined;
 	return requireDuration(value);
+}
+
+function requireTravelPercent(value: unknown): number {
+	if (typeof value !== "number" || !Number.isInteger(value)
+		|| value < WALKTHROUGH_TRAVEL_PERCENT_MIN || value > WALKTHROUGH_TRAVEL_PERCENT_MAX) {
+		throw new Error(
+			`Step travel share must be a whole percent from ${WALKTHROUGH_TRAVEL_PERCENT_MIN} to ${WALKTHROUGH_TRAVEL_PERCENT_MAX}.`,
+		);
+	}
+	return value;
+}
+
+function optionalStoredTravelPercent(value: unknown): number | undefined {
+	if (value === undefined) return undefined;
+	return requireTravelPercent(value);
 }
 
 function withoutUndefined<T extends object>(value: T): T {
