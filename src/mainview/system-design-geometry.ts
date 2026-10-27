@@ -161,6 +161,41 @@ export function componentRect(component: Pick<SystemComponent, "position">): Pro
 	return { x: component.position.x, y: component.position.y, width: SYSTEM_COMPONENT_SIZE.width, height: SYSTEM_COMPONENT_SIZE.height };
 }
 
+/** The rectangle that encloses every Service and Component a scene draws, or null when it draws none. */
+export function sceneBounds(scene: SystemDesign): ProofRect | null {
+	const rects: ProofRect[] = [
+		...scene.services.map((service) => ({
+			x: service.position.x,
+			y: service.position.y,
+			width: service.size.width,
+			height: service.size.height,
+		})),
+		...scene.components.map(componentRect),
+	];
+	if (rects.length === 0) return null;
+	const left = Math.min(...rects.map((rect) => rect.x));
+	const top = Math.min(...rects.map((rect) => rect.y));
+	const right = Math.max(...rects.map((rect) => rect.x + rect.width));
+	const bottom = Math.max(...rects.map((rect) => rect.y + rect.height));
+	return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+/**
+ * The camera that shows a rectangle centered in the visible area, at no more
+ * than 100% zoom, with a margin around it. Used when a focused view opens so
+ * the Service and its external context are visible at once.
+ */
+export function fitViewport(bounds: ProofRect, size: { width: number; height: number }, margin = 48): CanvasViewport {
+	const availableWidth = Math.max(1, size.width - margin * 2);
+	const availableHeight = Math.max(1, size.height - margin * 2);
+	const zoom = clampZoom(Math.min(1, availableWidth / Math.max(1, bounds.width), availableHeight / Math.max(1, bounds.height)));
+	return {
+		x: (size.width - bounds.width * zoom) / 2 - bounds.x * zoom,
+		y: (size.height - bounds.height * zoom) / 2 - bounds.y * zoom,
+		zoom,
+	};
+}
+
 export type ConnectionGeometry = {
 	connection: SystemConnection;
 	pathString: string;

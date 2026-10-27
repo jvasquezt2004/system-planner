@@ -272,6 +272,10 @@ export const workspaceClient = {
 	setSystemServiceCollapsed(serviceId: string, collapsed: boolean): Promise<WorkspaceState> {
 		return rpc.request.setSystemServiceCollapsed({ serviceId, collapsed });
 	},
+	/** Presentation only: saved outside Project history. Pass the Service to focus and the camera to keep for its view. */
+	setSystemFocus(serviceId: string | null, viewport?: CanvasViewport): Promise<WorkspaceState> {
+		return rpc.request.setSystemFocus(viewport ? { serviceId, viewport } : { serviceId });
+	},
 	describeSystemServiceRemoval(serviceId: string): Promise<SystemServiceRemovalPlan & WalkthroughRemovalImpact> {
 		return rpc.request.describeSystemServiceRemoval({ serviceId });
 	},

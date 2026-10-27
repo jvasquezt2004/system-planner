@@ -194,6 +194,7 @@ describe("RPC request handlers", () => {
 			resizeSystemService: record("resizeSystemService"),
 			removeSystemService: record("removeSystemService"),
 			setSystemServiceCollapsed: record("setSystemServiceCollapsed"),
+			setSystemFocus: record("setSystemFocus"),
 			describeSystemServiceRemoval: (serviceId: string) => {
 				captured.describeSystemServiceRemoval = serviceId;
 				return { serviceId, serviceName: "Orders", releasedComponents: [], connections: [] };
@@ -221,6 +222,10 @@ describe("RPC request handlers", () => {
 		expect(captured.removeSystemService).toEqual({ serviceId: "orders" });
 		await handlers.setSystemServiceCollapsed({ serviceId: "orders", collapsed: true });
 		expect(captured.setSystemServiceCollapsed).toEqual({ serviceId: "orders", collapsed: true });
+		await handlers.setSystemFocus({ serviceId: "orders", viewport: { x: 12, y: 24, zoom: 0.9 } });
+		expect(captured.setSystemFocus).toEqual({ serviceId: "orders", viewport: { x: 12, y: 24, zoom: 0.9 } });
+		await handlers.setSystemFocus({ serviceId: null });
+		expect(captured.setSystemFocus).toEqual({ serviceId: null });
 
 		const plan = await handlers.describeSystemServiceRemoval({ serviceId: "orders" });
 		expect(captured.describeSystemServiceRemoval).toBe("orders");

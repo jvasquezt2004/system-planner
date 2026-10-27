@@ -114,6 +114,7 @@ import {
 	removeSystemService,
 	resizeSystemGroup,
 	resizeSystemService,
+	setSystemFocus,
 	setSystemServiceCollapsed,
 	systemDesignContent,
 	withSystemPresentation,
@@ -138,6 +139,7 @@ import {
 	type RemoveSystemServiceAction,
 	type ResizeSystemGroupAction,
 	type ResizeSystemServiceAction,
+	type SetSystemFocusAction,
 	type SetSystemServiceCollapsedAction,
 	type UpdateSystemGroupAction,
 	type SetActiveViewAction,
@@ -314,6 +316,11 @@ export interface DesignWorkspace {
 	 * never enters Project history and Undo does not reverse it.
 	 */
 	setSystemServiceCollapsed(action: SetSystemServiceCollapsedAction): Promise<WorkspaceState>;
+	/**
+	 * Opens a Service's focused view with its last camera, or returns to the overview when serviceId is null.
+	 * Focus is presentation saved with the System design, so it never enters Project history.
+	 */
+	setSystemFocus(action: SetSystemFocusAction): Promise<WorkspaceState>;
 	/** Lists what removing the Service releases, deletes, and which Walkthrough steps it leaves dangling, before anything changes. */
 	describeSystemServiceRemoval(serviceId: string): SystemServiceRemovalPlan & WalkthroughRemovalImpact;
 	/** Groups organize Components, Services, and child Groups. Each edit is one Project-history action. */
@@ -2570,6 +2577,20 @@ export async function createDesignWorkspace(
 				const { projectId, designId } = requireOpenProject();
 				const current = state.systemDesign!;
 				const next = setSystemServiceCollapsed(current, action.serviceId, action.collapsed);
+				if (next === current) return state;
+				return persistSystemDesign(projectId, designId, next);
+			});
+		},
+		setSystemFocus(action) {
+			return runTask(async () => {
+				const { projectId, designId } = requireOpenProject();
+				const current = state.systemDesign!;
+				const viewport = action.viewport && {
+					x: requireNumber(action.viewport.x, "Canvas position"),
+					y: requireNumber(action.viewport.y, "Canvas position"),
+					zoom: clamp(requireNumber(action.viewport.zoom, "Canvas zoom"), CANVAS_MIN_ZOOM, CANVAS_MAX_ZOOM),
+				};
+				const next = setSystemFocus(current, action.serviceId, viewport);
 				if (next === current) return state;
 				return persistSystemDesign(projectId, designId, next);
 			});

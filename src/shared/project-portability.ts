@@ -101,6 +101,8 @@ export function createProjectExportDocument(input: ProjectExportInput): ProjectE
 			connections: systemDesign.connections,
 			viewport: systemDesign.viewport,
 			collapsedServiceIds: systemDesign.collapsedServiceIds,
+			focusedServiceId: systemDesign.focusedServiceId,
+			focusViewport: systemDesign.focusViewport,
 		},
 		designs: input.designs.map((design) => ({
 			id: design.id,

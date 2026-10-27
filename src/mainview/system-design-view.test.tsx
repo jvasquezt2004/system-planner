@@ -7,6 +7,7 @@ import {
 	addSystemGroup,
 	addSystemService,
 	createEmptySystemDesign,
+	setSystemFocus,
 	setSystemServiceCollapsed,
 	type SystemDesign,
 } from "../shared/system-design";
@@ -249,6 +250,92 @@ describe("system overview collapsed Services", () => {
 		expect(expanded).toContain('data-component-id="cache"');
 		expect(expanded).toContain('data-connection-id="warms"');
 		expect(expanded.match(/data-testid="service-resize-handle"/g)).toHaveLength(1);
+	});
+});
+
+describe("system overview focused Service", () => {
+	/** Orders owns Worker and Cache; Billing owns Ledger; Queue is at system scope; Audit is connected to nothing. */
+	function focusable(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemService(design, { id: "billing", name: "Billing", position: { x: 700, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "ledger", name: "Ledger", position: { x: 740, y: 60 }, serviceId: "billing" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 400, y: 420 } });
+		design = addSystemComponent(design, { id: "audit", name: "Audit", position: { x: 900, y: 420 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "posts", sourceId: "ledger", targetId: "worker", label: "Posts" });
+		design = addSystemConnection(design, { id: "settles", sourceId: "billing", targetId: "orders", label: "Settles" });
+		design = addSystemConnection(design, { id: "warms", sourceId: "cache", targetId: "worker", label: "Warms" });
+		design = addSystemConnection(design, { id: "elsewhere", sourceId: "queue", targetId: "ledger", label: "Elsewhere" });
+		return design;
+	}
+
+	test("the overview offers Focus on every Service, and the focused view draws its Service, owned Components, and outside context only", () => {
+		const overview = render(focusable());
+		expect(overview.match(/data-testid="service-focus-button"/g)).toHaveLength(2);
+		expect(overview).toContain('data-component-id="audit"');
+		expect(overview).toContain("Add service");
+		// The negative checks on the focused view below are only meaningful if the overview shows these tools.
+		expect(overview).toContain("Group</button>");
+
+		const html = render(setSystemFocus(focusable(), "orders", { x: 0, y: 0, zoom: 1 }));
+		expect(html).toContain('data-service-id="orders"');
+		expect(html).toContain('data-component-id="worker"');
+		expect(html).toContain('data-component-id="cache"');
+		expect(html).toContain('data-component-id="queue"');
+		expect(html).toContain('data-component-id="ledger"');
+		expect(html.match(/data-context="true"/g)?.length).toBeGreaterThanOrEqual(2);
+		expect(html).toContain("OUTSIDE");
+		expect(html).toContain('data-service-id="billing"');
+		expect(html).toContain("SERVICE · OUTSIDE");
+		expect(html).toContain('data-connection-id="reads"');
+		expect(html).toContain('data-connection-id="posts"');
+		expect(html).toContain('data-connection-id="settles"');
+		expect(html).toContain('data-connection-id="warms"');
+		expect(html).not.toContain('data-connection-id="elsewhere"');
+		expect(html).not.toContain('data-component-id="audit"');
+	});
+
+	test("a focused Component keeps its owner label, so an outside Component reads as belonging to its real Service", () => {
+		const html = render(setSystemFocus(focusable(), "orders", { x: 0, y: 0, zoom: 1 }));
+		expect(html).toContain("in Orders");
+		expect(html).toContain("in Billing");
+		expect(html).toContain('aria-label="Component: Ledger"');
+	});
+
+	test("the focused view names its Service, offers a way back, and drops the overview-only tools", () => {
+		const html = render(setSystemFocus(focusable(), "orders", { x: 0, y: 0, zoom: 1 }));
+		expect(html).toContain('data-testid="system-focus-back"');
+		expect(html).toContain('data-testid="system-focus-name"');
+		expect(html).toContain("Orders");
+		expect(html).not.toContain('data-testid="service-focus-button"');
+		expect(html).not.toContain("Add service");
+		expect(html).not.toContain("Group</button>");
+		expect(html).toContain("Add component");
+		expect(html).toContain("Walkthroughs");
+	});
+
+	test("a focused Service is drawn expanded even when the overview collapses it", () => {
+		const collapsed = setSystemServiceCollapsed(focusable(), "orders", true);
+		expect(render(collapsed)).not.toContain('data-component-id="worker"');
+		const html = render(setSystemFocus(collapsed, "orders", { x: 0, y: 0, zoom: 1 }));
+		expect(html).toContain('data-component-id="worker"');
+		expect(html).toContain('data-collapsed="false"');
+	});
+
+	test("a focus on a Service that no longer exists opens the overview", () => {
+		const stale = { ...focusable(), focusedServiceId: "gone" };
+		const html = render(stale);
+		expect(html).toContain("Add service");
+		expect(html).not.toContain('data-testid="system-focus-back"');
+		expect(html.match(/data-testid="service-focus-button"/g)).toHaveLength(2);
+	});
+
+	test("the toolbar and inspector keep to the canvas width, so a narrow window does not push them off screen", () => {
+		expect(render(focusable())).toContain("max-w-[calc(100%-2rem)]");
+		expect(render(setSystemFocus(focusable(), "orders", { x: 0, y: 0, zoom: 1 }))).toContain("max-w-[calc(100%-2rem)]");
 	});
 });
 

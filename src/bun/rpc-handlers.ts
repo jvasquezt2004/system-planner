@@ -54,6 +54,7 @@ import type {
 	RemoveSystemConnectionAction,
 	RemoveSystemGroupAction,
 	RemoveSystemServiceAction,
+	SetSystemFocusAction,
 	SetSystemServiceCollapsedAction,
 	ResizeSystemGroupAction,
 	ResizeSystemServiceAction,
@@ -173,6 +174,7 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeSystemService: async (action: RemoveSystemServiceAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemService(action),
 		setSystemServiceCollapsed: async (action: SetSystemServiceCollapsedAction): Promise<WorkspaceState> =>
 			(await deps.workspace).setSystemServiceCollapsed(action),
+		setSystemFocus: async (action: SetSystemFocusAction): Promise<WorkspaceState> => (await deps.workspace).setSystemFocus(action),
 		describeSystemServiceRemoval: async ({ serviceId }: { serviceId: string }): Promise<SystemServiceRemovalPlan & WalkthroughRemovalImpact> =>
 			(await deps.workspace).describeSystemServiceRemoval(serviceId),
 		addSystemGroup: async (action: AddSystemGroupAction): Promise<WorkspaceState> => (await deps.workspace).addSystemGroup(action),

@@ -28,7 +28,10 @@ import {
 	screenToWorld,
 	truncateLabel,
 	zoomAroundPoint,
+	fitViewport,
+	sceneBounds,
 } from "./system-design-geometry";
+import { systemServiceFocus } from "../shared/system-design";
 
 describe("system design overview geometry", () => {
 	test("zoom keeps the canvas point under the pointer fixed", () => {
@@ -287,5 +290,39 @@ describe("system design collapsed Service geometry", () => {
 		const moved = connectionGeometries(design, new Map([["orders", { x: 100, y: 0 }]]))
 			.find((geometry) => geometry.connection.id === "reads")!;
 		expect(moved.start.x).toBe(100 + SYSTEM_SERVICE_COLLAPSED_SIZE.width);
+	});
+});
+
+describe("focused view camera", () => {
+	test("the focus camera shows a Service with its outside context, centered, at no more than 100% zoom", () => {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 900, y: 60 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+
+		const bounds = sceneBounds(systemServiceFocus(design, "orders").scene)!;
+		expect(bounds).toEqual({ x: 0, y: 0, width: 900 + 180, height: 280 });
+
+		const size = { width: 800, height: 600 };
+		const camera = fitViewport(bounds, size);
+		expect(camera.zoom).toBeLessThanOrEqual(1);
+		expect(camera.zoom).toBeGreaterThanOrEqual(0.3);
+		// Every drawn edge sits inside the visible area with the same margin on both sides.
+		const left = camera.x + bounds.x * camera.zoom;
+		const right = camera.x + (bounds.x + bounds.width) * camera.zoom;
+		const top = camera.y + bounds.y * camera.zoom;
+		const bottom = camera.y + (bounds.y + bounds.height) * camera.zoom;
+		expect(left).toBeGreaterThanOrEqual(48 - 1e-9);
+		expect(right).toBeLessThanOrEqual(size.width - 48 + 1e-9);
+		expect(top).toBeGreaterThanOrEqual(48 - 1e-9);
+		expect(bottom).toBeLessThanOrEqual(size.height - 48 + 1e-9);
+		expect((left + right) / 2).toBeCloseTo(size.width / 2, 6);
+		expect((top + bottom) / 2).toBeCloseTo(size.height / 2, 6);
+	});
+
+	test("a small scene is not enlarged past 100%, and an empty scene has no bounds", () => {
+		expect(fitViewport({ x: 0, y: 0, width: 200, height: 100 }, { width: 800, height: 600 }).zoom).toBe(1);
+		expect(sceneBounds(createEmptySystemDesign())).toBeNull();
 	});
 });

@@ -27,9 +27,12 @@ import {
 	removeSystemService,
 	resizeSystemGroup,
 	resizeSystemService,
+	setSystemFocus,
 	setSystemServiceCollapsed,
 	systemConnectionRouteOffsets,
 	systemDesignContent,
+	systemServiceFocus,
+	SYSTEM_SERVICE_COLLAPSED_SIZE,
 	updateSystemComponent,
 	updateSystemGroup,
 	visibleEndpointOf,
@@ -37,6 +40,7 @@ import {
 	withSystemPresentation,
 	type SystemDesign,
 } from "../shared/system-design";
+import { CANVAS_MAX_ZOOM } from "../shared/design";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
 import { openDesignStore, type DesignStore } from "./store";
 
@@ -1008,5 +1012,172 @@ describe("System design collapsed Services workspace", () => {
 		await workspace.setSystemServiceCollapsed({ serviceId: "orders", collapsed: false });
 		expect(workspace.getState().systemDesign?.collapsedServiceIds).toEqual([]);
 		expect(workspace.getState().undoActionName).toBe("Add component “Worker”");
+	});
+});
+
+describe("System design focused Service", () => {
+	/** Orders owns Worker and Cache; Billing owns Ledger; Queue is at system scope. */
+	function focusableDesign(): SystemDesign {
+		let design = servicedDesign();
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "ledger", name: "Ledger", position: { x: 700, y: 200 }, serviceId: "billing" });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "posts", sourceId: "ledger", targetId: "worker", label: "Posts" });
+		design = addSystemConnection(design, { id: "settles", sourceId: "billing", targetId: "orders", label: "Settles" });
+		design = addSystemConnection(design, { id: "warms", sourceId: "cache", targetId: "worker", label: "Warms" });
+		// Between two outside endpoints, so the focused view must not show it.
+		design = addSystemConnection(design, { id: "elsewhere", sourceId: "queue", targetId: "ledger", label: "Elsewhere" });
+		return design;
+	}
+
+	test("focusing is presentation: it names the Service and its camera without changing content, and returning keeps the overview camera", () => {
+		const design = { ...focusableDesign(), viewport: { x: 5, y: 6, zoom: 0.8 } };
+		const focused = setSystemFocus(design, "orders", { x: 10, y: 20, zoom: 1.2 });
+
+		expect(focused.focusedServiceId).toBe("orders");
+		expect(focused.focusViewport).toEqual({ x: 10, y: 20, zoom: 1.2 });
+		expect(systemDesignContent(focused)).toEqual(systemDesignContent(design));
+		expect(focused.viewport).toEqual({ x: 5, y: 6, zoom: 0.8 });
+		expect(setSystemFocus(focused, "orders", { x: 10, y: 20, zoom: 1.2 })).toBe(focused);
+
+		const overview = setSystemFocus(focused, null);
+		expect(overview.focusedServiceId).toBeNull();
+		expect(overview.focusViewport).toEqual({ x: 10, y: 20, zoom: 1.2 });
+		expect(overview.viewport).toEqual({ x: 5, y: 6, zoom: 0.8 });
+		expect(() => setSystemFocus(design, "missing", { x: 0, y: 0, zoom: 1 })).toThrow("That Service could not be found.");
+	});
+
+	test("the focused view shows the Service, its owned Components, and the outside endpoints its Connections reach, and nothing else", () => {
+		const design = focusableDesign();
+		const { scene, contextIds } = systemServiceFocus(design, "orders");
+
+		expect(scene.services.map((service) => service.id)).toEqual(["orders", "billing"]);
+		expect(scene.components.map((component) => component.id).sort()).toEqual(["cache", "ledger", "queue", "worker"]);
+		expect(scene.connections.map((connection) => connection.id).sort()).toEqual(["posts", "reads", "settles", "warms"]);
+		expect([...contextIds].sort()).toEqual(["billing", "ledger", "queue"]);
+		expect(scene.services[0]!.size).toEqual(design.services[0]!.size);
+		expect(scene.services[1]!.size).toEqual(SYSTEM_SERVICE_COLLAPSED_SIZE);
+		expect(scene.groups).toEqual([]);
+	});
+
+	test("an endpoint in the focused view is the same Component, with its real owner kept in the design", () => {
+		const design = focusableDesign();
+		const { scene } = systemServiceFocus(design, "orders");
+
+		expect(scene.components.find((component) => component.id === "worker")).toEqual(findSystemComponent(design, "worker"));
+		expect(scene.components.find((component) => component.id === "ledger")).toMatchObject({ name: "Ledger", serviceId: null });
+		expect(scene.components.find((component) => component.id === "queue")).toMatchObject({ name: "Queue", serviceId: null });
+		expect(findSystemComponent(design, "ledger")!.serviceId).toBe("billing");
+		expect(findSystemComponent(design, "queue")!.serviceId).toBeNull();
+	});
+
+	test("a focused Service is drawn expanded even when the overview collapses it, and its collapse state is unchanged", () => {
+		const design = setSystemServiceCollapsed(focusableDesign(), "orders", true);
+		const { scene } = systemServiceFocus(design, "orders");
+
+		expect(scene.collapsedServiceIds).toEqual([]);
+		expect(design.collapsedServiceIds).toEqual(["orders"]);
+		expect(scene.components.map((component) => component.id)).toContain("worker");
+	});
+
+	test("focus survives loading, is dropped with its Service, and a stale focus loads as the overview", () => {
+		const focused = setSystemFocus(focusableDesign(), "orders", { x: 1, y: 2, zoom: 1.5 });
+		expect(normalizeSystemDesign(JSON.parse(JSON.stringify(focused)))).toEqual(focused);
+
+		const legacy = normalizeSystemDesign({ services: [], components: [], connections: [] });
+		expect(legacy.focusedServiceId).toBeNull();
+		expect(legacy.focusViewport).toEqual({ x: 0, y: 0, zoom: 1 });
+
+		const stale = normalizeSystemDesign({
+			services: [{ id: "orders", name: "Orders", position: { x: 0, y: 0 } }],
+			components: [],
+			connections: [],
+			focusedServiceId: "gone",
+			focusViewport: "not a camera",
+		});
+		expect(stale.focusedServiceId).toBeNull();
+		expect(stale.focusViewport).toEqual({ x: 0, y: 0, zoom: 1 });
+
+		expect(removeSystemService(focused, "orders").focusedServiceId).toBeNull();
+		expect(withSystemPresentation(systemDesignContent(focused), focused)).toMatchObject({
+			focusedServiceId: "orders",
+			focusViewport: { x: 1, y: 2, zoom: 1.5 },
+		});
+		expect(withSystemPresentation(systemDesignContent(removeSystemService(focused, "orders")), focused).focusedServiceId).toBeNull();
+	});
+});
+
+describe("System design focused Service workspace", () => {
+	test("focus is saved across reopen with its camera, is never an undoable action, and leaves the open database and view alone", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await first.createProject({ name: "Overview" });
+		await first.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await first.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60, serviceId: "orders" });
+		const before = first.getState();
+		const focused = await first.setSystemFocus({ serviceId: "orders", viewport: { x: 12, y: 24, zoom: 0.9 } });
+
+		expect(focused.systemDesign?.focusedServiceId).toBe("orders");
+		expect(focused.systemDesign?.focusViewport).toEqual({ x: 12, y: 24, zoom: 0.9 });
+		expect(focused.undoActionName).toBe(before.undoActionName);
+		expect(focused.undoRedo).toEqual(before.undoRedo);
+		expect(focused.activeDesignId).toBe(before.activeDesignId);
+		expect(focused.activeView).toBe(before.activeView);
+
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+		const reopened = await openWorkspace(databasePath);
+		expect(reopened.getState().systemDesign?.focusedServiceId).toBe("orders");
+		expect(reopened.getState().systemDesign?.focusViewport).toEqual({ x: 12, y: 24, zoom: 0.9 });
+		expect(reopened.getState().systemDesign?.components.find((component) => component.id === "worker")).toMatchObject({ serviceId: "orders" });
+	});
+
+	test("a Component edited in the focused view is the same Component the overview shows, and Undo keeps the focus", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Overview" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+		await workspace.addSystemComponent({ id: "worker", name: "Worker", x: 40, y: 60, serviceId: "orders" });
+		await workspace.addSystemComponent({ id: "queue", name: "Queue", x: 360, y: 60 });
+		await workspace.addSystemConnection({ id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		await workspace.setSystemFocus({ serviceId: "orders", viewport: { x: 0, y: 0, zoom: 1 } });
+
+		await workspace.updateSystemComponent({ componentId: "worker", changes: { name: "Renamed worker" } });
+		await workspace.moveSystemComponent({ componentId: "worker", x: 80, y: 90 });
+		expect(workspace.getState().systemDesign?.components.find((component) => component.id === "worker")).toMatchObject({
+			id: "worker",
+			name: "Renamed worker",
+			position: { x: 80, y: 90 },
+			serviceId: "orders",
+		});
+
+		const overview = await workspace.setSystemFocus({ serviceId: null });
+		expect(overview.systemDesign?.focusedServiceId).toBeNull();
+		expect(overview.systemDesign?.components.find((component) => component.id === "worker")).toMatchObject({
+			id: "worker",
+			name: "Renamed worker",
+			position: { x: 80, y: 90 },
+			serviceId: "orders",
+		});
+
+		await workspace.setSystemFocus({ serviceId: "orders", viewport: { x: 0, y: 0, zoom: 1 } });
+		await workspace.undo({ designId: workspace.getState().activeDesignId! });
+		expect(workspace.getState().systemDesign?.components.find((component) => component.id === "worker")).toMatchObject({
+			name: "Renamed worker",
+			position: { x: 40, y: 60 },
+		});
+		expect(workspace.getState().systemDesign?.focusedServiceId).toBe("orders");
+		expect(workspace.getState().undoActionName).toBe("Rename component to “Renamed worker”");
+	});
+
+	test("the focused camera is clamped to the canvas zoom range, and removing the focused Service returns to the overview", async () => {
+		const workspace = await openWorkspace(databasePathForTest());
+		await workspace.createProject({ name: "Overview" });
+		await workspace.addSystemService({ id: "orders", name: "Orders", x: 0, y: 0 });
+
+		const focused = await workspace.setSystemFocus({ serviceId: "orders", viewport: { x: 0, y: 0, zoom: 99 } });
+		expect(focused.systemDesign?.focusViewport.zoom).toBe(CANVAS_MAX_ZOOM);
+
+		const removed = await workspace.removeSystemService({ serviceId: "orders" });
+		expect(removed.systemDesign?.focusedServiceId).toBeNull();
 	});
 });
