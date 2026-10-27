@@ -3,7 +3,11 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { walkthroughStepStatus, type Walkthrough } from "../shared/walkthrough";
+import {
+	walkthroughStepStatus,
+	type Walkthrough,
+	walkthroughSteps,
+} from "../shared/walkthrough";
 import { compileWalkthroughPlayback } from "../shared/walkthrough-playback";
 import { createDesignWorkspace, type DesignWorkspace } from "./workspace";
 import { openDesignStore, type DesignStore } from "./store";
@@ -64,7 +68,7 @@ function walkthroughsOf(workspace: DesignWorkspace): Walkthrough[] {
 
 function statusOf(workspace: DesignWorkspace, walkthroughId: string, stepId: string) {
 	const state = workspace.getState();
-	const step = walkthroughsOf(workspace).find((walkthrough) => walkthrough.id === walkthroughId)!.steps.find((item) => item.id === stepId)!;
+	const step = walkthroughSteps(walkthroughsOf(workspace).find((walkthrough) => walkthrough.id === walkthroughId)!).find((item) => item.id === stepId)!;
 	return walkthroughStepStatus(step, state.systemDesign!);
 }
 
@@ -94,8 +98,8 @@ describe("Walkthrough workspace", () => {
 		expect(walkthroughsOf(reopened)).toEqual(before);
 		expect(walkthroughsOf(reopened).map((walkthrough) => walkthrough.name)).toEqual(["Cached read", "Upload an image"]);
 		const upload = walkthroughsOf(reopened).find((walkthrough) => walkthrough.id === "w-upload")!;
-		expect(upload.steps.map((step) => step.id)).toEqual(["s2", "s1"]);
-		expect(upload.steps[0]).toMatchObject({
+		expect(walkthroughSteps(upload).map((step) => step.id)).toEqual(["s2", "s1"]);
+		expect(walkthroughSteps(upload)[0]).toMatchObject({
 			connectionId: "enqueue",
 			route: { sourceId: "api", targetId: "queue" },
 			title: "Queue the job",
@@ -121,7 +125,7 @@ describe("Walkthrough workspace", () => {
 		expect(workspace.getState().undoActionName).toBe("Edit step “Upload”");
 
 		await workspace.undo({ designId: activeDesign(workspace) });
-		expect(walkthroughsOf(workspace)[0]!.steps[0]!.explanation).toBe("");
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)[0]!.explanation).toBe("");
 		expect(workspace.getState().undoActionName).toBe("Add step “Upload”");
 		expect(workspace.getState().redoActionName).toBe("Edit step “Upload”");
 	});
@@ -135,7 +139,7 @@ describe("Walkthrough workspace", () => {
 		await workspace.addWalkthroughStep({ id: "t", walkthroughId: "w", connectionId: "enqueue" });
 
 		await workspace.removeSystemConnection({ connectionId: "upload" });
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s", "t"]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.id)).toEqual(["s", "t"]);
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "dangling" });
 		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
 
@@ -148,7 +152,7 @@ describe("Walkthrough workspace", () => {
 		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
 		const reopened = await openWorkspace(databasePath);
 		expect(statusOf(reopened, "w", "s")).toEqual({ status: "dangling" });
-		expect(walkthroughsOf(reopened)[0]!.steps[0]!.explanation).toBe("Upload it");
+		expect(walkthroughSteps(walkthroughsOf(reopened)[0]!)[0]!.explanation).toBe("Upload it");
 	});
 
 	test("removing a Component keeps its steps and renaming a Component keeps the references", async () => {
@@ -162,7 +166,7 @@ describe("Walkthrough workspace", () => {
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
 
 		await workspace.removeSystemComponent({ componentId: "api" });
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s", "t"]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.id)).toEqual(["s", "t"]);
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "dangling" });
 		expect(statusOf(workspace, "w", "t")).toEqual({ status: "dangling" });
 	});
@@ -177,7 +181,7 @@ describe("Walkthrough workspace", () => {
 
 		await workspace.repairWalkthroughStep({ walkthroughId: "w", stepId: "s", connectionId: "enqueue" });
 		expect(workspace.getState().undoActionName).toBe("Relink step “Send”");
-		expect(walkthroughsOf(workspace)[0]!.steps[0]).toMatchObject({ connectionId: "enqueue", route: { sourceId: "api", targetId: "queue" } });
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)[0]).toMatchObject({ connectionId: "enqueue", route: { sourceId: "api", targetId: "queue" } });
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
 
 		await workspace.updateSystemConnection({ connectionId: "enqueue", changes: { label: "Publish" } });
@@ -187,7 +191,7 @@ describe("Walkthrough workspace", () => {
 		await workspace.repairWalkthroughStep({ walkthroughId: "w", stepId: "s", connectionId: "enqueue" });
 		expect(workspace.getState().undoActionName).toBe("Accept route for step “Send”");
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
-		expect(walkthroughsOf(workspace)[0]!.steps[0]!.title).toBe("Send");
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)[0]!.title).toBe("Send");
 	});
 
 	test("removal impact names the affected steps of every Walkthrough before anything changes", async () => {
@@ -216,8 +220,8 @@ describe("Walkthrough workspace", () => {
 		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
 
 		await workspace.removeSystemComponent({ componentId: "api" });
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s", "t"]);
-		expect(walkthroughsOf(workspace)[0]!.steps[0]!.explanation).toBe("Browser posts.");
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.id)).toEqual(["s", "t"]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)[0]!.explanation).toBe("Browser posts.");
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "dangling" });
 		expect(statusOf(workspace, "v", "u")).toEqual({ status: "ok" });
 		expect(names(workspace.describeSystemServiceRemoval("edge"))).toEqual(["Serve:u"]);
@@ -264,7 +268,7 @@ describe("Walkthrough workspace", () => {
 		await workspace.acceptWalkthroughStepRedirection({ walkthroughId: "w", stepId: "t" });
 		expect(workspace.getState().undoActionName).toBe("Accept route for step “Queue”");
 		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
-		expect(walkthroughsOf(workspace)[0]!.steps[1]).toMatchObject({
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)[1]).toMatchObject({
 			connectionId: "enqueue",
 			route: { sourceId: "client", targetId: "queue" },
 			explanation: "Work is queued.",
@@ -286,7 +290,7 @@ describe("Walkthrough workspace", () => {
 		await workspace.moveSystemComponent({ componentId: "api", x: 320, y: 40 });
 		expect(statusOf(workspace, "w", "s")).toEqual({ status: "ok" });
 		expect(statusOf(workspace, "w", "t")).toEqual({ status: "ok" });
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.route)).toEqual([
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.route)).toEqual([
 			{ sourceId: "client", targetId: "api" },
 			{ sourceId: "api", targetId: "queue" },
 		]);
@@ -322,18 +326,67 @@ describe("Walkthrough workspace", () => {
 
 		expect(workspace.getState().undoActionName).toBe("Move step “Enqueue”");
 		await workspace.undo({ designId: activeDesign(workspace) });
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s", "t"]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.id)).toEqual(["s", "t"]);
 		await workspace.undo({ designId: activeDesign(workspace) });
 		expect(walkthroughsOf(workspace)[0]!.name).toBe("Upload");
 		await workspace.undo({ designId: activeDesign(workspace) });
 		await workspace.undo({ designId: activeDesign(workspace) });
-		expect(walkthroughsOf(workspace)[0]!.steps).toEqual([]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!)).toEqual([]);
 		await workspace.undo({ designId: activeDesign(workspace) });
 		expect(walkthroughsOf(workspace)).toEqual([]);
 		expect(workspace.getState().undoRedo.canUndo).toBe(true);
 
 		await workspace.redo({ designId: activeDesign(workspace) });
 		expect(walkthroughsOf(workspace).map((walkthrough) => walkthrough.name)).toEqual(["Upload"]);
+	});
+
+	test("parallel and repeated blocks persist with their steps, and replay after reopening", async () => {
+		const databasePath = databasePathForTest();
+		const first = await openWorkspace(databasePath);
+		await openImageUploadProject(first);
+		await first.createWalkthrough({ id: "w", name: "Concurrent retry" });
+		await first.addWalkthroughBlock({ id: "p", walkthroughId: "w", kind: "parallel" });
+		await first.addWalkthroughStep({ id: "a", walkthroughId: "w", connectionId: "upload", title: "Upload", sequence: { blockId: "p", branch: 0 } });
+		await first.addWalkthroughStep({ id: "b", walkthroughId: "w", connectionId: "enqueue", title: "Queue", sequence: { blockId: "p", branch: 1 } });
+		await first.addWalkthroughParallelBranch({ walkthroughId: "w", blockId: "p" });
+		await first.addWalkthroughBlock({ id: "r", walkthroughId: "w", kind: "repeat" });
+		await first.updateWalkthroughRepeat({ walkthroughId: "w", blockId: "r", count: 3 });
+		await first.addWalkthroughStep({
+			id: "attempt",
+			walkthroughId: "w",
+			connectionId: "upload",
+			title: "Attempt fails",
+			action: "fail",
+			durationMs: 800,
+			sequence: { blockId: "r" },
+		});
+		await first.addWalkthroughStep({ id: "ok", walkthroughId: "w", connectionId: "upload", title: "Succeeds", action: "succeed", durationMs: 800 });
+		await first.moveWalkthroughBlock({ walkthroughId: "w", blockId: "r", toIndex: 0 });
+		await first.close();
+		openWorkspaces.splice(openWorkspaces.indexOf(first), 1);
+
+		const reopened = await openWorkspace(databasePath);
+		const walkthrough = walkthroughsOf(reopened)[0]!;
+		expect(walkthrough.blocks.map((block) => block.kind)).toEqual(["repeat", "parallel", "step"]);
+		expect(walkthroughSteps(walkthrough).map((step) => step.id)).toEqual(["attempt", "a", "b", "ok"]);
+		const parallel = walkthrough.blocks[1]!;
+		expect(parallel.kind === "parallel" ? parallel.branches.map((branch) => branch.length) : []).toEqual([1, 1, 0]);
+
+		const compiled = compileWalkthroughPlayback(walkthrough, reopened.getState().systemDesign!);
+		expect(compiled.ok).toBe(true);
+		if (compiled.ok) {
+			expect(compiled.timeline.steps.map((step) => [step.stepId, step.startMs, step.repetition?.iteration ?? null])).toEqual([
+				["attempt", 0, 1],
+				["attempt", 800, 2],
+				["attempt", 1600, 3],
+				["a", 2400, null],
+				["b", 2400, null],
+				["ok", 3600, null],
+			]);
+			expect(compiled.timeline.totalMs).toBe(4400);
+		}
+		await reopened.removeSystemConnection({ connectionId: "enqueue" });
+		expect(walkthroughStepStatus(walkthroughSteps(walkthroughsOf(reopened)[0]!)[2]!, reopened.getState().systemDesign!)).toEqual({ status: "dangling" });
 	});
 
 	test("a failed Walkthrough save keeps the draft and the next successful save writes it", async () => {
@@ -352,7 +405,11 @@ describe("Walkthrough workspace", () => {
 
 		const reopened = await openWorkspace(databasePath);
 		expect(walkthroughsOf(reopened)).toEqual([
-			expect.objectContaining({ id: "w", name: "Draft", steps: [expect.objectContaining({ id: "s", explanation: "Kept" })] }),
+			expect.objectContaining({
+				id: "w",
+				name: "Draft",
+				blocks: [expect.objectContaining({ kind: "step", step: expect.objectContaining({ id: "s", explanation: "Kept" }) })],
+			}),
 		]);
 	});
 
@@ -408,7 +465,7 @@ describe("Walkthrough workspace", () => {
 		await workspace.createDesign({ name: "Billing" });
 		expect(activeDesign(workspace)).not.toBe(firstDesign);
 		expect(workspace.getState().systemDesign?.connections.map((connection) => connection.id)).toEqual(["upload", "enqueue"]);
-		expect(walkthroughsOf(workspace)[0]!.steps.map((step) => step.id)).toEqual(["s"]);
+		expect(walkthroughSteps(walkthroughsOf(workspace)[0]!).map((step) => step.id)).toEqual(["s"]);
 
 		await workspace.createWalkthrough({ id: "w2", name: "Billing run" });
 		await workspace.openDesign({ designId: firstDesign });
@@ -419,7 +476,7 @@ describe("Walkthrough workspace", () => {
 		openWorkspaces.splice(openWorkspaces.indexOf(workspace), 1);
 		const reopened = await openWorkspace(databasePath);
 		expect(walkthroughsOf(reopened).map((walkthrough) => walkthrough.name)).toEqual(["Upload", "Billing run"]);
-		expect(walkthroughsOf(reopened)[0]!.steps[0]!.explanation).toBe("Kept");
+		expect(walkthroughSteps(walkthroughsOf(reopened)[0]!)[0]!.explanation).toBe("Kept");
 	});
 
 	test("Walkthrough edits are refused when no Project is open", async () => {

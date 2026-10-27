@@ -1,13 +1,22 @@
 import { sampleCubicBezier, type ProofPoint } from "./architecture-proof";
 import { findSystemConnection, type SystemDesign } from "./system-design";
-import { findSystemEndpoint, walkthroughStepStatus, type Walkthrough, type WalkthroughAction } from "./walkthrough";
+import {
+	findSystemEndpoint,
+	walkthroughSteps,
+	walkthroughStepStatus,
+	type Walkthrough,
+	type WalkthroughAction,
+	type WalkthroughBlock,
+} from "./walkthrough";
 
 /**
- * Deterministic playback of a saved linear Walkthrough (ADR-0010). One authored
- * clock drives every visible effect: each frame is derived from elapsed time `t`
- * and the current route geometry, never from callbacks that already fired. A
- * seek, a pause, a speed change, or a geometry change therefore yields the same
- * state for the same `t`.
+ * Deterministic playback of a saved Walkthrough (ADR-0010). The block tree is
+ * expanded once into a flat timeline on one authored clock: a sequence advances
+ * after its blocks, a parallel block starts every branch together and ends with
+ * its longest branch, and a repeat block plays its body `count` times in order.
+ * Each frame is derived from elapsed time `t` and the current route geometry,
+ * never from callbacks that already fired. A seek, a pause, a speed change, or a
+ * geometry change therefore yields the same state for the same `t`.
  *
  * Each step's authored duration is split into illustrative phases. The travel
  * share (`travelPercent`, 60 by default) sets where the arrival falls:
@@ -25,11 +34,15 @@ export const PLAYBACK_DEFAULT_TRAVEL_PERCENT = 60;
 export const PLAYBACK_ARRIVAL_HOLD_FRACTION = 0.5;
 /** Duration used for a step whose designer has not set one. */
 export const PLAYBACK_DEFAULT_STEP_MS = 1200;
+/** Bounds the timeline after repeat blocks are expanded, so playback work stays finite. */
+export const PLAYBACK_STEP_LIMIT = 500;
 export const PLAYBACK_SPEEDS = [0.5, 1, 2] as const;
 export type PlaybackSpeed = (typeof PLAYBACK_SPEEDS)[number];
 
 export type PlaybackStep = {
+	/** Position in the timeline, ordered by start time. A step can appear more than once when a repeat block plays it again. */
 	index: number;
+	/** The authored step this occurrence plays. */
 	stepId: string;
 	connectionId: string;
 	sourceId: string;
@@ -40,6 +53,8 @@ export type PlaybackStep = {
 	operation?: string;
 	exampleMessage?: string;
 	examplePayload?: string;
+	/** Which pass of the innermost enclosing repeat block this occurrence belongs to, when there is one. */
+	repetition?: { iteration: number; count: number };
 	/** Start of the step on the Walkthrough clock, in milliseconds. */
 	startMs: number;
 	durationMs: number;
@@ -75,28 +90,38 @@ export type PlaybackFrame = {
 	timeMs: number;
 	totalMs: number;
 	complete: boolean;
+	/** The step that leads the frame: the latest-started step still running, used for captions and camera follow. */
 	stepIndex: number;
 	step: PlaybackStep;
-	/** Progress through the active step, from 0 to 1. */
+	/** Progress through the leading step, from 0 to 1. */
 	stepProgress: number;
-	/** The travelling message, or null once it has arrived, when reduced motion is on, or when no route is drawn. */
-	message: PlaybackMessage | null;
-	/** Reactions keyed by endpoint id (Component or Service). */
+	/** Indexes of every step running at this time. Parallel branches can run together. */
+	activeStepIndexes: number[];
+	/** The travelling messages of the running steps, in timeline order. Empty when reduced motion is on or once they arrive. */
+	messages: PlaybackMessage[];
+	/**
+	 * Reactions keyed by endpoint id (Component or Service). When several running
+	 * steps react at one endpoint, the strongest phase wins (outcome, then arrival,
+	 * then departure), and among equals the later-starting step.
+	 */
 	reactions: Record<string, PlaybackReaction>;
 	highlight: { connectionId: string; endpointIds: string[] };
 };
 
+const PHASE_RANK: Record<PlaybackReaction["phase"], number> = { depart: 0, arrive: 1, outcome: 2 };
+
 /**
- * Turns a Walkthrough into a timeline when every step still plays a Connection
- * with its recorded endpoints. Dangling, redirected, or endpoint-less steps are
- * reported so the designer can repair them before playback starts.
+ * Turns a Walkthrough into a timeline when every authored step still plays a
+ * Connection with its recorded endpoints. Dangling, redirected, or endpoint-less
+ * steps are reported so the designer can repair them before playback starts.
  */
 export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: SystemDesign): PlaybackCompileResult {
-	if (walkthrough.steps.length === 0) {
+	const authored = walkthroughSteps(walkthrough);
+	if (authored.length === 0) {
 		return { ok: false, problems: ["Add at least one step before playing this Walkthrough."] };
 	}
 	const problems: string[] = [];
-	walkthrough.steps.forEach((step, index) => {
+	authored.forEach((step, index) => {
 		const label = `Step ${index + 1}`;
 		const status = walkthroughStepStatus(step, design);
 		if (status.status === "dangling") {
@@ -114,32 +139,76 @@ export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: Sys
 	});
 	if (problems.length > 0) return { ok: false, problems };
 
-	let cursor = 0;
-	const steps = walkthrough.steps.map((step, index): PlaybackStep => {
-		const connection = findSystemConnection(design, step.connectionId)!;
-		const durationMs = step.durationMs ?? PLAYBACK_DEFAULT_STEP_MS;
-		const travelPercent = step.travelPercent ?? PLAYBACK_DEFAULT_TRAVEL_PERCENT;
-		const startMs = cursor;
-		cursor += durationMs;
+	const occurrences = countOccurrences(walkthrough.blocks);
+	if (occurrences > PLAYBACK_STEP_LIMIT) {
 		return {
-			index,
-			stepId: step.id,
-			connectionId: connection.id,
-			sourceId: connection.sourceId,
-			targetId: connection.targetId,
-			action: step.action,
-			title: step.title,
-			explanation: step.explanation,
-			operation: step.operation,
-			exampleMessage: step.exampleMessage,
-			examplePayload: step.examplePayload,
-			startMs,
-			durationMs,
-			arrivalMs: startMs + Math.round(durationMs * (travelPercent / 100)),
-			endMs: cursor,
+			ok: false,
+			problems: [`Repeated blocks play ${occurrences} steps, more than the ${PLAYBACK_STEP_LIMIT} playback allows. Lower a repeat count.`],
 		};
-	});
-	return { ok: true, timeline: { walkthroughId: walkthrough.id, totalMs: cursor, steps } };
+	}
+
+	const drafts: Omit<PlaybackStep, "index">[] = [];
+	const totalMs = expandBlocks(walkthrough.blocks, 0, drafts, design);
+	// Parallel branches are expanded one after another, so order by start time; the sort is stable.
+	drafts.sort((a, b) => a.startMs - b.startMs);
+	return {
+		ok: true,
+		timeline: { walkthroughId: walkthrough.id, totalMs, steps: drafts.map((step, index) => ({ ...step, index })) },
+	};
+}
+
+/** Appends the occurrences of `blocks` starting at `startMs`, and returns when they end. */
+function expandBlocks(
+	blocks: WalkthroughBlock[],
+	startMs: number,
+	out: Omit<PlaybackStep, "index">[],
+	design: SystemDesign,
+	repetition?: PlaybackStep["repetition"],
+): number {
+	let cursor = startMs;
+	for (const block of blocks) {
+		if (block.kind === "step") {
+			const step = block.step;
+			const connection = findSystemConnection(design, step.connectionId)!;
+			const durationMs = step.durationMs ?? PLAYBACK_DEFAULT_STEP_MS;
+			const travelPercent = step.travelPercent ?? PLAYBACK_DEFAULT_TRAVEL_PERCENT;
+			out.push({
+				stepId: step.id,
+				connectionId: connection.id,
+				sourceId: connection.sourceId,
+				targetId: connection.targetId,
+				action: step.action,
+				title: step.title,
+				explanation: step.explanation,
+				operation: step.operation,
+				exampleMessage: step.exampleMessage,
+				examplePayload: step.examplePayload,
+				repetition,
+				startMs: cursor,
+				durationMs,
+				arrivalMs: cursor + Math.round(durationMs * (travelPercent / 100)),
+				endMs: cursor + durationMs,
+			});
+			cursor += durationMs;
+		} else if (block.kind === "parallel") {
+			const ends = block.branches.map((branch) => expandBlocks(branch, cursor, out, design, repetition));
+			cursor = Math.max(cursor, ...ends);
+		} else {
+			for (let iteration = 1; iteration <= block.count; iteration += 1) {
+				cursor = expandBlocks(block.body, cursor, out, design, { iteration, count: block.count });
+			}
+		}
+	}
+	return cursor;
+}
+
+/** How many step occurrences the blocks play once repeats are expanded. */
+function countOccurrences(blocks: WalkthroughBlock[]): number {
+	return blocks.reduce((total, block) => {
+		if (block.kind === "step") return total + 1;
+		if (block.kind === "parallel") return total + block.branches.reduce((sum, branch) => sum + countOccurrences(branch), 0);
+		return total + block.count * countOccurrences(block.body);
+	}, 0);
 }
 
 /**
@@ -157,70 +226,119 @@ export function deriveWalkthroughFrame(
 	if (!last) throw new Error("A playback timeline needs at least one step.");
 	const clamped = Math.max(0, Math.min(timeline.totalMs, timeMs));
 	const complete = clamped >= timeline.totalMs;
-	const step = complete ? last : activeStep(timeline, clamped);
-	const local = clamped - step.startMs;
-	const arrivalLocal = step.arrivalMs - step.startMs;
-	const base = {
+	if (complete) {
+		return {
+			timeMs: clamped,
+			totalMs: timeline.totalMs,
+			complete,
+			stepIndex: last.index,
+			step: last,
+			stepProgress: 1,
+			activeStepIndexes: [],
+			messages: [],
+			reactions: {},
+			highlight: { connectionId: last.connectionId, endpointIds: [last.sourceId, last.targetId] },
+		};
+	}
+
+	const active = timeline.steps.filter((step) => step.startMs <= clamped && clamped < step.endMs);
+	// The leading step is the latest-started one still running; ties go to the later timeline entry.
+	const leading = active.reduce<PlaybackStep>((best, step) => (step.startMs >= best.startMs ? step : best), active[0] ?? last);
+	const reactions: Record<string, PlaybackReaction> = {};
+	const messages: PlaybackMessage[] = [];
+
+	for (const step of active) {
+		const local = clamped - step.startMs;
+		const arrivalLocal = step.arrivalMs - step.startMs;
+		const departing = local < arrivalLocal;
+		const candidates: [string, PlaybackReaction][] = [];
+		if (departing) {
+			candidates.push([step.sourceId, {
+				action: "send",
+				role: "sender",
+				phase: "depart",
+				intensity: reducedMotion ? 1 : 1 - local / arrivalLocal,
+			}]);
+		} else {
+			const holdEndLocal = arrivalLocal + Math.round((step.durationMs - arrivalLocal) * PLAYBACK_ARRIVAL_HOLD_FRACTION);
+			const span = Math.max(1, holdEndLocal - arrivalLocal);
+			candidates.push(local < holdEndLocal
+				? [step.targetId, {
+					action: "receive",
+					role: "destination",
+					phase: "arrive",
+					intensity: reducedMotion ? 1 : (local - arrivalLocal) / span,
+				}]
+				: [step.targetId, {
+					action: step.action === "process" || step.action === "succeed" || step.action === "fail" ? step.action : "receive",
+					role: "destination",
+					phase: "outcome",
+					intensity: 1,
+				}]);
+		}
+		for (const [endpointId, reaction] of candidates) {
+			const existing = reactions[endpointId];
+			if (!existing || PHASE_RANK[reaction.phase] >= PHASE_RANK[existing.phase]) reactions[endpointId] = reaction;
+		}
+
+		const route = routes.get(step.connectionId);
+		if (!reducedMotion && route && local <= arrivalLocal) {
+			const progress = arrivalLocal === 0 ? 1 : local / arrivalLocal;
+			messages.push({
+				connectionId: step.connectionId,
+				progress,
+				point: sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, progress),
+			});
+		}
+	}
+
+	return {
 		timeMs: clamped,
 		totalMs: timeline.totalMs,
 		complete,
-		stepIndex: step.index,
-		step,
-		stepProgress: complete ? 1 : Math.min(1, local / step.durationMs),
-		highlight: { connectionId: step.connectionId, endpointIds: [step.sourceId, step.targetId] },
+		stepIndex: leading.index,
+		step: leading,
+		stepProgress: Math.min(1, (clamped - leading.startMs) / leading.durationMs),
+		activeStepIndexes: active.map((step) => step.index),
+		messages,
+		reactions,
+		highlight: { connectionId: leading.connectionId, endpointIds: [leading.sourceId, leading.targetId] },
 	};
-	if (complete) return { ...base, message: null, reactions: {} };
-
-	const reactions: Record<string, PlaybackReaction> = {};
-	const departing = local < arrivalLocal;
-	if (departing) {
-		reactions[step.sourceId] = {
-			action: "send",
-			role: "sender",
-			phase: "depart",
-			intensity: reducedMotion ? 1 : 1 - local / arrivalLocal,
-		};
-	}
-
-	const holdEndLocal = arrivalLocal + Math.round((step.durationMs - arrivalLocal) * PLAYBACK_ARRIVAL_HOLD_FRACTION);
-	if (!departing) {
-		const arriving = local < holdEndLocal;
-		const span = Math.max(1, holdEndLocal - arrivalLocal);
-		reactions[step.targetId] = arriving
-			? {
-				action: "receive",
-				role: "destination",
-				phase: "arrive",
-				intensity: reducedMotion ? 1 : (local - arrivalLocal) / span,
-			}
-			: {
-				action: step.action === "process" || step.action === "succeed" || step.action === "fail" ? step.action : "receive",
-				role: "destination",
-				phase: "outcome",
-				intensity: 1,
-			};
-	}
-
-	let message: PlaybackMessage | null = null;
-	const route = routes.get(step.connectionId);
-	if (!reducedMotion && route && local <= arrivalLocal) {
-		const progress = arrivalLocal === 0 ? 1 : local / arrivalLocal;
-		message = {
-			connectionId: step.connectionId,
-			progress,
-			point: sampleCubicBezier(route.start, route.cp1, route.cp2, route.end, progress),
-		};
-	}
-	return { ...base, message, reactions };
 }
 
-/** The step whose window contains `timeMs` (before the end of the Walkthrough). */
-function activeStep(timeline: PlaybackTimeline, timeMs: number): PlaybackStep {
-	let found = timeline.steps[0]!;
-	for (const candidate of timeline.steps) {
-		if (candidate.startMs <= timeMs) found = candidate;
+/**
+ * The start of the step before the one at `timeMs` on the clock: the latest start
+ * earlier than the leading step's start, or 0. Steps that start together count as one.
+ */
+export function previousStepStartMs(timeline: PlaybackTimeline, timeMs: number): number {
+	const current = leadingStartMs(timeline, timeMs);
+	let target = 0;
+	for (const step of timeline.steps) {
+		if (step.startMs < current && step.startMs > target) target = step.startMs;
 	}
-	return found;
+	return target;
+}
+
+/** The start of the next step after the one at `timeMs`, or the end of the Walkthrough when none follows. */
+export function nextStepStartMs(timeline: PlaybackTimeline, timeMs: number): number {
+	const current = leadingStartMs(timeline, timeMs);
+	let target = timeline.totalMs;
+	for (const step of timeline.steps) {
+		if (step.startMs > current && step.startMs < target) target = step.startMs;
+	}
+	return target;
+}
+
+/** The start of the step leading at `timeMs`: the latest-started step running then, or the last step once finished. */
+function leadingStartMs(timeline: PlaybackTimeline, timeMs: number): number {
+	const last = timeline.steps[timeline.steps.length - 1];
+	if (!last) return 0;
+	if (timeMs >= timeline.totalMs) return last.startMs;
+	let start = timeline.steps[0]!.startMs;
+	for (const step of timeline.steps) {
+		if (step.startMs <= timeMs && timeMs < step.endMs && step.startMs >= start) start = step.startMs;
+	}
+	return start;
 }
 
 /**

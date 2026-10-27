@@ -152,11 +152,22 @@ import {
 import {
 	acceptWalkthroughStepRedirection,
 	addWalkthrough,
+	addWalkthroughBlock,
+	addWalkthroughParallelBranch,
 	addWalkthroughStep,
 	findWalkthrough,
+	findWalkthroughBlock,
 	findWalkthroughStep,
 	moveWalkthrough,
+	moveWalkthroughBlock,
 	moveWalkthroughStep,
+	removeWalkthroughBlock,
+	updateWalkthroughRepeat,
+	type AddWalkthroughBlockAction,
+	type AddWalkthroughParallelBranchAction,
+	type MoveWalkthroughBlockAction,
+	type RemoveWalkthroughBlockAction,
+	type UpdateWalkthroughRepeatAction,
 	normalizeWalkthroughs,
 	removeWalkthrough,
 	removeWalkthroughStep,
@@ -325,6 +336,11 @@ export interface DesignWorkspace {
 	updateWalkthroughStep(action: UpdateWalkthroughStepAction): Promise<WorkspaceState>;
 	moveWalkthroughStep(action: MoveWalkthroughStepAction): Promise<WorkspaceState>;
 	removeWalkthroughStep(action: RemoveWalkthroughStepAction): Promise<WorkspaceState>;
+	addWalkthroughBlock(action: AddWalkthroughBlockAction): Promise<WorkspaceState>;
+	addWalkthroughParallelBranch(action: AddWalkthroughParallelBranchAction): Promise<WorkspaceState>;
+	updateWalkthroughRepeat(action: UpdateWalkthroughRepeatAction): Promise<WorkspaceState>;
+	moveWalkthroughBlock(action: MoveWalkthroughBlockAction): Promise<WorkspaceState>;
+	removeWalkthroughBlock(action: RemoveWalkthroughBlockAction): Promise<WorkspaceState>;
 	/** Points a step at a Connection and accepts that Connection's current endpoints. */
 	repairWalkthroughStep(action: RepairWalkthroughStepAction): Promise<WorkspaceState>;
 	/** Accepts the changed route of a redirected step. Only that step's recorded endpoints change. */
@@ -2771,6 +2787,51 @@ export async function createDesignWorkspace(
 						next: removeWalkthroughStep(walkthroughs, action.walkthroughId, action.stepId),
 						action: { name: `Remove step “${removed.title}”` },
 					};
+				});
+			});
+		},
+		addWalkthroughBlock(action) {
+			return runTask(async () => {
+				const id = action.id ?? createId();
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = addWalkthroughBlock(walkthroughs, action.walkthroughId, { ...action, id });
+					const added = findWalkthroughBlock(next, action.walkthroughId, id)!;
+					const name = added.kind === "parallel" ? "Add parallel block" : "Add repeated block";
+					return { next, action: { name } };
+				});
+			});
+		},
+		addWalkthroughParallelBranch(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = addWalkthroughParallelBranch(walkthroughs, action.walkthroughId, action.blockId);
+					return { next, action: { name: "Add parallel branch" } };
+				});
+			});
+		},
+		updateWalkthroughRepeat(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = updateWalkthroughRepeat(walkthroughs, action.walkthroughId, action.blockId, action.count);
+					return { next, action: { name: `Repeat ${action.count} ${action.count === 1 ? "time" : "times"}` } };
+				});
+			});
+		},
+		moveWalkthroughBlock(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const next = moveWalkthroughBlock(walkthroughs, action.walkthroughId, action.blockId, action.toIndex);
+					return { next, action: { name: "Move block" } };
+				});
+			});
+		},
+		removeWalkthroughBlock(action) {
+			return runTask(async () => {
+				return applyWalkthroughChange((walkthroughs) => {
+					const removed = findWalkthroughBlock(walkthroughs, action.walkthroughId, action.blockId);
+					if (!removed) throw new Error("That block could not be found.");
+					const name = removed.kind === "parallel" ? "Remove parallel block" : "Remove repeated block";
+					return { next: removeWalkthroughBlock(walkthroughs, action.walkthroughId, action.blockId), action: { name } };
 				});
 			});
 		},

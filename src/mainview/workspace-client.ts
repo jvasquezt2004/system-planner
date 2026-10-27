@@ -4,7 +4,9 @@ import type { AssistantThinkingLevel } from "../shared/assistant";
 import type {
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
+	WalkthroughContainerKind,
 	WalkthroughRemovalImpact,
+	WalkthroughSequenceRef,
 	WalkthroughStepChanges,
 } from "../shared/walkthrough";
 import type {
@@ -337,6 +339,21 @@ export const workspaceClient = {
 	},
 	removeWalkthroughStep(walkthroughId: string, stepId: string): Promise<WorkspaceState> {
 		return rpc.request.removeWalkthroughStep({ walkthroughId, stepId });
+	},
+	addWalkthroughBlock(walkthroughId: string, kind: WalkthroughContainerKind, id: string, sequence?: WalkthroughSequenceRef): Promise<WorkspaceState> {
+		return rpc.request.addWalkthroughBlock({ id, walkthroughId, kind, sequence });
+	},
+	addWalkthroughParallelBranch(walkthroughId: string, blockId: string): Promise<WorkspaceState> {
+		return rpc.request.addWalkthroughParallelBranch({ walkthroughId, blockId });
+	},
+	updateWalkthroughRepeat(walkthroughId: string, blockId: string, count: number): Promise<WorkspaceState> {
+		return rpc.request.updateWalkthroughRepeat({ walkthroughId, blockId, count });
+	},
+	moveWalkthroughBlock(walkthroughId: string, blockId: string, toIndex: number): Promise<WorkspaceState> {
+		return rpc.request.moveWalkthroughBlock({ walkthroughId, blockId, toIndex });
+	},
+	removeWalkthroughBlock(walkthroughId: string, blockId: string): Promise<WorkspaceState> {
+		return rpc.request.removeWalkthroughBlock({ walkthroughId, blockId });
 	},
 	repairWalkthroughStep(walkthroughId: string, stepId: string, connectionId: string): Promise<WorkspaceState> {
 		return rpc.request.repairWalkthroughStep({ walkthroughId, stepId, connectionId });

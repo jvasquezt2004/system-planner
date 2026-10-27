@@ -56,22 +56,22 @@ describe("walkthrough SVG playback", () => {
 	test("the message dot is drawn at the point the frame derives from the route, at that authored time", () => {
 		const { timeline, routes } = timelineAndRoutes(1000);
 		const frame = deriveWalkthroughFrame(timeline, routes, 300);
-		expect(frame.message).not.toBeNull();
-		const html = svg(<WalkthroughMessageDot message={frame.message!} />);
-		expect(html).toContain(`cx="${frame.message!.point.x}"`);
-		expect(html).toContain(`cy="${frame.message!.point.y}"`);
+		expect(frame.messages[0]).not.toBeNull();
+		const html = svg(<WalkthroughMessageDot message={frame.messages[0]!} />);
+		expect(html).toContain(`cx="${frame.messages[0]!.point.x}"`);
+		expect(html).toContain(`cy="${frame.messages[0]!.point.y}"`);
 		expect(html).toContain('data-connection-id="enqueue"');
 	});
 
 	test("the dot moves along the route as time advances and is not drawn once the message has arrived", () => {
 		const { timeline, routes } = timelineAndRoutes(1000);
-		const early = deriveWalkthroughFrame(timeline, routes, 100).message!;
-		const later = deriveWalkthroughFrame(timeline, routes, 400).message!;
+		const early = deriveWalkthroughFrame(timeline, routes, 100).messages[0]!;
+		const later = deriveWalkthroughFrame(timeline, routes, 400).messages[0]!;
 		expect(later.progress).toBeGreaterThan(early.progress);
 		expect(later.point.x).toBeGreaterThan(early.point.x);
 
 		const arrived = deriveWalkthroughFrame(timeline, routes, timeline.steps[0]!.arrivalMs + 1);
-		expect(arrived.message).toBeNull();
+		expect(arrived.messages).toEqual([]);
 	});
 
 	test("reactions render as a ring at the frame's intensity with the preset's label", () => {

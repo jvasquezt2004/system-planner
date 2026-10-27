@@ -2,12 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { computeConnectionPath, type ProofRect } from "./architecture-proof";
 import {
 	PLAYBACK_DEFAULT_STEP_MS,
+	PLAYBACK_STEP_LIMIT,
 	compileWalkthroughPlayback,
 	createPlaybackTransport,
 	deriveWalkthroughFrame,
 	isTransportPlaying,
+	nextStepStartMs,
 	pauseTransport,
 	playTransport,
+	previousStepStartMs,
 	seekTransport,
 	setTransportSpeed,
 	stepStartMs,
@@ -29,7 +32,14 @@ import {
 	updateSystemConnection,
 	type SystemDesign,
 } from "./system-design";
-import { addWalkthrough, addWalkthroughStep, updateWalkthroughStep, type Walkthrough } from "./walkthrough";
+import {
+	addWalkthrough,
+	addWalkthroughBlock,
+	addWalkthroughStep,
+	updateWalkthroughRepeat,
+	updateWalkthroughStep,
+	type Walkthrough,
+} from "./walkthrough";
 
 /** A three-hop path: Client → API → Queue, with a second Connection from the API to the Client. */
 function fixtureDesign(): SystemDesign {
@@ -143,8 +153,8 @@ describe("Walkthrough frames derive from authored time", () => {
 
 		expect(frame.reactions.client).toEqual({ action: "send", role: "sender", phase: "depart", intensity: 1 });
 		expect(frame.reactions.api).toBeUndefined();
-		expect(frame.message?.progress).toBe(0);
-		expect(frame.message?.point).toEqual(routes.get("upload")!.start);
+		expect(frame.messages[0]?.progress).toBe(0);
+		expect(frame.messages[0]?.point).toEqual(routes.get("upload")!.start);
 		expect(frame.highlight).toEqual({ connectionId: "upload", endpointIds: ["client", "api"] });
 	});
 
@@ -155,12 +165,12 @@ describe("Walkthrough frames derive from authored time", () => {
 		const arrival = timeline.steps[0]!.arrivalMs;
 
 		const atArrival = deriveWalkthroughFrame(timeline, routes, arrival);
-		expect(atArrival.message?.progress).toBe(1);
-		expect(atArrival.message?.point.x).toBeCloseTo(routes.get("upload")!.end.x, 6);
-		expect(atArrival.message?.point.y).toBeCloseTo(routes.get("upload")!.end.y, 6);
+		expect(atArrival.messages[0]?.progress).toBe(1);
+		expect(atArrival.messages[0]?.point.x).toBeCloseTo(routes.get("upload")!.end.x, 6);
+		expect(atArrival.messages[0]?.point.y).toBeCloseTo(routes.get("upload")!.end.y, 6);
 
 		const afterArrival = deriveWalkthroughFrame(timeline, routes, arrival + 1);
-		expect(afterArrival.message).toBeNull();
+		expect(afterArrival.messages).toEqual([]);
 		expect(afterArrival.reactions.client).toBeUndefined();
 		expect(afterArrival.reactions.api).toEqual({ action: "receive", role: "destination", phase: "arrive", intensity: expect.any(Number) });
 	});
@@ -220,7 +230,7 @@ describe("Walkthrough frames derive from authored time", () => {
 		const done = deriveWalkthroughFrame(timeline, routesFor(design), 5000);
 		expect(done.complete).toBe(true);
 		expect(done.timeMs).toBe(1000);
-		expect(done.message).toBeNull();
+		expect(done.messages).toEqual([]);
 		expect(done.reactions).toEqual({});
 		expect(done.stepProgress).toBe(1);
 	});
@@ -231,7 +241,7 @@ describe("Walkthrough frames derive from authored time", () => {
 		const routes = routesFor(design);
 
 		const early = deriveWalkthroughFrame(timeline, routes, 100, { reducedMotion: true });
-		expect(early.message).toBeNull();
+		expect(early.messages).toEqual([]);
 		expect(early.reactions.client).toEqual({ action: "send", role: "sender", phase: "depart", intensity: 1 });
 
 		const late = deriveWalkthroughFrame(timeline, routes, timeline.steps[0]!.arrivalMs + 50, { reducedMotion: true });
@@ -247,9 +257,9 @@ describe("Walkthrough frames derive from authored time", () => {
 		const movedRoutes = routesFor(moved);
 
 		const arrival = deriveWalkthroughFrame(timeline, movedRoutes, timeline.steps[0]!.arrivalMs);
-		expect(arrival.message?.point.x).toBeCloseTo(movedRoutes.get("upload")!.end.x, 6);
-		expect(arrival.message?.point.y).toBeCloseTo(movedRoutes.get("upload")!.end.y, 6);
-		expect(arrival.message?.point).not.toEqual(routesFor(design).get("upload")!.end);
+		expect(arrival.messages[0]?.point.x).toBeCloseTo(movedRoutes.get("upload")!.end.x, 6);
+		expect(arrival.messages[0]?.point.y).toBeCloseTo(movedRoutes.get("upload")!.end.y, 6);
+		expect(arrival.messages[0]?.point).not.toEqual(routesFor(design).get("upload")!.end);
 		expect(timeline.steps[0]!.arrivalMs).toBe(Math.round(1000 * 0.6));
 	});
 });
@@ -269,7 +279,7 @@ describe("Walkthrough travel share and time scrubbing", () => {
 		expect(timeline.totalMs).toBe(2000);
 
 		const arrived = deriveWalkthroughFrame(timeline, routesFor(design), 250);
-		expect(arrived.message?.progress).toBe(1);
+		expect(arrived.messages[0]?.progress).toBe(1);
 		expect(arrived.reactions.api).toEqual({ action: "receive", role: "destination", phase: "arrive", intensity: 0 });
 	});
 
@@ -289,7 +299,7 @@ describe("Walkthrough travel share and time scrubbing", () => {
 		expect(later.step.connectionId).toBe("enqueue");
 		expect(later.reactions.client).toBeUndefined();
 		expect(later.reactions.api).toBeUndefined();
-		expect(later.message).toBeNull();
+		expect(later.messages).toEqual([]);
 		expect(later.reactions.queue).toEqual({ action: "receive", role: "destination", phase: "arrive", intensity: expect.any(Number) });
 	});
 
@@ -422,5 +432,142 @@ describe("Walkthrough playback after architecture changes", () => {
 		if (blocked.ok) throw new Error("Expected the dangling Walkthrough to be blocked.");
 		expect(blocked.problems).toEqual(["Step 1 plays a Connection that was removed. Choose a Connection to repair it."]);
 		expect(compileWalkthroughPlayback(walkthroughs[1]!, removed).ok).toBe(true);
+	});
+});
+
+describe("Parallel and repeated playback", () => {
+	/** Builds a Walkthrough from block-level steps, using the same authoring operations as the editor. */
+	function nested(build: (walkthroughs: Walkthrough[]) => Walkthrough[]): Walkthrough[] {
+		return build(addWalkthrough([], { id: "nested" }));
+	}
+
+	function addStep(walkthroughs: Walkthrough[], design: SystemDesign, id: string, connectionId: string, durationMs: number, sequence?: { blockId: string | null; branch?: number }, action: "send" | "receive" | "process" | "succeed" | "fail" = "send") {
+		const added = addWalkthroughStep(walkthroughs, "nested", { id, connectionId, sequence }, design);
+		return updateWalkthroughStep(added, "nested", id, { durationMs, action });
+	}
+
+	test("a parallel block starts every branch together and ends with its longest branch", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = addWalkthroughBlock(start, "nested", { id: "p", kind: "parallel" });
+			next = addStep(next, design, "a", "upload", 1000, { blockId: "p", branch: 0 });
+			next = addStep(next, design, "b", "enqueue", 2000, { blockId: "p", branch: 1 });
+			next = addStep(next, design, "c", "reply", 500);
+			return next;
+		});
+		const timeline = compiled(design, walkthroughs);
+		expect(timeline.totalMs).toBe(2500);
+		expect(timeline.steps.map((step) => [step.stepId, step.startMs, step.endMs])).toEqual([
+			["a", 0, 1000],
+			["b", 0, 2000],
+			["c", 2000, 2500],
+		]);
+
+		const routes = routesFor(design);
+		const together = deriveWalkthroughFrame(timeline, routes, 500);
+		expect(together.activeStepIndexes).toEqual([0, 1]);
+		expect(together.messages.map((message) => message.connectionId)).toEqual(["upload", "enqueue"]);
+
+		const shorterDone = deriveWalkthroughFrame(timeline, routes, 1500);
+		expect(shorterDone.activeStepIndexes).toEqual([1]);
+		expect(shorterDone.step.stepId).toBe("b");
+
+		const afterBlock = deriveWalkthroughFrame(timeline, routes, 2100);
+		expect(afterBlock.step.stepId).toBe("c");
+		expect(afterBlock.complete).toBe(false);
+		expect(deriveWalkthroughFrame(timeline, routes, 2500).complete).toBe(true);
+	});
+
+	test("reactions at one endpoint compose by phase: an outcome outranks another branch's departure", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = addWalkthroughBlock(start, "nested", { id: "p", kind: "parallel" });
+			next = addStep(next, design, "a", "upload", 1000, { blockId: "p", branch: 0 }, "succeed");
+			next = addStep(next, design, "b", "enqueue", 2000, { blockId: "p", branch: 1 });
+			return next;
+		});
+		const timeline = compiled(design, walkthroughs);
+		// At 900 the upload has arrived at api and is showing its outcome, while enqueue departs from api.
+		const frame = deriveWalkthroughFrame(timeline, routesFor(design), 900);
+		expect(frame.reactions.api).toMatchObject({ phase: "outcome", action: "succeed" });
+	});
+
+	test("a repeated block plays its body once per pass, in order, and numbers each pass", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = addWalkthroughBlock(start, "nested", { id: "r", kind: "repeat" });
+			next = updateWalkthroughRepeat(next, "nested", "r", 3);
+			next = addStep(next, design, "attempt", "upload", 1000, { blockId: "r" }, "fail");
+			next = addStep(next, design, "retry-ok", "upload", 1000, undefined, "succeed");
+			return next;
+		});
+		const timeline = compiled(design, walkthroughs);
+		expect(timeline.steps.map((step) => [step.stepId, step.startMs, step.repetition?.iteration ?? null])).toEqual([
+			["attempt", 0, 1],
+			["attempt", 1000, 2],
+			["attempt", 2000, 3],
+			["retry-ok", 3000, null],
+		]);
+		expect(timeline.totalMs).toBe(4000);
+		const secondPass = deriveWalkthroughFrame(timeline, routesFor(design), 1500);
+		expect(secondPass.step.repetition).toEqual({ iteration: 2, count: 3 });
+		expect(secondPass.step.index).toBe(1);
+	});
+
+	test("seeking and previous or next step respect nested block boundaries", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = addWalkthroughBlock(start, "nested", { id: "p", kind: "parallel" });
+			next = addStep(next, design, "a", "upload", 1000, { blockId: "p", branch: 0 });
+			next = addStep(next, design, "b", "enqueue", 2000, { blockId: "p", branch: 1 });
+			next = addStep(next, design, "c", "reply", 1000);
+			next = addWalkthroughBlock(next, "nested", { id: "r", kind: "repeat" });
+			next = updateWalkthroughRepeat(next, "nested", "r", 2);
+			return addStep(next, design, "d", "upload", 500, { blockId: "r" });
+		});
+		const timeline = compiled(design, walkthroughs);
+		expect(timeline.steps.map((step) => step.startMs)).toEqual([0, 0, 2000, 3000, 3500]);
+		// The parallel branches start together, so stepping forward from the block's start skips the sibling.
+		expect(nextStepStartMs(timeline, 0)).toBe(2000);
+		expect(previousStepStartMs(timeline, 2500)).toBe(0);
+		expect(nextStepStartMs(timeline, 3200)).toBe(3500);
+		expect(previousStepStartMs(timeline, 3600)).toBe(3000);
+		expect(nextStepStartMs(timeline, 3600)).toBe(timeline.totalMs);
+		// Seeking to a pass's start lands on that pass, and derived frames match a fresh derivation.
+		const seeked = deriveWalkthroughFrame(timeline, routesFor(design), 3500);
+		expect(seeked).toEqual(deriveWalkthroughFrame(timeline, routesFor(design), 3500));
+		expect(seeked.step.repetition).toEqual({ iteration: 2, count: 2 });
+	});
+
+	test("a Walkthrough whose repeats play too many steps is refused before it is expanded", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = start;
+			let parent: string | null = null;
+			for (const id of ["r1", "r2", "r3"]) {
+				next = addWalkthroughBlock(next, "nested", { id, kind: "repeat", sequence: parent ? { blockId: parent } : undefined });
+				next = updateWalkthroughRepeat(next, "nested", id, 10);
+				parent = id;
+			}
+			for (const id of ["x", "y", "z"]) next = addStep(next, design, id, "upload", 500, { blockId: parent });
+			return next;
+		});
+		const result = compileWalkthroughPlayback(walkthroughs[0]!, design);
+		expect(result.ok).toBe(false);
+		if (result.ok) return;
+		expect(result.problems).toEqual([`Repeated blocks play 3000 steps, more than the ${PLAYBACK_STEP_LIMIT} playback allows. Lower a repeat count.`]);
+	});
+
+	test("a dangling step inside a parallel branch blocks playback and names the step", () => {
+		const design = fixtureDesign();
+		const walkthroughs = nested((start) => {
+			let next = addWalkthroughBlock(start, "nested", { id: "p", kind: "parallel" });
+			next = addStep(next, design, "a", "upload", 1000, { blockId: "p", branch: 0 });
+			return addStep(next, design, "b", "enqueue", 1000, { blockId: "p", branch: 1 });
+		});
+		const withoutEnqueue = removeSystemConnection(design, "enqueue");
+		const result = compileWalkthroughPlayback(walkthroughs[0]!, withoutEnqueue);
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.problems).toEqual(["Step 2 plays a Connection that was removed. Choose a Connection to repair it."]);
 	});
 });

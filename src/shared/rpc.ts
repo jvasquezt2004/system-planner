@@ -75,10 +75,15 @@ import type {
 	UpdateSystemServiceAction,
 } from "./system-design";
 import type {
+	AddWalkthroughBlockAction,
+	AddWalkthroughParallelBranchAction,
 	AddWalkthroughStepAction,
 	CreateWalkthroughAction,
 	MoveWalkthroughAction,
+	MoveWalkthroughBlockAction,
 	MoveWalkthroughStepAction,
+	RemoveWalkthroughBlockAction,
+	UpdateWalkthroughRepeatAction,
 	RemoveWalkthroughAction,
 	RemoveWalkthroughStepAction,
 	RenameWalkthroughAction,
@@ -234,6 +239,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			updateWalkthroughStep: { params: UpdateWalkthroughStepAction; response: WorkspaceState };
 			moveWalkthroughStep: { params: MoveWalkthroughStepAction; response: WorkspaceState };
 			removeWalkthroughStep: { params: RemoveWalkthroughStepAction; response: WorkspaceState };
+			addWalkthroughBlock: { params: AddWalkthroughBlockAction; response: WorkspaceState };
+			addWalkthroughParallelBranch: { params: AddWalkthroughParallelBranchAction; response: WorkspaceState };
+			updateWalkthroughRepeat: { params: UpdateWalkthroughRepeatAction; response: WorkspaceState };
+			moveWalkthroughBlock: { params: MoveWalkthroughBlockAction; response: WorkspaceState };
+			removeWalkthroughBlock: { params: RemoveWalkthroughBlockAction; response: WorkspaceState };
 			repairWalkthroughStep: { params: RepairWalkthroughStepAction; response: WorkspaceState };
 			acceptWalkthroughStepRedirection: { params: AcceptWalkthroughStepRedirectionAction; response: WorkspaceState };
 			copySqlPreview: {
