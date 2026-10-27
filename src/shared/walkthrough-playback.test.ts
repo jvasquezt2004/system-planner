@@ -6,6 +6,7 @@ import {
 	compileWalkthroughPlayback,
 	createPlaybackTransport,
 	deriveWalkthroughFrame,
+	hiddenActivityStep,
 	isTransportPlaying,
 	nextStepStartMs,
 	pauseTransport,
@@ -14,6 +15,7 @@ import {
 	seekTransport,
 	setTransportSpeed,
 	stepStartMs,
+	strongestReaction,
 	transportTimeMs,
 	walkthroughPlaybackKey,
 	type PlaybackRoute,
@@ -28,6 +30,8 @@ import {
 	moveSystemComponent,
 	removeSystemConnection,
 	resizeSystemGroup,
+	setSystemFocus,
+	setSystemServiceCollapsed,
 	updateSystemComponent,
 	updateSystemConnection,
 	type SystemDesign,
@@ -584,5 +588,92 @@ describe("Parallel and repeated playback", () => {
 		const result = compileWalkthroughPlayback(walkthroughs[0]!, withoutEnqueue);
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.problems).toEqual(["Step 2 plays a Connection that was removed. Choose a Connection to repair it."]);
+	});
+});
+
+describe("Collapsed Service activity and focus transitions", () => {
+	/** Orders owns Worker and Cache. Reads leaves the Service, Warms stays inside it, and Fills leaves from Cache. */
+	function serviceFixture(): SystemDesign {
+		let design = createEmptySystemDesign();
+		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", name: "Worker", position: { x: 40, y: 60 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "cache", name: "Cache", position: { x: 40, y: 200 }, serviceId: "orders" });
+		design = addSystemComponent(design, { id: "queue", name: "Queue", position: { x: 640, y: 60 } });
+		design = addSystemConnection(design, { id: "reads", sourceId: "worker", targetId: "queue", label: "Reads" });
+		design = addSystemConnection(design, { id: "warms", sourceId: "worker", targetId: "cache", label: "Warms" });
+		design = addSystemConnection(design, { id: "fills", sourceId: "cache", targetId: "queue", label: "Fills" });
+		return design;
+	}
+
+	/** Reads and Warms run in parallel for one second; Fills follows for another second. */
+	function parallelThenFills(design: SystemDesign): Walkthrough[] {
+		let walkthroughs = addWalkthrough([], { id: "orders-flow" });
+		walkthroughs = addWalkthroughBlock(walkthroughs, "orders-flow", { id: "p", kind: "parallel" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "orders-flow", { id: "reads", connectionId: "reads", sequence: { blockId: "p", branch: 0 } }, design);
+		walkthroughs = updateWalkthroughStep(walkthroughs, "orders-flow", "reads", { durationMs: 1000, title: "Read the order" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "orders-flow", { id: "warms", connectionId: "warms", sequence: { blockId: "p", branch: 1 } }, design);
+		walkthroughs = updateWalkthroughStep(walkthroughs, "orders-flow", "warms", { durationMs: 1000, title: "Warm the cache" });
+		walkthroughs = addWalkthroughStep(walkthroughs, "orders-flow", { id: "fills", connectionId: "fills" }, design);
+		return updateWalkthroughStep(walkthroughs, "orders-flow", "fills", { durationMs: 1000, title: "Fill the queue" });
+	}
+
+	test("the boundary takes the strongest reaction among itself and the Components it hides", () => {
+		const depart = { action: "send", role: "sender", phase: "depart", intensity: 1 } as const;
+		const arrive = { action: "receive", role: "destination", phase: "arrive", intensity: 1 } as const;
+		const outcome = { action: "process", role: "destination", phase: "outcome", intensity: 1 } as const;
+		const reactions = { orders: arrive, worker: depart, cache: outcome };
+		expect(strongestReaction(reactions, ["orders", "worker", "cache"])).toBe(outcome);
+		expect(strongestReaction(reactions, ["orders", "worker"])).toBe(arrive);
+		expect(strongestReaction({ worker: depart }, ["orders", "worker"])).toBe(depart);
+		expect(strongestReaction({}, ["orders", "worker"])).toBeUndefined();
+
+		const faint = { ...depart, intensity: 0.2 };
+		const strong = { ...depart, intensity: 0.8 };
+		expect(strongestReaction({ worker: faint, cache: strong }, ["orders", "worker", "cache"])).toBe(strong);
+		// Equal reactions keep the Service's own, since it is listed first.
+		expect(strongestReaction({ orders: depart, worker: depart }, ["orders", "worker"])).toBe(depart);
+	});
+
+	test("a step that stays inside a collapsed Service is named on its boundary, and one that crosses it is not", () => {
+		const design = serviceFixture();
+		const timeline = compiled(design, parallelThenFills(design));
+		const hidden = new Set(["worker", "cache"]);
+
+		const parallel = deriveWalkthroughFrame(timeline, routesFor(design), 500);
+		expect(parallel.activeStepIndexes).toEqual([0, 1]);
+		expect(hiddenActivityStep(timeline, parallel, hidden)?.title).toBe("Warm the cache");
+
+		// Fills leaves the Service for the Queue, so it is drawn as a message on the boundary instead.
+		const crossing = deriveWalkthroughFrame(timeline, routesFor(design), 1500);
+		expect(crossing.step.stepId).toBe("fills");
+		expect(hiddenActivityStep(timeline, crossing, hidden)).toBeNull();
+	});
+
+	test("collapsing or focusing a Service keeps the playback key, the clock, and the active steps", () => {
+		const design = serviceFixture();
+		const walkthroughs = parallelThenFills(design);
+		const key = walkthroughPlaybackKey(walkthroughs[0]!, design);
+		const timeline = compiled(design, walkthroughs);
+		const before = deriveWalkthroughFrame(timeline, routesFor(design), 1500);
+
+		for (const changed of [setSystemServiceCollapsed(design, "orders", true), setSystemFocus(design, "orders")]) {
+			expect(walkthroughPlaybackKey(walkthroughs[0]!, changed)).toBe(key);
+			const after = deriveWalkthroughFrame(timeline, routesFor(changed), 1500);
+			expect(after.timeMs).toBe(before.timeMs);
+			expect(after.activeStepIndexes).toEqual(before.activeStepIndexes);
+			expect(after.step.stepId).toBe(before.step.stepId);
+		}
+	});
+
+	test("a step the focused view does not draw still advances the clock and reacts, without a message", () => {
+		const design = serviceFixture();
+		const timeline = compiled(design, parallelThenFills(design));
+		// Routes exclude Fills, as a focused view that does not draw its Connection would.
+		const routes = new Map([...routesFor(design)].filter(([connectionId]) => connectionId !== "fills"));
+		const frame = deriveWalkthroughFrame(timeline, routes, 1500);
+		expect(frame.step.stepId).toBe("fills");
+		expect(frame.messages).toEqual([]);
+		expect(frame.reactions.cache?.role).toBe("sender");
+		expect(frame.highlight.connectionId).toBe("fills");
 	});
 });
