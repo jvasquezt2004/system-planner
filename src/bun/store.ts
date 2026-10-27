@@ -321,7 +321,7 @@ export function openDesignStore(
 	migrateSystemDesigns(database);
 
 	const listProjects = database.query<{ id: string; name: string }, []>(
-		`SELECT id, name FROM projects ORDER BY updated_at DESC, name ASC`,
+		`SELECT id, name FROM projects ORDER BY updated_at DESC, name ASC, rowid DESC`,
 	);
 	const selectProject = database.query<ProjectRow, [string]>(`
 		SELECT projects.id, projects.name, designs.id AS design_id, designs.revision, designs.document_revision,

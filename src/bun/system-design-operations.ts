@@ -86,6 +86,7 @@ export type SystemOperation = {
 	properties?: SystemComponentProperty[];
 	icon?: CustomIcon;
 	label?: string;
+	interactionType?: string;
 	protocol?: string;
 	ownerServiceId?: string | null;
 	linkedDesignId?: string | null;
@@ -294,6 +295,7 @@ export function planSystemOperations(
 						sourceId,
 						targetId,
 						...(operation.label !== undefined ? { label: operation.label } : {}),
+						...(operation.interactionType !== undefined ? { interactionType: operation.interactionType } : {}),
 						...(operation.protocol !== undefined ? { protocol: operation.protocol } : {}),
 						...attribution,
 					};
@@ -710,6 +712,7 @@ function componentChanges(operation: SystemOperation, designIds: ReadonlySet<str
 function connectionChanges(design: SystemDesign, operation: SystemOperation): SystemConnectionChanges {
 	const changes: SystemConnectionChanges = {};
 	if (operation.label !== undefined) changes.label = operation.label;
+	if (operation.interactionType !== undefined) changes.interactionType = operation.interactionType;
 	if (operation.protocol !== undefined) changes.protocol = operation.protocol;
 	if (operation.sourceId !== undefined) changes.sourceId = requireEndpoint(design, operation.sourceId, "sourceId");
 	if (operation.targetId !== undefined) changes.targetId = requireEndpoint(design, operation.targetId, "targetId");
