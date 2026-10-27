@@ -99,13 +99,19 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 		run.worker = null;
 		void options.workspace.finishScenarioRun({ runId: run.runId, ...outcome }).then((state) => {
 			if (active === run) active = null;
-			if (!isCurrent(run) || state.project?.id !== run.projectId) {
+			if (!isCurrent(run) || state.project?.id !== run.projectId || state.activeDesignId !== run.designId) {
 				run.resolve(null);
 				return;
 			}
 			options.onState?.(state);
 			const finished = state.scenarioRuns[run.scenario.id];
-			run.resolve(finished?.id === run.runId && finished.status !== "running" ? finished : null);
+			run.resolve(
+				finished?.id === run.runId &&
+				finished.designId === run.designId &&
+				finished.status !== "running"
+					? finished
+					: null,
+			);
 		}).catch((error: unknown) => {
 			if (active === run) active = null;
 			run.reject(error);
@@ -132,6 +138,7 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 			const run: ActiveRun = {
 				scenario,
 				runId: null,
+				projectId: null,
 				designId: null,
 				token,
 				worker: null,
@@ -156,10 +163,11 @@ export function createScenarioRunDriver(options: ScenarioRunDriverOptions): Scen
 					return promise;
 				}
 				run.projectId = begun.state.project.id;
-				run.designId = begun.state.activeDesignId;
-				if (!run.designId || (scenario.designId !== undefined && scenario.designId !== run.designId)) {
+				const designId = begun.state.activeDesignId;
+				if (!designId || (scenario.designId !== undefined && scenario.designId !== designId)) {
 					throw new Error("The Scenario run started in a different database Design.");
 				}
+				run.designId = designId;
 				onStarted?.(run.runId);
 				if (run.finishing) return promise;
 				if (pendingStops.delete(run.runId)) {

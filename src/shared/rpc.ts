@@ -86,11 +86,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			handleSandboxApiRequest: { params: { runId: string; request: SandboxApiRequest }; response: SandboxApiResponse };
 			finishScenarioRun: { params: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: "exception" | "stopped" | "timed out" }; response: WorkspaceState };
 			undo: {
-				params: Record<string, never>;
+				params: { designId?: string };
 				response: WorkspaceState;
 			};
 			redo: {
-				params: Record<string, never>;
+				params: { designId?: string };
 				response: WorkspaceState;
 			};
 			addTable: {

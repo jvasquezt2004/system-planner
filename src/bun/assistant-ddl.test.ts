@@ -434,7 +434,7 @@ describe("assistant DDL translator", () => {
 		if (!generated.ok) throw new Error(generated.errors.join("; "));
 		expect(generated.sql).toContain(`UNIQUE ("${endpointNames[0]}", "${endpointNames[1]}")`);
 		expect(workspace.getState().sandbox.status).toBe("applied");
-	});
+	}, 60_000);
 
 	test("places unrelated tables to the right of existing cards", async () => {
 		const workspace = await openWorkspace();

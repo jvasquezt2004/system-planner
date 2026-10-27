@@ -122,15 +122,25 @@ export interface DesignWorkspace {
 	beginScenarioRun(action: { scenarioId: string; designId?: string }): Promise<{ runId: string; state: WorkspaceState }>;
 	handleSandboxApiRequest(action: { runId: string; request: SandboxApiRequest }): Promise<SandboxApiResponse>;
 	finishScenarioRun(action: { runId: string; status: "passed" | "failed" | "errored"; console: string[]; expectations?: ScenarioRun["expectations"]; reason?: ScenarioRun["reason"] }): Promise<WorkspaceState>;
-	undo(): Promise<WorkspaceState>;
-	redo(): Promise<WorkspaceState>;
+	undo(action?: { designId?: string }): Promise<WorkspaceState>;
+	redo(action?: { designId?: string }): Promise<WorkspaceState>;
 	applyAssistantDesign(design: Design, assistantTurnId?: string, designId?: string): Promise<WorkspaceState>;
+	onAssistantDesignMutation?(listener: (turnId: string, before: Design, after: Design) => void): () => void;
 	restoreAssistantProjectSnapshot(input: {
 		projectId: string;
-		design: Design;
-		scenarios: Scenario[];
-		edgeFunctions: EdgeFunction[];
-		expectedSnapshot: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
+		design?: Design;
+		scenarios?: Scenario[];
+		edgeFunctions?: EdgeFunction[];
+		expectedSnapshot?: { design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] };
+		validateAndRestore?: (currentState: WorkspaceState) => {
+			ok: true;
+			design: Design;
+			scenarios: Scenario[];
+			edgeFunctions: EdgeFunction[];
+		} | {
+			ok: false;
+			conflicts: string[];
+		};
 	}): Promise<WorkspaceState>;
 	renameTable(action: RenameTableAction): Promise<WorkspaceState>;
 	removeTable(action: RemoveTableAction): Promise<WorkspaceState>;
@@ -152,6 +162,8 @@ export interface DesignWorkspace {
 	removeRelationship(action: RemoveRelationshipAction): Promise<WorkspaceState>;
 	/** Lists what a removal would also delete, before anything is removed. */
 	describeRemoval(target: RemovalTarget): RemovalPlan;
+	/** Throws unless `designId` is omitted or names the open project's active Design. */
+	requireActiveDesign(designId?: string): void;
 	setViewport(action: SetViewportAction): Promise<WorkspaceState>;
 	close(): Promise<void>;
 }
@@ -180,10 +192,12 @@ export async function createDesignWorkspace(
 	const createId = options.createId ?? (() => crypto.randomUUID());
 
 	const listeners = new Set<WorkspaceListener>();
+	/** Undo history belongs to one Design, so an edit cannot be replayed onto another. */
 	const histories = new Map<string, ProjectDesignHistory>();
 
-	function getUndoRedoState(projectId: string | null): WorkspaceState["undoRedo"] {
-		const history = projectId ? histories.get(projectId) : undefined;
+	const assistantMutationListeners = new Set<(turnId: string, before: Design, after: Design) => void>();
+	function getUndoRedoState(designId: string | null): WorkspaceState["undoRedo"] {
+		const history = designId ? histories.get(designId) : undefined;
 		return {
 			canUndo: history !== undefined && history.cursor > 0,
 			canRedo: history !== undefined && history.cursor < history.entries.length,
@@ -255,16 +269,16 @@ export async function createDesignWorkspace(
 		return applyManualDelta(base, manualBefore, manualAfter);
 	}
 	function recordDesignChange(
-		projectId: string,
+		designId: string,
 		before: Design,
 		after: Design,
 		structural: boolean,
 		assistantTurnId?: string,
 	): WorkspaceState["undoRedo"] {
-		let history = histories.get(projectId);
+		let history = histories.get(designId);
 		if (!history) {
 			history = { entries: [], cursor: 0 };
-			histories.set(projectId, history);
+			histories.set(designId, history);
 		}
 		history.entries.length = history.cursor;
 		if (assistantTurnId) {
@@ -297,12 +311,12 @@ export async function createDesignWorkspace(
 				};
 				history.entries.splice(firstTurnEntry, history.cursor - firstTurnEntry, ...manualEntries, assistantEntry);
 				history.cursor = firstTurnEntry + manualEntries.length + 1;
-				return getUndoRedoState(projectId);
+				return getUndoRedoState(designId);
 			}
 		}
 		history.entries.push({ before, after, structural, ...(assistantTurnId ? { assistantTurnId } : {}) });
 		history.cursor = history.entries.length;
-		return getUndoRedoState(projectId);
+		return getUndoRedoState(designId);
 	}
 	let state: WorkspaceState = {
 		projects: store.listProjects(),
@@ -398,20 +412,20 @@ export async function createDesignWorkspace(
 		projectId: string,
 		revision: number,
 		documentRevisionToSave: number,
-		designId?: string,
+		designId: string,
 	) {
 		return (
 			activeProjectId === projectId &&
-			(designId === undefined || activeDesignId === designId) &&
+			activeDesignId === designId &&
 			state.revision === revision &&
 			documentRevision === documentRevisionToSave
 		);
 	}
-	function isCurrentPreview(projectId: string, revision: number, requestId: number, designId?: string) {
+	function isCurrentPreview(projectId: string, revision: number, requestId: number, designId: string) {
 		return (
 			previewRequestId === requestId &&
 			activeProjectId === projectId &&
-			(designId === undefined || activeDesignId === designId) &&
+			activeDesignId === designId &&
 			state.revision === revision
 		);
 	}
@@ -430,7 +444,7 @@ export async function createDesignWorkspace(
 		cancelScheduledPreview();
 	}
 
-	function schedulePreview(projectId: string, revision: number, design: Design, designId?: string) {
+	function schedulePreview(projectId: string, revision: number, design: Design, designId: string) {
 		cancelScheduledPreview();
 		const requestId = ++previewRequestId;
 
@@ -456,7 +470,7 @@ export async function createDesignWorkspace(
 		revision: number,
 		design: Design,
 		requestId: number,
-		designId?: string,
+		designId: string,
 	) {
 		if (!isCurrentPreview(projectId, revision, requestId, designId)) return;
 
@@ -574,7 +588,7 @@ export async function createDesignWorkspace(
 		revision: number,
 		documentRevisionToSave: number,
 		design: Design,
-		designId?: string,
+		designId: string,
 	) {
 		const savedAt = now();
 		try {
@@ -662,16 +676,22 @@ export async function createDesignWorkspace(
 		}
 	}
 
-	function updateEdgeFunctions(projectId: string, update: (items: EdgeFunction[]) => EdgeFunction[], designId?: string) {
+	async function updateEdgeFunctions(
+		projectId: string,
+		update: (items: EdgeFunction[]) => EdgeFunction[],
+		designId?: string,
+	) {
 		const targetDesignId = designId ?? activeDesignId ?? undefined;
 		const edgeFunctions = update(state.edgeFunctions);
 		const revision = edgeFunctionRevision + 1;
 		edgeFunctionRevision = revision;
 		setState({ ...state, edgeFunctions, edgeFunctionSave: { status: "saving", revision, designId: targetDesignId } });
-		return saveEdgeFunctions(projectId, edgeFunctions, revision, edgeFunctionProjectGeneration, targetDesignId);
+		const committedState = state;
+		await saveEdgeFunctions(projectId, edgeFunctions, revision, edgeFunctionProjectGeneration, targetDesignId);
+		return activeProjectId === projectId && activeDesignId === targetDesignId ? state : committedState;
 	}
 
-	function updateScenarios(
+	async function updateScenarios(
 		projectId: string,
 		update: (scenarios: Scenario[]) => Scenario[],
 		designId?: string,
@@ -685,7 +705,9 @@ export async function createDesignWorkspace(
 			scenarios,
 			scenarioSave: { status: "saving", revision, designId: targetDesignId },
 		});
-		return saveScenarios(projectId, scenarios, revision, targetDesignId);
+		const committedState = state;
+		await saveScenarios(projectId, scenarios, revision, targetDesignId);
+		return activeProjectId === projectId && activeDesignId === targetDesignId ? state : committedState;
 	}
 	/** Saves the draft immediately and debounces its disposable preview rebuild. */
 	async function applyStructuralChange(
@@ -695,12 +717,12 @@ export async function createDesignWorkspace(
 		assistantTurnId?: string,
 		designId?: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, true, assistantTurnId)
-			: getUndoRedoState(projectId);
+			? recordDesignChange(targetDesignId, before, design, true, assistantTurnId)
+			: getUndoRedoState(targetDesignId);
 		const revision = state.revision + 1;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -741,12 +763,12 @@ export async function createDesignWorkspace(
 		recordHistory = true,
 		designId?: string,
 	) {
-		const targetDesignId = designId ?? activeDesignId ?? undefined;
+		const targetDesignId = requireOpenDesign(designId).designId;
 		const before = state.design;
 		if (!before) throw new Error("Open a project before editing its design.");
 		const undoRedo = recordHistory
-			? recordDesignChange(projectId, before, design, false)
-			: getUndoRedoState(projectId);
+			? recordDesignChange(targetDesignId, before, design, false)
+			: getUndoRedoState(targetDesignId);
 		const revision = state.revision;
 		const nextDocumentRevision = documentRevision + 1;
 		documentRevision = nextDocumentRevision;
@@ -760,9 +782,9 @@ export async function createDesignWorkspace(
 		return state;
 	}
 
-	async function applyHistoryChange(direction: "undo" | "redo") {
-		const { projectId, design: currentDesign, designId } = requireOpenDesign();
-		const history = histories.get(projectId);
+	async function applyHistoryChange(direction: "undo" | "redo", targetDesignId?: string) {
+		const { projectId, design: currentDesign, designId } = requireOpenDesign(targetDesignId);
+		const history = histories.get(designId);
 		if (!history) return state;
 
 		const undoing = direction === "undo";
@@ -778,8 +800,8 @@ export async function createDesignWorkspace(
 				: await applyNonSchemaChange(projectId, design, false, designId);
 		} catch (error) {
 			history.cursor += undoing ? 1 : -1;
-			if (activeProjectId === projectId) {
-				setState({ ...state, undoRedo: getUndoRedoState(projectId) });
+			if (activeDesignId === designId) {
+				setState({ ...state, undoRedo: getUndoRedoState(designId) });
 			}
 			throw error;
 		}
@@ -849,7 +871,7 @@ export async function createDesignWorkspace(
 					edgeFunctions: [],
 					edgeFunctionSave: { status: "idle" },
 					scenarioRuns: {},
-					undoRedo: getUndoRedoState(project.id),
+					undoRedo: getUndoRedoState(designId),
 				});
 				return state;
 			});
@@ -907,7 +929,7 @@ export async function createDesignWorkspace(
 									savedAt: edgeFunctionDocument.savedAt,
 									designId,
 								},
-					undoRedo: getUndoRedoState(record.project.id),
+					undoRedo: getUndoRedoState(designId),
 				});
 				if (design.tables.length > 0) {
 					const requestId = ++previewRequestId;
@@ -927,8 +949,7 @@ export async function createDesignWorkspace(
 					source: 'Deno.serve(async (_request) => new Response("OK"));',
 					designId,
 				};
-				await updateEdgeFunctions(projectId, (items) => [...items, edgeFunction], designId);
-				return state;
+				return await updateEdgeFunctions(projectId, (items) => [...items, edgeFunction], designId);
 			});
 		},
 		renameEdgeFunction(action) {
@@ -941,10 +962,9 @@ export async function createDesignWorkspace(
 					throw new Error(`Edge function “${name}” already exists in this project.`);
 				}
 				if (current.name === name) return state;
-				await updateEdgeFunctions(projectId, (items) =>
+				return await updateEdgeFunctions(projectId, (items) =>
 					items.map((item) => item.id === current.id ? { ...item, name } : item),
 				designId);
-				return state;
 			});
 		},
 		removeEdgeFunction(action) {
@@ -953,8 +973,7 @@ export async function createDesignWorkspace(
 				if (!state.edgeFunctions.some((item) => item.id === action.edgeFunctionId)) {
 					throw new Error("That Edge function could not be found.");
 				}
-				await updateEdgeFunctions(projectId, (items) => items.filter((item) => item.id !== action.edgeFunctionId), designId);
-				return state;
+				return await updateEdgeFunctions(projectId, (items) => items.filter((item) => item.id !== action.edgeFunctionId), designId);
 			});
 		},
 		updateEdgeFunctionSource(action) {
@@ -963,10 +982,9 @@ export async function createDesignWorkspace(
 				const edgeFunction = state.edgeFunctions.find((item) => item.id === action.edgeFunctionId);
 				if (!edgeFunction) throw new Error("That Edge function could not be found.");
 				if (edgeFunction.source === action.source) return state;
-				await updateEdgeFunctions(projectId, (items) =>
+				return await updateEdgeFunctions(projectId, (items) =>
 					items.map((item) => item.id === edgeFunction.id ? { ...item, source: action.source } : item),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		createScenario(action) {
@@ -975,8 +993,7 @@ export async function createDesignWorkspace(
 				const name = action.name.trim();
 				if (!name) throw new Error("Scenario name is required.");
 				const scenario: Scenario = { id: createId(), name, source: "", designId };
-				await updateScenarios(projectId, (scenarios) => [...scenarios, scenario], designId);
-				return state;
+				return await updateScenarios(projectId, (scenarios) => [...scenarios, scenario], designId);
 			});
 		},
 		renameScenario(action) {
@@ -987,10 +1004,9 @@ export async function createDesignWorkspace(
 				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
 				if (!scenario) throw new Error("That scenario could not be found.");
 				if (scenario.name === name) return state;
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.map((item) => item.id === action.scenarioId ? { ...item, name } : item),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		removeScenario(action) {
@@ -999,10 +1015,9 @@ export async function createDesignWorkspace(
 				if (!state.scenarios.some((item) => item.id === action.scenarioId)) {
 					throw new Error("That scenario could not be found.");
 				}
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.filter((item) => item.id !== action.scenarioId),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		updateScenarioSource(action) {
@@ -1011,12 +1026,11 @@ export async function createDesignWorkspace(
 				const scenario = state.scenarios.find((item) => item.id === action.scenarioId);
 				if (!scenario) throw new Error("That scenario could not be found.");
 				if (scenario.source === action.source) return state;
-				await updateScenarios(projectId, (scenarios) =>
+				return await updateScenarios(projectId, (scenarios) =>
 					scenarios.map((item) =>
 						item.id === action.scenarioId ? { ...item, source: action.source } : item,
 					),
-				designId);
-				return state;
+					designId);
 			});
 		},
 		beginScenarioRun(action: { scenarioId: string; designId?: string }) {
@@ -1166,11 +1180,11 @@ export async function createDesignWorkspace(
 				return state;
 			});
 		},
-		undo() {
-			return runTask(() => applyHistoryChange("undo"));
+		undo(action) {
+			return runTask(() => applyHistoryChange("undo", action?.designId));
 		},
-		redo() {
-			return runTask(() => applyHistoryChange("redo"));
+		redo(action) {
+			return runTask(() => applyHistoryChange("redo", action?.designId));
 		},
 		applyAssistantDesign(design, assistantTurnId, targetDesignId) {
 			return runTask(async () => {
@@ -1211,6 +1225,11 @@ export async function createDesignWorkspace(
 						: {}),
 				};
 				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
+				if (assistantTurnId) {
+					for (const listener of assistantMutationListeners) {
+						listener(assistantTurnId, currentDesign, validated);
+					}
+				}
 				return applyStructuralChange(projectId, validated, true, assistantTurnId, designId);
 			});
 		},
@@ -1218,19 +1237,119 @@ export async function createDesignWorkspace(
 			return runTask(async () => {
 				const current = state;
 				if (current.project?.id !== input.projectId || !current.design) throw new Error("The Assistant turn belongs to a different open project.");
-				const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
-				const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
-				if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
-				const restored = normalizeDesign({ ...input.design, viewport: current.design.viewport });
-				if (JSON.stringify({ ...restored, viewport: null }) !== JSON.stringify({ ...current.design, viewport: null })) {
-					await applyStructuralChange(input.projectId, restored, true, undefined, activeDesignId ?? undefined);
+				const designId = activeDesignId!;
+				let targetDesign = input.design;
+				let targetScenarios = input.scenarios;
+				let targetEdgeFunctions = input.edgeFunctions;
+
+				if (input.validateAndRestore) {
+					const result = input.validateAndRestore(current);
+					if (result.ok === false) {
+						throw new Error(`Cannot revert Assistant turn due to conflicting items: ${result.conflicts.join("; ")}`);
+					}
+					targetDesign = result.design;
+					targetScenarios = result.scenarios;
+					targetEdgeFunctions = result.edgeFunctions;
 				}
-				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
-				await updateScenarios(input.projectId, () => structuredClone(input.scenarios), activeDesignId ?? undefined);
-				if (state.project?.id !== input.projectId) throw new Error("The open project changed while reverting the Assistant turn.");
-				await updateEdgeFunctions(input.projectId, () => structuredClone(input.edgeFunctions), activeDesignId ?? undefined);
+
+				if (!targetDesign || !targetScenarios || !targetEdgeFunctions) {
+					throw new Error("Missing restoration payload.");
+				}
+
+				if (input.expectedSnapshot) {
+					const currentContent = { design: { ...current.design, viewport: null }, scenarios: current.scenarios, edgeFunctions: current.edgeFunctions };
+					const expectedContent = { design: { ...input.expectedSnapshot.design, viewport: null }, scenarios: input.expectedSnapshot.scenarios, edgeFunctions: input.expectedSnapshot.edgeFunctions };
+					if (JSON.stringify(currentContent) !== JSON.stringify(expectedContent)) throw new Error("The project changed after this Assistant turn; it can no longer be reverted.");
+				}
+				const restored = normalizeDesign({ ...targetDesign, viewport: current.design.viewport });
+				const nextRevision = state.revision + 1;
+				const nextDocumentRevision = ++documentRevision;
+				const nextScenarioRevision = ++scenarioRevision;
+				const nextEdgeFunctionRevision = ++edgeFunctionRevision;
+				const savedAt = now();
+				const history = histories.get(designId);
+				const originalHistory = history ? structuredClone(history) : undefined;
+				const undoRedo = recordDesignChange(designId, current.design, restored, true);
+				const lastApplied = getLastAppliedSandbox(state.sandbox);
+				setState({
+					...state,
+					design: restored,
+					revision: nextRevision,
+					scenarios: targetScenarios,
+					edgeFunctions: targetEdgeFunctions,
+					undoRedo,
+					save: { status: "saving", revision: nextRevision, designId },
+					scenarioSave: { status: "saving", revision: nextScenarioRevision, designId },
+					edgeFunctionSave: { status: "saving", revision: nextEdgeFunctionRevision, designId },
+					sql: {
+						status: "checking",
+						draftRevision: nextRevision,
+						availableRevision: lastGeneratableSql?.revision ?? null,
+						sql: lastGeneratableSql?.sql ?? null,
+					},
+					sandbox: lastApplied === null ? { status: "idle" } : { status: "applied", ...lastApplied },
+				});
+				const initialSave = {
+					projectId: input.projectId,
+					designId,
+					design: { design: restored, save: { revision: nextRevision, documentRevision: nextDocumentRevision, savedAt } },
+					scenarios: { scenarios: targetScenarios, save: { revision: nextScenarioRevision, savedAt } },
+					edgeFunctions: { edgeFunctions: targetEdgeFunctions, save: { revision: nextEdgeFunctionRevision, savedAt } },
+				};
+				try {
+					await store.saveProjectArtifacts(initialSave);
+				} catch (error) {
+					const concurrentEdit = state.revision !== nextRevision || documentRevision !== nextDocumentRevision
+						|| scenarioRevision !== nextScenarioRevision || edgeFunctionRevision !== nextEdgeFunctionRevision;
+					if (!concurrentEdit) {
+						documentRevision = nextDocumentRevision - 1;
+						scenarioRevision = nextScenarioRevision - 1;
+						edgeFunctionRevision = nextEdgeFunctionRevision - 1;
+						if (originalHistory) histories.set(designId, originalHistory);
+						else histories.delete(designId);
+						setState(current);
+					} else {
+						const currentState = state;
+						const correctiveDocumentRevision = ++documentRevision;
+						await store.saveProjectArtifacts({
+							projectId: input.projectId,
+							designId,
+							design: { design: currentState.design!, save: { revision: currentState.revision, documentRevision: correctiveDocumentRevision, savedAt: now() } },
+							scenarios: { scenarios: currentState.scenarios, save: { revision: ++scenarioRevision, savedAt: now() } },
+							edgeFunctions: { edgeFunctions: currentState.edgeFunctions, save: { revision: ++edgeFunctionRevision, savedAt: now() } },
+						});
+					}
+					throw error;
+				}
+				if (state.revision === nextRevision && documentRevision === nextDocumentRevision
+					&& scenarioRevision === nextScenarioRevision && edgeFunctionRevision === nextEdgeFunctionRevision) {
+					setState({
+						...state,
+						projects: store.listProjects(),
+						save: { status: "saved", revision: nextRevision, savedAt, designId },
+						scenarioSave: { status: "saved", revision: nextScenarioRevision, savedAt, designId },
+						edgeFunctionSave: { status: "saved", revision: nextEdgeFunctionRevision, savedAt, designId },
+					});
+					schedulePreview(input.projectId, nextRevision, restored, designId);
+				} else {
+					const latest = state;
+					const correctiveDocumentRevision = ++documentRevision;
+					const correctiveScenarioRevision = ++scenarioRevision;
+					const correctiveEdgeFunctionRevision = ++edgeFunctionRevision;
+					await store.saveProjectArtifacts({
+						projectId: input.projectId,
+						designId,
+						design: { design: latest.design!, save: { revision: latest.revision, documentRevision: correctiveDocumentRevision, savedAt: now() } },
+						scenarios: { scenarios: latest.scenarios, save: { revision: correctiveScenarioRevision, savedAt: now() } },
+						edgeFunctions: { edgeFunctions: latest.edgeFunctions, save: { revision: correctiveEdgeFunctionRevision, savedAt: now() } },
+					});
+				}
 				return state;
 			});
+		},
+		onAssistantDesignMutation(listener) {
+			assistantMutationListeners.add(listener);
+			return () => assistantMutationListeners.delete(listener);
 		},
 		addTable(action) {
 			return runTask(async () => {
@@ -1706,6 +1825,9 @@ export async function createDesignWorkspace(
 			const { design } = requireOpenDesign(target.designId);
 			requireRemovalTarget(design, target);
 			return removalPlan(design, target);
+		},
+		requireActiveDesign(designId) {
+			requireOpenDesign(designId);
 		},
 		setViewport(action) {
 			return runTask(async () => {

@@ -18,12 +18,12 @@ import type { AssistantStore } from "./assistant-store";
 import { getAssistantCodeDiagnostics } from "./assistant-code-diagnostics";
 import { openAssistantStore } from "./assistant-store";
 import { generateDesignSql, quoteIdentifier } from "./sql";
-import { getLastAppliedSandbox, type SandboxState, type SqlState, type WorkspaceState } from "../shared/design";
+import { getLastAppliedSandbox, type Design, type EdgeFunction, type SandboxState, type SqlState, type WorkspaceState } from "../shared/design";
 import type { DesignWorkspace } from "./workspace";
-
 import type { ScenarioRun } from "../shared/design";
 import type { Scenario } from "../shared/design";
 import { runAllScenarios, SCENARIO_RUN_TIMEOUT_MS } from "../shared/run-all";
+import { TurnTracker, checkCodeRelevantContent } from "./assistant-turn-tracker";
 function deterministicDdlIdFactory(toolCallId: string) {
 	let counter = 0;
 	return () => {
@@ -365,8 +365,16 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	const runningTurns = new Set<string>();
 	const requestsThisTurn = new Map<string, number>();
 	const turnIds = new Map<string, string>();
+	const turnTrackers = new Map<string, TurnTracker>();
+	const conversationReadStates = new Map<string, { revision: number; design: Design; scenarios: Scenario[]; edgeFunctions: EdgeFunction[] }>();
 	const turnCheckpoints = new Map<string, { turnId: string; projectId: string; before: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> }; after?: { design: NonNullable<ReturnType<DesignWorkspace["getState"]>["design"]>; scenarios: Scenario[]; edgeFunctions: NonNullable<ReturnType<DesignWorkspace["getState"]>["edgeFunctions"]> } }>();
 	const latestTurnByProject = new Map<string, string>();
+	workspace.onAssistantDesignMutation?.((turnId, before, after) => {
+		const tracker = turnTrackers.get(turnId);
+		if (tracker) {
+			tracker.recordDesignMutation(before, after);
+		}
+	});
 	const pendingConfirmations = new Set<string>();
 	// Removal plans the designer rejected, per conversation, for the current turn only.
 	const rejectedDrops = new Map<string, { turnId: string | undefined; plans: Set<string> }>();
@@ -381,6 +389,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 	};
 	const lastConfirmedDrops = new Map<string, ConfirmedDropGuard>();
 	type AssistantTarget = { projectId: string; designId: string };
+	const pendingDdlTargets = new Map<string, AssistantTarget>();
 	const turnUsages = new Map<string, {
 		inputTokens: number;
 		outputTokens: number;
@@ -600,6 +609,12 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			const { state, target } = requireBoundState(conversationId);
 			const generated = generateDesignSql(state.design);
 			store.observeProjectSnapshot(conversationId, projectSnapshot(state), state.revision);
+			conversationReadStates.set(conversationId, {
+				revision: state.revision,
+				design: structuredClone(state.design),
+				scenarios: structuredClone(state.scenarios),
+				edgeFunctions: structuredClone(state.edgeFunctions),
+			});
 			return {
 				content: [{ type: "text", text: JSON.stringify({
 					projectId: target.projectId,
@@ -697,14 +712,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				};
 			}
 			lastConfirmedDrops.delete(conversationId);
-			const before = invocationState.design;
+			const readState = conversationReadStates.get(conversationId);
+			const before = invocationState.design ?? workspace.getState().design;
 			const result = await applyAssistantDdl(workspace, sql, {
 				assistantTurnId: turnIds.get(conversationId),
 				expectedProjectId: target.projectId,
 				expectedDesignId: target.designId,
 				idFactory: deterministicDdlIdFactory(_toolCallId),
+				readDesign: readState?.design,
 			});
-			assertTargetState(workspace.getState(), target, "The project or Design changed before the DDL result was accepted.");
+			if (result.status === "confirmation-required" &&
+				(result.projectId !== target.projectId || result.designId !== target.designId)) {
+				throw new Error("The DDL confirmation plan belongs to another project or Design.");
+			}
 			if (result.status === "confirmation-required") {
 				const rejected = rejectedDrops.get(conversationId);
 				if (rejected && rejected.turnId === turnIds.get(conversationId) && rejected.plans.has(JSON.stringify(result.removal))) {
@@ -723,6 +743,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			}
 			if (result.status === "applied") assertTargetState(result.state, target, "The project or Design changed before the DDL change completed.");
 			const after = result.state;
+			if (readState && result.state.design) {
+				readState.design = structuredClone(result.state.design);
+				readState.revision = result.state.revision;
+			}
 			store.observeProjectSnapshot(conversationId, projectSnapshot(after), after.revision);
 			const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 			const affectedTables: Array<{
@@ -781,6 +805,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				details,
 			};
 		},
+	},
 	{
 		name: "manage_code",
 		label: "Manage project code",
@@ -811,8 +836,13 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				oldText?: string;
 				newText?: string;
 			};
-			const { state: boundState, target } = requireBoundState(conversationId);
+			const { state: initialBoundState, target } = requireBoundState(conversationId);
+			let boundState = initialBoundState;
 			const kind = input.kind;
+			const currentTurnId = turnIds.get(conversationId);
+			const tracker = currentTurnId ? turnTrackers.get(currentTurnId) : undefined;
+			const readState = conversationReadStates.get(conversationId);
+			checkCodeRelevantContent(readState, workspace.getState(), kind, input.id, input.action, input.name);
 			if (input.action === "create") {
 				if (kind === "function-body") throw new Error("Function bodies cannot be created; define a Function through apply_ddl.");
 				if (!input.name) throw new Error("A name is required to create a code item.");
@@ -820,11 +850,19 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					? await workspace.createScenario({ name: input.name, designId: target.designId })
 					: await workspace.createEdgeFunction({ name: input.name, designId: target.designId });
 				assertTargetState(state, target, "The project or Design changed before the code item was created.");
-				assertTargetState(workspace.getState(), target, "The project or Design changed before the code item was created.");
+				boundState = state as BoundWorkspaceState;
 				const item = kind === "scenario"
 					? state.scenarios.find((candidate) => candidate.name === input.name?.trim())
 					: state.edgeFunctions.find((candidate) => candidate.name === input.name?.trim());
 				if (!item) throw new Error("The created code item could not be found in the bound project and Design.");
+				if (tracker) {
+					if (kind === "scenario") tracker.recordScenarioCreated(item as Scenario);
+					else tracker.recordEdgeFunctionCreated(item as EdgeFunction);
+				}
+				if (readState) {
+					if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+					else readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				}
 				if (input.source === undefined) {
 					const details = { action: "created", kind, id: item.id, name: item.name, projectId: target.projectId, designId: target.designId };
 					return { content: [{ type: "text", text: JSON.stringify(details) }], details };
@@ -837,6 +875,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (kind === "function-body") throw new Error("Function bodies cannot be renamed or removed through code tools.");
 				if (!input.id) throw new Error("An item id is required to rename or remove a code item.");
 				if (input.action === "rename" && !input.name) throw new Error("A new name is required to rename a code item.");
+				const currentBound = requireBoundState(conversationId);
+				const beforeScenario = kind === "scenario" ? currentBound.state.scenarios.find((s) => s.id === input.id) : undefined;
+				const beforeEdge = kind === "edge-function" ? currentBound.state.edgeFunctions.find((e) => e.id === input.id) : undefined;
 				const state = kind === "scenario"
 					? input.action === "rename"
 						? await workspace.renameScenario({ scenarioId: input.id, name: input.name!, designId: target.designId })
@@ -845,7 +886,27 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 						? await workspace.renameEdgeFunction({ edgeFunctionId: input.id, name: input.name!, designId: target.designId })
 						: await workspace.removeEdgeFunction({ edgeFunctionId: input.id, designId: target.designId });
 				assertTargetState(state, target, "The project or Design changed before the code item was updated.");
-				assertTargetState(workspace.getState(), target, "The project or Design changed before the code item was updated.");
+				if (tracker) {
+					if (kind === "scenario") {
+						if (input.action === "rename" && beforeScenario) {
+							const afterScenario = state.scenarios.find((s) => s.id === input.id);
+							if (afterScenario) tracker.recordScenarioModified(beforeScenario, afterScenario);
+						} else if (input.action === "remove" && beforeScenario) {
+							tracker.recordScenarioRemoved(beforeScenario);
+						}
+					} else {
+						if (input.action === "rename" && beforeEdge) {
+							const afterEdge = state.edgeFunctions.find((e) => e.id === input.id);
+							if (afterEdge) tracker.recordEdgeFunctionModified(beforeEdge, afterEdge);
+						} else if (input.action === "remove" && beforeEdge) {
+							tracker.recordEdgeFunctionRemoved(beforeEdge);
+						}
+					}
+				}
+				if (readState) {
+					if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+					else readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				}
 				const details = {
 					action: input.action === "rename" ? "renamed" : "removed",
 					kind,
@@ -876,6 +937,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				itemName = item.name;
 				before = item.body;
 			}
+			const beforeScenario = kind === "scenario" ? boundState.scenarios.find((s) => s.id === input.id) : undefined;
+			const beforeEdge = kind === "edge-function" ? boundState.edgeFunctions.find((e) => e.id === input.id) : undefined;
 			let after: string;
 			if (input.action === "write") {
 				if (input.source === undefined) throw new Error("A complete source string is required for a whole-file write.");
@@ -901,7 +964,23 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				);
 			}
 			assertTargetState(state, target, "The project or Design changed before the code write completed.");
-			assertTargetState(workspace.getState(), target, "The project or Design changed before the code write completed.");
+			if (tracker) {
+				if (kind === "scenario" && beforeScenario) {
+					const afterScenario = state.scenarios.find((s) => s.id === input.id);
+					if (afterScenario) tracker.recordScenarioModified(beforeScenario, afterScenario);
+				} else if (kind === "edge-function" && beforeEdge) {
+					const afterEdge = state.edgeFunctions.find((e) => e.id === input.id);
+					if (afterEdge) tracker.recordEdgeFunctionModified(beforeEdge, afterEdge);
+				}
+			}
+			if (readState) {
+				if (kind === "scenario") readState.scenarios = structuredClone(state.scenarios);
+				else if (kind === "edge-function") readState.edgeFunctions = structuredClone(state.edgeFunctions);
+				else if (state.design) {
+					readState.design = structuredClone(state.design);
+					readState.revision = state.revision;
+				}
+			}
 			const appliedSource = kind === "scenario"
 				? state.scenarios.find(({ id }) => id === input.id)?.source
 				: kind === "edge-function"
@@ -1173,29 +1252,21 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) return false;
 			const state = workspace.getState();
 			if (state.project?.id !== checkpoint.projectId || !state.design) return false;
-			const after = JSON.stringify({
-				design: { ...checkpoint.after.design, viewport: null },
-				scenarios: checkpoint.after.scenarios,
-				edgeFunctions: checkpoint.after.edgeFunctions,
-			});
-			const before = JSON.stringify({
-				design: { ...checkpoint.before.design, viewport: null },
-				scenarios: checkpoint.before.scenarios,
-				edgeFunctions: checkpoint.before.edgeFunctions,
-			});
-			return after !== before && JSON.stringify({ design: { ...state.design, viewport: null }, scenarios: state.scenarios, edgeFunctions: state.edgeFunctions }) === after;
+			const tracker = turnTrackers.get(checkpoint.turnId);
+			if (!tracker || !tracker.hasChanges()) return false;
+			return true;
 		},
 		async revertTurn(conversationId) {
 			const checkpoint = turnCheckpoints.get(conversationId);
 			if (!checkpoint?.after || latestTurnByProject.get(checkpoint.projectId) !== conversationId) throw new Error("This Assistant turn is no longer available to revert.");
+			const tracker = turnTrackers.get(checkpoint.turnId);
+			if (!tracker || !tracker.hasChanges()) throw new Error("This Assistant turn has no changes to revert.");
 			await workspace.restoreAssistantProjectSnapshot({
 				projectId: checkpoint.projectId,
-				design: checkpoint.before.design,
-				scenarios: checkpoint.before.scenarios,
-				edgeFunctions: checkpoint.before.edgeFunctions,
-				expectedSnapshot: checkpoint.after,
+				validateAndRestore: (current) => tracker.computeRestoration(current),
 			});
 			turnCheckpoints.delete(conversationId);
+			turnTrackers.delete(checkpoint.turnId);
 			latestTurnByProject.delete(checkpoint.projectId);
 			return store.loadConversation(conversationId);
 		},
@@ -1227,6 +1298,8 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 		},
 		async confirmDdlDrop(conversationId: string, toolCallId: string, options?: { waitForCompletion?: boolean }): Promise<any> {
 			const waitForCompletion = options?.waitForCompletion ?? true;
+			const agent = active.get(conversationId);
+			if (!agent) throw new Error("The Assistant turn for this confirmation is no longer active.");
 			const { conversation, state: invocationState } = requireBoundState(conversationId);
 			if (confirmingDrops.has(toolCallId)) throw new Error("This DDL confirmation is already being processed.");
 			if (conversation.messages.some((message) => {
@@ -1278,10 +1351,10 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					planOnly: true,
 				});
 				assertTargetState(workspace.getState(), target, "The project or Design changed while refreshing the DDL confirmation.");
+				if (plan.status !== "confirmation-required") throw new Error("Could not refresh the destructive DDL plan.");
 				if (plan.projectId !== target.projectId || plan.designId !== target.designId) {
 					throw new Error("The refreshed DDL plan belongs to another project or Design.");
 				}
-				if (plan.status !== "confirmation-required") throw new Error("Could not refresh the destructive DDL plan.");
 				if (plan.projectId !== savedPlan.projectId || plan.revision !== savedPlan.revision
 					|| JSON.stringify(plan.removal) !== JSON.stringify(savedPlan.removal)
 					|| JSON.stringify(plan.targets) !== JSON.stringify(savedPlan.targets)) {
@@ -1303,6 +1376,9 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				const beforeById = new Map((before?.tables ?? []).map((table) => [table.id, table]));
 				const turnId = turnIds.get(conversationId) ?? `confirmed:${toolCallId}`;
 				turnIds.set(conversationId, turnId);
+				if (!turnTrackers.has(turnId)) {
+					turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
+				}
 				const result = await applyAssistantDdl(workspace, statement, {
 					assistantTurnId: turnId,
 					confirmedDrops: true,
@@ -1311,6 +1387,7 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					idFactory: deterministicDdlIdFactory(toolCallId),
 					confirmation: {
 						projectId: savedPlan.projectId,
+						designId: target.designId,
 						revision: savedPlan.revision,
 						targetIds: savedPlan.targets.map(({ targetId }) => targetId),
 					},
@@ -1318,6 +1395,11 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 				if (result.status !== "applied") throw new Error("The DDL change still requires confirmation.");
 				assertTargetState(result.state, target, "The project or Design changed before the confirmed DDL change completed.");
 				const after = result.state;
+				const readState = conversationReadStates.get(conversationId);
+				if (readState && after.design) {
+					readState.design = structuredClone(after.design);
+					readState.revision = after.revision;
+				}
 				const affectedTables: Array<{
 					id: string;
 					name: string;
@@ -1397,26 +1479,22 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 					projectId: target.projectId,
 					designId: target.designId,
 				});
-					pausedTurns.delete(conversationId);
-					agent.state.messages.push(toolResult as never);
-					runningTurns.add(conversationId);
-					const run = agent.prompt("Continue after the confirmed destructive change.");
-					if (!waitForCompletion) {
-						run.catch((err) => {
-							runningTurns.delete(conversationId);
-							publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
-							publish(conversationId, { type: "agent_end" });
-							publish(conversationId, { type: "assistant_turn_ended" });
-						}).finally(() => {
-							confirmingDrops.delete(toolCallId);
-						});
-						return { started: true };
-					}
-					await run;
-				} else if (!waitForCompletion) {
-					publish(conversationId, { type: "assistant_turn_ended" });
+				pausedTurns.delete(conversationId);
+				agent.state.messages.push(toolResult as never);
+				runningTurns.add(conversationId);
+				const run = agent.prompt("Continue after the confirmed destructive change.");
+				if (!waitForCompletion) {
+					run.catch((err) => {
+						runningTurns.delete(conversationId);
+						publish(conversationId, { type: "assistant_error", error: err instanceof Error ? err.message : String(err) });
+						publish(conversationId, { type: "agent_end" });
+						publish(conversationId, { type: "assistant_turn_ended" });
+					}).finally(() => {
+						confirmingDrops.delete(toolCallId);
+					});
 					return { started: true };
 				}
+				await run;
 				return store.loadConversation(conversationId);
 			} finally {
 				if (waitForCompletion) {
@@ -1720,12 +1798,22 @@ export function createAssistantRuntime({ databasePath, workspace, models: suppli
 			requestsThisTurn.set(conversationId, 0);
 			pausedTurns.delete(conversationId);
 			turnUsages.set(conversationId, { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cost: null });
-			turnIds.set(conversationId, crypto.randomUUID());
+			const turnId = crypto.randomUUID();
+			turnIds.set(conversationId, turnId);
+			turnTrackers.set(turnId, new TurnTracker(turnId, conversation.project_id));
 			turnCheckpoints.set(conversationId, {
-				turnId: turnIds.get(conversationId)!,
+				turnId,
 				projectId: conversation.project_id,
 				before: checkpointBefore,
 			});
+			if (!conversationReadStates.has(conversationId)) {
+				conversationReadStates.set(conversationId, {
+					revision: currentState.revision,
+					design: structuredClone(currentState.design),
+					scenarios: structuredClone(currentState.scenarios),
+					edgeFunctions: structuredClone(currentState.edgeFunctions),
+				});
+			}
 			runningTurns.add(conversationId);
 			const run = agent.prompt([{ ...userMessage, content: [{ type: "text", text }] }]);
 			if (!waitForCompletion) {

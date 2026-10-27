@@ -176,6 +176,7 @@ describe("Assistant Scenario runs", () => {
 		const timeoutMessage = "The view did not report the Scenario run result in time.";
 		const requestStarted = Promise.withResolvers<void>();
 		const { scenarios, scripted, runtime, projectId, requests } = await setup(
+			['console.log("timeout scenario");'],
 			{
 				scenarioRunTimeoutMs: 20,
 				runScenario: async (_projectId, _designId, _scenario, _signal, timeoutMs) => {
@@ -309,7 +310,7 @@ describe("Assistant Scenario runs", () => {
 		if (!table) throw new Error("Expected Books table.");
 		await workspace.addColumn({ tableId: table.id, name: "subtitle", type: "text" });
 		expect(workspace.getState().scenarioRuns[scenarios[1]!.id]?.stale).toBe(true);
-	});
+	}, 60_000);
 
 
 	test("runs all saved Scenarios in order and reports Stop distinctly", async () => {

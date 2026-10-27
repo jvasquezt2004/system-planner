@@ -8,6 +8,7 @@ import { isSupportedColumnType, type ColumnLiteralType, type ColumnType } from "
 import type { DesignWorkspace } from "./workspace";
 import { removalPlan } from "../shared/relationships";
 import { indexMethodProblem } from "../shared/index-methods";
+import { checkDdlRelevantContent } from "./assistant-turn-tracker";
 
 // @pgsql/parser exposes its tagged PostgreSQL AST through a generic Node type;
 // model the JSON-shaped runtime nodes locally so statement fields stay usable.
@@ -206,7 +207,16 @@ function aggregateRemoval(targets: AssistantDdlRemovalTarget[]): RemovalPlan {
 	};
 }
 
-export type AssistantDdlOptions = { assistantTurnId?: string; confirmedDrops?: boolean; expectedProjectId?: string; expectedDesignId?: string; confirmation?: AssistantDdlConfirmation; idFactory?: () => string; planOnly?: boolean };
+export type AssistantDdlOptions = {
+	assistantTurnId?: string;
+	confirmedDrops?: boolean;
+	expectedProjectId?: string;
+	expectedDesignId?: string;
+	confirmation?: AssistantDdlConfirmation;
+	idFactory?: () => string;
+	planOnly?: boolean;
+	readDesign?: Design;
+};
 export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string, options: AssistantDdlOptions = {}): Promise<AssistantDdlResult> {
 	const parsed = await parse(sql) as Node;
 	const state = workspace.getState();
@@ -220,11 +230,14 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 			throw new Error("Assistant DDL confirmation is stale: project, Design, or revision changed.");
 		}
 	}
+	const statements: Node[] = parsed.stmts ?? [];
 	if (!state.project || !state.design || !state.activeDesignId) throw new Error("Cannot apply assistant DDL without an open database Design.");
+	if (options.readDesign) {
+		checkDdlRelevantContent(options.readDesign, state.design, statements);
+	}
 	const design: Design = structuredClone(state.design);
 	const createId = options.idFactory ?? id;
 	const pendingRemovals: AssistantDdlRemovalTarget[] = [];
-	const statements: Node[] = parsed.stmts ?? [];
 	const sqlBytes = new TextEncoder().encode(sql);
 	const appliedStatements: string[] = [];
 	for (const item of statements) {
@@ -502,17 +515,21 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	const latest = workspace.getState();
 	if (options.expectedProjectId && latest.project?.id !== options.expectedProjectId) throw new Error("Assistant DDL project changed before commit.");
 	if (options.expectedDesignId && latest.activeDesignId !== options.expectedDesignId) throw new Error("Assistant DDL Design changed before commit.");
-	if (latest.project?.id !== state.project.id || latest.activeDesignId !== state.activeDesignId || latest.revision !== state.revision) {
-		throw new Error("Assistant DDL project, Design, or revision changed before commit.");
+	if (!latest.project || !latest.design || latest.activeDesignId !== state.activeDesignId) {
+		throw new Error("Assistant DDL project or Design changed before commit.");
 	}
 	const targetIds = pendingRemovals.map(({ targetId }) => targetId).sort();
 	if (options.confirmation) {
 		const confirmedIds = [...options.confirmation.targetIds].sort();
-		if (latest.project?.id !== options.confirmation.projectId || latest.activeDesignId !== options.confirmation.designId ||
+		if (latest.project.id !== options.confirmation.projectId || latest.activeDesignId !== options.confirmation.designId ||
 			latest.revision !== options.confirmation.revision || confirmedIds.length !== targetIds.length ||
 			confirmedIds.some((targetId, index) => targetId !== targetIds[index])) {
 			throw new Error("Assistant DDL confirmation is stale: targets, project, Design, or revision changed.");
 		}
+	} else if (latest.project.id !== state.project.id || (!options.readDesign && latest.revision !== state.revision)) {
+		throw new Error("Assistant DDL project or revision changed before commit.");
+	} else if (options.readDesign && latest.revision !== state.revision) {
+		checkDdlRelevantContent(options.readDesign, latest.design, statements);
 	}
 	if (options.planOnly) {
 		return {

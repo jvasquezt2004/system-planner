@@ -2287,6 +2287,103 @@ describe("design workspace", () => {
 		]);
 		expect(redone.design?.tables.map(({ name }) => name)).toEqual(["generated"]);
 	}, 30_000);
+
+	test("undo and redo reject a Design that is not active and keep each Design's history separate", async () => {
+		const { workspace } = await openTestWorkspace();
+
+		const alphaProjectId = (await workspace.createProject({ name: "Alpha" })).project!.id;
+		const alphaId = workspace.getState().activeDesignId!;
+		await workspace.addTable({ designId: alphaId, name: "alpha_table" });
+
+		const betaProjectId = (await workspace.createProject({ name: "Beta" })).project!.id;
+		const betaId = workspace.getState().activeDesignId!;
+		await workspace.addTable({ designId: betaId, name: "beta_table" });
+		expect(workspace.getState().undoRedo.canUndo).toBe(true);
+
+		const betaBefore = workspace.getState();
+		await expect(workspace.undo({ designId: alphaId })).rejects.toThrow(/not the active/i);
+		await expect(workspace.redo({ designId: alphaId })).rejects.toThrow(/not the active/i);
+		expect(workspace.getState().design?.tables.map(({ name }) => name)).toEqual(["beta_table"]);
+		expect(workspace.getState().revision).toBe(betaBefore.revision);
+
+		const alpha = await workspace.openProject({ projectId: alphaProjectId });
+		expect(alpha.project?.name).toBe("Alpha");
+		expect(alpha.activeDesignId).toBe(alphaId);
+		expect(alpha.undoRedo.canUndo).toBe(true);
+		const undone = await workspace.undo({ designId: alphaId });
+		expect(undone.design?.tables).toHaveLength(0);
+		expect(undone.undoRedo).toEqual({ canUndo: false, canRedo: true });
+
+		const beta = await workspace.openProject({ projectId: betaProjectId });
+		expect(beta.project?.name).toBe("Beta");
+		expect(beta.undoRedo).toEqual({ canUndo: true, canRedo: false });
+		expect(beta.design?.tables.map(({ name }) => name)).toEqual(["beta_table"]);
+	});
+
+	test("explicit Design targets are validated before any copy or export and reject a late snapshot", async () => {
+		const { workspace } = await openTestWorkspace();
+		await workspace.createProject({ name: "Targets" });
+		const designId = workspace.getState().activeDesignId!;
+
+		expect(() => workspace.requireActiveDesign()).not.toThrow();
+		expect(() => workspace.requireActiveDesign(designId)).not.toThrow();
+		expect(() => workspace.requireActiveDesign("some-other-design")).toThrow(/not the active/i);
+	});
+
+	test("a late sandbox completion is ignored after the same Project is reopened", async () => {
+		type Gate = { started: Promise<void>; signalStarted: () => void; wait: Promise<void>; unblock: () => void };
+		const createGate = (): Gate => {
+			const started = Promise.withResolvers<void>();
+			const release = Promise.withResolvers<void>();
+			return {
+				started: started.promise,
+				signalStarted: started.resolve,
+				wait: release.promise,
+				unblock: release.resolve,
+			};
+		};
+		let nextGate: Gate | null = null;
+		const { workspace } = await openTestWorkspace({
+			createSandbox: () => {
+				const sandbox = createPGliteSandbox();
+				return {
+					async apply(sql) {
+						const result = await sandbox.apply(sql);
+						const gate = nextGate;
+						if (gate) {
+							nextGate = null;
+							gate.signalStarted();
+							await gate.wait;
+						}
+						return result;
+					},
+					dispose: () => sandbox.dispose(),
+				};
+			},
+		});
+
+		await workspace.createProject({ name: "Reopen" });
+		const projectId = workspace.getState().project!.id;
+		const designId = workspace.getState().activeDesignId!;
+		const authors = requireTable((await workspace.addTable({ designId, name: "Authors" })).design?.tables[0]);
+
+		const gate = createGate();
+		nextGate = gate;
+		const lateRename = workspace.renameTable({ designId, tableId: authors.id, name: "Late" });
+		await gate.started;
+
+		const reopened = await workspace.openProject({ projectId });
+		expect(reopened.activeDesignId).toBe(designId);
+		expect(reopened.design?.tables.map(({ name }) => name)).toEqual(["Late"]);
+		gate.unblock();
+		await lateRename;
+
+		const current = workspace.getState();
+		expect(current.sandbox).toMatchObject({ status: "applied", revision: current.revision, designId });
+		if (current.sandbox.status !== "applied") throw new Error("Expected an applied sandbox.");
+		expect(current.sandbox.tables.map(({ name }) => name)).toEqual(["Late"]);
+		expect(current.sql).toMatchObject({ status: "current", revision: current.revision, designId });
+	}, 60_000);
 });
 
 function requireTable(table: DesignTable | undefined): DesignTable {

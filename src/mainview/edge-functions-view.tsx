@@ -44,7 +44,7 @@ type Props = {
 
 /** Manage project Edge functions as saved source, separate from design history. */
 export function EdgeFunctionsView({
-	designId,
+	designId, initialSelectedId,
 	edgeFunctions, save, appliedTables, appliedEnums, appliedFunctions,
 	onCreate, onRename, onRemove, onUpdateSource,
 }: Props) {
