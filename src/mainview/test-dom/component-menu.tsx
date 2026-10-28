@@ -20,6 +20,7 @@ const { flushSync } = await import("react-dom");
 const { Button } = await import("../components/ui/button");
 const { DropdownMenu, DropdownMenuTrigger } = await import("../components/ui/dropdown-menu");
 const { SystemDesignView } = await import("../system-design-view");
+const { applySystemLayout, systemCardsOverlap } = await import("../../shared/system-layout");
 const { createEmptySystemDesign, addSystemComponent } = await import("../../shared/system-design");
 import type { WorkspaceState } from "../../shared/design";
 import type { workspaceClient } from "../workspace-client";
@@ -52,7 +53,11 @@ try {
 			}) };
 			return state;
 		},
-	} satisfies Pick<typeof workspaceClient, "addSystemComponent">;
+		async arrangeSystemLayout(action) {
+			state = { ...state, systemDesign: applySystemLayout(state.systemDesign!, action.placement) };
+			return state;
+		},
+	} satisfies Pick<typeof workspaceClient, "addSystemComponent" | "arrangeSystemLayout">;
 	const render = () => root.render(<SystemDesignView
 		state={state} client={client as typeof workspaceClient}
 		onApply={(action) => { void action().then(() => flushSync(render)); }}
@@ -74,6 +79,15 @@ try {
 		assert.equal(host.querySelectorAll("[data-component-id]").length, addedKinds.length, "New components appear on the canvas");
 		assert.equal(document.querySelector('[role="menu"]'), null, "The catalog closes after selection");
 	}
+	// A saved compact layout must offer a working, ordinary workspace layout action.
+	state.systemDesign = { ...state.systemDesign!, components: state.systemDesign!.components.map((component, index) => ({ ...component, position: { x: 32, y: 64 + index * 128 } })) };
+	flushSync(render);
+	assert.ok(host.querySelector('[data-testid="system-cards-overlap"]'));
+	const arrange = host.querySelector('[data-testid="arrange-system-cards"]')!;
+	flushSync(() => arrange.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+	await new Promise((resolve) => setTimeout(resolve, 50));
+	assert.equal(systemCardsOverlap(state.systemDesign!), false);
+	assert.equal(host.querySelector('[data-testid="system-cards-overlap"]'), null);
 	console.log("Button refs and Add component catalog interactions passed");
 } finally {
 	root.unmount();

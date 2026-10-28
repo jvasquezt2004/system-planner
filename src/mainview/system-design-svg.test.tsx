@@ -81,7 +81,7 @@ describe("System design SVG export", () => {
 		expect(COMPONENT_CATALOG).toHaveLength(28);
 	});
 
-	test("draws generic Components without artwork and Custom Components with their chosen icon", () => {
+	test("draws generic Components with library artwork and Custom Components with their chosen icon", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemComponent(design, { id: "plain", name: "Plain box", position: { x: 0, y: 0 } });
 		CUSTOM_ICONS.forEach((icon, index) => {
@@ -89,7 +89,7 @@ describe("System design SVG export", () => {
 		});
 		const svg = exportSvg(design);
 		expect(svg).toContain('data-kind="generic"');
-		expect(svg).not.toContain('data-artwork="generic"');
+		expect(svg).toContain('data-artwork="generic"');
 		for (const icon of CUSTOM_ICONS) {
 			expect(svg).toContain(`data-icon="${icon}"`);
 		}

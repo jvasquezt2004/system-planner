@@ -18,12 +18,14 @@ import {
  * never from callbacks that already fired. A seek, a pause, a speed change, or a
  * geometry change therefore yields the same state for the same `t`.
  *
- * Each step's authored duration is split into illustrative phases. The travel
+ * Each step's base authored duration is split into illustrative phases. The travel
  * share (`travelPercent`, 60 by default) sets where the arrival falls:
  *   - depart:  the sender activates with `send` while the message travels;
  *   - arrive:  the destination reacts with `receive` on arrival;
  *   - outcome: the destination shows the step's own `process`, `succeed`, or `fail`
  *              (a `send` or `receive` step keeps `receive`).
+ * Optional artwork timing reserves a full sender action before travel and a full
+ * destination action afterward; the saved base duration is never rewritten.
  * Layout changes alter the drawn route but not these durations, so the message
  * still reaches its destination at the authored arrival time.
  */
@@ -60,6 +62,10 @@ export type PlaybackStep = {
 	durationMs: number;
 	/** Absolute time the message reaches its destination. */
 	arrivalMs: number;
+	/** When the sender's full artwork cycle has finished and message travel can begin. */
+	travelStartMs?: number;
+	/** Zero when an immediately preceding step already completed this sender's action. */
+	sourceAnimationMs?: number;
 	endMs: number;
 };
 
@@ -117,7 +123,12 @@ const PHASE_RANK: Record<PlaybackReaction["phase"], number> = { depart: 0, arriv
  * Connection with its recorded endpoints. Dangling, redirected, or endpoint-less
  * steps are reported so the designer can repair them before playback starts.
  */
-export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: SystemDesign): PlaybackCompileResult {
+export type PlaybackTimingOptions = {
+	/** Optional presentation timing. Authored durations remain saved unchanged. */
+	componentAnimationMs?: (endpointId: string) => number;
+};
+
+export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: SystemDesign, timing: PlaybackTimingOptions = {}): PlaybackCompileResult {
 	const authored = walkthroughSteps(walkthrough);
 	if (authored.length === 0) {
 		return { ok: false, problems: ["Add at least one step before playing this Walkthrough."] };
@@ -150,7 +161,7 @@ export function compileWalkthroughPlayback(walkthrough: Walkthrough, design: Sys
 	}
 
 	const drafts: Omit<PlaybackStep, "index">[] = [];
-	const totalMs = expandBlocks(walkthrough.blocks, 0, drafts, design);
+	const totalMs = expandBlocks(walkthrough.blocks, 0, drafts, design, timing);
 	// Parallel branches are expanded one after another, so order by start time; the sort is stable.
 	drafts.sort((a, b) => a.startMs - b.startMs);
 	return {
@@ -165,6 +176,7 @@ function expandBlocks(
 	startMs: number,
 	out: Omit<PlaybackStep, "index">[],
 	design: SystemDesign,
+	timing: PlaybackTimingOptions,
 	repetition?: PlaybackStep["repetition"],
 ): number {
 	let cursor = startMs;
@@ -172,8 +184,16 @@ function expandBlocks(
 		if (block.kind === "step") {
 			const step = block.step;
 			const connection = findSystemConnection(design, step.connectionId)!;
-			const durationMs = step.durationMs ?? PLAYBACK_DEFAULT_STEP_MS;
+			const authoredMs = step.durationMs ?? PLAYBACK_DEFAULT_STEP_MS;
 			const travelPercent = step.travelPercent ?? PLAYBACK_DEFAULT_TRAVEL_PERCENT;
+			const travelMs = Math.round(authoredMs * (travelPercent / 100));
+			const senderJustFinished = out.some((previous) => previous.endMs === cursor && previous.targetId === connection.sourceId);
+			const sourceMs = senderJustFinished ? 0 : timing.componentAnimationMs?.(connection.sourceId) ?? 0;
+			const targetMs = timing.componentAnimationMs?.(connection.targetId) ?? 0;
+			// Leave a short final-pose hold so the completed cycle is visible before advancing.
+			const departureMs = sourceMs > 0 ? sourceMs + 150 : 0;
+			const arrivalMs = cursor + departureMs + travelMs;
+			const durationMs = departureMs + travelMs + Math.max(authoredMs - travelMs, targetMs > 0 ? targetMs + 150 : 0);
 			out.push({
 				stepId: step.id,
 				connectionId: connection.id,
@@ -188,16 +208,18 @@ function expandBlocks(
 				repetition,
 				startMs: cursor,
 				durationMs,
-				arrivalMs: cursor + Math.round(durationMs * (travelPercent / 100)),
+				arrivalMs,
+				...(departureMs > 0 ? { travelStartMs: cursor + departureMs } : {}),
+				...(timing.componentAnimationMs ? { sourceAnimationMs: sourceMs } : {}),
 				endMs: cursor + durationMs,
 			});
 			cursor += durationMs;
 		} else if (block.kind === "parallel") {
-			const ends = block.branches.map((branch) => expandBlocks(branch, cursor, out, design, repetition));
+			const ends = block.branches.map((branch) => expandBlocks(branch, cursor, out, design, timing, repetition));
 			cursor = Math.max(cursor, ...ends);
 		} else {
 			for (let iteration = 1; iteration <= block.count; iteration += 1) {
-				cursor = expandBlocks(block.body, cursor, out, design, { iteration, count: block.count });
+				cursor = expandBlocks(block.body, cursor, out, design, timing, { iteration, count: block.count });
 			}
 		}
 	}
@@ -252,6 +274,7 @@ export function deriveWalkthroughFrame(
 	for (const step of active) {
 		const local = clamped - step.startMs;
 		const arrivalLocal = step.arrivalMs - step.startMs;
+		const travelStartLocal = (step.travelStartMs ?? step.startMs) - step.startMs;
 		const departing = local < arrivalLocal;
 		const candidates: [string, PlaybackReaction][] = [];
 		if (departing) {
@@ -286,8 +309,9 @@ export function deriveWalkthroughFrame(
 		}
 
 		const route = routes.get(step.connectionId);
-		if (!reducedMotion && route && local <= arrivalLocal) {
-			const progress = arrivalLocal === 0 ? 1 : local / arrivalLocal;
+		if (!reducedMotion && route && local >= travelStartLocal && local <= arrivalLocal) {
+			const travelSpan = arrivalLocal - travelStartLocal;
+			const progress = travelSpan === 0 ? 1 : (local - travelStartLocal) / travelSpan;
 			messages.push({
 				connectionId: step.connectionId,
 				progress,
@@ -446,7 +470,7 @@ export function walkthroughPlaybackKey(walkthrough: Walkthrough, design: SystemD
 		walkthrough,
 		services: design.services.map((service) => service.id),
 		groups: design.groups.map((group) => [group.id, group.memberIds]),
-		components: design.components.map((component) => [component.id, component.serviceId, component.designId ?? null]),
+		components: design.components.map((component) => [component.id, component.kind, component.serviceId, component.designId ?? null]),
 		connections: design.connections.map((connection) => [connection.id, connection.sourceId, connection.targetId]),
 	});
 }

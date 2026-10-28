@@ -1,3 +1,4 @@
+import type { SystemLayoutAction } from "../shared/system-layout";
 import { defineElectrobunRPC } from "electrobun/rpc";
 import { Electroview } from "electrobun/view";
 import type { AssistantThinkingLevel } from "../shared/assistant";
@@ -334,6 +335,9 @@ export const workspaceClient = {
 	},
 	updateSystemComponent(componentId: string, changes: SystemComponentChanges): Promise<WorkspaceState> {
 		return rpc.request.updateSystemComponent({ componentId, changes });
+	},
+	arrangeSystemLayout(action: SystemLayoutAction): Promise<WorkspaceState> {
+		return rpc.request.arrangeSystemLayout(action);
 	},
 	moveSystemComponent(componentId: string, point: CanvasPoint): Promise<WorkspaceState> {
 		return rpc.request.moveSystemComponent({ componentId, x: point.x, y: point.y });

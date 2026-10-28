@@ -231,6 +231,7 @@ describe("RPC request handlers", () => {
 			moveSystemGroup: record("moveSystemGroup"),
 			resizeSystemGroup: record("resizeSystemGroup"),
 			removeSystemGroup: record("removeSystemGroup"),
+			arrangeSystemLayout: record("arrangeSystemLayout"),
 		} as unknown as DesignWorkspace;
 
 		const handlers = createRpcRequestHandlers({
@@ -254,6 +255,9 @@ describe("RPC request handlers", () => {
 		expect(captured.moveSystemGroup).toEqual({ groupId: "domain", x: 60, y: 30 });
 		await handlers.resizeSystemGroup({ groupId: "domain", width: 500, height: 300 });
 		expect(captured.resizeSystemGroup).toEqual({ groupId: "domain", width: 500, height: 300 });
+		const placement = { components: [{ id: "api", position: { x: 40, y: 240 } }], services: [], groups: [] };
+		await handlers.arrangeSystemLayout({ placement });
+		expect(captured.arrangeSystemLayout).toEqual({ placement });
 		await handlers.removeSystemGroup({ groupId: "domain" });
 		expect(captured.removeSystemGroup).toEqual({ groupId: "domain" });
 	});

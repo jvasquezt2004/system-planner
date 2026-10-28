@@ -1,3 +1,4 @@
+import type { SystemLayoutAction } from "../shared/system-layout";
 import type { AssistantConversationRecord, AssistantModel, AssistantThinkingLevel, AssistantConnectionStatus, AssistantConversation } from "../shared/assistant";
 import type {
 	AddColumnAction,
@@ -191,6 +192,7 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		removeSystemGroup: async (action: RemoveSystemGroupAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemGroup(action),
 		addSystemComponent: async (action: AddSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).addSystemComponent(action),
 		updateSystemComponent: async (action: UpdateSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).updateSystemComponent(action),
+		arrangeSystemLayout: async (action: SystemLayoutAction): Promise<WorkspaceState> => (await deps.workspace).arrangeSystemLayout(action),
 		moveSystemComponent: async (action: MoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).moveSystemComponent(action),
 		removeSystemComponent: async (action: RemoveSystemComponentAction): Promise<WorkspaceState> => (await deps.workspace).removeSystemComponent(action),
 		describeSystemComponentRemoval: async ({ componentId }: { componentId: string }): Promise<SystemComponentRemovalPlan & WalkthroughRemovalImpact> =>

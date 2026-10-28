@@ -1,3 +1,4 @@
+import type { SystemLayoutAction } from "./system-layout";
 import type { ElectrobunRPCSchema } from "electrobun/rpc";
 import type {
 	AssistantConnectionStatus,
@@ -237,6 +238,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			removeSystemGroup: { params: RemoveSystemGroupAction; response: WorkspaceState };
 			addSystemComponent: { params: AddSystemComponentAction; response: WorkspaceState };
 			updateSystemComponent: { params: UpdateSystemComponentAction; response: WorkspaceState };
+			arrangeSystemLayout: { params: SystemLayoutAction; response: WorkspaceState };
 			moveSystemComponent: { params: MoveSystemComponentAction; response: WorkspaceState };
 			removeSystemComponent: { params: RemoveSystemComponentAction; response: WorkspaceState };
 			describeSystemComponentRemoval: {

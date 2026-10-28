@@ -109,10 +109,6 @@ export function resizedGroupSize(origin: SystemServiceSize, dx: number, dy: numb
 
 /** Height of a Group frame's header, where its name sits and where it can be dragged from. */
 export const GROUP_HEADER_HEIGHT = 40;
-/** Room the linked-schema badge takes beside a Database card's header, so its artwork moves left of it. */
-export const SCHEMA_BADGE_ROOM = 56;
-/** Approximate advance of one upper-case header character at 10px with letter spacing. */
-export const KIND_HEADER_CHARACTER_WIDTH = 7.4;
 
 /** Padding between a Group frame and the members it encloses. The top leaves room for the header. */
 const GROUP_FRAME_PADDING = { left: 24, right: 24, top: 48, bottom: 24 } as const;

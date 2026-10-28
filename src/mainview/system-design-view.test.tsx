@@ -63,6 +63,15 @@ describe("system overview SVG export", () => {
 });
 
 describe("system overview rendering", () => {
+	test("older overlapping rows offer an explicit Arrange repair without silently moving saved cards", () => {
+		let design = addSystemComponent(createEmptySystemDesign(), { id: "api", kind: "api", name: "API", position: { x: 0, y: 0 } });
+		design = addSystemComponent(design, { id: "worker", kind: "worker", name: "Worker", position: { x: 0, y: 128 } });
+		const html = render(design);
+		expect(html).toContain('data-testid="system-cards-overlap"');
+		expect(html).toContain('data-testid="arrange-system-cards"');
+		expect(design.components[1]!.position).toEqual({ x: 0, y: 128 });
+	});
+
 	test("draws each Service boundary with its name, owned Components, and resize handle", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemService(design, { id: "orders", name: "Orders", position: { x: 0, y: 0 } });
@@ -158,11 +167,11 @@ describe("system overview rendering", () => {
 		}
 		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
 		expect(html).toContain(">SCHEDULED JOB<");
-		expect(html).toContain(">SERVERLESS HAND…<");
+		expect(html).toContain(">SERVERLESS HANDLER<");
 		expect(html).toContain('aria-label="Serverless handler: Node 4"');
 	});
 
-	test("each data and messaging kind draws its own labelled artwork, and a long kind label stops before the artwork", () => {
+	test("each data and messaging kind draws its own labelled artwork, with the full kind label below the artwork", () => {
 		const kinds = ["database", "cache", "object_storage_bucket", "file_storage", "search_index", "queue", "topic", "event_bus", "event_stream"] as const;
 		let design = createEmptySystemDesign();
 		kinds.forEach((kind, index) => {
@@ -175,29 +184,29 @@ describe("system overview rendering", () => {
 			expect(html).toContain(`data-artwork="${kind}"`);
 		}
 		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(kinds.length);
-		expect(html).toContain(">OBJECT-STORAGE…<");
+		expect(html).toContain(">OBJECT-STORAGE BUCKET<");
 		expect(html).toContain(">EVENT STREAM<");
 		expect(html).toContain('aria-label="Object-storage bucket: Node 2"');
 	});
 
-	test("a linked Database keeps its badge and moves its artwork left of the badge", () => {
+	test("a linked Database keeps its badge above its full-size artwork", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemComponent(design, { id: "primary", kind: "database", name: "Primary", position: { x: 0, y: 0 }, designId: "design-orders" });
 		const html = render(design);
 		expect(html).toContain('data-artwork="database"');
-		expect(html).toContain('transform="translate(86 8)"');
+		expect(html).toContain('transform="translate(10 0)"');
 		expect(html).toContain(">DATABASE<");
 		expect(html).toContain(">LINKED<");
 	});
 
-	test("the original generic Component draws no catalog artwork, while an unlinked Database draws its own", () => {
+	test("the original generic Component draws its library artwork, while an unlinked Database draws its own", () => {
 		let design = createEmptySystemDesign();
 		design = addSystemComponent(design, { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
-		expect(render(design)).not.toContain("data-testid=\"component-artwork\"");
+		expect(render(design)).toContain('data-artwork="generic"');
 
 		design = addSystemComponent(design, { id: "store", kind: "database", name: "Store", position: { x: 220, y: 0 } });
 		const html = render(design);
-		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(1);
+		expect(html.match(/data-testid="component-artwork"/g)).toHaveLength(2);
 		expect(html).toContain('data-artwork="database"');
 	});
 });
@@ -402,10 +411,10 @@ describe("supporting and Custom Component rendering", () => {
 		expect(html).toContain('aria-label="Custom: Chosen"');
 	});
 
-	test("the original generic Component still draws no artwork and no icon", () => {
+	test("the original generic Component draws library artwork without a Custom icon", () => {
 		const design = addSystemComponent(createEmptySystemDesign(), { id: "plain", name: "Plain", position: { x: 0, y: 0 } });
 		const html = render(design);
-		expect(html).not.toContain('data-testid="component-artwork"');
+		expect(html).toContain('data-artwork="generic"');
 		expect(html).not.toContain("data-icon=");
 	});
 });

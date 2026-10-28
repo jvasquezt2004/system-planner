@@ -889,7 +889,7 @@ function StepEditor({
 					onChange={(event) => setTravelPercent(event.target.value)}
 					onBlur={commitTravelPercent}
 				/>
-				<span className="text-[11.5px] text-ink-3">The part of the duration spent travelling before the message arrives.</span>
+				<span className="text-[11.5px] text-ink-3">Travel uses this share of the duration. Component animations finish before playback advances.</span>
 			</label>
 
 			<label className="flex flex-col gap-1">

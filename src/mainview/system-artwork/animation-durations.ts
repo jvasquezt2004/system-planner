@@ -1,0 +1,35 @@
+import type { SystemComponentKind } from "../../shared/system-design";
+
+/** Full, finite artwork actions in milliseconds, including delayed effects and mirrored returns. */
+export const COMPONENT_ANIMATION_MS = {
+	generic: 2000,
+	person: 1800,
+	browser: 3400,
+	mobile_app: 2550,
+	external_system: 2200,
+	dns: 3600,
+	cdn: 2750,
+	load_balancer: 3800,
+	api_gateway: 3600,
+	proxy: 2800,
+	application: 3600,
+	api: 2500,
+	worker: 6000,
+	scheduled_job: 6400,
+	serverless_handler: 4000,
+	database: 2100,
+	cache: 1100,
+	object_storage_bucket: 2200,
+	file_storage: 2500,
+	search_index: 3600,
+	queue: 1200,
+	topic: 2100,
+	event_bus: 3300,
+	event_stream: 2000,
+	identity_provider: 2400,
+	secrets_store: 2400,
+	configuration: 6100,
+	observability: 2400,
+	custom: 4000,
+} as const satisfies Record<SystemComponentKind, number>;
+

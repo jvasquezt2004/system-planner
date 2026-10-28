@@ -144,7 +144,7 @@ export const DEFAULT_SYSTEM_CONNECTION_LABEL = "Interaction";
 export const SYSTEM_COMPONENT_NAME_LIMIT = 80;
 export const SYSTEM_CONNECTION_LABEL_LIMIT = 80;
 export const SYSTEM_PROPERTY_LIMIT = 40;
-export const SYSTEM_COMPONENT_SIZE = { width: 180, height: 84 } as const;
+export const SYSTEM_COMPONENT_SIZE = { width: 180, height: 196 } as const;
 export const SYSTEM_SERVICE_DEFAULT_SIZE: SystemServiceSize = { width: 420, height: 280 };
 export const SYSTEM_SERVICE_MIN_SIZE: SystemServiceSize = { width: 240, height: 160 };
 /** The boundary a collapsed Service draws in place of its expanded frame. Its position is unchanged. */

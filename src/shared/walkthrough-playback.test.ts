@@ -391,6 +391,7 @@ describe("Walkthrough playback key", () => {
 		const key = walkthroughPlaybackKey(walkthroughs[0]!, design);
 
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, addSystemComponent(design, { id: "cache", position: { x: 0, y: 200 } }))).not.toBe(key);
+		expect(walkthroughPlaybackKey(walkthroughs[0]!, updateSystemComponent(design, "api", { kind: "worker" }))).not.toBe(key);
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, removeSystemConnection(design, "reply"))).not.toBe(key);
 		expect(walkthroughPlaybackKey(walkthroughs[0]!, addSystemService(design, { id: "svc", name: "Svc", position: { x: 0, y: 0 } }))).not.toBe(key);
 
@@ -455,6 +456,26 @@ describe("Walkthrough playback after architecture changes", () => {
 });
 
 describe("Parallel and repeated playback", () => {
+	test("animation completion expands parallel branches and every repetition before a sequence advances", () => {
+		const design = fixtureDesign();
+		let walks = addWalkthrough([], { id: "timed" });
+		walks = addWalkthroughBlock(walks, "timed", { id: "parallel", kind: "parallel" });
+		walks = addWalkthroughStep(walks, "timed", { id: "a", connectionId: "upload", sequence: { blockId: "parallel", branch: 0 } }, design);
+		walks = addWalkthroughStep(walks, "timed", { id: "b", connectionId: "enqueue", sequence: { blockId: "parallel", branch: 1 } }, design);
+		walks = addWalkthroughBlock(walks, "timed", { id: "repeat", kind: "repeat" });
+		walks = updateWalkthroughRepeat(walks, "timed", "repeat", 2);
+		walks = addWalkthroughStep(walks, "timed", { id: "retry", connectionId: "reply", sequence: { blockId: "repeat" } }, design);
+		const result = compileWalkthroughPlayback(walks[0]!, design, { componentAnimationMs: (id) => id === "queue" ? 6000 : 2400 });
+		if (!result.ok) throw new Error(result.problems.join(", "));
+		const [a, b, retry1, retry2] = result.timeline.steps;
+		expect(a!.startMs).toBe(b!.startMs);
+		expect(b!.endMs - b!.arrivalMs).toBeGreaterThanOrEqual(6000);
+		expect(retry1!.startMs).toBe(Math.max(a!.endMs, b!.endMs));
+		expect(retry2!.startMs).toBe(retry1!.endMs);
+		expect(retry2!.endMs - retry2!.arrivalMs).toBeGreaterThanOrEqual(2400);
+		expect(result.timeline.totalMs).toBe(retry2!.endMs);
+	});
+
 	/** Builds a Walkthrough from block-level steps, using the same authoring operations as the editor. */
 	function nested(build: (walkthroughs: Walkthrough[]) => Walkthrough[]): Walkthrough[] {
 		return build(addWalkthrough([], { id: "nested" }));

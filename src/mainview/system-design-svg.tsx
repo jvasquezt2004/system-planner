@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ProofRect } from "../shared/architecture-proof";
-import { componentKindLabel, isCatalogKind } from "../shared/component-catalog";
+import { componentKindLabel } from "../shared/component-catalog";
 import {
 	SYSTEM_COMPONENT_SIZE,
 	SYSTEM_SERVICE_COLLAPSED_SIZE,
@@ -12,11 +12,9 @@ import {
 	systemServiceFocus,
 	type SystemDesign,
 } from "../shared/system-design";
-import { ComponentArtwork } from "./component-artwork";
+import { ComponentArtwork } from "./system-artwork";
 import {
 	GROUP_HEADER_HEIGHT,
-	KIND_HEADER_CHARACTER_WIDTH,
-	SCHEMA_BADGE_ROOM,
 	componentRect,
 	connectionGeometries,
 	internalConnectionCount,
@@ -163,12 +161,7 @@ export function systemDesignSvg(design: SystemDesign, options: SystemDesignSvgOp
 			{scene.components.filter((component) => !isComponentHiddenByCollapse(scene, component.id)).map((component) => {
 				const context = contextIds.has(component.id);
 				const designId = component.kind === "database" ? component.designId : undefined;
-				const schemaBadged = designId !== undefined;
-				const artworkX = SYSTEM_COMPONENT_SIZE.width - 38 - (schemaBadged ? SCHEMA_BADGE_ROOM : 0);
-				const kindLabel = `${componentKindLabel(component.kind).toUpperCase()}${context ? " · OUTSIDE" : ""}`;
-				const kindHeader = isCatalogKind(component.kind)
-					? truncateLabel(kindLabel, Math.max(1, Math.floor((artworkX - 22) / KIND_HEADER_CHARACTER_WIDTH)))
-					: kindLabel;
+				const kindHeader = `${componentKindLabel(component.kind).toUpperCase()}${context ? " · OUTSIDE" : ""}`;
 				const ownerId = findSystemComponent(design, component.id)?.serviceId ?? null;
 				const owner = ownerId === null ? undefined : serviceNames.get(ownerId);
 				return (
@@ -177,19 +170,17 @@ export function systemDesignSvg(design: SystemDesign, options: SystemDesignSvgOp
 						<rect
 							width={SYSTEM_COMPONENT_SIZE.width}
 							height={SYSTEM_COMPONENT_SIZE.height}
-							rx={10}
+							rx={14}
 							strokeDasharray={context ? "5 4" : undefined}
 							strokeWidth={1.25}
 							style={{ fill: "var(--color-paper-raised)", stroke: "var(--color-rule-strong)" }}
 						/>
-						<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>{kindHeader}</text>
-						{isCatalogKind(component.kind) && (
-							<ComponentArtwork artwork={component.kind} x={artworkX} y={8} icon={component.icon} />
-						)}
-						<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
+						<text x={14} y={153} fontSize={8.5} letterSpacing={0.4} style={{ fill: "var(--color-ink-3)" }}>{kindHeader}</text>
+						<ComponentArtwork artwork={component.kind} icon={component.icon} />
+						<text x={14} y={136} fontSize={14} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 							{truncateLabel(component.name, 22)}
 						</text>
-						<text x={14} y={64} fontSize={11.5} style={{ fill: "var(--color-ink-2)" }}>
+						<text x={14} y={170} fontSize={11} style={{ fill: "var(--color-ink-2)" }}>
 							{truncateLabel(component.technology ?? component.description ?? "", 28)}
 						</text>
 						{designId !== undefined && (

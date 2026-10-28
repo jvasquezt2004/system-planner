@@ -20,7 +20,16 @@ import {
 
 /** Spacing between layers and rows, sized around one Component card. */
 export const SYSTEM_LAYOUT_COLUMN_GAP = 240;
-export const SYSTEM_LAYOUT_ROW_GAP = 128;
+export const SYSTEM_LAYOUT_ROW_GAP = 240;
+
+/** Detect saved layouts whose visible cards need more room, including older compact rows. */
+export function systemCardsOverlap(design: SystemDesign): boolean {
+	const visible = design.components.filter((component) => component.serviceId === null
+		|| !design.collapsedServiceIds.includes(component.serviceId));
+	return visible.some((component, index) => visible.slice(index + 1).some((other) =>
+		Math.abs(component.position.x - other.position.x) < SYSTEM_COMPONENT_SIZE.width
+		&& Math.abs(component.position.y - other.position.y) < SYSTEM_COMPONENT_SIZE.height));
+}
 /** Space a frame leaves around its contents. The Service and Group header sits above the top padding. */
 export const SYSTEM_FRAME_PADDING = 32;
 export const SYSTEM_FRAME_HEADER = 48;

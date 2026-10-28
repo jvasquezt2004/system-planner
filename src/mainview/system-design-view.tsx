@@ -54,13 +54,13 @@ import {
 	componentKindLabel,
 	descriptorKeysFor,
 	descriptorValue,
-	isCatalogKind,
 	mergeFreeProperties,
 	withDescriptorValue,
 	type ComponentFamily,
 	type CustomIcon,
 } from "../shared/component-catalog";
-import { ComponentArtwork } from "./component-artwork";
+import { ComponentArtwork, componentArtworkTime } from "./system-artwork";
+import { computeSystemLayout, systemCardsOverlap } from "../shared/system-layout";
 import type { workspaceClient } from "./workspace-client";
 import {
 	findWalkthrough,
@@ -72,11 +72,9 @@ import {
 import { WalkthroughEditor, type WalkthroughSelection } from "./walkthrough-editor";
 import { hiddenActivityStep, strongestReaction } from "../shared/walkthrough-playback";
 import { usePrefersReducedMotion, useWalkthroughPlayback } from "./use-walkthrough-playback";
-import { ReactionRing, ReactionTag, ReceptionItem, WalkthroughMessageDot } from "./walkthrough-playback-svg";
+import { ReactionRing, ReactionTag, WalkthroughMessageDot } from "./walkthrough-playback-svg";
 import {
 	GROUP_HEADER_HEIGHT,
-	KIND_HEADER_CHARACTER_WIDTH,
-	SCHEMA_BADGE_ROOM,
 	bendInsertionFor,
 	connectionGeometries,
 	fitViewport,
@@ -206,6 +204,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 	// The drawn scene is what is shown, with any gesture in progress applied.
 	const shown = focus?.scene ?? design;
 	const scene = useMemo(() => (shown ? previewScene(shown, drag?.scene ?? null) : null), [shown, drag]);
+	const cardsOverlap = useMemo(() => scene ? systemCardsOverlap(scene) : false, [scene]);
 	const geometries = useMemo(() => (scene ? connectionGeometries(scene) : []), [scene]);
 	const routes = useMemo(() => playbackRoutes(geometries), [geometries]);
 	const reducedMotion = usePrefersReducedMotion();
@@ -1026,15 +1025,9 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 							const traced = highlight?.endpointIds.includes(component.id) ?? false;
 							const reaction = frame?.reactions[component.id];
 							const detail = component.technology ?? component.description ?? "";
-							// The header keeps the kind label clear of the artwork, and a linked Database's badge clear of both.
-							const schemaBadged = component.kind === "database" && component.designId !== undefined;
-							const artworkX = SYSTEM_COMPONENT_SIZE.width - 38 - (schemaBadged ? SCHEMA_BADGE_ROOM : 0);
-							// An endpoint outside the focused Service is context: dashed, and labelled, so it is not mistaken for owned.
+							// Names and metadata sit below the illustration.
 							const context = focus?.contextIds.has(component.id) ?? false;
-							const kindLabel = `${componentKindLabel(component.kind).toUpperCase()}${context ? " · OUTSIDE" : ""}`;
-							const kindHeaderText = isCatalogKind(component.kind)
-								? truncateLabel(kindLabel, Math.max(1, Math.floor((artworkX - 22) / KIND_HEADER_CHARACTER_WIDTH)))
-								: kindLabel;
+							const kindHeaderText = `${componentKindLabel(component.kind).toUpperCase()}${context ? " · OUTSIDE" : ""}`;
 							// The owner is the real one, even where a focused view draws the Component outside its Service.
 							const ownerId = findSystemComponent(design, component.id)?.serviceId ?? null;
 							const owner = ownerId === null ? undefined : serviceNames.get(ownerId);
@@ -1076,7 +1069,7 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 									<rect
 										width={SYSTEM_COMPONENT_SIZE.width}
 										height={SYSTEM_COMPONENT_SIZE.height}
-										rx={10}
+										rx={14}
 										strokeDasharray={context ? "5 4" : undefined}
 										style={{
 											fill: "var(--color-paper-raised)",
@@ -1084,15 +1077,14 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 										}}
 										strokeWidth={selected || linking || traced ? 2 : 1.25}
 									/>
-									{reaction && <ReceptionItem reaction={reaction} kind={component.kind} width={SYSTEM_COMPONENT_SIZE.width} height={SYSTEM_COMPONENT_SIZE.height} />}
-									<text x={14} y={22} fontSize={10} letterSpacing={1.1} style={{ fill: "var(--color-ink-3)" }}>
+									<text x={14} y={153} fontSize={8.5} letterSpacing={0.4} style={{ fill: "var(--color-ink-3)" }}>
 										{kindHeaderText}
 									</text>
-									{isCatalogKind(component.kind) && <ComponentArtwork artwork={component.kind} x={artworkX} y={8} icon={component.icon} />}
-									<text x={14} y={44} fontSize={15} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
+									<ComponentArtwork artwork={component.kind} icon={component.icon} time={componentArtworkTime(component.id, frame, playback.timeline, reducedMotion)} />
+									<text x={14} y={136} fontSize={14} fontWeight={600} style={{ fill: "var(--color-ink)" }}>
 										{truncateLabel(component.name, 22)}
 									</text>
-									<text x={14} y={64} fontSize={11.5} style={{ fill: "var(--color-ink-2)" }}>
+									<text x={14} y={170} fontSize={11} style={{ fill: "var(--color-ink-2)" }}>
 										{truncateLabel(detail, 28)}
 									</text>
 									{component.kind === "database" && component.designId && (
@@ -1209,6 +1201,14 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 					>
 						Walkthroughs
 					</Button>
+					{!focus && (
+						<Button type="button" size="sm" variant="outline" disabled={!design.components.length}
+							data-testid="arrange-system-cards"
+							title="Space out components and fit their Service and Group boundaries. Can be undone."
+							onClick={() => onApply(() => client.arrangeSystemLayout({ placement: computeSystemLayout(design) }))}>
+							Arrange
+						</Button>
+					)}
 					<Button type="button" size="sm" variant="outline" onClick={() => void exportDiagram("svg")} disabled={!hasItems} data-testid="export-system-svg">
 						<Download className="size-3.5" />
 						Export SVG
@@ -1230,6 +1230,16 @@ export function SystemDesignView({ state, client, onApply, onLayout, onOpenDatab
 				</div>
 
 				<SaveLine save={state.systemSave} />
+				{cardsOverlap && !focus && (
+					<div role="status" data-testid="system-cards-overlap"
+						className="absolute bottom-12 left-4 flex max-w-[calc(100%-2rem)] items-center gap-3 rounded-md bg-paper-raised px-3 py-2 text-[12px] text-ink-2">
+						<span>Some cards overlap. Arrange to make room.</span>
+						<Button type="button" size="sm" variant="outline"
+							onClick={() => onApply(() => client.arrangeSystemLayout({ placement: computeSystemLayout(design) }))}>
+							Arrange
+						</Button>
+					</div>
+				)}
 
 				{diagramExport && (
 					<p

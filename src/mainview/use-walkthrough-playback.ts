@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { SystemDesign } from "../shared/system-design";
 import type { Walkthrough } from "../shared/walkthrough";
+import { COMPONENT_ANIMATION_MS } from "./system-artwork/animation-durations";
 import {
 	compileWalkthroughPlayback,
 	createPlaybackTransport,
@@ -94,7 +95,12 @@ export function useWalkthroughPlayback({
 	const [clockMs, setClockMs] = useState(0);
 
 	const compiled = useMemo(
-		() => (walkthrough && design ? compileWalkthroughPlayback(walkthrough, design) : null),
+		() => (walkthrough && design ? compileWalkthroughPlayback(walkthrough, design, {
+			componentAnimationMs: (id) => {
+				const component = design.components.find((item) => item.id === id);
+				return component ? COMPONENT_ANIMATION_MS[component.kind] : 0;
+			},
+		}) : null),
 		[walkthrough, design],
 	);
 	const timeline = compiled?.ok ? compiled.timeline : null;

@@ -91,7 +91,7 @@ describe("system design Connection routes", () => {
 	});
 
 	test("a new bend point goes in the middle of the longest leg, at the place that keeps the route in order", () => {
-		expect(bendInsertionFor(connectionGeometries(routedDesign())[0]!)).toEqual({ index: 0, point: { x: 250, y: 42 } });
+		expect(bendInsertionFor(connectionGeometries(routedDesign())[0]!)).toEqual({ index: 0, point: { x: 250, y: 98 } });
 
 		const bent = updateSystemConnection(routedDesign(), "ab", { bendPoints: [{ x: 100, y: -80 }, { x: 300, y: -80 }] });
 		expect(bendInsertionFor(connectionGeometries(bent)[0]!)).toEqual({ index: 1, point: { x: 200, y: -80 } });
