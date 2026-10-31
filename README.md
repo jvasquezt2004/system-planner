@@ -1,4 +1,4 @@
-# Schema Designer
+# System planner
 
 Design a system, explore its databases, and explain how the pieces work together.
 Schema Designer is a local desktop app for system architecture and PostgreSQL
