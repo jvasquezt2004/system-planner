@@ -3,6 +3,8 @@
 //! rather than returning invented data.
 
 use schema_domain::geometry::{CanvasPoint, CanvasViewport};
+use schema_domain::relationships::RemovalTarget;
+use crate::edits::RelationshipChanges;
 use schema_domain::system_design::SystemViewName;
 use schema_domain::walkthrough_ops::StepDraft;
 use serde::de::DeserializeOwned;
@@ -42,6 +44,105 @@ params!(RenameTable { table_id: String, name: String, design_id: String });
 params!(MoveTable { table_id: String, position: CanvasPoint, design_id: String });
 params!(AddColumn { table_id: String, name: Option<String>, r#type: Option<String>, design_id: String });
 params!(UpdateColumn { table_id: String, column_id: String, changes: Value, design_id: String });
+params!(RemoveTable { table_id: String, confirmed: Option<bool>, design_id: String });
+params!(RemoveColumn { table_id: String, column_id: String, confirmed: Option<bool>, design_id: String });
+params!(RemoveFunction { function_id: String, confirmed: Option<bool>, design_id: String });
+params!(RemoveRelationship { relationship_id: String, design_id: String });
+
+/// A property that may be absent. `null` is a value (the original tells it from `undefined`), so it
+/// is kept and left for validation to refuse.
+fn present<'de, D: serde::Deserializer<'de>>(deserializer: D) -> std::result::Result<Option<Value>, D::Error> {
+    Value::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct AddRelationship {
+    referencing_table_id: String,
+    referenced_table_id: String,
+    #[serde(default, deserialize_with = "present")]
+    cardinality: Option<Value>,
+    junction_position: Option<CanvasPoint>,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateRelationship {
+    relationship_id: String,
+    #[serde(default, deserialize_with = "present")]
+    required: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    cardinality: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    on_delete: Option<Value>,
+    #[serde(default, deserialize_with = "present")]
+    on_update: Option<Value>,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateIndexes {
+    table_id: String,
+    #[serde(default)]
+    indexes: Value,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateUniqueConstraints {
+    table_id: String,
+    #[serde(default)]
+    unique_constraints: Value,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdatePolicies {
+    table_id: String,
+    #[serde(default)]
+    row_level_security: Value,
+    #[serde(default)]
+    policies: Value,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateEnumTypes {
+    #[serde(default)]
+    enum_types: Value,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateFunctions {
+    #[serde(default)]
+    functions: Value,
+    design_id: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateTriggers {
+    #[serde(default)]
+    triggers: Value,
+    design_id: String,
+}
+
+/// `describeRemoval` takes a removal target and the design it belongs to in one object.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DescribeRemoval {
+    design_id: String,
+    #[serde(flatten)]
+    target: RemovalTarget,
+}
+
 params!(Viewport { x: f64, y: f64, zoom: f64, design_id: String });
 params!(SystemViewport { x: f64, y: f64, zoom: f64 });
 params!(ServiceId { service_id: String });
@@ -86,6 +187,26 @@ impl Workspace {
             "moveTable" => call!(MoveTable, |p| self.move_table(&p.design_id, &p.table_id, p.position)),
             "addColumn" => call!(AddColumn, |p| self.add_column(&p.design_id, &p.table_id, p.name.as_deref(), p.r#type.as_deref())),
             "updateColumn" => call!(UpdateColumn, |p| self.update_column(&p.design_id, &p.table_id, &p.column_id, &p.changes)),
+            "removeTable" => call!(RemoveTable, |p| self.remove_table(&p.design_id, &p.table_id, p.confirmed == Some(true))),
+            "removeColumn" => call!(RemoveColumn, |p| self.remove_column(&p.design_id, &p.table_id, &p.column_id, p.confirmed == Some(true))),
+            "removeFunction" => call!(RemoveFunction, |p| self.remove_function(&p.design_id, &p.function_id, p.confirmed == Some(true))),
+            "addRelationship" => call!(AddRelationship, |p| self.add_relationship(&p.design_id, &p.referencing_table_id, &p.referenced_table_id, p.cardinality.as_ref(), p.junction_position)),
+            "updateRelationship" => call!(UpdateRelationship, |p| self.update_relationship(
+                &p.design_id,
+                &p.relationship_id,
+                &RelationshipChanges { required: p.required.as_ref(), cardinality: p.cardinality.as_ref(), on_delete: p.on_delete.as_ref(), on_update: p.on_update.as_ref() },
+            )),
+            "removeRelationship" => call!(RemoveRelationship, |p| self.remove_relationship(&p.design_id, &p.relationship_id)),
+            "updateIndexes" => call!(UpdateIndexes, |p| self.update_indexes(&p.design_id, &p.table_id, &p.indexes)),
+            "updateUniqueConstraints" => call!(UpdateUniqueConstraints, |p| self.update_unique_constraints(&p.design_id, &p.table_id, &p.unique_constraints)),
+            "updatePolicies" => call!(UpdatePolicies, |p| self.update_policies(&p.design_id, &p.table_id, &p.row_level_security, &p.policies)),
+            "updateEnumTypes" => call!(UpdateEnumTypes, |p| self.update_enum_types(&p.design_id, &p.enum_types)),
+            "updateFunctions" => call!(UpdateFunctions, |p| self.update_functions(&p.design_id, &p.functions)),
+            "updateTriggers" => call!(UpdateTriggers, |p| self.update_triggers(&p.design_id, &p.triggers)),
+            "describeRemoval" => {
+                let p: DescribeRemoval = parse(method, value)?;
+                self.describe_database_removal(&p.design_id, &p.target)
+            }
             "setViewport" => call!(Viewport, |p| self.set_viewport(&p.design_id, p.x, p.y, p.zoom)),
 
             "addSystemService" => call!(AddSystemService, |p| self.add_system_service(p)),

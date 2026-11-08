@@ -13,6 +13,7 @@
 //! column and viewport edits. Undo/redo, relationships, System design and Walkthrough
 //! edits, Scenarios and the rest arrive with later phases.
 
+mod database;
 mod edits;
 mod rpc;
 mod state;
@@ -629,7 +630,7 @@ impl Workspace {
     }
 }
 
-fn to_json<T: serde::Serialize>(value: &T) -> Result<Value> {
+pub(crate) fn to_json<T: serde::Serialize>(value: &T) -> Result<Value> {
     serde_json::to_value(value).map_err(|error| error.to_string())
 }
 

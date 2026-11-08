@@ -8,6 +8,7 @@ pub mod catalog;
 pub mod column_defaults;
 pub mod column_types;
 pub mod design;
+pub mod design_edits;
 pub mod geometry;
 pub mod index_methods;
 pub mod js;

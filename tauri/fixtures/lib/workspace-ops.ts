@@ -65,6 +65,123 @@ class C {
 	text(): string | undefined {
 		return this.pick([undefined, "Fastify", "  trimmed  ", "", "y".repeat(501), "A description"]);
 	}
+	// Database design objects.
+	confirmed(): boolean | undefined {
+		return this.pick([true, true, false, undefined]);
+	}
+	tableOf(tableId: string) {
+		return this.s.design?.tables.find((table) => table.id === tableId);
+	}
+	relationshipId(): string {
+		const ids = this.s.design?.relationships.map((relationship) => relationship.id) ?? [];
+		return ids.length === 0 || this.chance(0.05) ? "missing-relationship" : this.pick(ids);
+	}
+	functionId(): string {
+		const ids = (this.s.design?.functions ?? []).map((fn) => fn.id);
+		return ids.length === 0 || this.chance(0.07) ? "missing-function" : this.pick(ids);
+	}
+	/** The list as it is, with an item added, dropped or tweaked, or a fresh one; now and then not a list at all. */
+	listOf<T>(existing: readonly T[] | undefined, make: () => T, tweak: (item: T) => T, mayNotBeAList = true): unknown {
+		// Policies are the exception: the original calls `.map` on them unchecked, so a non-list throws an engine-specific TypeError.
+		if (mayNotBeAList && this.chance(0.03)) return this.pick(["nope", null, {}]);
+		const copy = structuredClone([...(existing ?? [])]);
+		const roll = this.rng();
+		if (roll < 0.2) return copy;
+		if (roll < 0.5) return [...copy, make()];
+		if (roll < 0.62 && copy.length > 0) return copy.slice(1);
+		if (roll < 0.85 && copy.length > 0) {
+			const at = this.int(0, copy.length - 1);
+			copy[at] = tweak(copy[at]!);
+			return copy;
+		}
+		return Array.from({ length: this.int(0, 3) }, make);
+	}
+	columnIds(tableId: string, max: number): unknown[] {
+		const ids = Array.from({ length: this.int(0, max) }, () => this.columnOf(tableId));
+		return this.chance(0.04) ? [...ids, 7] : ids;
+	}
+	index(tableId: string): Record<string, unknown> {
+		const index: Record<string, unknown> = { id: this.pick(["ix-a", "ix-b", "ix-c", "ix-d", "", "  "]) };
+		if (this.chance(0.6)) index.name = this.pick(["by_name", "  spaced  ", "", "x".repeat(70), 42]);
+		index.method = this.pick(["btree", "btree", "btree", "hash", "gin", "gist", "brin", "nope"]);
+		index.keys = Array.from({ length: this.int(0, 3) }, () => {
+			const key: Record<string, unknown> = { columnId: this.columnOf(tableId) };
+			if (this.chance(0.3)) key.order = this.pick(["asc", "desc", "up"]);
+			if (this.chance(0.2)) key.nulls = this.pick(["first", "last", "middle"]);
+			if (this.chance(0.1)) key.operatorClass = this.pick(["text_pattern_ops", 5]);
+			return key;
+		});
+		if (this.chance(0.3)) index.unique = this.chance(0.9) ? this.chance(0.5) : "yes";
+		if (this.chance(0.1)) index.nullsNotDistinct = this.chance(0.9) ? true : "no";
+		if (this.chance(0.4)) index.includeColumnIds = this.chance(0.08) ? "col" : this.columnIds(tableId, 2);
+		if (this.chance(0.2)) index.with = this.pick([{ fillfactor: 70 }, { fastupdate: true }, { lists: 100 }, { m: 16, efConstruction: 64 }, { fillfactor: 1.5 }, { bogus: 1 }, { fastupdate: "no" }, {}, null]);
+		return index;
+	}
+	uniqueConstraint(tableId: string): Record<string, unknown> {
+		const constraint: Record<string, unknown> = { id: this.pick(["uq-a", "uq-b", "uq-c", ""]) };
+		if (this.chance(0.5)) constraint.name = this.pick(["uq_name", "  spaced ", "", 3]);
+		constraint.columnIds = this.chance(0.05) ? "col" : this.columnIds(tableId, 3);
+		if (this.chance(0.15)) constraint.nullsNotDistinct = this.chance(0.9) ? true : "no";
+		return constraint;
+	}
+	policy(): Record<string, unknown> {
+		return {
+			id: this.pick(["p1", "p2", "p3", " "]),
+			name: this.pick(["read", "write", "  admin  ", "all", "read", ""]),
+			command: this.pick(["ALL", "SELECT", "INSERT", "UPDATE", "DELETE", "BAD"]),
+			roles: this.pick([[], ["authenticated"], ["anon", "anon"], ["  svc "], [""], [7]]),
+			mode: this.pick(["permissive", "restrictive", "permissive", "x"]),
+			using: this.pick(["true", "auth.uid() = id", ""]),
+			withCheck: this.pick(["true", ""]),
+		};
+	}
+	enumType(): Record<string, unknown> {
+		return {
+			id: this.pick(["e1", "e2", "e3", ""]),
+			name: this.pick(["status", "mood", "  role ", " "]),
+			labels: this.pick([["a", "b"], ["x"], [], ["ok", " "], ["ok", 3], ["a", "b", "c"]]),
+		};
+	}
+	fn(): Record<string, unknown> {
+		const tables = (this.s.design?.tables ?? []).map((table) => table.name);
+		const table = tables.length > 0 ? this.pick(tables) : "orders";
+		const trigger = this.chance(0.45);
+		// Three in four are well formed; the rest carry one of the mistakes the editor refuses.
+		const noisy = this.chance(0.25);
+		const bad = <T>(valid: T[], invalid: unknown[]) => (noisy && this.chance(0.5) ? this.pick(invalid) : this.pick(valid));
+		return {
+			id: this.pick(["f1", "f2", "f3", "f4", "f5"]),
+			name: bad(["touch", "audit", "calc", "  trim_me ", "tally", "stamp"], ["touch", ""]),
+			arguments: trigger ? [] : bad([[], [{ name: "n", type: "integer" }], [{ name: "t", type: `${table}[]` }]], [[{ name: "a", type: "text" }, { name: "a", type: "text" }], [{ name: "", type: "x" }], [{ name: "q", type: "" }]]),
+			returnType: trigger ? "trigger" : bad(["integer", "text", "TABLE(id bigint)", "setof thing", table], ["  ", 5]),
+			returnsSet: bad([false, false, true], ["yes"]),
+			language: trigger ? bad(["plpgsql"], ["sql"]) : this.pick(["sql", "plpgsql"]),
+			volatility: bad(["volatile", "stable", "immutable"], ["fast"]),
+			security: bad(["invoker", "definer"], ["root"]),
+			body: trigger
+				? "BEGIN RETURN NEW; END;"
+				: this.pick(["SELECT 1", `SELECT * FROM ${table}`, `SELECT 1 FROM public . "${table}"`, `UPDATE ${table} SET x = 1`, `INSERT INTO ${table}(a) VALUES (1)`, "", `select * from ${table}x`, `SELECT 1 JOIN "${table}"`]),
+		};
+	}
+	trigger(): Record<string, unknown> {
+		const tableId = this.tableId();
+		const column = () => this.columnOf(tableId);
+		const noisy = this.chance(0.25);
+		const triggerFunctions = (this.s.design?.functions ?? []).filter((fn) => fn.returnType.trim().toLowerCase() === "trigger" && fn.language === "plpgsql" && fn.arguments.length === 0);
+		const functions = !noisy && triggerFunctions.length > 0 ? triggerFunctions : this.s.design?.functions ?? [];
+		const valid = [[{ event: "INSERT" }], [{ event: "UPDATE", columnIds: [column()] }], [{ event: "UPDATE" }, { event: "DELETE" }], [{ event: "UPDATE", columnIds: [column(), column()] }], [{ event: "TRUNCATE" }]];
+		const invalid = [[{ event: "INSERT" }, { event: "INSERT" }], [], [{ event: "DELETE", columnIds: [column()] }], [{ event: "SELECT" }], [{ event: "INSERT" }, { event: "UPDATE", columnIds: ["gone"] }]];
+		return {
+			id: this.pick(["t1", "t2", "t3", "t4"]),
+			name: this.pick(["trg", "before_ins", "  spaced ", "after_del"]),
+			tableId,
+			timing: noisy && this.chance(0.3) ? "LATER" : this.pick(["BEFORE", "AFTER", "INSTEAD OF"]),
+			events: this.chance(0.12) ? [{ event: "INSERT" }, { event: "INSERT" }] : noisy && this.chance(0.5) ? this.pick(invalid) : this.pick(valid),
+			level: noisy && this.chance(0.3) ? "X" : this.pick(["ROW", "ROW", "STATEMENT"]),
+			functionId: functions.length > 0 ? this.pick(functions).id : "missing-function",
+			...(this.chance(0.7) ? { when: this.pick(["", "  NEW.x > 1 ", noisy ? 5 : "NEW.z"]) } : {}),
+		};
+	}
 	// System design identities.
 	service(): string {
 		const ids = this.s.systemDesign?.services.map((item) => item.id) ?? [];
@@ -214,8 +331,86 @@ export const OPERATIONS: Operation[] = [
 				{ kind: "literal", literalType: "boolean", value: "true" }, { kind: "expression", sql: "now()" },
 			]);
 		}
+		if (c.chance(0.12)) changes.enumTypeId = c.pick([...(c.s.design?.enumTypes ?? []).map((item) => item.id), "e1", "", 4]);
+		const enums = c.s.design?.enumTypes ?? [];
+		if (enums.length > 0 && c.chance(0.15)) Object.assign(changes, { type: "enum", enumTypeId: c.pick(enums).id });
 		if (c.chance(0.1)) changes.typeParameters = c.pick([{ length: 120 }, { precision: 10, scale: 2 }, { dimensions: 3 }, { array: true }, { length: 1.5 }, { bogus: 1 }, {}]);
 		return { designId: c.designId(), tableId, columnId: c.columnOf(tableId), changes };
+	}),
+	op("removeTable", 2, (c) => ({ designId: c.designId(), tableId: c.tableId(), confirmed: c.confirmed() })),
+	op("removeColumn", 4, (c) => {
+		// Often a column some index, constraint or trigger uses, since that is what removal must clean up.
+		const used = (c.s.design?.tables ?? []).flatMap((table) => [
+			...(table.indexes ?? []).flatMap((index) => [...index.keys.map((key) => key.columnId), ...(index.includeColumnIds ?? [])]),
+			...(table.uniqueConstraints ?? []).flatMap((constraint) => constraint.columnIds),
+			...(c.s.design?.triggers ?? []).filter((trigger) => trigger.tableId === table.id).flatMap((trigger) => trigger.events.flatMap((event) => event.columnIds ?? [])),
+		].map((columnId) => ({ tableId: table.id, columnId })));
+		if (used.length > 0 && c.chance(0.5)) return { designId: c.designId(), ...c.pick(used), confirmed: c.pick([true, true, undefined]) };
+		const tableId = c.tableId();
+		return { designId: c.designId(), tableId, columnId: c.columnOf(tableId), confirmed: c.confirmed() };
+	}),
+	op("addRelationship", 8, (c) => {
+		const params: Record<string, unknown> = { designId: c.designId(), referencingTableId: c.tableId(), referencedTableId: c.tableId() };
+		if (c.chance(0.8)) params.cardinality = c.pick(["one-to-many", "one-to-one", "many-to-many", "many-to-many", "nonsense", null]);
+		if (c.chance(0.3)) params.junctionPosition = c.point();
+		return params;
+	}),
+	op("updateRelationship", 4, (c) => {
+		const params: Record<string, unknown> = { designId: c.designId(), relationshipId: c.relationshipId() };
+		if (c.chance(0.4)) params.required = c.pick([true, false, "yes"]);
+		if (c.chance(0.3)) params.cardinality = c.pick(["one-to-many", "one-to-one", "many-to-many", "nonsense"]);
+		const actions = ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT", "BAD"];
+		if (c.chance(0.4)) params.onDelete = c.pick(actions);
+		if (c.chance(0.3)) params.onUpdate = c.pick(actions);
+		return params;
+	}),
+	op("removeRelationship", 2, (c) => ({ designId: c.designId(), relationshipId: c.relationshipId() })),
+	op("updateIndexes", 4, (c) => {
+		const tableId = c.tableId();
+		return { designId: c.designId(), tableId, indexes: c.listOf(c.tableOf(tableId)?.indexes, () => c.index(tableId), (item) => ({ ...item, unique: !item.unique })) };
+	}),
+	op("updateUniqueConstraints", 3, (c) => {
+		const tableId = c.tableId();
+		return {
+			designId: c.designId(), tableId,
+			uniqueConstraints: c.listOf(c.tableOf(tableId)?.uniqueConstraints, () => c.uniqueConstraint(tableId), (item) => ({ ...item, name: "renamed" })),
+		};
+	}),
+	op("updatePolicies", 3, (c) => {
+		const tableId = c.tableId();
+		return {
+			designId: c.designId(), tableId, rowLevelSecurity: c.chance(0.9) ? c.chance(0.6) : "on",
+			policies: c.listOf(c.tableOf(tableId)?.policies, () => c.policy(), (item) => ({ ...item, using: "false" }), false),
+		};
+	}),
+	op("updateEnumTypes", 4, (c) => {
+		const enums = c.s.design?.enumTypes ?? [];
+		const inUse = enums.filter((item) => c.s.design?.tables.some((table) => table.columns.some((column) => column.enumTypeId === item.id)));
+		// Dropping one that is in use must be refused, and dropping the rest must work.
+		if (inUse.length > 0 && c.chance(0.5)) {
+			const dropped = c.pick(inUse);
+			return { designId: c.designId(), enumTypes: enums.filter((item) => c.chance(0.5) ? item.id !== dropped.id : true && item.id !== dropped.id) };
+		}
+		return { designId: c.designId(), enumTypes: c.listOf(enums, () => c.enumType(), (item) => ({ ...item, labels: [...item.labels, "extra"] })) };
+	}),
+	op("updateFunctions", 6, (c) => ({
+		designId: c.designId(),
+		functions: c.listOf(c.s.design?.functions, () => c.fn() as any, (item) => ({ ...item, body: `${item.body} -- edited` })),
+	})),
+	op("removeFunction", 3, (c) => ({ designId: c.designId(), functionId: c.functionId(), confirmed: c.confirmed() })),
+	op("updateTriggers", 6, (c) => ({
+		designId: c.designId(),
+		triggers: c.listOf(c.s.design?.triggers, () => c.trigger() as any, (item) => ({ ...item, when: "NEW.y IS NULL" })),
+	})),
+	op("describeRemoval", 3, (c) => {
+		const designId = c.designId();
+		const roll = c.rng();
+		if (roll < 0.4) return { kind: "table", tableId: c.tableId(), designId };
+		if (roll < 0.8) {
+			const tableId = c.tableId();
+			return { kind: "column", tableId, columnId: c.columnOf(tableId), designId };
+		}
+		return { kind: "function", functionId: c.functionId(), designId };
 	}),
 	op("setViewport", 3, (c) => ({ designId: c.designId(), x: c.pick([0, 12.5, -40]), y: c.pick([0, 33, -8.25]), zoom: c.pick([1, 0.5, 2, 0.01, 99]) })),
 
@@ -393,11 +588,16 @@ const hasComponents = (state: WorkspaceState) => count(state.systemDesign?.compo
 const hasGroups = (state: WorkspaceState) => count(state.systemDesign?.groups) > 0;
 const hasConnections = (state: WorkspaceState) => count(state.systemDesign?.connections) > 0;
 const hasProject = (state: WorkspaceState) => state.project !== null;
+const hasRelationships = (state: WorkspaceState) => count(state.design?.relationships) > 0;
+const hasFunctions = (state: WorkspaceState) => count(state.design?.functions) > 0;
 
 const NEEDS: Record<string, (state: WorkspaceState) => boolean> = {
 	setActiveView: hasProject,
 	createDesign: hasProject, openDesign: hasProject, renameDesign: hasProject,
 	addTable: hasProject,
+	removeTable: hasTables, removeColumn: hasTables, addRelationship: hasTables, updateIndexes: hasTables, updateUniqueConstraints: hasTables, updatePolicies: hasTables,
+	updateRelationship: hasRelationships, removeRelationship: hasRelationships,
+	updateEnumTypes: hasProject, updateFunctions: hasProject, removeFunction: hasFunctions, updateTriggers: (state) => hasTables(state) && hasFunctions(state), describeRemoval: hasProject,
 	renameTable: hasTables, moveTable: hasTables, addColumn: hasTables, updateColumn: hasTables, setViewport: hasProject,
 	addSystemService: hasProject, addSystemGroup: hasProject, addSystemComponent: hasProject, setSystemViewport: hasProject,
 	updateSystemService: hasServices, moveSystemService: hasServices, resizeSystemService: hasServices, removeSystemService: hasServices,

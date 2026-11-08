@@ -332,16 +332,15 @@ Known gaps seen in the slice:
 - Opening a Project shows SQL "Not run" and sandbox "Not available" until the first
   edit. By the original's code this is the same (opening schedules no preview),
   but it should be compared side by side with the Electrobun app.
-- The slice has no differential test of the workspace state machine itself yet.
+- ~~The slice has no differential test of the workspace state machine itself.~~ (done, see "Workspace oracle and database edits").
 
 Next, in the order the results suggest:
 
 1. ~~Wire the System design and Walkthrough handlers~~ (done, see "System overview results").
-2. A differential oracle for the workspace: drive the TypeScript workspace with a
+2. ~~A differential oracle for the workspace~~ (done): drive the TypeScript workspace with a
    stubbed sandbox through scripted sessions, record the settled state after each call
    and the ordered status trail it pushes, and replay them against Rust.
-3. The remaining Design edits (remove table and column, relationships, indexes, enums,
-   Functions, Triggers, policies, unique constraints) and Undo/Redo.
+3. ~~The remaining Design edits~~ (done) and Undo/Redo.
 4. Project files, exports and imports (native dialogs), then Scenarios and the
    Assistant harnesses.
 
@@ -379,12 +378,69 @@ preview on open), 3 for the table reads, and the real window rendering a seeded 
 
 Known gaps, now visible in the window:
 
-- **Arrange** (and the "Some cards overlap" hint's button) calls `arrangeSystemLayout`,
-  which needs `system-layout.ts` (about 300 lines). Not ported.
+- ~~**Arrange**~~ applying a computed layout is ported (see below). Computing one
+  (`computeSystemLayout`, used by the Assistant's layout tool) is not.
 - **Export SVG/PNG, project export/import, attaching files** need native dialogs.
 - **Undo/Redo** still does nothing.
-- Interaction in the real window is untested by me (no synthetic input), and there is
-  still no differential oracle for the workspace state machine.
+- Interaction in the real window is untested by me (no synthetic input).
+
+## Workspace oracle and database edits
+
+**Oracle.** `fixtures/generate-workspace.ts` drives the real TypeScript workspace with a
+stubbed sandbox, a clock the driver sets before each call and ids numbered per call.
+Eight random sessions of 400 calls plus five hand-written ones (`lib/workspace-scripts.ts`:
+enums, cascades, relationships, functions and triggers, policies) record, for every call,
+a fingerprint of each top-level field of the settled state (or the error message), the
+ordered trail of states pushed while it ran, and, after a refusal or a plan, the state the
+workspace holds. The database at the end of each session is fingerprinted too.
+`crates/workspace/tests/oracle.rs` replays them and must agree on all of it. 3272 calls,
+about a third refused, 83 distinct push shapes.
+
+Mutation checks: 19 deliberate breaks of the port (cascades, wording of confirmations,
+validation order, id order for junctions, de-duplication, dependency detection, and so on)
+are each caught. The first random sessions let three survive (a trigger with duplicate
+events, an INCLUDE list after a column is removed, dropping an enum a column uses); the
+scripted sessions exist because of that.
+
+What the oracle found while it was built:
+
+- `removeWalkthroughBlock` looks the block up before anything else, so a missing block
+  wins over a missing Walkthrough.
+- `sameColumn` treats no `typeParameters` and `{}` as the same.
+- The original's "nothing changed" check for System edits is `JSON.stringify`, which
+  depends on key order. Updating `technology`, `description`, `designId` or `icon`
+  deletes the key and adds it back at the end, so an edit that changes nothing but
+  the order is still a change: it is saved and it is an Undo step. The Rust workspace
+  now models that order for the optional keys of Components and Connections
+  (`system::KeyOrders`) so the same edits count as changes. The earlier caveat about
+  no-op edits no longer applies to System edits.
+
+**Arrange.** `apply_system_layout` is ported and verified by the oracle (31 successful
+calls, 12 refused: unknown cards, non-finite positions). Computing a layout is
+`computeSystemLayout`, still unported.
+
+**Database edits.** Remove table (with the relationships, triggers and association that
+go with it), remove column (index keys and INCLUDE lists, unique constraints, trigger
+columns, relationships), add / update / remove relationship (one-to-many, one-to-one,
+many-to-many with its junction table), indexes, unique constraints, enum types,
+Functions (with table dependency detection), remove Function, triggers, policies, and
+`describeRemoval`. The checks and cascades are in `schema_domain::design_edits`
+(raw JSON in, typed out, the original's messages and order of checks); relationship
+creation and update are in `workspace/src/edits.rs`; `workspace/src/database.rs` decides
+when a change counts.
+
+Differences that remain, none reachable from the view:
+
+- A list edit is "unchanged" when the serialized lists are equal, as in the original, but
+  the typed Design always writes keys in one order, so a list that differs only in key order
+  is a no-op here and a change there.
+- Objects inside indexes, triggers and policies have no `extra` bag, so a key the app does
+  not model is dropped rather than kept.
+- A policy without `using` or `withCheck` gets empty text; the original keeps it absent.
+- `updatePolicies` with something that is not a list is a `TypeError` in the original (its
+  text is the JavaScript engine's); here it is "Policies must be a list.".
+- Undo/Redo names for these edits (for example "Remove table “x”") are not recorded yet;
+  they belong to the history port.
 
 ### Build environment note
 

@@ -29,7 +29,7 @@ pub fn require_table<'a>(design: &'a Design, table_id: &str) -> Result<&'a Desig
     design.tables.iter().find(|table| table.id == table_id).ok_or_else(|| "That table could not be found.".to_owned())
 }
 
-fn require_column<'a>(table: &'a DesignTable, column_id: &str) -> Result<&'a DesignColumn> {
+pub fn require_column<'a>(table: &'a DesignTable, column_id: &str) -> Result<&'a DesignColumn> {
     table.columns.iter().find(|column| column.id == column_id).ok_or_else(|| "That column could not be found.".to_owned())
 }
 
@@ -181,12 +181,17 @@ fn normalize_column_changes(changes: &Value) -> Result<ColumnChanges> {
     Ok(normalized)
 }
 
+fn type_parameters_json(column: &DesignColumn) -> String {
+    column.type_parameters.as_ref().map_or_else(|| "{}".to_owned(), |parameters| serde_json::to_string(parameters).unwrap_or_default())
+}
+
 fn same_column(a: &DesignColumn, b: &DesignColumn) -> bool {
     a.id == b.id
         && a.name == b.name
         && a.column_type == b.column_type
         && a.enum_type_id == b.enum_type_id
-        && a.type_parameters.clone().map(|p| serde_json::to_value(p).unwrap()) == b.type_parameters.clone().map(|p| serde_json::to_value(p).unwrap())
+        // `JSON.stringify(a.typeParameters ?? {})`: no parameters and an empty object are the same.
+        && type_parameters_json(a) == type_parameters_json(b)
         && a.nullable == b.nullable
         && a.primary_key == b.primary_key
         && a.unique == b.unique
@@ -281,4 +286,206 @@ pub fn update_column(design: &Design, table_id: &str, column_id: &str, changes: 
     let next = replace_table(design, DesignTable { columns, ..table.clone() });
     let schema_changed = changes.keys.iter().any(|key| key != "notes");
     Ok(if schema_changed { ColumnEdit::Schema(next) } else { ColumnEdit::NotesOnly(next) })
+}
+
+/* ------------------------------------------------------------ relationships */
+
+use schema_domain::design::DesignRelationship;
+use schema_domain::design::DesignManyToManyAssociation;
+use schema_domain::relationships::{foreign_key_column_name, is_relationship_cardinality, primary_key_column, resolve_relationship};
+use schema_domain::postgres_identifiers::unique_postgres_identifier;
+use schema_domain::sql::postgres_schema_relation_names;
+
+/// A foreign-key column, named after what it references and typed like the key it points at.
+fn create_relationship_column(referencing: &DesignTable, referenced: &DesignTable, referenced_column: &DesignColumn, create_id: &mut dyn FnMut() -> String) -> DesignColumn {
+    let mut column = new_column(create_id(), foreign_key_column_name(referencing, referenced, referenced_column), referenced_column.column_type.clone());
+    column.nullable = false;
+    column
+}
+
+pub fn require_cardinality(value: Option<&Value>) -> Result<String> {
+    match value {
+        None => Ok("one-to-many".into()),
+        Some(Value::String(text)) if is_relationship_cardinality(text) => Ok(text.clone()),
+        Some(_) => Err("That relationship cardinality is not supported.".into()),
+    }
+}
+
+fn require_referential_action(value: &Value) -> Result<String> {
+    match value.as_str() {
+        Some(action) if ["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"].contains(&action) => Ok(action.to_owned()),
+        _ => Err("That foreign-key referential action is not supported.".into()),
+    }
+}
+
+/// `addRelationship`: a foreign-key column on the referencing table, or for many-to-many a visible
+/// junction table with a column for each side.
+pub fn add_relationship(
+    design: &Design,
+    referencing_id: &str,
+    referenced_id: &str,
+    cardinality: Option<&Value>,
+    junction_position: Option<CanvasPoint>,
+    create_id: &mut dyn FnMut() -> String,
+) -> Result<Design> {
+    let referencing = require_table(design, referencing_id)?;
+    let referenced = require_table(design, referenced_id)?;
+    let creation = match cardinality {
+        None => "one-to-many".to_owned(),
+        Some(Value::String(text)) if text == "many-to-many" || is_relationship_cardinality(text) => text.clone(),
+        Some(_) => return Err("That relationship cardinality is not supported.".into()),
+    };
+
+    if creation == "many-to-many" {
+        let Some(left_key) = primary_key_column(referencing) else {
+            return Err(format!("Table \"{}\" needs exactly one primary key column before it can participate in a many-to-many relationship.", referencing.name));
+        };
+        let Some(right_key) = primary_key_column(referenced) else {
+            return Err(format!("Table \"{}\" needs exactly one primary key column before it can participate in a many-to-many relationship.", referenced.name));
+        };
+        let name = unique_postgres_identifier(&format!("{}{}", referencing.name, referenced.name), &postgres_schema_relation_names(design));
+        let position = match junction_position {
+            Some(point) => require_point(point, "Junction table position")?,
+            None => default_table_position(design),
+        };
+        let mut junction = create_default_table(&name, position, create_id);
+        let left_column = create_relationship_column(&junction, referencing, left_key, create_id);
+        junction.columns.push(left_column.clone());
+        let right_column = create_relationship_column(&junction, referenced, right_key, create_id);
+        junction.columns.push(right_column.clone());
+        let relationship = |referencing_column: &DesignColumn, referenced_table: &DesignTable, create_id: &mut dyn FnMut() -> String| DesignRelationship {
+            id: create_id(),
+            cardinality: "one-to-many".into(),
+            referencing_table_id: junction.id.clone(),
+            referencing_column_id: referencing_column.id.clone(),
+            referenced_table_id: referenced_table.id.clone(),
+            on_delete: None,
+            on_update: None,
+        };
+        let left = relationship(&left_column, referencing, create_id);
+        let right = relationship(&right_column, referenced, create_id);
+        let association = DesignManyToManyAssociation {
+            id: create_id(),
+            left_table_id: referencing.id.clone(),
+            right_table_id: referenced.id.clone(),
+            junction_table_id: junction.id.clone(),
+            left_relationship_id: left.id.clone(),
+            right_relationship_id: right.id.clone(),
+        };
+        let mut next = design.clone();
+        next.tables.push(junction);
+        next.relationships.extend([left, right]);
+        next.many_to_many_relationships.push(association);
+        return Ok(next);
+    }
+
+    let cardinality = require_cardinality(Some(&Value::String(creation)))?;
+    let Some(referenced_column) = primary_key_column(referenced) else {
+        return Err(format!("Table \"{}\" needs exactly one primary key column before another table can reference it.", referenced.name));
+    };
+    let column = create_relationship_column(referencing, referenced, referenced_column, create_id);
+    let relationship = DesignRelationship {
+        id: create_id(),
+        cardinality,
+        referencing_table_id: referencing.id.clone(),
+        referencing_column_id: column.id.clone(),
+        referenced_table_id: referenced.id.clone(),
+        on_delete: None,
+        on_update: None,
+    };
+    let mut table = referencing.clone();
+    table.columns.push(column);
+    let mut next = replace_table(design, table);
+    next.relationships.push(relationship);
+    Ok(next)
+}
+
+pub fn require_relationship<'a>(design: &'a Design, relationship_id: &str) -> Result<&'a DesignRelationship> {
+    design.relationships.iter().find(|candidate| candidate.id == relationship_id).ok_or_else(|| "That relationship could not be found.".to_owned())
+}
+
+/// What `updateRelationship` was asked to change. An absent property keeps its current value.
+pub struct RelationshipChanges<'a> {
+    pub required: Option<&'a Value>,
+    pub cardinality: Option<&'a Value>,
+    pub on_delete: Option<&'a Value>,
+    pub on_update: Option<&'a Value>,
+}
+
+/// `None` when nothing would change.
+pub fn update_relationship(design: &Design, relationship_id: &str, changes: &RelationshipChanges) -> Result<Option<Design>> {
+    let relationship = require_relationship(design, relationship_id)?;
+    let required = match changes.required {
+        None => None,
+        Some(Value::Bool(required)) => Some(*required),
+        Some(_) => return Err("Relationship required must be true or false.".into()),
+    };
+    let association = many_to_many_association_for_relationship(design, &relationship.id);
+    if association.is_some() && required == Some(false) {
+        return Err("Many-to-many junction references must remain required.".into());
+    }
+    if association.is_some() && changes.cardinality.is_some_and(|value| value.as_str() != Some("one-to-many")) {
+        return Err("Many-to-many junction reference cardinality cannot be changed.".into());
+    }
+    let cardinality = match changes.cardinality {
+        None => relationship.cardinality.clone(),
+        Some(value) => require_cardinality(Some(value))?,
+    };
+    let current_on_delete = relationship.on_delete.clone().unwrap_or_else(|| "NO ACTION".into());
+    let current_on_update = relationship.on_update.clone().unwrap_or_else(|| "NO ACTION".into());
+    let on_delete = match changes.on_delete {
+        None => current_on_delete.clone(),
+        Some(value) => require_referential_action(value)?,
+    };
+    let on_update = match changes.on_update {
+        None => current_on_update.clone(),
+        Some(value) => require_referential_action(value)?,
+    };
+    if required.is_none() && cardinality == relationship.cardinality && on_delete == current_on_delete && on_update == current_on_update {
+        return Ok(None);
+    }
+
+    let view = resolve_relationship(design, relationship).ok_or("That relationship could not be found.")?;
+    // Required and the foreign-key column's nullability are one setting.
+    let next_required = required.unwrap_or(view.required);
+    let columns = view
+        .referencing_table
+        .columns
+        .iter()
+        .map(|candidate| if candidate.id == view.referencing_column.id { DesignColumn { nullable: !next_required, ..candidate.clone() } } else { candidate.clone() })
+        .collect();
+    let mut next = replace_table(design, DesignTable { columns, ..view.referencing_table.clone() });
+    next.relationships = design
+        .relationships
+        .iter()
+        .map(|candidate| {
+            if candidate.id == relationship.id {
+                DesignRelationship { cardinality: cardinality.clone(), on_delete: Some(on_delete.clone()), on_update: Some(on_update.clone()), ..candidate.clone() }
+            } else {
+                candidate.clone()
+            }
+        })
+        .collect();
+    if cardinality == relationship.cardinality && on_delete == current_on_delete && on_update == current_on_update && next_required == view.required {
+        return Ok(None);
+    }
+    Ok(Some(next))
+}
+
+/// Removes the relationship-owned constraints, never a junction or its columns.
+pub fn remove_relationship(design: &Design, relationship_id: &str) -> Result<Design> {
+    let relationship = require_relationship(design, relationship_id)?;
+    let association = many_to_many_association_for_relationship(design, &relationship.id);
+    let ids: Vec<&str> = match association {
+        Some(association) => vec![association.left_relationship_id.as_str(), association.right_relationship_id.as_str()],
+        None => vec![relationship.id.as_str()],
+    };
+    Ok(Design {
+        relationships: design.relationships.iter().filter(|candidate| !ids.contains(&candidate.id.as_str())).cloned().collect(),
+        many_to_many_relationships: match association {
+            Some(association) => design.many_to_many_relationships.iter().filter(|candidate| candidate.id != association.id).cloned().collect(),
+            None => design.many_to_many_relationships.clone(),
+        },
+        ..design.clone()
+    })
 }
