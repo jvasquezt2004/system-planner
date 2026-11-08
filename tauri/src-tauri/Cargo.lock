@@ -4132,6 +4132,7 @@ dependencies = [
 name = "schema-workspace"
 version = "0.0.1"
 dependencies = [
+ "regex",
  "schema-domain",
  "schema-sandbox",
  "schema-store",

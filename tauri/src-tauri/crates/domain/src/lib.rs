@@ -16,6 +16,7 @@ pub mod postgres_identifiers;
 pub mod relationships;
 pub mod sql;
 pub mod system_design;
+pub mod system_layout;
 pub mod system_ops;
 pub mod walkthrough;
 pub mod walkthrough_ops;

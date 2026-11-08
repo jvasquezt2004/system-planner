@@ -84,6 +84,8 @@ struct Inner {
     last_generatable_sql: Option<(i64, String)>,
     preview_request_id: u64,
     scheduled: Option<ScheduledPreview>,
+    /// Optional-key order of the System design's Components and Connections; see `system::KeyOrders`.
+    key_orders: system::KeyOrders,
 }
 
 /// A preview to build straight away, outside the debounce.
@@ -125,6 +127,7 @@ impl Workspace {
                     last_generatable_sql: None,
                     preview_request_id: 0,
                     scheduled: None,
+                    key_orders: Default::default(),
                 }),
                 listeners: Mutex::new(Vec::new()),
                 options,
@@ -205,6 +208,7 @@ impl Workspace {
         inner.document_revision = revision;
         inner.system_document_revision = revision;
         inner.walkthrough_document_revision = 0;
+        inner.key_orders = Default::default();
         inner.last_generatable_sql = None;
         let projects = inner.store.list_projects().map_err(|error| error.to_string())?;
         let designs = inner.store.list_designs(&project.id).map_err(|error| error.to_string())?;
@@ -297,6 +301,13 @@ impl Workspace {
         };
         let source_values = |sources: &[schema_store::StoredSource]| -> Vec<Value> { sources.iter().map(|source| json!(source)).collect() };
         let has_tables = !design.tables.is_empty();
+        // Loading rebuilds every object in canonical key order; switching designs keeps what is loaded.
+        if opening {
+            inner.key_orders = match &system_design {
+                Some(system) => system::canonical_key_orders(system),
+                None => Default::default(),
+            };
+        }
         let preview_design = design.clone();
         let next = WorkspaceState {
             projects: inner.store.list_projects().map_err(store_error)?,

@@ -104,6 +104,7 @@ impl Workspace {
             "moveSystemGroup" => call!(MoveSystemGroup, |p| self.move_system_group(p)),
             "resizeSystemGroup" => call!(ResizeSystemGroup, |p| self.resize_system_group(p)),
             "removeSystemGroup" => call!(RemoveSystemGroup, |p| self.remove_system_group(p)),
+            "arrangeSystemLayout" => call!(ArrangeSystemLayout, |p| self.arrange_system_layout(p)),
             "addSystemComponent" => call!(AddSystemComponent, |p| self.add_system_component(p)),
             "updateSystemComponent" => call!(UpdateSystemComponent, |p| self.update_system_component(p)),
             "moveSystemComponent" => call!(MoveSystemComponent, |p| self.move_system_component(p)),

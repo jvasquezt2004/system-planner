@@ -9,6 +9,7 @@ use schema_domain::design::Design;
 use schema_domain::geometry::{CanvasPoint, CanvasViewport, DEFAULT_VIEWPORT, Size};
 use schema_domain::patch::Patch;
 use schema_domain::system_design::{SystemComponent, SystemDesign, SystemGroup};
+use schema_domain::system_layout::{apply_system_layout, LayoutPlacement};
 use schema_domain::system_ops::*;
 use schema_domain::walkthrough::Walkthrough;
 use schema_domain::walkthrough_ops::{self as walkthrough_ops, BlockInput, SequenceRef, StepDraft, StepInput, WalkthroughInput};
@@ -116,6 +117,93 @@ fn require_design_name(value: &str, others: &[&DatabaseDesignSummary]) -> Result
     Ok(name.to_owned())
 }
 
+/* ------------------------------------------------------ key-order emulation */
+
+/// The order of each Component's and Connection's optional keys, which drifts within a session.
+///
+/// The original decides whether a System design edit changed anything by comparing
+/// `JSON.stringify` output, which depends on key order. Updating an optional key deletes it and
+/// adds it back at the end, so an edit that changes nothing but the order still counts as a
+/// change: it is saved and it is an Undo step. This model follows JavaScript's rules (assigning
+/// an existing key keeps its place; delete then add moves it to the end) for exactly the keys
+/// that can drift, so the same edits are recognised as changes here. Loading resets every order.
+pub(crate) type KeyOrders = std::collections::HashMap<String, Vec<&'static str>>;
+
+const COMPONENT_KEYS: [&str; 4] = ["technology", "description", "designId", "icon"];
+const CONNECTION_KEYS: [&str; 6] = ["interactionType", "protocol", "fromSide", "toSide", "bendPoints", "labelOffset"];
+
+fn component_key(id: &str) -> String {
+    format!("component:{id}")
+}
+
+fn connection_key(id: &str) -> String {
+    format!("connection:{id}")
+}
+
+fn present_component_keys(component: &SystemComponent) -> Vec<&'static str> {
+    let present = |key: &str| match key {
+        "technology" => component.technology.is_some(),
+        "description" => component.description.is_some(),
+        "designId" => component.design_id.is_some(),
+        _ => component.icon.is_some(),
+    };
+    COMPONENT_KEYS.into_iter().filter(|key| present(key)).collect()
+}
+
+fn present_connection_keys(connection: &schema_domain::system_design::SystemConnection) -> Vec<&'static str> {
+    let present = |key: &str| match key {
+        "interactionType" => connection.interaction_type.is_some(),
+        "protocol" => connection.protocol.is_some(),
+        "fromSide" => connection.from_side.is_some(),
+        "toSide" => connection.to_side.is_some(),
+        "bendPoints" => connection.bend_points.is_some(),
+        _ => connection.label_offset.is_some(),
+    };
+    CONNECTION_KEYS.into_iter().filter(|key| present(key)).collect()
+}
+
+/// Every order in the canonical order a freshly loaded document has.
+pub(crate) fn canonical_key_orders(design: &SystemDesign) -> KeyOrders {
+    let mut orders = KeyOrders::new();
+    for component in &design.components {
+        orders.insert(component_key(&component.id), present_component_keys(component));
+    }
+    for connection in &design.connections {
+        orders.insert(connection_key(&connection.id), present_connection_keys(connection));
+    }
+    orders
+}
+
+/// Brings `orders` in line with `design` after an edit: objects the edit created get the canonical
+/// order, removed ones are dropped, and an object that was not touched keeps the order it had.
+fn settle_key_orders(mut orders: KeyOrders, design: &SystemDesign) -> KeyOrders {
+    let mut settled = KeyOrders::new();
+    for component in &design.components {
+        let key = component_key(&component.id);
+        settled.insert(key.clone(), orders.remove(&key).unwrap_or_else(|| present_component_keys(component)));
+    }
+    for connection in &design.connections {
+        let key = connection_key(&connection.id);
+        settled.insert(key.clone(), orders.remove(&key).unwrap_or_else(|| present_connection_keys(connection)));
+    }
+    settled
+}
+
+/// `delete next[key]`, then `Object.assign(next, { [key]: value })` when there is a value.
+fn reinsert(order: &mut Vec<&'static str>, key: &'static str, has_value: bool) {
+    order.retain(|existing| *existing != key);
+    if has_value {
+        order.push(key);
+    }
+}
+
+/// `next[key] = value`: an existing key keeps its place, a new one goes to the end.
+fn assign(order: &mut Vec<&'static str>, key: &'static str) {
+    if !order.contains(&key) {
+        order.push(key);
+    }
+}
+
 /* ---------------------------------------------------------------- actions */
 
 macro_rules! action {
@@ -137,6 +225,7 @@ action!(UpdateSystemGroup { group_id: String, changes: GroupChanges });
 action!(MoveSystemGroup { group_id: String, x: f64, y: f64 });
 action!(ResizeSystemGroup { group_id: String, width: f64, height: f64 });
 action!(RemoveSystemGroup { group_id: String });
+action!(ArrangeSystemLayout { placement: LayoutPlacement });
 action!(AddSystemComponent {
     id: Option<String>,
     kind: Option<String>,
@@ -194,15 +283,22 @@ impl Workspace {
 
     /// Applies one System design change: validate it, record it as one history action, then save
     /// the whole document. A failed save keeps the draft and shows the error.
-    fn apply_system_design_change(&self, mutate: impl FnOnce(&SystemDesign) -> Result<(SystemDesign, HistoryAction)>) -> Result<WorkspaceState> {
+    fn apply_system_design_change(
+        &self,
+        mutate: impl FnOnce(&SystemDesign, &mut KeyOrders) -> Result<(SystemDesign, HistoryAction)>,
+    ) -> Result<WorkspaceState> {
         let mut inner = self.lock();
         let (project_id, design_id) = require_open_project(&inner)?;
         let current = inner.state.system_design.clone().ok_or("Open a project before editing its System design.")?;
-        let (next, action) = mutate(&current)?;
-        if same_content(&next, &current) {
+        let mut orders = inner.key_orders.clone();
+        let (next, action) = mutate(&current, &mut orders)?;
+        let orders = settle_key_orders(orders, &next);
+        // Unchanged only if the content and the key order both are, as with the original's JSON comparison.
+        if same_content(&next, &current) && orders == inner.key_orders {
             return Ok(inner.state.clone());
         }
         self.record_history(&mut inner, &action);
+        inner.key_orders = orders;
         Ok(self.persist_system_design(&mut inner, &project_id, &design_id, next))
     }
 
@@ -271,7 +367,7 @@ impl Workspace {
 
     pub(crate) fn add_system_service(&self, a: AddSystemService) -> Result<WorkspaceState> {
         let id = a.id.clone().unwrap_or_else(|| self.new_id());
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let input = ServiceInput { id: id.clone(), name: a.name.clone(), position: CanvasPoint { x: a.x, y: a.y }, size: None };
             let next = add_service(design, &input)?;
             let added = find_service(&next, &id).ok_or("That Service could not be found.")?;
@@ -281,7 +377,7 @@ impl Workspace {
     }
 
     pub(crate) fn update_system_service(&self, a: UpdateSystemService) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = update_service(design, &a.service_id, &a.changes)?;
             let after = find_service(&next, &a.service_id).ok_or("That Service could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Rename service to “{}”", after.name)));
@@ -290,7 +386,7 @@ impl Workspace {
     }
 
     pub(crate) fn move_system_service(&self, a: MoveSystemService) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = move_service(design, &a.service_id, CanvasPoint { x: a.x, y: a.y })?;
             let moved = find_service(&next, &a.service_id).ok_or("That Service could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Move service “{}”", moved.name)));
@@ -299,7 +395,7 @@ impl Workspace {
     }
 
     pub(crate) fn resize_system_service(&self, a: ResizeSystemService) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = resize_service(design, &a.service_id, Size { width: a.width, height: a.height })?;
             let resized = find_service(&next, &a.service_id).ok_or("That Service could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Resize service “{}”", resized.name)));
@@ -308,7 +404,7 @@ impl Workspace {
     }
 
     pub(crate) fn remove_system_service(&self, a: RemoveSystemService) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let removed = find_service(design, &a.service_id).ok_or("That Service could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Remove service “{}”", removed.name)));
             Ok((remove_service(design, &a.service_id)?, action))
@@ -391,7 +487,7 @@ impl Workspace {
 
     pub(crate) fn add_system_group(&self, a: AddSystemGroup) -> Result<WorkspaceState> {
         let id = a.id.clone().unwrap_or_else(|| self.new_id());
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let size = match (a.width, a.height) {
                 (Some(width), Some(height)) => Some(Size { width, height }),
                 _ => None,
@@ -405,7 +501,7 @@ impl Workspace {
     }
 
     pub(crate) fn update_system_group(&self, a: UpdateSystemGroup) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let before = find_group(design, &a.group_id);
             let next = update_group(design, &a.group_id, &a.changes)?;
             let after = find_group(&next, &a.group_id);
@@ -416,7 +512,7 @@ impl Workspace {
     }
 
     pub(crate) fn move_system_group(&self, a: MoveSystemGroup) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = move_group(design, &a.group_id, CanvasPoint { x: a.x, y: a.y })?;
             let moved = find_group(&next, &a.group_id).ok_or("That Group could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Move group “{}”", moved.name)));
@@ -425,7 +521,7 @@ impl Workspace {
     }
 
     pub(crate) fn resize_system_group(&self, a: ResizeSystemGroup) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = resize_group(design, &a.group_id, Size { width: a.width, height: a.height })?;
             let resized = find_group(&next, &a.group_id).ok_or("That Group could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Resize group “{}”", resized.name)));
@@ -434,7 +530,7 @@ impl Workspace {
     }
 
     pub(crate) fn remove_system_group(&self, a: RemoveSystemGroup) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let removed = find_group(design, &a.group_id).ok_or("That Group could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Remove group “{}”", removed.name)));
             Ok((remove_group(design, &a.group_id)?, action))
@@ -445,7 +541,7 @@ impl Workspace {
 
     pub(crate) fn add_system_component(&self, a: AddSystemComponent) -> Result<WorkspaceState> {
         let id = a.id.clone().unwrap_or_else(|| self.new_id());
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let input = ComponentInput {
                 id: id.clone(),
                 kind: a.kind.clone(),
@@ -465,12 +561,28 @@ impl Workspace {
         })
     }
 
+    /// Applies an arrangement the view computed. It is one history action, however many items moved.
+    pub(crate) fn arrange_system_layout(&self, a: ArrangeSystemLayout) -> Result<WorkspaceState> {
+        self.apply_system_design_change(|design, _orders| {
+            let next = apply_system_layout(design, &a.placement)?;
+            Ok((next, attributed(&a.assistant_turn_id, HistoryAction::named("Arrange layout"))))
+        })
+    }
+
     pub(crate) fn update_system_component(&self, a: UpdateSystemComponent) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, orders| {
             let before = find_component(design, &a.component_id);
             let next = update_component(design, &a.component_id, &a.changes)?;
             let after = find_component(&next, &a.component_id);
             let (Some(before), Some(after)) = (before, after) else { return Err("That Component could not be found.".into()) };
+            // Each optional key that was part of the change is deleted and added back at the end.
+            if let Some(order) = orders.get_mut(&component_key(&a.component_id)) {
+                if !a.changes.technology.is_absent() { reinsert(order, "technology", after.technology.is_some()); }
+                if !a.changes.description.is_absent() { reinsert(order, "description", after.description.is_some()); }
+                if !a.changes.design_id.is_absent() { reinsert(order, "designId", after.design_id.is_some()); }
+                if !a.changes.icon.is_absent() { reinsert(order, "icon", after.icon.is_some()); }
+                if a.changes.kind.as_deref().is_some_and(|kind| kind != "custom") { order.retain(|key| *key != "icon"); }
+            }
             let action = if after.service_id != before.service_id {
                 match after.service_id.as_deref().and_then(|id| find_service(&next, id)) {
                     Some(owner) => HistoryAction::named(format!("Assign “{}” to “{}”", after.name, owner.name)),
@@ -486,7 +598,7 @@ impl Workspace {
     }
 
     pub(crate) fn move_system_component(&self, a: MoveSystemComponent) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let next = move_component(design, &a.component_id, CanvasPoint { x: a.x, y: a.y })?;
             let moved = find_component(&next, &a.component_id).ok_or("That Component could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Move “{}”", moved.name)));
@@ -495,7 +607,7 @@ impl Workspace {
     }
 
     pub(crate) fn remove_system_component(&self, a: RemoveSystemComponent) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let removed = find_component(design, &a.component_id).ok_or("That Component could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Remove component “{}”", removed.name)));
             Ok((remove_component(design, &a.component_id)?, action))
@@ -506,7 +618,7 @@ impl Workspace {
 
     pub(crate) fn add_system_connection(&self, a: AddSystemConnection) -> Result<WorkspaceState> {
         let id = a.id.clone().unwrap_or_else(|| self.new_id());
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let input = ConnectionInput {
                 id: id.clone(),
                 source_id: a.source_id.clone(),
@@ -523,9 +635,20 @@ impl Workspace {
     }
 
     pub(crate) fn update_system_connection(&self, a: UpdateSystemConnection) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, orders| {
             let next = update_connection(design, &a.connection_id, &a.changes)?;
             let after = find_connection(&next, &a.connection_id).ok_or("That Connection could not be found.")?;
+            if let Some(order) = orders.get_mut(&connection_key(&a.connection_id)) {
+                // In the original's order of statements: text keys are re-added; sides, bends and the
+                // label offset are deleted when cleared and assigned in place otherwise.
+                if !a.changes.interaction_type.is_absent() { reinsert(order, "interactionType", after.interaction_type.is_some()); }
+                if !a.changes.protocol.is_absent() { reinsert(order, "protocol", after.protocol.is_some()); }
+                for (patch, key, present) in [(&a.changes.from_side, "fromSide", after.from_side.is_some()), (&a.changes.to_side, "toSide", after.to_side.is_some())] {
+                    if !patch.is_absent() { if present { assign(order, key) } else { order.retain(|existing| *existing != key) } }
+                }
+                if a.changes.bend_points.is_some() { if after.bend_points.is_some() { assign(order, "bendPoints") } else { order.retain(|key| *key != "bendPoints") } }
+                if !a.changes.label_offset.is_absent() { if after.label_offset.is_some() { assign(order, "labelOffset") } else { order.retain(|key| *key != "labelOffset") } }
+            }
             // A route edit is one completed gesture, so it is never merged with a later edit to the same Connection.
             let action = if has_route_change(&a.changes) {
                 HistoryAction::named(format!("Reroute connection “{}”", after.label))
@@ -537,7 +660,7 @@ impl Workspace {
     }
 
     pub(crate) fn remove_system_connection(&self, a: RemoveSystemConnection) -> Result<WorkspaceState> {
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, _orders| {
             let removed = find_connection(design, &a.connection_id).ok_or("That Connection could not be found.")?;
             let action = attributed(&a.assistant_turn_id, HistoryAction::named(format!("Remove connection “{}”", removed.label)));
             Ok((remove_connection(design, &a.connection_id)?, action))
@@ -658,8 +781,10 @@ impl Workspace {
 
     pub fn remove_walkthrough_block(&self, walkthrough_id: &str, block_id: &str) -> Result<WorkspaceState> {
         self.apply_walkthrough_change(|walkthroughs, _| {
-            let walkthrough = walkthrough_ops::find_walkthrough(walkthroughs, walkthrough_id).ok_or("That Walkthrough could not be found.")?;
-            let container = walkthrough_ops::find_container_kind(walkthrough, block_id).ok_or("That block could not be found.")?;
+            // The block is looked up first, so an unknown Walkthrough is also reported as an unknown block.
+            let container = walkthrough_ops::find_walkthrough(walkthroughs, walkthrough_id)
+                .and_then(|walkthrough| walkthrough_ops::find_container_kind(walkthrough, block_id))
+                .ok_or("That block could not be found.")?;
             let name = if container == "parallel" { "Remove parallel block" } else { "Remove repeated block" };
             Ok((walkthrough_ops::remove_block(walkthroughs, walkthrough_id, block_id)?, HistoryAction::named(name)))
         })
@@ -756,7 +881,7 @@ impl Workspace {
                 Some(id) => Some(designs.into_iter().find(|design| design.id == id).ok_or("That design could not be found in this project.")?),
             }
         };
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, orders| {
             let component = require_database_component(design, component_id)?;
             let changes = ComponentChanges {
                 design_id: match design_id {
@@ -766,6 +891,9 @@ impl Workspace {
                 ..Default::default()
             };
             let next = update_component(design, &component.id, &changes)?;
+            if let Some(order) = orders.get_mut(&component_key(&component.id)) {
+                reinsert(order, "designId", design_id.is_some_and(|id| !id.is_empty()));
+            }
             let name = match &target {
                 Some(target) => format!("Link “{}” to “{}”", component.name, target.name),
                 None => format!("Unlink “{}” from its design", component.name),
@@ -799,9 +927,12 @@ impl Workspace {
             .create_design(&project.id, &design_id, &name, &to_json(&empty_design())?, DesignSave { revision: 1, document_revision: 1, saved_at })
             .map_err(|error| error.to_string())?;
         self.activate(project, &design_id, false)?;
-        self.apply_system_design_change(|design| {
+        self.apply_system_design_change(|design, orders| {
             let changes = ComponentChanges { design_id: Patch::Value(design_id.clone()), ..Default::default() };
             let next = update_component(design, component_id, &changes)?;
+            if let Some(order) = orders.get_mut(&component_key(component_id)) {
+                reinsert(order, "designId", true);
+            }
             Ok((next, HistoryAction::named(format!("Link “{component_name}” to “{name}”"))))
         })
     }
