@@ -4129,6 +4129,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema-transfer"
+version = "0.0.1"
+dependencies = [
+ "regex",
+ "schema-domain",
+ "schema-workspace",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "unicode-normalization",
+ "uuid",
+]
+
+[[package]]
 name = "schema-workspace"
 version = "0.0.1"
 dependencies = [

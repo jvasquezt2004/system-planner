@@ -399,6 +399,14 @@ impl Workspace {
         Ok((project_id.clone(), design.clone(), design_id.clone()))
     }
 
+    /// Fails unless `design_id` names the open Project's active Design.
+    pub fn require_active_design(&self, design_id: Option<&str>) -> Result<()> {
+        match design_id {
+            None | Some("") => Err("A database design ID is required.".into()),
+            Some(id) => self.require_open_design(&self.lock(), id).map(|_| ()),
+        }
+    }
+
     pub fn add_table(&self, design_id: &str, name: &str, position: Option<CanvasPoint>) -> Result<WorkspaceState> {
         let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let name = schema_domain::js::trim(name);
