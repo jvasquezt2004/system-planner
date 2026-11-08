@@ -185,3 +185,22 @@ pub struct PreparedProjectImport {
     pub system_design: Value,
     pub walkthroughs: Value,
 }
+
+/// A document the designer attached to a Project to give the Assistant background.
+/// The Design never depends on it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFileSummary {
+    pub id: String,
+    pub name: String,
+    pub size: i64,
+    pub mime: String,
+    pub added_at: i64,
+    /// Whether the Assistant can read the file as text.
+    pub has_text: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pages: Option<i64>,
+    /// Why there is no text, such as an image or a password-protected PDF.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+}

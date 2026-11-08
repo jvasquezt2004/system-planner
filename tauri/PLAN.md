@@ -336,8 +336,7 @@ Known gaps seen in the slice:
 
 Next, in the order the results suggest:
 
-1. Wire the System design and Walkthrough handlers (the operations exist), with id
-   generation, removal plans and Walkthrough impact, so the landing view works.
+1. ~~Wire the System design and Walkthrough handlers~~ (done, see "System overview results").
 2. A differential oracle for the workspace: drive the TypeScript workspace with a
    stubbed sandbox through scripted sessions, record the settled state after each call
    and the ordered status trail it pushes, and replay them against Rust.
@@ -345,6 +344,47 @@ Next, in the order the results suggest:
    Functions, Triggers, policies, unique constraints) and Undo/Redo.
 4. Project files, exports and imports (native dialogs), then Scenarios and the
    Assistant harnesses.
+
+## System overview results
+
+The System overview, the view a new Project opens on, now runs on the Rust backend.
+`Workspace::request` routes the view's JSON to typed handlers (about 60 calls), and the
+Tauri layer is a thin wrapper.
+
+Wired: every Service, Group, Component and Connection edit; collapse, focus and
+viewport; the three removal plans with their Walkthrough impact; linking a Database
+component and creating a Design for it; opening, creating and renaming Designs; and
+every Walkthrough edit. All of them use the fixture-verified operations from
+`schema-domain`. Reads of other stores' tables (`listProjectFiles`,
+`getAssistantRequestCap`) come from the same SQLite file, empty or the default when
+the table does not exist, as in the original.
+
+Found by reading the original while wiring this:
+
+- **Opening builds the preview at once.** `activateDesign` ends by generating and
+  checking the SQL immediately (no debounce) when the Design has tables. The first
+  slice showed "Not run / Not available" on open, which was wrong; the window now
+  reads "Saved | Accepted rev. 10 | Current rev. 10". Switching Designs behaves the same.
+- Every System design and Walkthrough handler names a history action and a coalesce key
+  (typing in one field merges into one Undo step). They are computed and passed to one
+  `record_history` hook that does nothing until history is ported.
+- "Nothing changed" is decided by content here. The original compares `JSON.stringify`
+  output, which also depends on key order, so it can save a no-op that Rust skips.
+
+Evidence: 8 new tests through `Workspace::request` with the view's JSON (persistence
+across restart, no-op edits not saved, presentation outside content, removal impact on
+Walkthrough steps, authoring rules and error messages, linking and creating Designs,
+preview on open), 3 for the table reads, and the real window rendering a seeded system
+(`cargo run -p schema-workspace --example seed -- <db> system`).
+
+Known gaps, now visible in the window:
+
+- **Arrange** (and the "Some cards overlap" hint's button) calls `arrangeSystemLayout`,
+  which needs `system-layout.ts` (about 300 lines). Not ported.
+- **Export SVG/PNG, project export/import, attaching files** need native dialogs.
+- **Undo/Redo** still does nothing.
+- Interaction in the real window is untested by me (no synthetic input), and there is
+  still no differential oracle for the workspace state machine.
 
 ### Build environment note
 

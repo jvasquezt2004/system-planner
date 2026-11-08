@@ -181,6 +181,15 @@ fn find_container<'a>(walkthrough: &'a Walkthrough, block_id: &str) -> Option<&'
     all_blocks(&walkthrough.blocks).into_iter().find(|block| !matches!(block, WalkthroughBlock::Step { .. }) && entry_id(block) == block_id)
 }
 
+/// `"parallel"` or `"repeat"` for the container with this id, if the Walkthrough has one.
+pub fn find_container_kind(walkthrough: &Walkthrough, block_id: &str) -> Option<&'static str> {
+    find_container(walkthrough, block_id).map(|block| match block {
+        WalkthroughBlock::Parallel { .. } => "parallel",
+        WalkthroughBlock::Repeat { .. } => "repeat",
+        WalkthroughBlock::Step { .. } => "step",
+    })
+}
+
 fn replace_at<T: Clone>(items: &[T], index: usize, item: T) -> Vec<T> {
     items.iter().enumerate().map(|(at, current)| if at == index { item.clone() } else { current.clone() }).collect()
 }

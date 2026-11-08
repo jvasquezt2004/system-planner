@@ -14,7 +14,9 @@
 //! edits, Scenarios and the rest arrive with later phases.
 
 mod edits;
+mod rpc;
 mod state;
+mod system;
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -30,6 +32,7 @@ use schema_sandbox::Sandbox;
 use schema_store::{DesignSave, ProjectSummary, Store};
 use serde_json::{json, Value};
 
+pub use rpc::NOT_IMPLEMENTED;
 pub use state::WorkspaceState;
 use state::{last_applied_sandbox, saved, saving};
 
@@ -74,9 +77,21 @@ struct Inner {
     active_design_id: Option<String>,
     /// Orders every stored document, including layout-only writes.
     document_revision: i64,
+    /// Orders System design document writes; separate from the database Design's document revision.
+    system_document_revision: i64,
+    /// Orders Walkthrough document writes.
+    walkthrough_document_revision: i64,
     last_generatable_sql: Option<(i64, String)>,
     preview_request_id: u64,
     scheduled: Option<ScheduledPreview>,
+}
+
+/// A preview to build straight away, outside the debounce.
+struct PreviewJob {
+    project_id: String,
+    revision: i64,
+    design: Design,
+    request_id: u64,
 }
 
 struct Shared {
@@ -105,6 +120,8 @@ impl Workspace {
                     active_project_id: None,
                     active_design_id: None,
                     document_revision: 0,
+                    system_document_revision: 0,
+                    walkthrough_document_revision: 0,
                     last_generatable_sql: None,
                     preview_request_id: 0,
                     scheduled: None,
@@ -186,6 +203,8 @@ impl Workspace {
         inner.active_project_id = Some(project.id.clone());
         inner.active_design_id = Some(design_id.clone());
         inner.document_revision = revision;
+        inner.system_document_revision = revision;
+        inner.walkthrough_document_revision = 0;
         inner.last_generatable_sql = None;
         let projects = inner.store.list_projects().map_err(|error| error.to_string())?;
         let designs = inner.store.list_designs(&project.id).map_err(|error| error.to_string())?;
@@ -209,15 +228,27 @@ impl Workspace {
     }
 
     pub fn open_project(&self, project_id: &str) -> Result<WorkspaceState> {
-        let mut inner = self.lock();
-        let record = inner.store.load_project(project_id).map_err(|error| error.to_string())?;
+        let record = self.lock().store.load_project(project_id).map_err(|error| error.to_string())?;
         let Some(record) = record else { return Err("That project could not be found.".into()) };
-        self.activate_design(&mut inner, record.project, &record.design_id)?;
-        Ok(inner.state.clone())
+        self.activate(record.project, &record.design_id, true)
     }
 
-    /// Makes one stored design of a Project the active one, loading the Project's own documents too.
-    fn activate_design(&self, inner: &mut Inner, project: ProjectSummary, design_id: &str) -> Result<()> {
+    /// Makes one stored design the active one and, when it has tables, builds its preview at once.
+    /// Unlike an edit, opening does not wait for further edits before it checks the schema.
+    fn activate(&self, project: ProjectSummary, design_id: &str, opening: bool) -> Result<WorkspaceState> {
+        let job = {
+            let mut inner = self.lock();
+            self.activate_design(&mut inner, project, design_id, opening)?
+        };
+        if let Some(job) = job {
+            self.generate_and_apply(&job.project_id, job.revision, &job.design, job.request_id, design_id);
+        }
+        Ok(self.state())
+    }
+
+    /// Makes one stored design of a Project the active one. Opening the Project also loads its own
+    /// documents (System design, Walkthroughs, last view); switching designs keeps what is loaded.
+    fn activate_design(&self, inner: &mut Inner, project: ProjectSummary, design_id: &str, opening: bool) -> Result<Option<PreviewJob>> {
         let store_error = |error: schema_store::StoreError| error.to_string();
         let record = inner.store.load_design(design_id).map_err(store_error)?;
         let Some(record) = record.filter(|record| record.project_id == project.id) else {
@@ -226,28 +257,51 @@ impl Workspace {
         let design = Design::load(&record.design)?;
         let scenario_document = inner.store.load_scenarios(&project.id, design_id).map_err(store_error)?;
         let edge_document = inner.store.load_edge_functions(&project.id, design_id).map_err(store_error)?;
-        let system_record = inner.store.load_system_design(&project.id).map_err(store_error)?;
-        let walkthrough_record = inner.store.load_walkthroughs(&project.id).map_err(store_error)?;
+        let system_record = if opening { inner.store.load_system_design(&project.id).map_err(store_error)? } else { None };
+        let walkthrough_record = if opening { inner.store.load_walkthroughs(&project.id).map_err(store_error)? } else { None };
 
         invalidate_preview(inner);
         inner.active_project_id = Some(project.id.clone());
         inner.active_design_id = Some(design_id.to_owned());
         inner.document_revision = record.document_revision;
+        if opening {
+            inner.system_document_revision = system_record.as_ref().map_or(0, |record| record.document_revision);
+            inner.walkthrough_document_revision = walkthrough_record.as_ref().map_or(0, |record| record.revision);
+        }
         inner.last_generatable_sql = None;
 
-        let system_design = match &system_record {
-            Some(record) => normalize_system_design(&record.document)?,
-            None => create_empty_system_design(),
-        };
-        let walkthroughs = match &walkthrough_record {
-            Some(record) => normalize_walkthroughs(&record.document)?,
-            None => vec![],
+        // Project-level documents load when the Project opens and are carried over when only the design changes.
+        let carried = inner.state.clone();
+        let (system_design, system_save, active_view, walkthroughs, walkthrough_save) = if opening {
+            (
+                Some(match &system_record {
+                    Some(record) => normalize_system_design(&record.document)?,
+                    None => create_empty_system_design(),
+                }),
+                match &system_record {
+                    Some(record) => saved(record.revision, record.saved_at, design_id),
+                    None => json!({ "status": "idle" }),
+                },
+                system_record.as_ref().map_or(SystemViewName::System, |record| record.last_view),
+                match &walkthrough_record {
+                    Some(record) => normalize_walkthroughs(&record.document)?,
+                    None => vec![],
+                },
+                match &walkthrough_record {
+                    Some(record) => saved(record.revision, record.saved_at, design_id),
+                    None => json!({ "status": "idle" }),
+                },
+            )
+        } else {
+            (carried.system_design, carried.system_save, carried.active_view, carried.walkthroughs, carried.walkthrough_save)
         };
         let source_values = |sources: &[schema_store::StoredSource]| -> Vec<Value> { sources.iter().map(|source| json!(source)).collect() };
+        let has_tables = !design.tables.is_empty();
+        let preview_design = design.clone();
         let next = WorkspaceState {
             projects: inner.store.list_projects().map_err(store_error)?,
             designs: inner.store.list_designs(&project.id).map_err(store_error)?,
-            project: Some(project),
+            project: Some(project.clone()),
             design: Some(design),
             active_design_id: Some(design_id.to_owned()),
             revision: record.revision,
@@ -264,18 +318,19 @@ impl Workspace {
                 None => json!({ "status": "idle" }),
                 Some(saved_at) => saved(edge_document.revision, saved_at, design_id),
             },
-            system_design: Some(system_design),
-            system_save: match &system_record {
-                Some(record) => saved(record.revision, record.saved_at, design_id),
-                None => json!({ "status": "idle" }),
-            },
-            active_view: system_record.as_ref().map_or(SystemViewName::System, |record| record.last_view),
+            system_design,
+            system_save,
+            active_view,
             walkthroughs,
-            walkthrough_save: json!({ "status": "idle" }),
+            walkthrough_save,
             ..WorkspaceState::initial(vec![])
         };
         self.set_state(inner, next);
-        Ok(())
+        if !has_tables {
+            return Ok(None);
+        }
+        inner.preview_request_id += 1;
+        Ok(Some(PreviewJob { project_id: project.id, revision: record.revision, design: preview_design, request_id: inner.preview_request_id }))
     }
 
     pub fn set_active_view(&self, view: SystemViewName) -> Result<WorkspaceState> {
@@ -291,7 +346,7 @@ impl Workspace {
 
     /* ------------------------------------------------------- Design edits */
 
-    fn open_design(&self, inner: &Inner, target_design_id: &str) -> Result<(String, Design, String)> {
+    fn require_open_design(&self, inner: &Inner, target_design_id: &str) -> Result<(String, Design, String)> {
         let (Some(project_id), Some(design_id), Some(design)) = (&inner.active_project_id, &inner.active_design_id, &inner.state.design) else {
             return Err("Open a project before editing its design.".into());
         };
@@ -305,7 +360,7 @@ impl Workspace {
     }
 
     pub fn add_table(&self, design_id: &str, name: &str, position: Option<CanvasPoint>) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let name = schema_domain::js::trim(name);
         if name.is_empty() {
             return Err("Table name is required.".into());
@@ -321,7 +376,7 @@ impl Workspace {
     }
 
     pub fn rename_table(&self, design_id: &str, table_id: &str, name: &str) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let name = schema_domain::js::trim(name);
         if name.is_empty() {
             return Err("Table name is required.".into());
@@ -335,7 +390,7 @@ impl Workspace {
     }
 
     pub fn move_table(&self, design_id: &str, table_id: &str, position: CanvasPoint) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let table = edits::require_table(&design, table_id)?;
         let position = edits::require_point(position, "Table position")?;
         if table.position == position {
@@ -346,7 +401,7 @@ impl Workspace {
     }
 
     pub fn add_column(&self, design_id: &str, table_id: &str, name: Option<&str>, column_type: Option<&str>) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let table = edits::require_table(&design, table_id)?;
         let name = match name {
             None => edits::next_column_name(table),
@@ -364,7 +419,7 @@ impl Workspace {
     }
 
     pub fn update_column(&self, design_id: &str, table_id: &str, column_id: &str, changes: &Value) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let outcome = edits::update_column(&design, table_id, column_id, changes)?;
         match outcome {
             edits::ColumnEdit::Unchanged => Ok(self.state()),
@@ -374,7 +429,7 @@ impl Workspace {
     }
 
     pub fn set_viewport(&self, design_id: &str, x: f64, y: f64, zoom: f64) -> Result<WorkspaceState> {
-        let (project_id, design, design_id) = self.open_design(&self.lock(), design_id)?;
+        let (project_id, design, design_id) = self.require_open_design(&self.lock(), design_id)?;
         let viewport = CanvasViewport {
             x: edits::require_number(x, "Canvas position")?,
             y: edits::require_number(y, "Canvas position")?,

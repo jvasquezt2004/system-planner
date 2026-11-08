@@ -386,6 +386,55 @@ impl Store {
         self.save_sources("edge_functions", "edge_function_documents", project_id, design_id, edge_functions, save)
     }
 
+    fn has_table(&self, name: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_row("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", [name], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
+    /// Files attached to a Project, oldest first, as the project files store of the original saved
+    /// them. That table is created when the first file is attached, so its absence means none.
+    pub fn list_project_files(&self, project_id: &str) -> Result<Vec<ProjectFileSummary>> {
+        if !self.has_table("project_files")? {
+            return Ok(vec![]);
+        }
+        let mut statement = self.conn.prepare(
+            "SELECT id, name, mime, size, added_at, pages, note, text IS NOT NULL AS has_text
+			 FROM project_files WHERE project_id = ? ORDER BY added_at, rowid",
+        )?;
+        let files = statement
+            .query_map([project_id], |row| {
+                let note: Option<String> = row.get(6)?;
+                Ok(ProjectFileSummary {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    mime: row.get(2)?,
+                    size: row.get(3)?,
+                    added_at: row.get(4)?,
+                    pages: row.get(5)?,
+                    // An empty note is stored as no note, as the original does.
+                    note: note.filter(|note| !note.is_empty()),
+                    has_text: row.get::<_, i64>(7)? == 1,
+                })
+            })?
+            .collect::<std::result::Result<_, _>>()?;
+        Ok(files)
+    }
+
+    /// The Assistant's per-turn request limit as its own store saved it, or the default of 40.
+    pub fn assistant_request_cap(&self) -> Result<i64> {
+        if !self.has_table("assistant_settings")? {
+            return Ok(40);
+        }
+        let cap = self
+            .conn
+            .query_row("SELECT max_requests_per_turn FROM assistant_settings WHERE id = 1", [], |row| row.get(0))
+            .optional()?;
+        Ok(cap.unwrap_or(40))
+    }
+
     fn require_owner(&self, design_id: &str, project_id: &str) -> Result<()> {
         require_owner(&self.conn, design_id, project_id)
     }

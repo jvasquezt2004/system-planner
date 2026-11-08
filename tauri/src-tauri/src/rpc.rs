@@ -1,17 +1,10 @@
-//! Dispatch for the view's RPC. A request names a method and carries the same JSON
-//! params the Electrobun app received, so the view needs no changes.
-//!
-//! Anything not yet ported fails loudly, naming the method, rather than returning
-//! invented data.
+//! The Tauri side of the view's RPC: the workspace answers everything it has ported, and this
+//! layer answers the few read-only Assistant lists with the truth, that there are none yet.
 
 use std::sync::Arc;
 
-use schema_domain::geometry::CanvasPoint;
-use schema_domain::system_design::SystemViewName;
 use schema_workspace::{Options, Workspace};
-use serde::de::DeserializeOwned;
-use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 #[derive(Clone)]
 pub struct Backend {
@@ -20,71 +13,6 @@ pub struct Backend {
 
 type Result<T> = std::result::Result<T, String>;
 
-fn params<T: DeserializeOwned>(method: &str, value: Value) -> Result<T> {
-    serde_json::from_value(value).map_err(|error| format!("`{method}` received invalid parameters: {error}"))
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct NameParams {
-    name: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ProjectParams {
-    project_id: String,
-}
-#[derive(Deserialize)]
-struct ViewParams {
-    view: SystemViewName,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AddTableParams {
-    name: String,
-    position: Option<CanvasPoint>,
-    design_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct RenameTableParams {
-    table_id: String,
-    name: String,
-    design_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct MoveTableParams {
-    table_id: String,
-    position: CanvasPoint,
-    design_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct AddColumnParams {
-    table_id: String,
-    name: Option<String>,
-    #[serde(rename = "type")]
-    column_type: Option<String>,
-    design_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct UpdateColumnParams {
-    table_id: String,
-    column_id: String,
-    changes: Value,
-    design_id: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct ViewportParams {
-    x: f64,
-    y: f64,
-    zoom: f64,
-    design_id: String,
-}
-
 impl Backend {
     /// Opens the workspace on `database_path` and starts pushing state changes through `push`.
     pub fn start(database_path: std::path::PathBuf, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
@@ -92,63 +20,30 @@ impl Backend {
         let workspace = Workspace::open(Options::new(database_path, sandbox))?;
         workspace.subscribe(Arc::new(move |state| {
             if let Ok(payload) = serde_json::to_value(state) {
-                push(serde_json::json!({ "method": "workspaceState", "payload": payload }));
+                push(json!({ "method": "workspaceState", "payload": payload }));
             }
         }));
         Ok(Self { workspace })
     }
 
-    fn state(state: schema_workspace::WorkspaceState) -> Result<Value> {
-        serde_json::to_value(state).map_err(|error| error.to_string())
-    }
-
     pub fn request(&self, method: &str, value: Value) -> Result<Value> {
-        let workspace = &self.workspace;
         match method {
-            "getWorkspaceState" => Self::state(workspace.state()),
-            "createProject" => Self::state(workspace.create_project(&params::<NameParams>(method, value)?.name)?),
-            "openProject" => Self::state(workspace.open_project(&params::<ProjectParams>(method, value)?.project_id)?),
-            "setActiveView" => Self::state(workspace.set_active_view(params::<ViewParams>(method, value)?.view)?),
-            "addTable" => {
-                let p: AddTableParams = params(method, value)?;
-                Self::state(workspace.add_table(&p.design_id, &p.name, p.position)?)
-            }
-            "renameTable" => {
-                let p: RenameTableParams = params(method, value)?;
-                Self::state(workspace.rename_table(&p.design_id, &p.table_id, &p.name)?)
-            }
-            "moveTable" => {
-                let p: MoveTableParams = params(method, value)?;
-                Self::state(workspace.move_table(&p.design_id, &p.table_id, p.position)?)
-            }
-            "addColumn" => {
-                let p: AddColumnParams = params(method, value)?;
-                Self::state(workspace.add_column(&p.design_id, &p.table_id, p.name.as_deref(), p.column_type.as_deref())?)
-            }
-            "updateColumn" => {
-                let p: UpdateColumnParams = params(method, value)?;
-                Self::state(workspace.update_column(&p.design_id, &p.table_id, &p.column_id, &p.changes)?)
-            }
-            "setViewport" => {
-                let p: ViewportParams = params(method, value)?;
-                Self::state(workspace.set_viewport(&p.design_id, p.x, p.y, p.zoom)?)
-            }
             // The Assistant is ported last, and its harnesses are the only part kept. Until then it has
             // no conversations, models or connections, which is true, so the sidebar can say so.
-            "listAssistantConversations" | "listAssistantModels" | "listAssistantConnections" => Ok(serde_json::json!([])),
-            "getClaudeOptIn" => Ok(serde_json::json!(false)),
-            other => Err(not_ported(other)),
+            "listAssistantConversations" | "listAssistantModels" | "listAssistantConnections" => Ok(json!([])),
+            "getClaudeOptIn" => Ok(json!(false)),
+            _ => self.workspace.request(method, value).inspect_err(|error| {
+                if error.contains(schema_workspace::NOT_IMPLEMENTED) {
+                    eprintln!("[rpc] not implemented yet: {method}");
+                }
+            }),
         }
     }
 
     pub fn message(&self, method: &str, _value: Value) -> Result<()> {
-        Err(not_ported(method))
+        eprintln!("[rpc] not implemented yet: {method}");
+        Err(format!("`{method}` {}", schema_workspace::NOT_IMPLEMENTED))
     }
-}
-
-fn not_ported(method: &str) -> String {
-    eprintln!("[rpc] not implemented yet: {method}");
-    format!("`{method}` is not implemented in the Tauri backend yet")
 }
 
 #[cfg(test)]
