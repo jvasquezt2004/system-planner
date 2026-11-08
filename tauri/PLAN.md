@@ -104,7 +104,7 @@ unchanged UI.
    (`tauri/fixtures`) landed here. Still to port from this phase: the pure
    model operations in `system-design.ts` / `walkthrough.ts` / `workspace.ts`
    (add, move, remove, describe-removal, repair, ...), which phase 2 needs.
-2. **Workspace and RPC. (in progress, see "Phase 2 progress")** Project/design/system-design/walkthrough operations,
+2. **Workspace and RPC. (first slice running, see "Slice results")** Project/design/system-design/walkthrough operations,
    undo/redo and project history, state push. UI usable for editing with no SQL
    preview yet.
 3. **SQL and schema code. (SQL generation done, see "Phase 3 progress")**
@@ -279,6 +279,72 @@ Findings:
 Still to port for this phase: `sql-preview.ts` (copy and export actions) and the
 four ORM generators in `src/shared/schema-code` (Prisma, Drizzle, SQLAlchemy,
 Django, about 3.5k lines with their naming helpers).
+
+## Slice results
+
+The first end-to-end slice runs: the unmodified React view on the Rust backend,
+with real autosave to SQLite and a real PostgreSQL validating the SQL preview.
+
+What it covers: `getWorkspaceState`, `createProject`, `openProject`,
+`setActiveView`, `addTable`, `renameTable`, `moveTable`, `addColumn`,
+`updateColumn`, `setViewport`, plus honest empty answers for the Assistant's
+read-only lists. New crates: `schema-sandbox` (PGlite through `pglite-oxide`, the
+catalog queries of `sandbox.ts`) and `schema-workspace` (state, edits, autosave,
+debounced preview).
+
+Evidence:
+
+- A demo Project seeded through the workspace (`cargo run -p schema-workspace
+  --example seed -- <db>`) opened in the real window and rendered correctly:
+  Project name, Design, the table card with its columns and PK/identity/unique
+  badges, "Saved", "rev. 10", "2 tables". Checked by capturing only the window.
+- Tests: 8 workspace tests (state trail in order, restart persistence, layout and
+  notes not moving the schema revision, invalid drafts staying saved with the
+  last good SQL, the original error messages, primary-key demotion, the real
+  sandbox) and one RPC test that sends the view's exact JSON.
+- Latency, release build, real sandbox: a schema edit settles in about 300 ms
+  (180 ms debounce plus about 120 ms to build and check). A layout-only edit
+  (move a table, pan) takes about 2 ms. The call returns once the preview has
+  settled, as the original's does.
+
+Design decisions the slice settled:
+
+- Threads and channels, not an async runtime. Workspace methods are blocking; Tauri
+  commands run them with `spawn_blocking`. A debounced preview is a thread that waits on
+  a cancel channel, so a newer edit wakes and ends it at once.
+- Every call returns the **settled** state (it waits for its preview, or for the
+  edit that replaces it). The view applies each response, so a response that
+  returned early would arrive as a stale `checking` state and overwrite newer pushes.
+- State is typed where the workspace reasons about it (`Design`, `SystemDesign`) and
+  JSON for the tagged status unions (`save`, `sql`, `sandbox`), which are only built
+  and read.
+
+Known gaps seen in the slice:
+
+- **System overview is not wired.** It is the view a new Project opens on. The
+  System design and Walkthrough operations are ported and fixture-verified but have no
+  RPC handlers yet, so the primary view cannot edit anything.
+- No Undo/Redo (the buttons render disabled; history is not ported).
+- The Project files panel shows `listProjectFiles` as not implemented; the Assistant
+  lists answer empty.
+- Not exercised in the real window: clicks and typing. Synthetic input would go to
+  whichever window has focus, so interaction is covered by tests and by hand.
+- Opening a Project shows SQL "Not run" and sandbox "Not available" until the first
+  edit. By the original's code this is the same (opening schedules no preview),
+  but it should be compared side by side with the Electrobun app.
+- The slice has no differential test of the workspace state machine itself yet.
+
+Next, in the order the results suggest:
+
+1. Wire the System design and Walkthrough handlers (the operations exist), with id
+   generation, removal plans and Walkthrough impact, so the landing view works.
+2. A differential oracle for the workspace: drive the TypeScript workspace with a
+   stubbed sandbox through scripted sessions, record the settled state after each call
+   and the ordered status trail it pushes, and replay them against Rust.
+3. The remaining Design edits (remove table and column, relationships, indexes, enums,
+   Functions, Triggers, policies, unique constraints) and Undo/Redo.
+4. Project files, exports and imports (native dialogs), then Scenarios and the
+   Assistant harnesses.
 
 ### Build environment note
 

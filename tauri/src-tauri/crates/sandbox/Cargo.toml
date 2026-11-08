@@ -1,0 +1,13 @@
+[package]
+name = "schema-sandbox"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+description = "Disposable PostgreSQL preview (PGlite) for Schema Designer"
+
+[dependencies]
+pglite-oxide = "0.5.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+anyhow = "1"

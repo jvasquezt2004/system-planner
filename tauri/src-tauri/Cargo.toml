@@ -18,9 +18,14 @@ tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 schema-domain = { path = "crates/domain" }
+schema-sandbox = { path = "crates/sandbox" }
+schema-workspace = { path = "crates/workspace" }
 
 # Further crates join as phases need them (see ../PLAN.md): rusqlite, pg_query,
 # pglite-oxide, tokio, and the Tauri dialog/clipboard/opener plugins.
+
+[dev-dependencies]
+tempfile = "3"
 
 [workspace]
 members = ["crates/*"]
