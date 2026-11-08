@@ -107,8 +107,9 @@ unchanged UI.
 2. **Workspace and RPC. (in progress, see "Phase 2 progress")** Project/design/system-design/walkthrough operations,
    undo/redo and project history, state push. UI usable for editing with no SQL
    preview yet.
-3. **SQL and schema code.** `sql.ts`, SQL preview, the four ORM generators,
-   `pg_query`-based helpers. Golden tests against TS output.
+3. **SQL and schema code. (SQL generation done, see "Phase 3 progress")**
+   `sql.ts`, SQL preview, the four ORM generators, `pg_query`-based helpers.
+   Golden tests against TS output.
 4. **Sandbox and Scenarios.** Design check, Scenario runs, Sandbox API emulator,
    result grids, edge function invocation plumbing.
 5. **Files and portability.** Project export/import (`.dbplanner.json`), project
@@ -242,6 +243,42 @@ Still to port for this phase, in dependency order:
 4. Save scheduling, revisions and the `WorkspaceState` that drives the view,
    including the SQL and sandbox state (so phase 3's SQL generation matters here).
 5. The `rpc_request` handlers and the state push.
+
+## Phase 3 progress
+
+SQL generation is ported with its dependencies, ahead of the rest of Phase 2's
+workspace so the first end-to-end slice (create a project, add a table, see its
+SQL) has something to show.
+
+| Ported | Source | Verified by |
+| --- | --- | --- |
+| Column type registry, `renderColumnType` | `column-types.ts` | generated from the TS source; 450 renderings |
+| Default validation and SQL rendering | `column-defaults.ts` | 563 validations (224 accepted), 450 renderings |
+| Identifier naming (63-byte limit, `makeObjectName`) | `postgres-identifiers.ts` | 760 cases |
+| Index access methods and operator classes | `index-methods.ts` | generated from the TS source; checked through the SQL cases |
+| Relationship resolution, naming, removal plans | `relationships.ts` | 642 cases |
+| Design to PostgreSQL, schema file, planned names | `sql.ts` | 642 cases, 260 accepted, 382 refused, 137 distinct errors, 14 distinct warnings |
+
+Findings:
+
+- `JSON.parse` accepts numbers beyond f64 (`1e999`); `serde_json` does not. JSON
+  defaults are validated for syntax only. A lone surrogate escape is the one
+  remaining difference and is not in the corpus.
+- JavaScript's `\d` and `\s` differ from Rust's; patterns spell out ASCII digits and
+  the JavaScript whitespace set (`js::SPACE_CLASS`).
+- `Object.entries(index.with)` is insertion-ordered and validation messages and
+  the rendered `WITH (...)` follow it, so `serde_json` now runs with
+  `preserve_order` and index options are an ordered map.
+- The first rich test Design was SQL-invalid (a trigger function with an
+  argument). The generator's "unmodified base must be accepted" check caught it.
+- Mutation checks on `sql.rs`, `relationships.rs` and `index_methods.rs`: 10 of
+  12 breaks caught; the two survivors are equivalent mutants (a redundant
+  reservation of explicit index names, and a trigger-event clause that only
+  matters for a Design whose events name another table's column).
+
+Still to port for this phase: `sql-preview.ts` (copy and export actions) and the
+four ORM generators in `src/shared/schema-code` (Prisma, Drizzle, SQLAlchemy,
+Django, about 3.5k lines with their naming helpers).
 
 ### Build environment note
 

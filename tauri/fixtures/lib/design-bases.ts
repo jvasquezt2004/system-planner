@@ -89,7 +89,7 @@ export const DESIGN_RICH = {
 		{
 			id: "fn-1",
 			name: "touch_updated",
-			arguments: [{ name: "target", type: "text" }],
+			arguments: [],
 			returnType: "trigger",
 			returnsSet: false,
 			language: "plpgsql",
@@ -124,5 +124,95 @@ export const DESIGN_LEGACY = {
 				{ id: "c3", name: "joined", type: "timestamp", nullable: true, primaryKey: false, identity: false, default: { kind: "currentTimestamp" } },
 			],
 		},
+	],
+} as unknown as Design;
+
+const full = (id: string, name: string, type: string, extra: Record<string, unknown> = {}) => ({
+	id, name, type, nullable: true, primaryKey: false, unique: false, identity: false, default: { kind: "none" }, notes: "", ...extra,
+});
+const pk = (id: string, name = "id", type = "bigint") => full(id, name, type, { nullable: false, primaryKey: true, identity: type !== "uuid", ...(type === "uuid" ? { default: { kind: "generateUuid" } } : {}) });
+
+/**
+ * A normalized Design that exercises every SQL branch: all index methods, vector
+ * columns, enums, composite keys, a foreign-key cycle, a self reference, a real
+ * many-to-many junction, policies, functions, triggers and raw statements.
+ */
+export const DESIGN_FEATURES = {
+	tables: [
+		{
+			id: "t-authors", name: "authors", position: { x: 0, y: 0 },
+			columns: [pk("a-id"), full("a-name", "name", "text", { nullable: false }), full("a-bio", "bio", "text"), full("a-email", "email", "varchar", { typeParameters: { length: 200 }, unique: true }), full("a-fav", "favourite_post_id", "bigint")],
+			indexes: [
+				{ id: "ix-a1", method: "btree", keys: [{ columnId: "a-name", order: "desc", nulls: "last" }], includeColumnIds: ["a-bio"] },
+				{ id: "ix-a2", name: "authors_bio_trgm", method: "btree", keys: [{ columnId: "a-bio", operatorClass: "text_pattern_ops" }], unique: true, nullsNotDistinct: true, with: { fillfactor: 70 } },
+			],
+			uniqueConstraints: [{ id: "uq-a1", columnIds: ["a-name", "a-email"] }],
+			rowLevelSecurity: true,
+			policies: [
+				{ id: "pol-a1", name: "authors are public", command: "SELECT", roles: [], mode: "permissive", using: "true", withCheck: "" },
+				{ id: "pol-a2", name: "authors edit own", command: "UPDATE", roles: ["authenticated", "service_role"], mode: "restrictive", using: "id = 1", withCheck: "id = 1" },
+			],
+		},
+		{
+			id: "t-posts", name: "posts", position: { x: 320, y: 0 },
+			columns: [
+				pk("p-id"), full("p-author", "author_id", "bigint", { nullable: false }), full("p-title", "title", "text", { nullable: false }), full("p-embedding", "embedding", "vector", { typeParameters: { dimensions: 3 } }),
+				full("p-tags", "tags", "text", { typeParameters: { array: true } }), full("p-body", "body", "jsonb"), full("p-created", "created_at", "timestamptz", { nullable: false, default: { kind: "currentTimestamp" } }),
+				full("p-status", "status", "enum", { enumTypeId: "e-status", default: { kind: "literal", literalType: "text", value: "draft" } }), full("p-score", "score", "numeric", { typeParameters: { precision: 8, scale: 2 } }),
+				full("p-shape", "shape", "halfvec", { typeParameters: { dimensions: 4 } }), full("p-range", "views", "integer", { default: { kind: "literal", literalType: "integer", value: "0" } }),
+			],
+			indexes: [
+				{ id: "ix-p1", method: "hnsw", keys: [{ columnId: "p-embedding", operatorClass: "vector_l2_ops" }], with: { m: 16, efConstruction: 64 } },
+				{ id: "ix-p2", method: "gin", keys: [{ columnId: "p-body" }], with: { fastupdate: false } },
+				{ id: "ix-p3", method: "gin", keys: [{ columnId: "p-tags" }] },
+				{ id: "ix-p4", method: "brin", keys: [{ columnId: "p-created" }], with: { pagesPerRange: 64 } },
+				{ id: "ix-p5", method: "hash", keys: [{ columnId: "p-title" }] },
+				{ id: "ix-p6", method: "btree", keys: [{ columnId: "p-author" }, { columnId: "p-created", order: "desc" }] },
+				{ id: "ix-p7", method: "btree", keys: [{ columnId: "p-author" }] },
+				{ id: "ix-p8", method: "ivfflat", keys: [{ columnId: "p-shape", operatorClass: "halfvec_cosine_ops" }], with: { lists: 100 } },
+			],
+			rowLevelSecurity: false, policies: [],
+		},
+		{
+			id: "t-comments", name: "comments", position: { x: 640, y: 0 },
+			columns: [pk("c-id", "id", "uuid"), full("c-post", "post_id", "bigint", { nullable: false }), full("c-parent", "parent_id", "uuid"), full("c-text", "text", "text", { nullable: false })],
+			rowLevelSecurity: false, policies: [],
+		},
+		{
+			id: "t-tags", name: "Tags", position: { x: 0, y: 320 },
+			columns: [pk("t-id"), full("t-label", "Label", "text", { nullable: false, unique: true })],
+			rowLevelSecurity: false, policies: [],
+		},
+		{
+			id: "t-post-tags", name: "post_tags", position: { x: 320, y: 320 },
+			columns: [pk("pt-id"), full("pt-post", "post_id", "bigint", { nullable: false }), full("pt-tag", "tag_id", "bigint", { nullable: false })],
+			rowLevelSecurity: false, policies: [],
+		},
+		{
+			id: "t-profiles", name: "profiles", position: { x: 640, y: 320 },
+			columns: [full("pr-author", "author_id", "bigint", { nullable: false, primaryKey: true }), full("pr-theme", "theme", "text")],
+			rowLevelSecurity: false, policies: [],
+		},
+	],
+	relationships: [
+		{ id: "r-post-author", cardinality: "one-to-many", referencingTableId: "t-posts", referencingColumnId: "p-author", referencedTableId: "t-authors", onDelete: "CASCADE", onUpdate: "RESTRICT" },
+		{ id: "r-author-fav", cardinality: "one-to-many", referencingTableId: "t-authors", referencingColumnId: "a-fav", referencedTableId: "t-posts", onDelete: "SET NULL" },
+		{ id: "r-comment-post", cardinality: "one-to-many", referencingTableId: "t-comments", referencingColumnId: "c-post", referencedTableId: "t-posts" },
+		{ id: "r-comment-parent", cardinality: "one-to-many", referencingTableId: "t-comments", referencingColumnId: "c-parent", referencedTableId: "t-comments", onDelete: "SET NULL" },
+		{ id: "r-pt-post", cardinality: "one-to-many", referencingTableId: "t-post-tags", referencingColumnId: "pt-post", referencedTableId: "t-posts" },
+		{ id: "r-pt-tag", cardinality: "one-to-many", referencingTableId: "t-post-tags", referencingColumnId: "pt-tag", referencedTableId: "t-tags" },
+		{ id: "r-profile-author", cardinality: "one-to-one", referencingTableId: "t-profiles", referencingColumnId: "pr-author", referencedTableId: "t-authors", onDelete: "CASCADE" },
+	],
+	manyToManyRelationships: [{ id: "m-posts-tags", leftTableId: "t-posts", rightTableId: "t-tags", junctionTableId: "t-post-tags", leftRelationshipId: "r-pt-post", rightRelationshipId: "r-pt-tag" }],
+	viewport: { x: 0, y: 0, zoom: 1 },
+	enumTypes: [{ id: "e-status", name: "post_status", labels: ["draft", "published", "archived"] }],
+	functions: [
+		{ id: "f-touch", name: "touch_updated", arguments: [], returnType: "trigger", returnsSet: false, language: "plpgsql", volatility: "volatile", security: "invoker", body: "BEGIN RETURN NEW; END;" },
+		{ id: "f-recent", name: "recent_posts", arguments: [{ name: "n", type: "integer" }, { name: "author", type: "authors" }], returnType: "TABLE(id bigint, title text)", returnsSet: true, language: "sql", volatility: "stable", security: "definer", body: "SELECT id, title FROM posts LIMIT n -- $function$", tableDependencies: ["t-posts"] },
+	],
+	triggers: [{ id: "tr-touch", name: "posts_touch", tableId: "t-posts", timing: "BEFORE", events: [{ event: "INSERT" }, { event: "UPDATE", columnIds: ["p-title", "p-body"] }], level: "ROW", functionId: "f-touch", when: "NEW.title IS NOT NULL" }],
+	rawStatements: [
+		{ id: "raw-b", sql: "CREATE EXTENSION IF NOT EXISTS pgcrypto", phase: "before" },
+		{ id: "raw-a", sql: "CREATE VIEW recent AS SELECT * FROM posts;  ", phase: "after", creates: "view:recent", attachedTo: "posts" },
 	],
 } as unknown as Design;

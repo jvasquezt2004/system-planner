@@ -21,9 +21,11 @@ TypeScript behaviour or a generator changed.
 | `generate-store.ts` | `openDesignStore` and every `DesignStore` method | `data/store-ops.json`, `data/store-legacy.json` | `crates/store/tests/fixtures.rs` |
 | `generate-system-ops.ts` | the System design editing functions in `system-design.ts` | `data/system-ops.json` | `crates/domain/tests/system_ops.rs` |
 | `generate-walkthrough-ops.ts` | the Walkthrough editing functions in `walkthrough.ts` | `data/walkthrough-ops.json` | `crates/domain/tests/walkthrough_ops.rs` |
+| `generate-design-sql.ts` | `generateDesignSql`, `renderSchemaFile`, `planSchemaObjectNames`, `postgresSchemaRelationNames`, relationship resolution, removal plans, `indexMethodProblem` | `data/design-sql.json` (edits + results, SQL as a hash) | `crates/domain/tests/design_sql.rs` |
 | `generate-columns.ts` | `columnDefaultProblem`, `renderDefaultExpression`, `renderColumnType` | `data/columns.json` | `crates/domain/tests/columns.rs` |
 | `generate-identifiers.ts` | `postgres-identifiers.ts` (UTF-8 byte arithmetic) | `data/identifiers.json` | `crates/domain/tests/columns.rs` |
 | `export-column-types.ts` | `column-types.ts` | `src-tauri/crates/domain/data/column-types.json` (embedded, not a fixture) | `crates/domain/src/column_types.rs` |
+| `export-index-methods.ts` | `index-methods.ts` | `src-tauri/crates/domain/data/index-methods.json` (embedded, not a fixture) | `crates/domain/src/index_methods.rs` |
 | `export-catalog.ts` | `component-catalog.ts` | `src-tauri/crates/domain/data/component-catalog.json` (embedded, not a fixture) | `crates/domain/src/catalog.rs` |
 
 ## What each corpus covers
@@ -40,6 +42,16 @@ TypeScript behaviour or a generator changed.
   so error ordering is exercised as much as results. The generators print a
   per-operation tally; an operation with no accepted or no rejected calls is
   a generator bug, not coverage.
+- **SQL generation** mutates three base Designs (the rich and legacy ones from
+  `designs.json`, plus a features Design with every index method, vectors, a
+  foreign-key cycle, a self reference, a real many-to-many junction, policies,
+  functions, triggers and raw statements). The mutator (`lib/design-mutate.ts`)
+  knows what each field means, so it swaps a column type for another column type
+  and an id for another id, and never produces a document a typed model cannot load.
+  Only the edits are stored, replayed on the same base by the Rust test; generated
+  SQL is compared by hash and length. `explain-design-sql.ts <case>` prints the
+  expected text when a hash differs. Roughly 40% of cases are accepted, with 137
+  distinct errors and 14 distinct warnings.
 - **Designs** are hand-built variants of each field `normalizeDesign` touches,
   plus legacy shapes. `normalizeDesign` is private to `workspace.ts`, so the
   oracle opens a real Project through the real workspace.

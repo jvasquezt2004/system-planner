@@ -56,3 +56,49 @@ pub fn replay(cases: &Value, run: impl Fn(&Value) -> Result<Value, String>) {
     }
     println!("{} cases match the TypeScript oracle", cases.len());
 }
+
+/// FNV-1a 64-bit over UTF-8, the fingerprint the fixtures use for long generated text.
+pub fn fnv(text: &str) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for byte in text.bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// `{ hash, length }` where length is JavaScript's `.length` (UTF-16 code units).
+pub fn fingerprint(text: &str) -> Value {
+    serde_json::json!({ "hash": fnv(text), "length": text.encode_utf16().count() })
+}
+
+/// Applies one recorded edit (`set`, `delete`, `insert`, `remove`) at a path of keys and indexes.
+pub fn apply_edit(doc: &mut Value, edit: &Value) {
+    let path = edit["path"].as_array().expect("edit path");
+    let (last, parents) = path.split_last().expect("non-empty path");
+    let mut node = doc;
+    for step in parents {
+        node = match step {
+            Value::String(key) => node.get_mut(key.as_str()).expect("path key"),
+            Value::Number(index) => node.get_mut(index.as_u64().expect("index") as usize).expect("path index"),
+            other => panic!("bad path step {other}"),
+        };
+    }
+    match edit["op"].as_str().expect("op") {
+        "set" => match last {
+            Value::String(key) => {
+                node.as_object_mut().expect("object").insert(key.clone(), edit["value"].clone());
+            }
+            Value::Number(index) => node[index.as_u64().unwrap() as usize] = edit["value"].clone(),
+            other => panic!("bad step {other}"),
+        },
+        "delete" => {
+            node.as_object_mut().expect("object").shift_remove(last.as_str().expect("key"));
+        }
+        "insert" => node.as_array_mut().expect("array").insert(last.as_u64().unwrap() as usize, edit["value"].clone()),
+        "remove" => {
+            node.as_array_mut().expect("array").remove(last.as_u64().unwrap() as usize);
+        }
+        other => panic!("unknown edit {other}"),
+    }
+}

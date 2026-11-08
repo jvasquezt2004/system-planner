@@ -39,7 +39,7 @@ fn is_uuid(text: &str) -> bool {
 }
 
 /// Replaces each distinct UUID with `<uuid#n>` in order of first appearance. Object keys
-/// are visited in sorted order (the default `serde_json` map is a `BTreeMap`).
+/// are visited in sorted order.
 pub fn normalize_uuids(value: &Value) -> Value {
     fn visit(node: &Value, seen: &mut Vec<String>) -> Value {
         match node {
@@ -52,9 +52,12 @@ pub fn normalize_uuids(value: &Value) -> Value {
             }
             Value::Array(items) => Value::Array(items.iter().map(|item| visit(item, seen)).collect()),
             Value::Object(map) => {
+                // Visit keys in sorted order so numbering matches the TypeScript traversal.
+                let mut keys: Vec<&String> = map.keys().collect();
+                keys.sort();
                 let mut out = Map::new();
-                for (key, item) in map {
-                    out.insert(key.clone(), visit(item, seen));
+                for key in keys {
+                    out.insert(key.clone(), visit(&map[key], seen));
                 }
                 Value::Object(out)
             }

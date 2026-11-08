@@ -106,3 +106,22 @@ pub fn number_to_string(n: f64) -> String {
         format!("{n}")
     }
 }
+
+/// The characters JavaScript's `\s` matches, as the body of a regex character class.
+/// Rust's `\s` differs: it includes U+0085 and leaves out U+FEFF.
+pub const SPACE_CLASS: &str = r"[\t\n\x0B\f\r \u{a0}\u{1680}\u{2000}-\u{200a}\u{2028}\u{2029}\u{202f}\u{205f}\u{3000}\u{feff}]";
+
+/// `Number(value)` for a JSON value. Strings follow the common cases of the JavaScript
+/// conversion (blank is 0, otherwise a decimal number or NaN).
+pub fn to_number(value: &Value) -> f64 {
+    match value {
+        Value::Null => 0.0,
+        Value::Bool(b) => f64::from(u8::from(*b)),
+        Value::Number(n) => n.as_f64().unwrap_or(f64::NAN),
+        Value::String(text) => {
+            let trimmed = trim(text);
+            if trimmed.is_empty() { 0.0 } else { trimmed.parse::<f64>().unwrap_or(f64::NAN) }
+        }
+        Value::Array(_) | Value::Object(_) => f64::NAN,
+    }
+}

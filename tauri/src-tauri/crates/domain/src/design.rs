@@ -69,22 +69,9 @@ pub struct IndexKey {
     pub operator_class: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct IndexOptions {
-    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "number_opt")]
-    pub fillfactor: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub fastupdate: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "number_opt")]
-    pub pages_per_range: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "number_opt")]
-    pub lists: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "number_opt")]
-    pub m: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none", serialize_with = "number_opt")]
-    pub ef_construction: Option<f64>,
-}
+/// Storage options (`fillfactor`, `fastupdate`, `pagesPerRange`, `lists`, `m`, `efConstruction`) in
+/// the order they were written: validation messages and the rendered `WITH (...)` clause follow it.
+pub type IndexOptions = Map<String, Value>;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
