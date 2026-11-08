@@ -1,0 +1,26 @@
+[package]
+name = "schema-designer"
+version = "0.0.1"
+description = "Schema Designer, rewritten on Tauri"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[lib]
+name = "schema_designer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schema-domain = { path = "crates/domain" }
+
+# Further crates join as phases need them (see ../PLAN.md): rusqlite, pg_query,
+# pglite-oxide, tokio, and the Tauri dialog/clipboard/opener plugins.
+
+[workspace]
+members = ["crates/*"]
