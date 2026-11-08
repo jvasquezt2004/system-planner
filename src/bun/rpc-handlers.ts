@@ -107,11 +107,29 @@ export type RpcHandlerDependencies = {
 	pendingSystemDesignSvgExports: Map<string, () => Promise<SystemDesignExportResult>>;
 	systemDesignPngExports: SystemDesignPngExports;
 	pendingSystemDesignPngExports: Map<string, () => Promise<SystemDesignExportResult>>;
+	/** Picks files and attaches them to the open Project. */
+	attachProjectFiles?: () => Promise<ProjectTransferResult>;
+	projectFiles?: { list(projectId: string): import("../shared/project-files").ProjectFileSummary[]; remove(projectId: string, fileId: string): Promise<boolean> };
+	/** Syncs and opens the open Project's folder; absent when the folder mirror is not running. */
+	revealProjectFolder?: () => Promise<{ path: string | null; opened: boolean }>;
 };
 
 export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 	return {
 		getWorkspaceState: async (): Promise<WorkspaceState> => (await deps.workspace).getState(),
+		beginProjectFilesAdd: async (): Promise<{ requestId: string }> => {
+			if (!deps.attachProjectFiles) throw new Error("Project files are not available.");
+			if (!(await deps.workspace).getState().project) throw new Error("Open a project before attaching files.");
+			const requestId = crypto.randomUUID();
+			deps.pendingProjectTransfers.set(requestId, deps.attachProjectFiles);
+			return { requestId };
+		},
+		listProjectFiles: async ({ projectId }: { projectId: string }) => deps.projectFiles?.list(projectId) ?? [],
+		removeProjectFile: async ({ projectId, fileId }: { projectId: string; fileId: string }) => deps.projectFiles ? deps.projectFiles.remove(projectId, fileId) : false,
+		revealProjectFolder: async (): Promise<{ path: string | null; opened: boolean }> => {
+			if (!deps.revealProjectFolder) throw new Error("The Project folder is not available.");
+			return deps.revealProjectFolder();
+		},
 		createProject: async (action: { name: string }): Promise<WorkspaceState> => (await deps.workspace).createProject(action),
 		openProject: async (action: { projectId: string }): Promise<WorkspaceState> => (await deps.workspace).openProject(action),
 		beginProjectExport: async (): Promise<{ requestId: string }> => {
@@ -302,6 +320,9 @@ export function createRpcRequestHandlers(deps: RpcHandlerDependencies) {
 		},
 		stopAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<void> =>
 			(await deps.assistant).stop(conversationId),
+		getCodexRequest: async ({ conversationId }: { conversationId: string }) => (await deps.assistant).getCodexRequest(conversationId),
+		answerCodexRequest: async ({ conversationId, requestId, response }: { conversationId: string; requestId: string; response: unknown }) => (await deps.assistant).answerCodexRequest(conversationId, requestId, response),
+		verifyCodexRequest: async ({ conversationId, requestId }: { conversationId: string; requestId: string }) => (await deps.assistant).verifyCodexRequest(conversationId, requestId),
 		continueAssistantTurn: async ({ conversationId }: { conversationId: string }): Promise<{ started: boolean }> => {
 			const assistant = await deps.assistant;
 			const result = await assistant.continueTurn(conversationId, { waitForCompletion: false });

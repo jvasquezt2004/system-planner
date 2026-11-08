@@ -78,12 +78,15 @@ Type parameters (such as `numeric(10, 2)`) are deliberately outside this slice.
   column demotes any previous key column in the same edit. A key is always
   required and already unique, so the editor turns off `Nullable` and `Unique`
   for it.
-- Clearing the key is allowed. The draft stays saved, the SQL preview becomes
-  out of date, and validation reports that the table needs exactly one primary
-  key column.
-- Contradictory drafts cannot be presented as valid SQL. A nullable primary key
-  or nullable identity column is saved but blocks generation with an explicit
-  error, both in the inspector and in the SQL panel.
+- Clearing the key is allowed. PostgreSQL accepts a table without a primary
+  key, so the SQL is still generated and the SQL panel adds a "Worth a look"
+  note recommending one.
+- Only what PostgreSQL would reject blocks SQL (duplicate names, a foreign key to
+  something that is not a single primary key, an invalid default, and so on). A
+  nullable primary key or identity column is advice, not an error, because
+  PostgreSQL makes them required and the SQL says `NOT NULL`. Other best-practice
+  notes (unindexed foreign keys, mixed-case names, `timestamp` without time zone,
+  `ON DELETE SET NULL` on a required column) also appear as notes, never blocks.
 - `Unique` renders a real `UNIQUE` constraint. A primary key does not repeat it.
 - Identity generation is one of the structured default choices. Changing a
   column's type out of the integer family clears identity in the same visible
@@ -127,9 +130,9 @@ Coverage added for this work:
   independent catalog names (`timestamptz` → `timestamp with time zone`, etc.);
 - moving the single-column primary key to another column and demoting the old
   key in the sandbox catalog;
-- clearing the key leaving a saved incomplete draft with stale SQL and an
-  actionable error, then reopening that draft;
-- a nullable primary key blocked by validation while the draft stays saved;
+- clearing the key still generating SQL, with a note recommending a primary key,
+  then reopening that draft;
+- a nullable primary key producing a note while the SQL stays `NOT NULL`;
 - a notes-only edit leaving the schema revision, SQL preview, applied sandbox,
   and sandbox rebuild count unchanged;
 - identity cleared when the key type leaves the integer family, verified in SQL

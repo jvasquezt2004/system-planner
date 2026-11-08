@@ -12,6 +12,9 @@ import { createSystemDesignSvgExports } from "./system-design-svg-export";
 import { createSystemDesignPngExports } from "./system-design-png-export";
 import { createDesignWorkspace } from "./workspace";
 import { createAssistantRuntime } from "./assistant-runtime";
+import { createProjectFolderMirror } from "./project-folder";
+import { openProjectFileStore } from "./project-files";
+import { homedir } from "node:os";
 import { createRpcRequestHandlers } from "./rpc-handlers";
 
 // pi-ai loads OAuth sign-in flows through a variable import() the bundle cannot
@@ -66,9 +69,28 @@ function completePendingAssistantScenarioRun(requestId: string, run: ScenarioRun
 	else pending.resolve(run);
 }
 const workspacePromise = createDesignWorkspace({ databasePath });
-const assistantPromise = workspacePromise.then((workspace) =>
+// A read-only, human-readable copy of the open Project (SQL, System design) that
+// Codex also uses as its working directory. The database remains authoritative.
+let projectFolder: ReturnType<typeof createProjectFolderMirror> | null = null;
+// Files the designer attached to a Project (specifications, PDFs), kept in the same database.
+let projectFilesStore: ReturnType<typeof openProjectFileStore> | null = null;
+const projectFilesPromise = workspacePromise.then(() => (projectFilesStore = openProjectFileStore(databasePath)));
+const projectFolderPromise = Promise.all([workspacePromise, projectFilesPromise]).then(([workspace, projectFiles]) => {
+	const mirror = createProjectFolderMirror({
+		root: process.env.DB_PLANNER_PROJECTS_PATH ?? join(homedir(), "Schema Designer"),
+		workspace,
+		contextFiles: projectFiles,
+	});
+	projectFolder = mirror;
+	void mirror.sync().catch((error: unknown) => console.error("[project-folder] initial sync failed", error));
+	return mirror;
+});
+const assistantPromise = Promise.all([workspacePromise, projectFilesPromise]).then(([workspace, projectFiles]) =>
 	createAssistantRuntime({
 		databasePath,
+		projectFiles,
+		syncProjectFolder: async (options) => (await projectFolderPromise).sync(options),
+		schemaFile: (designId) => projectFolder?.schemaFile(designId) ?? null,
 		workspace,
 		openExternal: (url) => Utils.openExternal(url),
 		runScenario: (projectId, designId, scenario, signal, timeoutMs) => {
@@ -200,6 +222,33 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			pendingSystemDesignSvgExports,
 			systemDesignPngExports,
 			pendingSystemDesignPngExports,
+			attachProjectFiles: async (): Promise<ProjectTransferResult> => {
+				const project = (await workspacePromise).getState().project;
+				if (!project) return { status: "failed", error: "Open a project before attaching files." };
+				const paths = await Utils.openFileDialog({
+					startingFolder: Utils.paths.documents,
+					allowedFileTypes: "*",
+					canChooseFiles: true,
+					canChooseDirectory: false,
+					allowsMultipleSelection: true,
+				});
+				if (paths.length === 0) return { status: "cancelled" };
+				const result = await (await projectFilesPromise).addFromPaths(project.id, paths);
+				await (await projectFolderPromise).sync();
+				return { status: "attached", added: result.added.map((file) => file.name), skipped: result.skipped };
+			},
+			projectFiles: {
+				list: (projectId) => projectFilesStore?.list(projectId) ?? [],
+				remove: async (projectId, fileId) => {
+					const removed = (await projectFilesPromise).remove(projectId, fileId);
+					if (removed) await (await projectFolderPromise).sync();
+					return removed;
+				},
+			},
+			revealProjectFolder: async () => {
+				const path = await (await projectFolderPromise).sync();
+				return { path, opened: path ? Utils.openPath(path) : false };
+			},
 		}),
 		messages: {
 			// Start the native picker from a message, not an awaited RPC request.
@@ -213,6 +262,7 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "bun">("bun", {
 			},
 			chooseProjectExportDirectory: ({ requestId }) => runProjectTransfer(requestId),
 			chooseProjectImportFile: ({ requestId }) => runProjectTransfer(requestId),
+			chooseProjectFiles: ({ requestId }) => runProjectTransfer(requestId),
 			chooseSystemDesignSvgExportDirectory: ({ requestId }) => runSystemDesignExport(pendingSystemDesignSvgExports, requestId, (result) => {
 				rpc.send.systemDesignSvgExportCompleted({ requestId, result });
 			}),

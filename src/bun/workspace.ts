@@ -681,7 +681,7 @@ export async function createDesignWorkspace(
 		const lastApplied = getLastAppliedSandbox(state.sandbox);
 		setState({
 			...state,
-			sql: { status: "current", revision, sql: generation.sql, designId },
+			sql: { status: "current", revision, sql: generation.sql, designId, ...(generation.warnings.length ? { warnings: generation.warnings } : {}) },
 			sandbox: {
 				status: "applying",
 				revision,
@@ -1835,6 +1835,9 @@ export async function createDesignWorkspace(
 						: {}),
 					...(normalized.triggers !== undefined
 						? { triggers: normalizeTriggers(normalized.triggers, normalized) }
+						: {}),
+					...(normalized.rawStatements !== undefined
+						? { rawStatements: normalizeRawStatements(normalized.rawStatements) }
 						: {}),
 				};
 				if (JSON.stringify(validated) === JSON.stringify(currentDesign)) return state;
@@ -3240,7 +3243,24 @@ function normalizeDesign(design: Design): Design {
 		...(design.enumTypes ? { enumTypes: design.enumTypes.map((enumType) => ({ ...enumType, labels: [...enumType.labels] })) } : {}),
 		...(design.functions ? { functions: structuredClone(design.functions) } : {}),
 		...(design.triggers ? { triggers: structuredClone(design.triggers) } : {}),
+		...(design.rawStatements ? { rawStatements: normalizeRawStatements(design.rawStatements) } : {}),
 	};
+}
+
+/** Raw SQL is opaque to the Design, so only its envelope is checked. */
+function normalizeRawStatements(value: unknown): NonNullable<Design["rawStatements"]> {
+	if (!Array.isArray(value)) throw new Error("Raw SQL statements must be a list.");
+	return value.map((entry) => {
+		const raw = entry as Partial<NonNullable<Design["rawStatements"]>[number]> | null;
+		if (!raw || typeof raw.id !== "string" || !raw.id || typeof raw.sql !== "string" || !raw.sql.trim() || (raw.phase !== "before" && raw.phase !== "after")) {
+			throw new Error("A raw SQL statement needs an id, SQL text, and a before or after phase.");
+		}
+		return {
+			id: raw.id, sql: raw.sql, phase: raw.phase,
+			...(typeof raw.creates === "string" ? { creates: raw.creates } : {}),
+			...(typeof raw.attachedTo === "string" ? { attachedTo: raw.attachedTo } : {}),
+		};
+	});
 }
 
 function createDefaultTable(

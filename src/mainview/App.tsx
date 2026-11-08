@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Braces, ChevronDown, FileCode2, FolderInput, FolderOutput, Network, PenTool, Plus, Redo2, ScrollText, Undo2, Workflow, X, Zap, Server } from "lucide-react";
+import { Braces, ChevronDown, FileCode2, FolderInput, FolderOpen, FolderOutput, Network, PenTool, Plus, Redo2, ScrollText, Undo2, Workflow, X, Zap, Server } from "lucide-react";
 import { errorMessage } from "../shared/error-message";
 import type { ProjectTransferResult } from "../shared/project-portability";
 import {
@@ -637,6 +637,17 @@ export function App({
 		}
 	}, []);
 
+	const showProjectFolder = useCallback(async () => {
+		setError(null);
+		try {
+			const result = await workspaceClient.revealProjectFolder();
+			if (!result.path) setError("Open a project to show its folder.");
+			else if (!result.opened) setError(`Could not open ${result.path}.`);
+		} catch (cause) {
+			setError(errorMessage(cause));
+		}
+	}, []);
+
 	const selectedTable =
 		state?.design?.tables.find((table) => table.id === selectedTableId) ?? null;
 	const inspectorRelationships =
@@ -668,6 +679,7 @@ export function App({
 				onOpenProject={(id) => run(() => workspaceClient.openProject(id))}
 				onNewProject={() => setCreatingProject(true)}
 				onExportProject={() => void transferProject(() => workspaceClient.exportProject())}
+				onShowProjectFolder={showProjectFolder}
 				onImportProject={() => void transferProject(() => workspaceClient.importProject())}
 				onOpenDesign={(id) => run(() => workspaceClient.openDesign(id))}
 				onNewDesign={() => setDesignDialog({ mode: "create" })}
@@ -868,6 +880,8 @@ export function App({
 					{state.project && (
 						<AssistantSidebar
 							api={workspaceClient}
+							onShowProjectFolder={showProjectFolder}
+							filesApi={workspaceClient}
 							projectId={state.project.id}
 							collapsed={assistantCollapsed}
 							width={assistantWidth}
@@ -1015,6 +1029,7 @@ export function Masthead({
 	onOpenProject,
 	onNewProject,
 	onExportProject,
+	onShowProjectFolder,
 	onImportProject,
 	onOpenDesign,
 	onNewDesign,
@@ -1031,6 +1046,7 @@ export function Masthead({
 	onOpenProject: (projectId: string) => void;
 	onNewProject: () => void;
 	onExportProject: () => void;
+	onShowProjectFolder: () => void;
 	onImportProject: () => void;
 	onOpenDesign: (designId: string) => void;
 	onNewDesign: () => void;
@@ -1107,6 +1123,10 @@ export function Masthead({
 						<DropdownMenuItem onSelect={onExportProject} disabled={!project || busy}>
 							<FolderOutput />
 							Export project…
+						</DropdownMenuItem>
+						<DropdownMenuItem onSelect={onShowProjectFolder} disabled={!project || busy} data-testid="show-project-folder">
+							<FolderOpen />
+							Show project folder
 						</DropdownMenuItem>
 					</DropdownMenuContent>
 				</DropdownMenu>

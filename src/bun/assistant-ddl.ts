@@ -9,6 +9,9 @@ import type { DesignWorkspace } from "./workspace";
 import { removalPlan } from "../shared/relationships";
 import { indexMethodProblem } from "../shared/index-methods";
 import { checkDdlRelevantContent } from "./assistant-turn-tracker";
+import { DATA_STATEMENTS, IGNORED_STATEMENTS, classifyRawStatement, dropKey, removeRawFor } from "./assistant-raw-sql";
+import { createPGliteSandbox } from "./sandbox";
+import { generateDesignSql, planSchemaObjectNames } from "./sql";
 
 // @pgsql/parser exposes its tagged PostgreSQL AST through a generic Node type;
 // model the JSON-shaped runtime nodes locally so statement fields stay usable.
@@ -16,7 +19,7 @@ type Node = Record<string, any>;
 export type AssistantDdlRemovalTarget = { kind: "table" | "column"; targetId: string; removal: RemovalPlan };
 export type AssistantDdlConfirmation = { projectId: string; designId: string; revision: number; targetIds: string[] };
 export type AssistantDdlResult =
-	| { status: "applied"; state: WorkspaceState; statements: string[] }
+	| { status: "applied"; state: WorkspaceState; statements: string[]; keptAsSql?: string[] }
 	| { status: "confirmation-required"; statement: string; removal: RemovalPlan; targets: AssistantDdlRemovalTarget[]; projectId: string; designId: string; revision: number };
 
 function placeTable(design: Design, references: unknown[]): { x: number; y: number } {
@@ -36,9 +39,31 @@ function last<T>(values: readonly T[]): T | undefined {
 	return values[values.length - 1];
 }
 const nameOf = (node: Node | undefined): string | undefined => node?.relname ?? node?.RangeVar?.relname;
+/** The Design cannot represent this statement, so it is kept as raw SQL instead. */
+class UnsupportedDdlError extends Error {}
 function unsupported(message: string): never {
-	throw new Error(`Unsupported assistant DDL: ${message}`);
+	throw new UnsupportedDdlError(`Unsupported assistant DDL: ${message}`);
 }
+
+/** Keeps a statement the structured Design cannot represent, to run verbatim with the generated schema. */
+function keepRawStatement(design: Design, statement: Node, sql: string, createId: () => string): void {
+	const kind = Object.keys(statement)[0] ?? "";
+	if (IGNORED_STATEMENTS.includes(kind)) return;
+	if (DATA_STATEMENTS.includes(kind)) {
+		throw new Error(`${kind.replace(/Stmt$/, "").toUpperCase()} statements change data, not the schema, so they are not part of a Design. Use a Scenario to run data statements.`);
+	}
+	(design.rawStatements ??= []).push({ id: createId(), sql, ...classifyRawStatement(statement) });
+}
+
+/** Removes kept raw SQL for a dropped object. Returns false when no kept statement created it. */
+function dropRawObject(design: Design, key: string | null): boolean {
+	if (!key || !(design.rawStatements ?? []).some((raw) => raw.creates === key)) return false;
+	design.rawStatements = removeRawFor(design.rawStatements!, key);
+	return true;
+}
+/** `public` is the default schema, so `public.t` is just `t`. Any other schema is not modelled. */
+const isQualified = (node: Node | undefined): boolean => Boolean(node?.schemaname) && node!.schemaname !== "public";
+const withoutPublic = (parts: Node[]): Node[] => parts.length > 1 && nodeName(parts[0]) === "public" ? parts.slice(1) : parts;
 const nodeName = (node: Node | undefined): string | undefined => node?.String?.sval ?? node?.sval ?? node?.name;
 function typeName(typeName: Node | undefined): string {
 	return (typeName?.names ?? []).map(nodeName).filter(Boolean).join(".");
@@ -90,6 +115,7 @@ function defaultValue(expr: Node | undefined, type: ColumnType): ColumnDefault {
 		if (!["text", "integer", "numeric", "boolean", "date", "time", "timestamp", "json"].includes(literalType)) unsupported(`literal defaults are not supported for ${type}`);
 		return { kind: "literal", literalType: literalType as ColumnLiteralType, value: literal.value };
 	}
+	if (expr.SQLValueFunction?.op === "SVFOP_CURRENT_TIMESTAMP") return { kind: "currentTimestamp" };
 	const call = expr.FuncCall;
 	if (call) {
 		const fn = (call.funcname ?? []).map(nodeName).filter(Boolean).join(".").toLowerCase();
@@ -154,7 +180,7 @@ function resolveReference(design: Design, source: DesignTable, local: DesignColu
 	const refName = nameOf(constraint.pktable) ?? nameOf(constraint.relation);
 	const target = design.tables.find(({ name }) => name === refName);
 	if (!target) unsupported(`referenced table ${refName ?? "<unknown>"} does not exist`);
-	if (constraint.pktable?.schemaname) unsupported("schema-qualified table names are not supported");
+	if (isQualified(constraint.pktable)) unsupported("schema-qualified table names are not supported");
 	const targetColumnName = constraint.pk_attrs?.[0]?.String?.sval ?? constraint.pk_attrs?.[0]?.sval;
 	const targetColumn = targetColumnName ? target.columns.find(({ name }) => name === targetColumnName) : target.columns.find(({ primaryKey }) => primaryKey);
 	if (!targetColumn) unsupported(`referenced column ${targetColumnName ?? "primary key"} does not exist on ${target.name}`);
@@ -207,6 +233,407 @@ function aggregateRemoval(targets: AssistantDdlRemovalTarget[]): RemovalPlan {
 	};
 }
 
+/** What translating a run of statements reads and collects. */
+type TranslateContext = { design: Design; designId: string; createId: () => string; pendingRemovals: AssistantDdlRemovalTarget[]; sqlBytes: Uint8Array; appliedStatements: string[] };
+
+/** Applies parsed statements to `design` in place: modelled SQL becomes structure, the rest is kept as raw SQL. */
+function translateStatements(context: TranslateContext, statements: Node[]): void {
+	const { design, designId, createId, pendingRemovals, sqlBytes, appliedStatements } = context;
+	for (const item of statements) {
+		const statement = item.stmt as Node;
+		const location = item.stmt_location ?? 0;
+		const length = item.stmt_len;
+		const statementSql = new TextDecoder()
+			.decode(sqlBytes.subarray(location, Number.isInteger(length) && length > 0 ? location + length : undefined))
+			.trim();
+		appliedStatements.push(statementSql);
+		const snapshot = structuredClone(design);
+		const removalsBefore = pendingRemovals.length;
+		try {
+			if (statement.CreateStmt) {
+				const create = statement.CreateStmt, tableName = nameOf(create.relation);
+				if (isQualified(create.relation)) unsupported("schema-qualified table names are not supported");
+				if (create.if_not_exists && tableName && design.tables.some((table) => table.name === tableName)) continue;
+				if (!tableName || design.tables.some((table) => table.name === tableName)) unsupported(`table ${tableName ?? "<unknown>"} already exists`);
+				if (create.inhRelations?.length || create.inh_relations?.length || create.partspec || create.partbound || create.constraints?.length || create.options?.length) unsupported("table inheritance, partitioning, and table-level storage options are not representable");
+				const refs = (create.tableElts ?? []).flatMap((element: Node) => element.ColumnDef
+					? (element.ColumnDef.constraints ?? []).map((entry: Node) => entry.Constraint?.pktable ? entry.Constraint.pktable : null)
+					: element.Constraint?.pktable ? [element.Constraint.pktable] : []);
+				const table: DesignTable = { id: createId(), name: tableName, position: placeTable(design, refs), columns: [] };
+				const pending: { column: DesignColumn; constraint: Node }[] = [];
+				for (const element of create.tableElts ?? []) {
+					if (element.ColumnDef) {
+						const c = column(element.ColumnDef, createId, design.enumTypes); const ref = c.__assistantReference; delete c.__assistantReference;
+						table.columns.push(c); if (ref) pending.push({ column: c, constraint: ref });
+					} else if (element.Constraint) {
+						const constraint = element.Constraint;
+						if (constraint.contype === "CONSTR_UNIQUE" || constraint.contype === "CONSTR_PRIMARY") {
+							if (constraint.deferrable || constraint.initdeferred || constraint.nulls_not_distinct) unsupported("deferrable and NULLS NOT DISTINCT constraints are not representable");
+							const names = (constraint.keys ?? []).map(nodeName).filter(Boolean);
+							if (constraint.contype === "CONSTR_PRIMARY" && names.length === 1) { const target = table.columns.find(({ name }) => name === names[0]); if (!target) unsupported("table-level primary key must refer to one existing column"); target.primaryKey = true; target.nullable = false; }
+							else if (constraint.contype === "CONSTR_UNIQUE" && names.length === 1) { const target = table.columns.find(({ name }) => name === names[0]); if (!target) unsupported("table-level UNIQUE must refer to one existing column"); target.unique = true; }
+							else if (constraint.contype === "CONSTR_UNIQUE" && names.length > 1) {
+								const columns = names.map((name: string) => table.columns.find(({ name: n }) => n === name)); if (columns.some((c: DesignColumn | undefined) => !c)) unsupported("UNIQUE references a missing column");
+								(table.uniqueConstraints ??= []).push({ id: createId(), name: constraint.conname, columnIds: columns.map((c: DesignColumn) => c.id) });
+							} else unsupported("composite primary keys are not representable");
+						} else if (constraint.contype === "CONSTR_FOREIGN") {
+							if (constraint.deferrable || constraint.initdeferred || (constraint.fk_matchtype && constraint.fk_matchtype !== "s") || constraint.fk_del_set_cols?.length) unsupported("deferrable, non-simple, and column-targeted foreign keys are not representable");
+							if ((constraint.fk_attrs ?? []).length !== 1) unsupported("foreign keys must reference one column");
+							const localName = nodeName(constraint.fk_attrs[0]), local = table.columns.find(({ name }) => name === localName);
+							if (!local) unsupported(`foreign-key column ${localName} does not exist`); pending.push({ column: local, constraint });
+						} else unsupported(`table constraint ${constraint.contype} is not supported`);
+					} else unsupported("table elements must be columns or supported constraints");
+				}
+				design.tables.push(table);
+				const relationships = pending.map(({ column, constraint }) => resolveReference(design, table, column, constraint, createId));
+				design.relationships.push(...relationships);
+				validateAndInferJunction(design, table, createId);
+				continue;
+			}
+			if (statement.RenameStmt) {
+				const rename = statement.RenameStmt;
+				if (rename.renameType === "OBJECT_TYPE") {
+					const names = withoutPublic(rename.object?.List?.items ?? []).map(nodeName).filter(Boolean);
+					if (names.length !== 1) unsupported("schema-qualified type names are not supported");
+					const enumType = (design.enumTypes ?? []).find((entry) => entry.name === names[0]);
+					if (!enumType) unsupported(`enum type ${names[0]} does not exist`);
+					if ((design.enumTypes ?? []).some((entry) => entry.name === rename.newname)) unsupported(`enum type ${rename.newname} already exists`);
+					enumType.name = rename.newname;
+					continue;
+				}
+				if (isQualified(rename.relation)) unsupported("schema-qualified table names are not supported");
+				const table = design.tables.find(({ name }) => name === nameOf(rename.relation));
+				if (!table) unsupported(`table ${nameOf(rename.relation)} does not exist`);
+				if (rename.renameType === "OBJECT_TABLE") table.name = rename.newname;
+				else if (rename.renameType === "OBJECT_COLUMN") { const target = table.columns.find(({ name }) => name === rename.subname); if (!target) unsupported(`column ${rename.subname} does not exist`); target.name = rename.newname; }
+				else unsupported(`rename operation ${rename.renameType} is not supported`);
+				continue;
+			}
+			if (statement.AlterTableStmt) {
+				const alter = statement.AlterTableStmt;
+				if (isQualified(alter.relation)) unsupported("schema-qualified table names are not supported");
+				const table = design.tables.find(({ name }) => name === nameOf(alter.relation));
+				if (!table) unsupported(`table ${nameOf(alter.relation)} does not exist`);
+				for (const wrapped of alter.cmds ?? []) {
+					const cmd = wrapped.AlterTableCmd; if (!cmd) unsupported("unknown ALTER TABLE command");
+					if (cmd.subtype === "AT_AddConstraint") {
+						const constraint = cmd.def?.Constraint;
+						if (!constraint) unsupported("ADD CONSTRAINT definition is invalid");
+						if (constraint.deferrable || constraint.initdeferred || constraint.nulls_not_distinct) unsupported("deferrable and NULLS NOT DISTINCT constraints are not representable");
+						if (constraint.contype === "CONSTR_PRIMARY" || constraint.contype === "CONSTR_UNIQUE") {
+							const names = (constraint.keys ?? []).map(nodeName).filter(Boolean);
+							if (constraint.contype === "CONSTR_PRIMARY" && names.length !== 1) unsupported("composite primary keys are not representable");
+							const columns = names.map((name: string) => {
+								const found = table.columns.find(({ name: columnName }) => columnName === name);
+								if (!found) unsupported(`constraint column ${name} does not exist`);
+								return found;
+							});
+							if (!names.length) unsupported("constraint must refer to existing columns");
+							if (constraint.contype === "CONSTR_PRIMARY") { columns[0].primaryKey = true; columns[0].nullable = false; }
+							else if (columns.length === 1) columns[0].unique = true;
+							else (table.uniqueConstraints ??= []).push({ id: createId(), name: constraint.conname, columnIds: columns.map((entry: DesignColumn) => entry.id) });
+						} else if (constraint.contype === "CONSTR_FOREIGN") {
+							if ((constraint.fk_attrs ?? []).length !== 1 || constraint.fk_matchtype && constraint.fk_matchtype !== "s" || constraint.fk_del_set_cols?.length) unsupported("foreign keys must reference one column and use simple matching");
+							const localName = nodeName(constraint.fk_attrs[0]), local = table.columns.find(({ name }) => name === localName);
+							if (!local) unsupported(`foreign-key column ${localName} does not exist`);
+							design.relationships.push(resolveReference(design, table, local, constraint, createId));
+						} else unsupported(`ALTER TABLE constraint ${constraint.contype} is not supported`);
+					} else if (cmd.subtype === "AT_AddColumn") {
+						const def = cmd.def?.ColumnDef; if (!def) unsupported("ADD COLUMN definition is invalid");
+						const c = column(def, createId, design.enumTypes); const ref = c.__assistantReference; delete c.__assistantReference; table.columns.push(c);
+						if (ref) { const relationship = resolveReference(design, table, c, ref, createId); design.relationships.push(relationship); }
+					} else if (cmd.subtype === "AT_DropColumn") {
+						const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
+						const removal = removalPlan(design, { kind: "column", tableId: table.id, columnId: target.id, designId });
+						pendingRemovals.push({ kind: "column", targetId: `column:${table.name}.${target.name}`, removal });
+						const relationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
+							const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
+							return association ? [association.leftRelationshipId, association.rightRelationshipId] : [relationshipId];
+						}));
+						const indexIds = new Set(removal.indexes.map(({ indexId }) => indexId));
+						const uniqueIds = new Set(removal.uniqueConstraints.map(({ constraintId }) => constraintId));
+						const triggerIds = new Set(removal.triggers.map(({ triggerId }) => triggerId));
+						design.relationships = design.relationships.filter(({ id: relationshipId }) => !relationshipIds.has(relationshipId));
+						design.manyToManyRelationships = design.manyToManyRelationships.filter((association) => !relationshipIds.has(association.leftRelationshipId) && !relationshipIds.has(association.rightRelationshipId));
+						table.indexes = (table.indexes ?? []).filter(({ id: indexId }) => !indexIds.has(indexId));
+						table.uniqueConstraints = (table.uniqueConstraints ?? []).filter(({ id: uniqueId }) => !uniqueIds.has(uniqueId));
+						design.triggers = (design.triggers ?? []).filter(({ id: triggerId }) => !triggerIds.has(triggerId));
+						table.columns = table.columns.filter(({ id: columnId }) => columnId !== target.id);
+					} else if (cmd.subtype === "AT_ColumnDefault") {
+						const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
+						target.default = cmd.def ? defaultValue(cmd.def, target.type) : noColumnDefault();
+					} else if (cmd.subtype === "AT_SetNotNull" || cmd.subtype === "AT_DropNotNull") {
+						const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`); target.nullable = cmd.subtype === "AT_DropNotNull";
+					} else if (cmd.subtype === "AT_AlterColumnType") {
+						const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
+						const wrappedDef = cmd.def?.ColumnDef;
+						const rawType = typeName(wrappedDef?.typeName ?? cmd.def?.typeName), enumType = design.enumTypes?.find((entry) => entry.name === rawType || entry.name === last(rawType.split(".")));
+						const updatedType = enumType ? { type: "enum" as ColumnType, enumTypeId: enumType.id } : getType({ typeName: wrappedDef?.typeName ?? cmd.def?.typeName });
+						Object.assign(target, updatedType, { typeParameters: "typeParameters" in updatedType ? updatedType.typeParameters : undefined });
+					} else if (cmd.subtype === "AT_EnableRowSecurity") table.rowLevelSecurity = true;
+					else unsupported(`ALTER TABLE operation ${cmd.subtype} is not supported`);
+				}
+				design.relationships = design.relationships.map((relationship) => {
+					if (relationship.referencingTableId !== table.id) return relationship;
+					const column = table.columns.find(({ id: columnId }) => columnId === relationship.referencingColumnId);
+					const unique = Boolean(column?.unique) || (table.uniqueConstraints ?? []).some((constraint) => constraint.columnIds.length === 1 && constraint.columnIds[0] === column?.id) || (table.indexes ?? []).some((index) => index.unique && index.keys.length === 1 && index.keys[0].columnId === column?.id);
+					return relationship.cardinality === "one-to-one" || unique ? { ...relationship, cardinality: "one-to-one" } : relationship;
+				});
+				validateAndInferJunction(design, table, createId);
+				continue;
+			}
+			if (statement.DropStmt) {
+				const drop = statement.DropStmt;
+				if (drop.removeType === "OBJECT_INDEX") {
+					for (const object of drop.objects ?? []) {
+						const parts = withoutPublic(object?.List?.items ?? []);
+						if (parts.length > 1) unsupported("schema-qualified index names are not supported");
+						const name = nodeName(parts[0]);
+						// Indexes made in the editor have no stored name; they are known by the name the generated SQL gives them.
+						let planned = new Map<string, string>();
+						try { planned = planSchemaObjectNames(design).indexes; } catch { /* An incomplete draft has no planned names. */ }
+						const indexName = (existing: DesignIndex) => existing.name ?? planned.get(existing.id);
+						const owner = design.tables.find((candidate) => (candidate.indexes ?? []).some((existing) => indexName(existing) === name));
+						if (!owner) {
+							// PostgreSQL refuses to drop an index that backs a unique constraint; the Design lets it go, so the Assistant need not know the difference.
+							let uniqueNames = new Map<string, string>();
+							try { uniqueNames = planSchemaObjectNames(design).uniqueConstraints; } catch { /* An incomplete draft has no planned names. */ }
+							const constraintOwner = design.tables.find((candidate) => (candidate.uniqueConstraints ?? []).some((constraint) => (constraint.name ?? uniqueNames.get(constraint.id)) === name));
+							if (constraintOwner) { constraintOwner.uniqueConstraints = constraintOwner.uniqueConstraints!.filter((constraint) => (constraint.name ?? uniqueNames.get(constraint.id)) !== name); continue; }
+							const columnOwner = design.tables.find((candidate) => candidate.columns.some((column) => column.unique && `${candidate.name}_${column.name}_key` === name));
+							if (columnOwner) { for (const column of columnOwner.columns) if (column.unique && `${columnOwner.name}_${column.name}_key` === name) column.unique = false; continue; }
+							if (dropRawObject(design, dropKey(drop.removeType, object)) || drop.missing_ok) continue;
+							unsupported(`index ${name} does not exist`);
+						}
+						const removed = owner.indexes!.find((existing) => indexName(existing) === name)!;
+						owner.indexes = owner.indexes!.filter((existing) => existing !== removed);
+						// Dropping the only unique index on a referencing column ends the one-to-one guarantee it created.
+						if (removed.unique && removed.keys.length === 1) {
+							const column = owner.columns.find(({ id: columnId }) => columnId === removed.keys[0].columnId);
+							const stillUnique = Boolean(column?.unique) || (owner.uniqueConstraints ?? []).some((constraint) => constraint.columnIds.length === 1 && constraint.columnIds[0] === column?.id) || (owner.indexes ?? []).some((index) => index.unique && index.keys.length === 1 && index.keys[0].columnId === column?.id);
+							if (!stillUnique) design.relationships = design.relationships.map((relationship) => relationship.referencingTableId === owner.id && relationship.referencingColumnId === column?.id && relationship.cardinality === "one-to-one" ? { ...relationship, cardinality: "one-to-many" } : relationship);
+						}
+					}
+					continue;
+				}
+				if (drop.removeType === "OBJECT_TYPE") {
+					for (const object of drop.objects ?? []) {
+						const names = withoutPublic(object?.TypeName?.names ?? []).map(nodeName).filter(Boolean);
+						if (names.length !== 1) unsupported("schema-qualified type names are not supported");
+						const enumType = (design.enumTypes ?? []).find((entry) => entry.name === names[0]);
+						if (!enumType) {
+							if (dropRawObject(design, dropKey(drop.removeType, object)) || drop.missing_ok) continue;
+							unsupported(`enum type ${names[0]} does not exist`);
+						}
+						const users = design.tables.flatMap((table) => table.columns.filter((column) => column.enumTypeId === enumType.id).map((column) => `${table.name}.${column.name}`));
+						if (users.length) throw new Error(`Enum type ${enumType.name} is still used by ${users.join(", ")}; drop or change those columns first.`);
+						design.enumTypes = (design.enumTypes ?? []).filter((entry) => entry !== enumType);
+					}
+					continue;
+				}
+				if (drop.removeType !== "OBJECT_TABLE") {
+					// Anything else was either kept as raw SQL (and is removed with it) or is dropped by a raw statement of its own.
+					const kind = String(drop.removeType ?? "").replace(/^OBJECT_/, "").replaceAll("_", " ");
+					if (!(drop.objects ?? []).length || !(drop.objects ?? []).every((object: Node) => dropRawObject(design, dropKey(drop.removeType, object)))) {
+						unsupported(`DROP ${kind || "object"} has no structured equivalent`);
+					}
+					continue;
+				}
+				// CASCADE adds nothing here: dependents are always listed for the designer's confirmation.
+				for (const object of drop.objects ?? []) {
+					const parts = withoutPublic(object?.List?.items ?? []);
+					if (parts.length > 1) unsupported("schema-qualified table names are not supported");
+					const name = nodeName(last<Node>(parts)) ?? object?.String?.sval ?? object?.relname;
+					const table = design.tables.find(({ name: tableName }) => tableName === name);
+					if (!table) {
+						if (dropRawObject(design, dropKey(drop.removeType, object)) || drop.missing_ok) continue;
+						unsupported(`table ${name} does not exist`);
+					}
+					const removal = removalPlan(design, { kind: "table", tableId: table.id, designId });
+					pendingRemovals.push({ kind: "table", targetId: `table:${table.name}`, removal });
+					const removedRelationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
+						const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
+						return association ? [association.leftRelationshipId, association.rightRelationshipId] : [relationshipId];
+					}));
+					const tableRelationshipIds = new Set(design.relationships.filter((relationship) => relationship.referencingTableId === table.id || relationship.referencedTableId === table.id).map(({ id: relationshipId }) => relationshipId));
+					design.tables = design.tables.filter(({ id: tableId }) => tableId !== table.id);
+					design.relationships = design.relationships.filter(({ id: relationshipId }) => !removedRelationshipIds.has(relationshipId) && !tableRelationshipIds.has(relationshipId));
+					design.triggers = (design.triggers ?? []).filter((trigger) => trigger.tableId !== table.id);
+					design.manyToManyRelationships = design.manyToManyRelationships.filter((association) => !removedRelationshipIds.has(association.leftRelationshipId) && !removedRelationshipIds.has(association.rightRelationshipId) && association.junctionTableId !== table.id);
+				}
+				continue;
+			}
+			if (statement.IndexStmt) {
+				const index = statement.IndexStmt;
+				if (isQualified(index.relation)) unsupported("schema-qualified table names are not supported");
+				const table = design.tables.find(({ name }) => name === nameOf(index.relation));
+				if (!table) unsupported(`table ${nameOf(index.relation)} does not exist`);
+				if (index.whereClause || index.indexIncludingParams?.length) unsupported("partial and INCLUDE indexes are not supported");
+				// Index names are unique in a schema. Repeating an identical index is harmless; a different one under the same name is a mistake.
+				if (index.idxname) {
+					let plannedIndexes = new Map<string, string>();
+					try { plannedIndexes = planSchemaObjectNames(design).indexes; } catch { /* An incomplete draft has no planned names. */ }
+					const sameName = design.tables.flatMap((candidate) => (candidate.indexes ?? []).filter((existing) => (existing.name ?? plannedIndexes.get(existing.id)) === index.idxname).map((existing) => ({ table: candidate, existing })))[0];
+					if (sameName) {
+						const wanted = (index.indexParams ?? []).map((entry: Node) => entry.IndexElem?.name).join(",");
+						const have = sameName.existing.keys.map((key) => sameName.table.columns.find((column) => column.id === key.columnId)?.name).join(",");
+						if (index.if_not_exists || (sameName.table.name === nameOf(index.relation) && wanted === have && !!index.unique === !!sameName.existing.unique)) continue;
+						throw new Error(`Index ${index.idxname} already exists on ${sameName.table.name}; choose another name or drop it first.`);
+					}
+				}
+				const keys = (index.indexParams ?? []).map((entry: Node) => {
+					const elem = entry.IndexElem; if (!elem?.name) unsupported("index expressions are not supported");
+					const ordering = elem.ordering;
+					const nullsOrdering = elem.nulls_ordering;
+					if (ordering && !["SORTBY_DEFAULT", "SORTBY_ASC", "SORTBY_DESC"].includes(ordering)) unsupported("index ordering is not representable");
+					if (nullsOrdering && !["SORTBY_NULLS_DEFAULT", "SORTBY_NULLS_FIRST", "SORTBY_NULLS_LAST"].includes(nullsOrdering)) unsupported("index NULLS ordering is not representable");
+					const operatorClass = (elem.opclass ?? []).map(nodeName).filter((value: string | undefined): value is string => typeof value === "string").at(-1);
+					const c = table.columns.find(({ name }) => name === elem.name); if (!c) unsupported(`index column ${elem.name} does not exist`);
+					return {
+						columnId: c.id,
+						...(operatorClass ? { operatorClass } : {}),
+						...(ordering === "SORTBY_ASC" ? { order: "asc" as const } : ordering === "SORTBY_DESC" ? { order: "desc" as const } : {}),
+						...(nullsOrdering === "SORTBY_NULLS_FIRST" ? { nulls: "first" as const } : nullsOrdering === "SORTBY_NULLS_LAST" ? { nulls: "last" as const } : {}),
+					};
+				});
+				if (!keys.length) unsupported("indexes require at least one column");
+				const indexData: DesignIndex = { id: createId(), name: index.idxname, method: index.accessMethod || "btree", keys, unique: !!index.unique };
+				const indexProblem = indexMethodProblem(indexData, indexData.keys.map(({ columnId }) => {
+					const column = table.columns.find((candidate) => candidate.id === columnId)!;
+					return { type: column.type, array: column.typeParameters?.array, dimensions: column.typeParameters?.dimensions };
+				}));
+				if (indexProblem) unsupported(indexProblem);
+				(table.indexes ??= []).push(indexData);
+				if (indexData.unique && indexData.keys.length === 1) design.relationships = design.relationships.map((relationship) =>
+					relationship.referencingTableId === table.id && relationship.referencingColumnId === indexData.keys[0].columnId
+						? { ...relationship, cardinality: "one-to-one" } : relationship);
+				validateAndInferJunction(design, table, createId);
+				continue;
+			}
+			if (statement.AlterEnumStmt) {
+				const alter = statement.AlterEnumStmt;
+				const names = withoutPublic(alter.typeName ?? []).map(nodeName).filter(Boolean);
+				if (names.length !== 1) unsupported("schema-qualified type names are not supported");
+				const enumType = (design.enumTypes ?? []).find((entry) => entry.name === names[0]);
+				if (!enumType) unsupported(`enum type ${names[0]} does not exist`);
+				if (alter.oldVal !== undefined) {
+					const position = enumType.labels.indexOf(alter.oldVal);
+					if (position < 0) unsupported(`enum value ${alter.oldVal} does not exist in ${enumType.name}`);
+					if (enumType.labels.includes(alter.newVal)) unsupported(`enum value ${alter.newVal} already exists in ${enumType.name}`);
+					enumType.labels[position] = alter.newVal;
+					// Defaults written with the old label would otherwise point at a value that no longer exists.
+					for (const table of design.tables) for (const column of table.columns) {
+						if (column.enumTypeId === enumType.id && column.default.kind === "literal" && column.default.value === alter.oldVal) column.default = { ...column.default, value: alter.newVal };
+					}
+					continue;
+				}
+				if (enumType.labels.includes(alter.newVal)) {
+					if (alter.skipIfNewValExists) continue;
+					unsupported(`enum value ${alter.newVal} already exists in ${enumType.name}`);
+				}
+				if (alter.newValNeighbor !== undefined) {
+					const neighbor = enumType.labels.indexOf(alter.newValNeighbor);
+					if (neighbor < 0) unsupported(`enum value ${alter.newValNeighbor} does not exist in ${enumType.name}`);
+					enumType.labels.splice(alter.newValIsAfter ? neighbor + 1 : neighbor, 0, alter.newVal);
+				} else enumType.labels.push(alter.newVal);
+				continue;
+			}
+			if (statement.CreateEnumStmt) {
+				const create = statement.CreateEnumStmt, name = nodeName(last<Node>(create.typeName ?? []));
+				if (!name || (design.enumTypes ?? []).some((entry) => entry.name === name)) unsupported(`enum type ${name ?? "<unknown>"} already exists`);
+				design.enumTypes ??= []; design.enumTypes.push({ id: createId(), name, labels: (create.vals ?? []).map(constString).filter(Boolean) as string[] }); continue;
+			}
+			if (statement.CreateFunctionStmt) {
+				const create = statement.CreateFunctionStmt;
+				if (create.is_procedure) unsupported("CREATE PROCEDURE is not representable as a Function");
+				const signature: string[] = (create.funcname ?? []).map((part: Node) => nodeName(part)).filter((part: string | undefined): part is string => typeof part === "string");
+				const name = last(signature);
+				if (!name || signature.length > 1) unsupported("schema-qualified functions are not supported");
+				const options: Record<string, Node> = {};
+				for (const item of create.options ?? []) { const o = item.DefElem; if (o?.defname) options[o.defname] = o.arg; }
+				const unsupportedOption = Object.keys(options).find((option) => !["language", "as", "volatility", "security"].includes(option));
+				if (unsupportedOption) unsupported(`function option ${unsupportedOption} is not representable`);
+				const language = constString(options.language) ?? options.language?.String?.sval;
+				const returnType = typeName(create.returnType);
+				const body = constString(options.as) ?? options.as?.List?.items?.map(constString).join("\n");
+				if (!body || !language || !returnType) unsupported("function must have a representable LANGUAGE, RETURNS type, and body");
+				if (language !== "sql" && language !== "plpgsql") unsupported(`function language ${language} is not representable`);
+				const args = (create.parameters ?? []).map((p: Node) => { const a = p.FunctionParameter; if (!a || (a.mode && a.mode !== "FUNC_PARAM_IN") || a.defexpr) unsupported("only IN function parameters without defaults are supported"); return { name: a.name ?? `arg${createId().slice(0, 8)}`, type: typeName(a.argType) }; });
+				const volatility = constString(options.volatility)?.toLowerCase();
+				const securityOption = options.security;
+				const securityValue = securityOption?.Boolean?.boolval;
+				const security = securityValue === true ? "definer" : securityValue === false ? "invoker" : (constString(securityOption) ?? securityOption?.DefElem?.defname)?.toLowerCase();
+				if (security && security !== "definer" && security !== "invoker") unsupported(`function security ${security} is not representable`);
+				const fn: DesignFunction = { id: (design.functions ?? []).find((f) => f.name === name)?.id ?? createId(), name, arguments: args, returnType, returnsSet: !!create.returnType?.setof, language, volatility: volatility === "immutable" ? "immutable" : volatility === "stable" ? "stable" : "volatile", security: security === "definer" ? "definer" : "invoker", body };
+				design.functions = (design.functions ?? []).filter((f) => f.name !== name); design.functions.push(fn); continue;
+			}
+			if (statement.CreateTrigStmt) {
+				const create = statement.CreateTrigStmt, table = design.tables.find(({ name }) => name === nameOf(create.relation));
+				if (!table) unsupported(`table ${nameOf(create.relation)} does not exist`);
+				const fnName = last(create.funcname?.map(nodeName).filter(Boolean) ?? []), fn = design.functions?.find((entry) => entry.name === fnName);
+				if (!fn) unsupported(`trigger function ${fnName ?? "<unknown>"} does not exist`);
+				if (create.isconstraint || create.args?.length || create.transition_rels?.length) unsupported("constraint triggers, trigger arguments, and transition relations are not representable");
+				const events: DesignTrigger["events"] = [];
+				for (const [flag, event] of [[4, "INSERT"], [8, "DELETE"], [16, "UPDATE"], [32, "TRUNCATE"]] as const) {
+					if (!(create.events & flag)) continue;
+					const columnIds = event === "UPDATE" ? (create.columns ?? []).map((column: Node) => {
+						const name = nodeName(last(column.ColumnRef?.fields ?? []) ?? column);
+						const found = table.columns.find((entry) => entry.name === name);
+						if (!found) unsupported(`trigger UPDATE OF column ${name ?? "<unknown>"} does not exist`);
+						return found.id;
+					}) : [];
+					events.push({ event, ...(columnIds.length ? { columnIds } : {}) });
+				}
+				const timing = create.timing === 64 ? "INSTEAD OF" : create.timing === 2 ? "BEFORE" : "AFTER";
+				let when = "";
+				if (create.whenClause) {
+					when = policyExpression(statementSql, "WHEN");
+					if (!when) unsupported("could not recover policy expression");
+				}
+				(design.triggers ??= []).push({ id: createId(), name: create.trigname, tableId: table.id, timing, events, level: create.row ? "ROW" : "STATEMENT", functionId: fn.id, when }); continue;
+			}
+			if (statement.CreatePolicyStmt) {
+				const create = statement.CreatePolicyStmt, table = design.tables.find(({ name }) => name === nameOf(create.table));
+				if (!table) unsupported(`table ${nameOf(create.table)} does not exist`);
+				const commands: Record<string, DesignPolicy["command"]> = { ALL: "ALL", SELECT: "SELECT", INSERT: "INSERT", UPDATE: "UPDATE", DELETE: "DELETE" };
+				const command = commands[String(create.cmd_name).toUpperCase()]; if (!command) unsupported(`policy command ${create.cmd_name} is not representable`);
+				const roles = (create.roles ?? []).map((role: Node) => role.RoleSpec?.rolename ?? "public");
+				const using = create.qual ? policyExpression(statementSql, "USING") : "";
+				const withCheck = create.with_check ? policyExpression(statementSql, "WITH CHECK") : "";
+				if (create.qual && !using || create.with_check && !withCheck) unsupported("could not recover policy expression");
+				(table.policies ??= []).push({ id: createId(), name: create.policy_name, command, roles, mode: create.permissive ? "permissive" : "restrictive", using, withCheck }); continue;
+			}
+			if (statement.CommentStmt) {
+				const comment = statement.CommentStmt;
+				if (comment.objtype !== "OBJECT_COLUMN") unsupported("only COMMENT ON COLUMN is supported");
+				const names = comment.object?.List?.items?.map(nodeName).filter(Boolean) ?? [];
+				if (names.length !== 2) unsupported("schema-qualified or malformed column comments are not supported");
+				const table = design.tables.find(({ name }) => name === names[0]), target = table?.columns.find(({ name }) => name === names[1]);
+				if (!target) unsupported(`column ${names.join(".")} does not exist`);
+				target.notes = comment.comment ?? ""; continue;
+			}
+			unsupported(Object.keys(statement)[0] ?? "empty statement");
+		} catch (error) {
+			// SQL the Design cannot represent is kept verbatim; PostgreSQL itself is the judge of whether it is valid.
+			if (!(error instanceof UnsupportedDdlError)) throw error;
+			for (const key of Object.keys(design) as Array<keyof Design>) delete design[key];
+			Object.assign(design, snapshot);
+			pendingRemovals.length = removalsBefore;
+			keepRawStatement(design, statement, statementSql, createId);
+		}
+	}
+}
+
+/** Translates a whole script onto a copy of `base`, without a workspace. Used to read a schema file. */
+export async function translateDdlText(base: Design, sql: string, createId: () => string = id): Promise<{ design: Design; keptAsSql: string[]; statementCount: number }> {
+	const parsed = await parse(sql) as Node;
+	const design = structuredClone(base);
+	const statements: Node[] = parsed.stmts ?? [];
+	translateStatements({ design, designId: "schema-file", createId, pendingRemovals: [], sqlBytes: new TextEncoder().encode(sql), appliedStatements: [] }, statements);
+	const known = new Set((base.rawStatements ?? []).map(({ id: rawId }) => rawId));
+	return { design, keptAsSql: (design.rawStatements ?? []).filter(({ id: rawId }) => !known.has(rawId)).map(({ sql: kept }) => kept), statementCount: statements.length };
+}
+
 export type AssistantDdlOptions = {
 	assistantTurnId?: string;
 	confirmedDrops?: boolean;
@@ -241,278 +668,7 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 	const pendingRemovals: AssistantDdlRemovalTarget[] = [];
 	const sqlBytes = new TextEncoder().encode(sql);
 	const appliedStatements: string[] = [];
-	for (const item of statements) {
-		const statement = item.stmt as Node;
-		const location = item.stmt_location ?? 0;
-		const length = item.stmt_len;
-		const statementSql = new TextDecoder()
-			.decode(sqlBytes.subarray(location, Number.isInteger(length) && length > 0 ? location + length : undefined))
-			.trim();
-		appliedStatements.push(statementSql);
-		if (statement.CreateStmt) {
-			const create = statement.CreateStmt, tableName = nameOf(create.relation);
-			if (create.relation?.schemaname) unsupported("schema-qualified table names are not supported");
-			if (!tableName || design.tables.some((table) => table.name === tableName)) unsupported(`table ${tableName ?? "<unknown>"} already exists`);
-			if (create.if_not_exists) unsupported("CREATE TABLE IF NOT EXISTS is not supported");
-			if (create.inhRelations?.length || create.inh_relations?.length || create.partspec || create.partbound || create.constraints?.length || create.options?.length) unsupported("table inheritance, partitioning, and table-level storage options are not representable");
-			const refs = (create.tableElts ?? []).flatMap((element: Node) => element.ColumnDef
-				? (element.ColumnDef.constraints ?? []).map((entry: Node) => entry.Constraint?.pktable ? entry.Constraint.pktable : null)
-				: element.Constraint?.pktable ? [element.Constraint.pktable] : []);
-			const table: DesignTable = { id: createId(), name: tableName, position: placeTable(design, refs), columns: [] };
-			const pending: { column: DesignColumn; constraint: Node }[] = [];
-			for (const element of create.tableElts ?? []) {
-				if (element.ColumnDef) {
-					const c = column(element.ColumnDef, createId, design.enumTypes); const ref = c.__assistantReference; delete c.__assistantReference;
-					table.columns.push(c); if (ref) pending.push({ column: c, constraint: ref });
-				} else if (element.Constraint) {
-					const constraint = element.Constraint;
-					if (constraint.contype === "CONSTR_UNIQUE" || constraint.contype === "CONSTR_PRIMARY") {
-						if (constraint.deferrable || constraint.initdeferred || constraint.nulls_not_distinct) unsupported("deferrable and NULLS NOT DISTINCT constraints are not representable");
-						const names = (constraint.keys ?? []).map(nodeName).filter(Boolean);
-						if (constraint.contype === "CONSTR_PRIMARY" && names.length === 1) { const target = table.columns.find(({ name }) => name === names[0]); if (!target) unsupported("table-level primary key must refer to one existing column"); target.primaryKey = true; target.nullable = false; }
-						else if (constraint.contype === "CONSTR_UNIQUE" && names.length === 1) { const target = table.columns.find(({ name }) => name === names[0]); if (!target) unsupported("table-level UNIQUE must refer to one existing column"); target.unique = true; }
-						else if (constraint.contype === "CONSTR_UNIQUE" && names.length > 1) {
-							const columns = names.map((name: string) => table.columns.find(({ name: n }) => n === name)); if (columns.some((c: DesignColumn | undefined) => !c)) unsupported("UNIQUE references a missing column");
-							(table.uniqueConstraints ??= []).push({ id: createId(), name: constraint.conname, columnIds: columns.map((c: DesignColumn) => c.id) });
-						} else unsupported("composite primary keys are not representable");
-					} else if (constraint.contype === "CONSTR_FOREIGN") {
-						if (constraint.deferrable || constraint.initdeferred || (constraint.fk_matchtype && constraint.fk_matchtype !== "s") || constraint.fk_del_set_cols?.length) unsupported("deferrable, non-simple, and column-targeted foreign keys are not representable");
-						if ((constraint.fk_attrs ?? []).length !== 1) unsupported("foreign keys must reference one column");
-						const localName = nodeName(constraint.fk_attrs[0]), local = table.columns.find(({ name }) => name === localName);
-						if (!local) unsupported(`foreign-key column ${localName} does not exist`); pending.push({ column: local, constraint });
-					} else unsupported(`table constraint ${constraint.contype} is not supported`);
-				} else unsupported("table elements must be columns or supported constraints");
-			}
-			design.tables.push(table);
-			const relationships = pending.map(({ column, constraint }) => resolveReference(design, table, column, constraint, createId));
-			design.relationships.push(...relationships);
-			validateAndInferJunction(design, table, createId);
-			continue;
-		}
-		if (statement.RenameStmt) {
-			const rename = statement.RenameStmt;
-			if (rename.relation?.schemaname) unsupported("schema-qualified table names are not supported");
-			const table = design.tables.find(({ name }) => name === nameOf(rename.relation));
-			if (!table) unsupported(`table ${nameOf(rename.relation)} does not exist`);
-			if (rename.renameType === "OBJECT_TABLE") table.name = rename.newname;
-			else if (rename.renameType === "OBJECT_COLUMN") { const target = table.columns.find(({ name }) => name === rename.subname); if (!target) unsupported(`column ${rename.subname} does not exist`); target.name = rename.newname; }
-			else unsupported(`rename operation ${rename.renameType} is not supported`);
-			continue;
-		}
-		if (statement.AlterTableStmt) {
-			const alter = statement.AlterTableStmt;
-			if (alter.relation?.schemaname) unsupported("schema-qualified table names are not supported");
-			const table = design.tables.find(({ name }) => name === nameOf(alter.relation));
-			if (!table) unsupported(`table ${nameOf(alter.relation)} does not exist`);
-			for (const wrapped of alter.cmds ?? []) {
-				const cmd = wrapped.AlterTableCmd; if (!cmd) unsupported("unknown ALTER TABLE command");
-				if (cmd.subtype === "AT_AddConstraint") {
-					const constraint = cmd.def?.Constraint;
-					if (!constraint) unsupported("ADD CONSTRAINT definition is invalid");
-					if (constraint.deferrable || constraint.initdeferred || constraint.nulls_not_distinct) unsupported("deferrable and NULLS NOT DISTINCT constraints are not representable");
-					if (constraint.contype === "CONSTR_PRIMARY" || constraint.contype === "CONSTR_UNIQUE") {
-						const names = (constraint.keys ?? []).map(nodeName).filter(Boolean);
-						if (constraint.contype === "CONSTR_PRIMARY" && names.length !== 1) unsupported("composite primary keys are not representable");
-						const columns = names.map((name: string) => {
-							const found = table.columns.find(({ name: columnName }) => columnName === name);
-							if (!found) unsupported(`constraint column ${name} does not exist`);
-							return found;
-						});
-						if (!names.length) unsupported("constraint must refer to existing columns");
-						if (constraint.contype === "CONSTR_PRIMARY") { columns[0].primaryKey = true; columns[0].nullable = false; }
-						else if (columns.length === 1) columns[0].unique = true;
-						else (table.uniqueConstraints ??= []).push({ id: createId(), name: constraint.conname, columnIds: columns.map((entry: DesignColumn) => entry.id) });
-					} else if (constraint.contype === "CONSTR_FOREIGN") {
-						if ((constraint.fk_attrs ?? []).length !== 1 || constraint.fk_matchtype && constraint.fk_matchtype !== "s" || constraint.fk_del_set_cols?.length) unsupported("foreign keys must reference one column and use simple matching");
-						const localName = nodeName(constraint.fk_attrs[0]), local = table.columns.find(({ name }) => name === localName);
-						if (!local) unsupported(`foreign-key column ${localName} does not exist`);
-						design.relationships.push(resolveReference(design, table, local, constraint, createId));
-					} else unsupported(`ALTER TABLE constraint ${constraint.contype} is not supported`);
-				} else if (cmd.subtype === "AT_AddColumn") {
-					const def = cmd.def?.ColumnDef; if (!def) unsupported("ADD COLUMN definition is invalid");
-					const c = column(def, createId, design.enumTypes); const ref = c.__assistantReference; delete c.__assistantReference; table.columns.push(c);
-					if (ref) { const relationship = resolveReference(design, table, c, ref, createId); design.relationships.push(relationship); }
-				} else if (cmd.subtype === "AT_DropColumn") {
-					const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
-					const removal = removalPlan(design, { kind: "column", tableId: table.id, columnId: target.id, designId });
-					pendingRemovals.push({ kind: "column", targetId: `column:${table.name}.${target.name}`, removal });
-					const relationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
-						const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
-						return association ? [association.leftRelationshipId, association.rightRelationshipId] : [relationshipId];
-					}));
-					const indexIds = new Set(removal.indexes.map(({ indexId }) => indexId));
-					const uniqueIds = new Set(removal.uniqueConstraints.map(({ constraintId }) => constraintId));
-					const triggerIds = new Set(removal.triggers.map(({ triggerId }) => triggerId));
-					design.relationships = design.relationships.filter(({ id: relationshipId }) => !relationshipIds.has(relationshipId));
-					design.manyToManyRelationships = design.manyToManyRelationships.filter((association) => !relationshipIds.has(association.leftRelationshipId) && !relationshipIds.has(association.rightRelationshipId));
-					table.indexes = (table.indexes ?? []).filter(({ id: indexId }) => !indexIds.has(indexId));
-					table.uniqueConstraints = (table.uniqueConstraints ?? []).filter(({ id: uniqueId }) => !uniqueIds.has(uniqueId));
-					design.triggers = (design.triggers ?? []).filter(({ id: triggerId }) => !triggerIds.has(triggerId));
-					table.columns = table.columns.filter(({ id: columnId }) => columnId !== target.id);
-				} else if (cmd.subtype === "AT_ColumnDefault") {
-					const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
-					target.default = cmd.def ? defaultValue(cmd.def, target.type) : noColumnDefault();
-				} else if (cmd.subtype === "AT_SetNotNull" || cmd.subtype === "AT_DropNotNull") {
-					const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`); target.nullable = cmd.subtype === "AT_DropNotNull";
-				} else if (cmd.subtype === "AT_AlterColumnType") {
-					const target = table.columns.find(({ name }) => name === cmd.name); if (!target) unsupported(`column ${cmd.name} does not exist`);
-					const wrappedDef = cmd.def?.ColumnDef;
-					const rawType = typeName(wrappedDef?.typeName ?? cmd.def?.typeName), enumType = design.enumTypes?.find((entry) => entry.name === rawType || entry.name === last(rawType.split(".")));
-					const updatedType = enumType ? { type: "enum" as ColumnType, enumTypeId: enumType.id } : getType({ typeName: wrappedDef?.typeName ?? cmd.def?.typeName });
-					Object.assign(target, updatedType, { typeParameters: "typeParameters" in updatedType ? updatedType.typeParameters : undefined });
-				} else if (cmd.subtype === "AT_EnableRowSecurity") table.rowLevelSecurity = true;
-				else unsupported(`ALTER TABLE operation ${cmd.subtype} is not supported`);
-			}
-			design.relationships = design.relationships.map((relationship) => {
-				if (relationship.referencingTableId !== table.id) return relationship;
-				const column = table.columns.find(({ id: columnId }) => columnId === relationship.referencingColumnId);
-				const unique = Boolean(column?.unique) || (table.uniqueConstraints ?? []).some((constraint) => constraint.columnIds.length === 1 && constraint.columnIds[0] === column?.id) || (table.indexes ?? []).some((index) => index.unique && index.keys.length === 1 && index.keys[0].columnId === column?.id);
-				return relationship.cardinality === "one-to-one" || unique ? { ...relationship, cardinality: "one-to-one" } : relationship;
-			});
-			validateAndInferJunction(design, table, createId);
-			continue;
-		}
-		if (statement.DropStmt) {
-			const drop = statement.DropStmt;
-			if (drop.removeType !== "OBJECT_TABLE") {
-				const kind = String(drop.removeType ?? "").replace(/^OBJECT_/, "").replaceAll("_", " ");
-				unsupported(`DROP ${kind || "object"} is not supported`);
-			}
-			if (drop.missing_ok) unsupported("DROP TABLE IF EXISTS is not supported");
-			if (drop.behavior === "DROP_CASCADE") unsupported("DROP ... CASCADE is not supported");
-			for (const object of drop.objects ?? []) {
-				const parts = object?.List?.items ?? [];
-				if (parts.length > 1) unsupported("schema-qualified table names are not supported");
-				const name = nodeName(last<Node>(parts)) ?? object?.String?.sval ?? object?.relname;
-				const table = design.tables.find(({ name: tableName }) => tableName === name);
-				if (!table) unsupported(`table ${name} does not exist`);
-				const removal = removalPlan(design, { kind: "table", tableId: table.id, designId });
-				pendingRemovals.push({ kind: "table", targetId: `table:${table.name}`, removal });
-				const removedRelationshipIds = new Set(removal.relationships.flatMap(({ relationshipId }) => {
-					const association = design.manyToManyRelationships.find(({ id: associationId }) => associationId === relationshipId);
-					return association ? [association.leftRelationshipId, association.rightRelationshipId] : [relationshipId];
-				}));
-				const tableRelationshipIds = new Set(design.relationships.filter((relationship) => relationship.referencingTableId === table.id || relationship.referencedTableId === table.id).map(({ id: relationshipId }) => relationshipId));
-				design.tables = design.tables.filter(({ id: tableId }) => tableId !== table.id);
-				design.relationships = design.relationships.filter(({ id: relationshipId }) => !removedRelationshipIds.has(relationshipId) && !tableRelationshipIds.has(relationshipId));
-				design.triggers = (design.triggers ?? []).filter((trigger) => trigger.tableId !== table.id);
-				design.manyToManyRelationships = design.manyToManyRelationships.filter((association) => !removedRelationshipIds.has(association.leftRelationshipId) && !removedRelationshipIds.has(association.rightRelationshipId) && association.junctionTableId !== table.id);
-			}
-			continue;
-		}
-		if (statement.IndexStmt) {
-			const index = statement.IndexStmt;
-			if (index.relation?.schemaname) unsupported("schema-qualified table names are not supported");
-			const table = design.tables.find(({ name }) => name === nameOf(index.relation));
-			if (!table) unsupported(`table ${nameOf(index.relation)} does not exist`);
-			if (index.whereClause || index.indexIncludingParams?.length) unsupported("partial and INCLUDE indexes are not supported");
-			if (index.if_not_exists) unsupported("CREATE INDEX IF NOT EXISTS is not supported");
-			const keys = (index.indexParams ?? []).map((entry: Node) => {
-				const elem = entry.IndexElem; if (!elem?.name) unsupported("index expressions are not supported");
-				const ordering = elem.ordering;
-				const nullsOrdering = elem.nulls_ordering;
-				if (ordering && !["SORTBY_DEFAULT", "SORTBY_ASC", "SORTBY_DESC"].includes(ordering)) unsupported("index ordering is not representable");
-				if (nullsOrdering && !["SORTBY_NULLS_DEFAULT", "SORTBY_NULLS_FIRST", "SORTBY_NULLS_LAST"].includes(nullsOrdering)) unsupported("index NULLS ordering is not representable");
-				const operatorClass = (elem.opclass ?? []).map(nodeName).filter((value: string | undefined): value is string => typeof value === "string").at(-1);
-				const c = table.columns.find(({ name }) => name === elem.name); if (!c) unsupported(`index column ${elem.name} does not exist`);
-				return {
-					columnId: c.id,
-					...(operatorClass ? { operatorClass } : {}),
-					...(ordering === "SORTBY_ASC" ? { order: "asc" as const } : ordering === "SORTBY_DESC" ? { order: "desc" as const } : {}),
-					...(nullsOrdering === "SORTBY_NULLS_FIRST" ? { nulls: "first" as const } : nullsOrdering === "SORTBY_NULLS_LAST" ? { nulls: "last" as const } : {}),
-				};
-			});
-			if (!keys.length) unsupported("indexes require at least one column");
-			const indexData: DesignIndex = { id: createId(), name: index.idxname, method: index.accessMethod || "btree", keys, unique: !!index.unique };
-			const indexProblem = indexMethodProblem(indexData, indexData.keys.map(({ columnId }) => {
-				const column = table.columns.find((candidate) => candidate.id === columnId)!;
-				return { type: column.type, array: column.typeParameters?.array, dimensions: column.typeParameters?.dimensions };
-			}));
-			if (indexProblem) unsupported(indexProblem);
-			(table.indexes ??= []).push(indexData);
-			if (indexData.unique && indexData.keys.length === 1) design.relationships = design.relationships.map((relationship) =>
-				relationship.referencingTableId === table.id && relationship.referencingColumnId === indexData.keys[0].columnId
-					? { ...relationship, cardinality: "one-to-one" } : relationship);
-			validateAndInferJunction(design, table, createId);
-			continue;
-		}
-		if (statement.CreateEnumStmt) {
-			const create = statement.CreateEnumStmt, name = nodeName(last<Node>(create.typeName ?? []));
-			if (!name || (design.enumTypes ?? []).some((entry) => entry.name === name)) unsupported(`enum type ${name ?? "<unknown>"} already exists`);
-			design.enumTypes ??= []; design.enumTypes.push({ id: createId(), name, labels: (create.vals ?? []).map(constString).filter(Boolean) as string[] }); continue;
-		}
-		if (statement.CreateFunctionStmt) {
-			const create = statement.CreateFunctionStmt;
-			if (!create.replace) unsupported("functions must use CREATE OR REPLACE FUNCTION");
-			if (create.is_procedure) unsupported("CREATE PROCEDURE is not representable as a Function");
-			const signature: string[] = (create.funcname ?? []).map((part: Node) => nodeName(part)).filter((part: string | undefined): part is string => typeof part === "string");
-			const name = last(signature);
-			if (!name || signature.length > 1) unsupported("schema-qualified functions are not supported");
-			const options: Record<string, Node> = {};
-			for (const item of create.options ?? []) { const o = item.DefElem; if (o?.defname) options[o.defname] = o.arg; }
-			const unsupportedOption = Object.keys(options).find((option) => !["language", "as", "volatility", "security"].includes(option));
-			if (unsupportedOption) unsupported(`function option ${unsupportedOption} is not representable`);
-			const language = constString(options.language) ?? options.language?.String?.sval;
-			const returnType = typeName(create.returnType);
-			const body = constString(options.as) ?? options.as?.List?.items?.map(constString).join("\n");
-			if (!body || !language || !returnType) unsupported("function must have a representable LANGUAGE, RETURNS type, and body");
-			if (language !== "sql" && language !== "plpgsql") unsupported(`function language ${language} is not representable`);
-			const args = (create.parameters ?? []).map((p: Node) => { const a = p.FunctionParameter; if (!a || (a.mode && a.mode !== "FUNC_PARAM_IN") || a.defexpr) unsupported("only IN function parameters without defaults are supported"); return { name: a.name ?? `arg${createId().slice(0, 8)}`, type: typeName(a.argType) }; });
-			const volatility = constString(options.volatility)?.toLowerCase();
-			const securityOption = options.security;
-			const securityValue = securityOption?.Boolean?.boolval;
-			const security = securityValue === true ? "definer" : securityValue === false ? "invoker" : (constString(securityOption) ?? securityOption?.DefElem?.defname)?.toLowerCase();
-			if (security && security !== "definer" && security !== "invoker") unsupported(`function security ${security} is not representable`);
-			const fn: DesignFunction = { id: (design.functions ?? []).find((f) => f.name === name)?.id ?? createId(), name, arguments: args, returnType, returnsSet: !!create.returnType?.setof, language, volatility: volatility === "immutable" ? "immutable" : volatility === "stable" ? "stable" : "volatile", security: security === "definer" ? "definer" : "invoker", body };
-			design.functions = (design.functions ?? []).filter((f) => f.name !== name); design.functions.push(fn); continue;
-		}
-		if (statement.CreateTrigStmt) {
-			const create = statement.CreateTrigStmt, table = design.tables.find(({ name }) => name === nameOf(create.relation));
-			if (!table) unsupported(`table ${nameOf(create.relation)} does not exist`);
-			const fnName = last(create.funcname?.map(nodeName).filter(Boolean) ?? []), fn = design.functions?.find((entry) => entry.name === fnName);
-			if (!fn) unsupported(`trigger function ${fnName ?? "<unknown>"} does not exist`);
-			if (create.isconstraint || create.args?.length || create.transition_rels?.length) unsupported("constraint triggers, trigger arguments, and transition relations are not representable");
-			const events: DesignTrigger["events"] = [];
-			for (const [flag, event] of [[4, "INSERT"], [8, "DELETE"], [16, "UPDATE"], [32, "TRUNCATE"]] as const) {
-				if (!(create.events & flag)) continue;
-				const columnIds = event === "UPDATE" ? (create.columns ?? []).map((column: Node) => {
-					const name = nodeName(last(column.ColumnRef?.fields ?? []) ?? column);
-					const found = table.columns.find((entry) => entry.name === name);
-					if (!found) unsupported(`trigger UPDATE OF column ${name ?? "<unknown>"} does not exist`);
-					return found.id;
-				}) : [];
-				events.push({ event, ...(columnIds.length ? { columnIds } : {}) });
-			}
-			const timing = create.timing === 64 ? "INSTEAD OF" : create.timing === 2 ? "BEFORE" : "AFTER";
-			let when = "";
-			if (create.whenClause) {
-				when = policyExpression(statementSql, "WHEN");
-				if (!when) unsupported("could not recover policy expression");
-			}
-			(design.triggers ??= []).push({ id: createId(), name: create.trigname, tableId: table.id, timing, events, level: create.row ? "ROW" : "STATEMENT", functionId: fn.id, when }); continue;
-		}
-		if (statement.CreatePolicyStmt) {
-			const create = statement.CreatePolicyStmt, table = design.tables.find(({ name }) => name === nameOf(create.table));
-			if (!table) unsupported(`table ${nameOf(create.table)} does not exist`);
-			const commands: Record<string, DesignPolicy["command"]> = { ALL: "ALL", SELECT: "SELECT", INSERT: "INSERT", UPDATE: "UPDATE", DELETE: "DELETE" };
-			const command = commands[String(create.cmd_name).toUpperCase()]; if (!command) unsupported(`policy command ${create.cmd_name} is not representable`);
-			const roles = (create.roles ?? []).map((role: Node) => role.RoleSpec?.rolename ?? "public");
-			const using = create.qual ? policyExpression(statementSql, "USING") : "";
-			const withCheck = create.with_check ? policyExpression(statementSql, "WITH CHECK") : "";
-			if (create.qual && !using || create.with_check && !withCheck) unsupported("could not recover policy expression");
-			(table.policies ??= []).push({ id: createId(), name: create.policy_name, command, roles, mode: create.permissive ? "permissive" : "restrictive", using, withCheck }); continue;
-		}
-		if (statement.CommentStmt) {
-			const comment = statement.CommentStmt;
-			if (comment.objtype !== "OBJECT_COLUMN") unsupported("only COMMENT ON COLUMN is supported");
-			const names = comment.object?.List?.items?.map(nodeName).filter(Boolean) ?? [];
-			if (names.length !== 2) unsupported("schema-qualified or malformed column comments are not supported");
-			const table = design.tables.find(({ name }) => name === names[0]), target = table?.columns.find(({ name }) => name === names[1]);
-			if (!target) unsupported(`column ${names.join(".")} does not exist`);
-			target.notes = comment.comment ?? ""; continue;
-		}
-		unsupported(Object.keys(statement)[0] ?? "empty statement");
-	}
+	translateStatements({ design, designId, createId, pendingRemovals, sqlBytes, appliedStatements }, statements);
 	const latest = workspace.getState();
 	if (options.expectedProjectId && latest.project?.id !== options.expectedProjectId) throw new Error("Assistant DDL project changed before commit.");
 	if (options.expectedDesignId && latest.activeDesignId !== options.expectedDesignId) throw new Error("Assistant DDL Design changed before commit.");
@@ -554,9 +710,23 @@ export async function applyAssistantDdl(workspace: DesignWorkspace, sql: string,
 			revision: state.revision,
 		};
 	}
+	const before = new Set((state.design.rawStatements ?? []).map(({ id: rawId }) => rawId));
+	const keptAsSql = (design.rawStatements ?? []).filter(({ id: rawId }) => !before.has(rawId)).map(({ sql: kept }) => kept);
+	if (keptAsSql.length) {
+		// The sandbox is the judge of raw SQL: try the whole schema on a throwaway database so a bad statement changes nothing.
+		const generated = generateDesignSql(design);
+		if (generated.ok) {
+			const scratch = createPGliteSandbox();
+			try {
+				const result = await scratch.apply(generated.sql);
+				if (!result.ok) throw new Error(`PostgreSQL rejected the SQL, so nothing was applied: ${result.error}`);
+			} finally { await scratch.dispose(); }
+		}
+	}
 	return {
 		status: "applied",
 		state: await workspace.applyAssistantDesign(design, designId, options.assistantTurnId),
 		statements: appliedStatements,
+		...(keptAsSql.length ? { keptAsSql } : {}),
 	};
 }

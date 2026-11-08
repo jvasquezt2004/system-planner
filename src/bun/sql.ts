@@ -2,7 +2,7 @@ import {
 	columnDefaultProblem,
 	renderDefaultExpression,
 } from "../shared/column-defaults";
-import { columnTypeInfo, isSupportedColumnType } from "../shared/column-types";
+import { columnTypeInfo, findColumnTypeInfo, isSupportedColumnType } from "../shared/column-types";
 import { renderColumnType } from "../shared/column-types";
 import type {
 	Design,
@@ -30,22 +30,42 @@ import {
 import { findIndexMethod, indexOperatorClasses } from "../shared/index-methods";
 
 export type SqlGeneration =
-	| { ok: true; sql: string }
+	| { ok: true; sql: string; /** Advice that does not stop the SQL: PostgreSQL accepts it, but it is usually a mistake. */ warnings: string[] }
 	| { ok: false; errors: string[] };
 
 type PairConstraint = {
+	association: DesignManyToManyAssociation;
 	junction: DesignTable;
 	leftColumn: DesignColumn;
 	rightColumn: DesignColumn;
 };
 
+const sameColumns = (a: string[], b: string[]) => a.length === b.length && [...a].sort().join("\u0000") === [...b].sort().join("\u0000");
+
+/** Whether the table already makes exactly these columns unique, through a unique constraint or a unique index. */
+function hasEquivalentUnique(table: DesignTable, columnIds: string[]): boolean {
+	return (table.uniqueConstraints ?? []).some((constraint) => sameColumns(constraint.columnIds, columnIds)) ||
+		(table.indexes ?? []).some((index) => index.unique && sameColumns(index.keys.map((key) => key.columnId), columnIds));
+}
+
+/**
+ * The many-to-many links that still need a pair constraint of their own. A junction that is already unique on
+ * its two columns does not get a second, identical constraint (and index).
+ */
+function pendingPairAssociations(design: Design) {
+	return (design.manyToManyRelationships ?? []).flatMap((association) => {
+		const junction = design.tables.find((table) => table.id === association.junctionTableId);
+		if (!junction) return [];
+		const ends = [association.leftRelationshipId, association.rightRelationshipId].map((id) => design.relationships.find((relationship) => relationship.id === id)?.referencingColumnId);
+		if (ends.every((id): id is string => typeof id === "string") && hasEquivalentUnique(junction, ends)) return [];
+		return [{ association, junction }];
+	});
+}
+
 /** Names of the tables, identity sequences, and indexes in PostgreSQL's schema namespace. */
 export function postgresSchemaRelationNames(design: Design): Set<string> {
 	const relationships = resolveRelationships(design);
-	const junctions = (design.manyToManyRelationships ?? []).flatMap((association) => {
-		const junction = design.tables.find((table) => table.id === association.junctionTableId);
-		return junction ? [junction] : [];
-	});
+	const junctions = pendingPairAssociations(design).map(({ junction }) => junction);
 	return planPostgresIdentifiers(design, relationships, junctions).relationNames;
 }
 
@@ -69,10 +89,7 @@ export type SchemaObjectNames = {
 
 export function planSchemaObjectNames(design: Design): SchemaObjectNames {
 	const relationships = resolveRelationships(design);
-	const associations = (design.manyToManyRelationships ?? []).flatMap((association) => {
-		const junction = design.tables.find((table) => table.id === association.junctionTableId);
-		return junction ? [{ association, junction }] : [];
-	});
+	const associations = pendingPairAssociations(design);
 	const plan = planPostgresIdentifiers(
 		design,
 		relationships,
@@ -104,18 +121,35 @@ export function planSchemaObjectNames(design: Design): SchemaObjectNames {
 }
 
 /**
+ * The text of a Design's schema.sql. An invalid draft is still written out as the SQL it would be, under
+ * a comment naming its problems, so the file can be edited to fix them.
+ */
+export function renderSchemaFile(design: Design): string {
+	const generated = generateDesignSql(design);
+	if (generated.ok) {
+		const notes = generated.warnings.map((warning) => `-- ${warning}`);
+		return notes.length ? `-- Worth a look (the SQL is valid; these are advice, not errors):\n${notes.join("\n")}\n\n${generated.sql}` : generated.sql;
+	}
+	let body = "";
+	try {
+		const lenient = generateDesignSql(design, { lenient: true });
+		if (lenient.ok) body = lenient.sql;
+	} catch { /* Some drafts cannot be rendered at all; the problems are still listed. */ }
+	return `-- This Design has problems. Fix them in this file, then apply it:\n${generated.errors.map((error) => `-- ${error}`).join("\n")}\n\n${body}`;
+}
+
+/**
  * Generates read-only PostgreSQL from the authoritative design. An incomplete
  * draft produces explicit errors instead of partial SQL.
  */
-export function generateDesignSql(design: Design): SqlGeneration {
+export function generateDesignSql(design: Design, options: { lenient?: boolean } = {}): SqlGeneration {
+	// Errors are what PostgreSQL would reject. Warnings are best practice (Supabase's Postgres guide): never a reason to withhold SQL.
 	const errors: string[] = [];
-	if (design.tables.length === 0) {
-		errors.push("Add a table to generate SQL.");
-	}
+	const warnings: string[] = [];
 
 	const tableNames = new Set<string>();
 	for (const table of design.tables) {
-		validateTable(table, tableNames, errors, design.enumTypes ?? []);
+		validateTable(table, tableNames, errors, design.enumTypes ?? [], warnings);
 		validateIndexes(table, errors);
 		validateUniqueConstraints(table, errors);
 	}
@@ -190,24 +224,30 @@ export function generateDesignSql(design: Design): SqlGeneration {
 	// reported here, so an incompatible edit never silently drops the link.
 	const relationships: RelationshipView[] = [];
 	for (const relationship of design.relationships) {
-		const view = validateRelationship(design, relationship, errors);
+		const view = validateRelationship(design, relationship, errors, warnings);
 		if (view) relationships.push(view);
 	}
 
 	const pairConstraints: PairConstraint[] = [];
 	for (const association of design.manyToManyRelationships ?? []) {
-		const constraint = validateManyToManyAssociation(design, association, errors);
+		const constraint = validateManyToManyAssociation(design, association, warnings);
 		if (constraint) pairConstraints.push(constraint);
 	}
 
-	if (errors.length > 0) return { ok: false, errors };
+	for (const view of relationships) warnForeignKeyIndex(view, warnings);
+	const pendingPairs = new Set(pendingPairAssociations(design).map(({ association }) => association.id));
+	const activePairs = pairConstraints.filter(({ association }) => pendingPairs.has(association.id));
+
+	// A lenient render shows an invalid draft as the SQL it would be, problems and all, so it can be edited.
+	if (errors.length > 0 && !options.lenient) return { ok: false, errors: [...new Set(errors)] };
 
 	const namePlan = planPostgresIdentifiers(
 		design,
 		relationships,
-		pairConstraints.map(({ junction }) => junction),
+		activePairs.map(({ junction }) => junction),
 	);
-	const pairConstraintSql = pairConstraints.map(
+	warnRedundantIndexes(namePlan, warnings);
+	const pairConstraintSql = activePairs.map(
 		({ junction, leftColumn, rightColumn }, index) => {
 			const name = namePlan.pairConstraintNames[index];
 			if (!name) throw new Error("A pair constraint has no planned name.");
@@ -222,29 +262,42 @@ export function generateDesignSql(design: Design): SqlGeneration {
 			index.method === "hnsw" || index.method === "ivfflat",
 		),
 	);
+	// A foreign key goes inside CREATE TABLE when the table it references is already created (itself included);
+	// only references that are part of a cycle are added afterwards.
+	const orderedTables = dependencyOrder(design, relationships);
+	const tablePosition = new Map(orderedTables.map((table, position) => [table.id, position]));
+	const inlineForeignKeys = new Set(namePlan.namedRelationships
+		.filter(({ view }) => (tablePosition.get(view.referencedTable.id) ?? Infinity) <= (tablePosition.get(view.referencingTable.id) ?? -1))
+		.map(({ view }) => view.relationship.id));
+	const rawSql = (phase: "before" | "after") => (design.rawStatements ?? [])
+		.filter((raw) => raw.phase === phase)
+		.map((raw) => /;\s*$/.test(raw.sql) ? raw.sql.trim() : `${raw.sql.trim()};`);
 	const statements = [
 		...(vectorUsed ? ["CREATE EXTENSION IF NOT EXISTS vector;"] : []),
+		...rawSql("before"),
 		...(design.enumTypes ?? []).map((enumType) =>
 			`CREATE TYPE ${quoteIdentifier(enumType.name)} AS ENUM (${enumType.labels.map(quoteString).join(", ")});`,
 		),
-		...design.tables.map((table) =>
+		...orderedTables.map((table) =>
 			renderTable(
 				table,
 				design,
 				namePlan.uniqueConstraints.filter((entry) => entry.table.id === table.id),
+				namePlan.namedRelationships.filter((entry) => inlineForeignKeys.has(entry.view.relationship.id) && entry.view.referencingTable.id === table.id),
 			),
 		),
-		...namePlan.indexes.map(({ table, index, name }) => renderIndex(table, index, name)),
-		...namePlan.namedRelationships.map(
+		...[...namePlan.indexes].sort((a, b) => (tablePosition.get(a.table.id) ?? 0) - (tablePosition.get(b.table.id) ?? 0)).map(({ table, index, name }) => renderIndex(table, index, name)),
+		...namePlan.namedRelationships.filter((entry) => !inlineForeignKeys.has(entry.view.relationship.id)).map(
 			({ view, foreignKeyConstraintName, uniqueConstraintName }) =>
 				renderRelationship(view, foreignKeyConstraintName, uniqueConstraintName),
 		),
 		...pairConstraintSql,
 		...(design.functions ?? []).map((fn) => renderFunction(fn, design)),
 		...(design.triggers ?? []).map((trigger) => renderTrigger(trigger, design)),
-		...design.tables.flatMap((table) => renderPolicies(table)),
+		...orderedTables.flatMap((table) => renderPolicies(table)),
+		...rawSql("after"),
 	];
-	return { ok: true, sql: `${statements.join("\n\n")}\n` };
+	return { ok: true, sql: `${statements.join("\n\n")}\n`, warnings: [...new Set(warnings)] };
 }
 
 function renderFunction(fn: DesignFunction, design: Design): string {
@@ -298,10 +351,21 @@ function isFunctionType(value: string): boolean {
 	);
 }
 
+/** PostgreSQL lets integer types reference each other, and text, varchar and char alike; other mixes it refuses. */
+function referenceTypesCompatible(referencing: DesignColumn, referenced: DesignColumn): boolean {
+	if (referencing.type === "enum" || referenced.type === "enum") {
+		return referencing.type === referenced.type && referencing.enumTypeId === referenced.enumTypeId;
+	}
+	if (referencing.type === referenced.type) return true;
+	const family = (type: DesignColumn["type"]) => findColumnTypeInfo(type)?.family.id;
+	return family(referencing.type) === family(referenced.type) && (family(referencing.type) === "integer" || family(referencing.type) === "text");
+}
+
 function validateRelationship(
 	design: Design,
 	relationship: DesignRelationship,
 	errors: string[],
+	warnings: string[],
 ): RelationshipView | null {
 	const view = resolveRelationship(design, relationship);
 	if (!view) {
@@ -316,7 +380,7 @@ function validateRelationship(
 		);
 		return null;
 	}
-	if (view.referencedColumn.type !== view.referencingColumn.type) {
+	if (!referenceTypesCompatible(view.referencingColumn, view.referencedColumn)) {
 		const referencing = view.referencingColumn;
 		const referenced = view.referencedColumn;
 		errors.push(
@@ -333,13 +397,14 @@ function validateRelationship(
 		if (!["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"].includes(action)) {
 			errors.push(`${label} has an unsupported ON ${kind.toUpperCase()} action.`);
 		}
+		// PostgreSQL accepts both of these; they only fail later, when a row is actually deleted or updated.
 		if (action === "SET NULL" && !view.referencingColumn.nullable) {
-			errors.push(
+			warnings.push(
 				`${label} uses ON ${kind.toUpperCase()} SET NULL but its foreign-key column is required.`,
 			);
 		}
 		if (action === "SET DEFAULT" && view.referencingColumn.default.kind === "none") {
-			errors.push(
+			warnings.push(
 				`${label} uses ON ${kind.toUpperCase()} SET DEFAULT but its foreign-key column has no default.`,
 			);
 		}
@@ -347,10 +412,11 @@ function validateRelationship(
 	return view;
 }
 
+/** The junction's foreign keys are ordinary relationships, so a malformed association only loses its pair constraint. */
 function validateManyToManyAssociation(
 	design: Design,
 	association: DesignManyToManyAssociation,
-	errors: string[],
+	warnings: string[],
 ): PairConstraint | null {
 	const junction = design.tables.find(
 		(table) => table.id === association.junctionTableId,
@@ -362,7 +428,7 @@ function validateManyToManyAssociation(
 		(relationship) => relationship.id === association.rightRelationshipId,
 	);
 	if (!junction || !leftRelationship || !rightRelationship) {
-		errors.push("A many-to-many relationship refers to a missing junction or reference.");
+		warnings.push("A many-to-many relationship refers to a missing junction or reference.");
 		return null;
 	}
 
@@ -384,8 +450,8 @@ function validateManyToManyAssociation(
 		!rightColumn ||
 		leftColumn.id === rightColumn.id
 	) {
-		errors.push(
-			`Many-to-many junction "${junction.name}" needs two distinct references to its endpoint tables.`,
+		warnings.push(
+			`Many-to-many junction "${junction.name}" needs two distinct references to its endpoint tables, so no pair constraint was added.`,
 		);
 		return null;
 	}
@@ -402,13 +468,13 @@ function validateManyToManyAssociation(
 		leftColumn.default.kind !== "none" ||
 		rightColumn.default.kind !== "none"
 	) {
-		errors.push(
-			`Many-to-many junction "${junction.name}" needs required references without individual defaults or uniqueness.`,
+		warnings.push(
+			`Many-to-many junction "${junction.name}" needs required references without individual defaults or uniqueness, so no pair constraint was added.`,
 		);
 		return null;
 	}
 
-	return { junction, leftColumn, rightColumn };
+	return { association, junction, leftColumn, rightColumn };
 }
 
 function planPostgresIdentifiers(
@@ -468,9 +534,9 @@ function planPostgresIdentifiers(
 function validateUniqueConstraints(table: DesignTable, errors: string[]) {
 	const names = new Set<string>();
 	for (const constraint of table.uniqueConstraints ?? []) {
-		if (constraint.columnIds.length < 2) {
+		if (constraint.columnIds.length < 1) {
 			errors.push(
-				`Composite unique constraint on "${table.name}" needs at least two columns.`,
+				`Unique constraint on "${table.name}" needs at least one column.`,
 			);
 		}
 		const missingOrDuplicateColumn =
@@ -701,6 +767,7 @@ function validateTable(
 	tableNames: Set<string>,
 	errors: string[],
 	enumTypes: NonNullable<Design["enumTypes"]>,
+	warnings: string[],
 ) {
 	const name = table.name.trim();
 	const label = name.length > 0 ? `"${name}"` : "(unnamed table)";
@@ -708,18 +775,31 @@ function validateTable(
 	if (name.length === 0) errors.push("Every table needs a name.");
 	else if (tableNames.has(name)) errors.push(`Table name ${label} is used more than once.`);
 	tableNames.add(name);
+	if (name !== name.toLowerCase() && name.length > 0) warnings.push(`Table ${label} is mixed case, so every query must quote it. Lowercase snake_case works everywhere.`);
 
-	if (table.columns.length === 0) errors.push(`Table ${label} needs at least one column.`);
+	// PostgreSQL allows a table with no columns; it is almost never intended.
+	if (table.columns.length === 0) warnings.push(`Table ${label} has no columns.`);
+	else if (!table.columns.some((column) => column.primaryKey)) warnings.push(`Table ${label} has no primary key. Give every table one, so rows can be addressed and referenced.`);
 
 	const columnNames = new Set<string>();
-	let primaryKeys = 0;
 	for (const column of table.columns) {
-		validateColumn(table, column, columnNames, errors, enumTypes);
-		if (column.primaryKey) primaryKeys += 1;
+		validateColumn(table, column, columnNames, errors, enumTypes, warnings);
+		if (column.name !== column.name.toLowerCase()) warnings.push(`Column "${column.name}" of ${label} is mixed case, so every query must quote it.`);
+		if (column.type === "timestamp") warnings.push(`Column "${column.name}" of ${label} is timestamp without time zone; timestamptz avoids time zone surprises.`);
 	}
-	if (primaryKeys !== 1) {
-		errors.push(`Table ${label} needs exactly one primary key column.`);
-	}
+}
+
+/** Postgres does not index foreign keys itself; without one, joins and cascading deletes scan the whole table. */
+function warnForeignKeyIndex(view: RelationshipView, warnings: string[]) {
+	const table = view.referencingTable;
+	const column = view.referencingColumn;
+	const firstKey = (columnIds: string[]) => columnIds[0] === column.id;
+	const covered =
+		column.primaryKey || column.unique || view.relationship.cardinality === "one-to-one" ||
+		(table.uniqueConstraints ?? []).some((constraint) => firstKey(constraint.columnIds)) ||
+		(table.indexes ?? []).some((index) => index.keys[0]?.columnId === column.id) ||
+		table.columns.filter((candidate) => candidate.primaryKey).length > 1 && table.columns.find((candidate) => candidate.primaryKey)?.id === column.id;
+	if (!covered) warnings.push(`Foreign key "${table.name}"."${column.name}" has no index, so joins and cascading deletes scan "${table.name}". Add one.`);
 }
 
 function validateColumn(
@@ -728,6 +808,7 @@ function validateColumn(
 	columnNames: Set<string>,
 	errors: string[],
 	enumTypes: NonNullable<Design["enumTypes"]>,
+	warnings: string[],
 ) {
 	const tableLabel = table.name.trim().length > 0 ? `"${table.name.trim()}"` : "(unnamed table)";
 	const name = column.name.trim();
@@ -800,28 +881,84 @@ function validateColumn(
 		);
 	}
 
-	// A nullable primary key or identity column is contradictory; keep the
-	// draft saved but block SQL until the designer resolves it.
+	// PostgreSQL makes primary key and identity columns required whatever the flag says, and the SQL below
+	// says NOT NULL for them, so a contradictory flag is advice rather than an error.
 	if (column.primaryKey && column.nullable) {
-		errors.push(
-			`Primary key column ${label} in table ${tableLabel} must be required; turn off Nullable.`,
+		warnings.push(
+			`Primary key column ${label} in table ${tableLabel} is marked Nullable, but PostgreSQL requires it; turn off Nullable.`,
 		);
 	}
 	if (column.identity && column.nullable) {
-		errors.push(
-			`Identity column ${label} in table ${tableLabel} must be required; turn off Nullable.`,
+		warnings.push(
+			`Identity column ${label} in table ${tableLabel} is marked Nullable, but PostgreSQL requires it; turn off Nullable.`,
 		);
 	}
+}
+
+type Plan = ReturnType<typeof planPostgresIdentifiers>;
+
+/**
+ * An index whose columns are the start of another index, a unique constraint, or the primary key is served by
+ * it already, and only slows writes and takes space (Supabase's composite-index guidance).
+ */
+function warnRedundantIndexes(plan: Plan, warnings: string[]) {
+	type Cover = { name: string; keys: string[]; unique: boolean };
+	for (const entry of plan.indexes) {
+		const { table, index } = entry;
+		const keys = index.keys.map((key) => key.columnId);
+		if (index.method === "btree" && index.unique && (index.includeColumnIds?.length ?? 0) === 0) {
+			// A unique index next to a unique constraint on the same columns builds the same index twice.
+			const twin = plan.uniqueConstraints.find((other) => other.table.id === table.id && sameColumns(other.constraint.columnIds, keys));
+			if (twin) warnings.push(`Unique index "${entry.name}" on "${table.name}" repeats constraint "${twin.name}" on the same columns, so the same index is built twice. Keep one.`);
+			continue;
+		}
+		if (index.method !== "btree" || index.unique || (index.includeColumnIds?.length ?? 0) > 0) continue;
+		const covers: Cover[] = [
+			...plan.indexes.filter((other) => other.table.id === table.id && other.index.id !== index.id && other.index.method === "btree").map((other) => ({ name: `index "${other.name}"`, keys: other.index.keys.map((key) => key.columnId), unique: Boolean(other.index.unique) })),
+			...plan.uniqueConstraints.filter((other) => other.table.id === table.id).map((other) => ({ name: `constraint "${other.name}"`, keys: other.constraint.columnIds, unique: true })),
+			...table.columns.filter((column) => column.unique && !column.primaryKey).map((column) => ({ name: `unique column "${column.name}"`, keys: [column.id], unique: true })),
+			...(table.columns.some((column) => column.primaryKey) ? [{ name: "the primary key", keys: table.columns.filter((column) => column.primaryKey).map((column) => column.id), unique: true }] : []),
+		];
+		const covering = covers.find((cover) => cover.keys.length >= keys.length && keys.every((id, position) => cover.keys[position] === id) &&
+			// Two identical plain indexes are redundant with each other; only the later one is reported.
+			(cover.keys.length > keys.length || cover.unique || plan.indexes.findIndex((other) => other.index.id === index.id) > plan.indexes.findIndex((other) => `index "${other.name}"` === cover.name)));
+		if (covering) warnings.push(`Index "${entry.name}" on "${table.name}" is already covered by ${covering.name}, which starts with the same columns. It only costs writes and space.`);
+	}
+}
+
+/** Tables in an order where each comes after the tables it references, keeping the designed order otherwise. */
+function dependencyOrder(design: Design, relationships: RelationshipView[]): DesignTable[] {
+	const references = new Map<string, string[]>();
+	for (const view of relationships) {
+		if (view.referencingTable.id === view.referencedTable.id) continue;
+		references.set(view.referencingTable.id, [...(references.get(view.referencingTable.id) ?? []), view.referencedTable.id]);
+	}
+	const byId = new Map(design.tables.map((table) => [table.id, table]));
+	const state = new Map<string, "visiting" | "done">();
+	const ordered: DesignTable[] = [];
+	const visit = (table: DesignTable) => {
+		if (state.has(table.id)) return; // Done, or part of a cycle: that reference is added after the tables.
+		state.set(table.id, "visiting");
+		for (const id of references.get(table.id) ?? []) {
+			const target = byId.get(id);
+			if (target) visit(target);
+		}
+		state.set(table.id, "done");
+		ordered.push(table);
+	};
+	for (const table of design.tables) visit(table);
+	return ordered;
 }
 
 function renderTable(
 	table: DesignTable,
 	design: Design,
 	uniqueConstraints: { constraint: DesignUniqueConstraint; name: string }[],
+	foreignKeys: Array<{ view: RelationshipView; foreignKeyConstraintName: string; uniqueConstraintName: string | null }> = [],
 ): string {
-	const primaryKey = table.columns.find((column) => column.primaryKey);
+	const primaryKeys = table.columns.filter((column) => column.primaryKey);
 	const lines = table.columns.map((column) => renderColumn(column, design));
-	if (primaryKey) lines.push(`  PRIMARY KEY (${quoteIdentifier(primaryKey.name)})`);
+	if (primaryKeys.length) lines.push(`  PRIMARY KEY (${primaryKeys.map((key) => quoteIdentifier(key.name)).join(", ")})`);
 	for (const { constraint, name } of uniqueConstraints) {
 		const columns = constraint.columnIds.map((id) =>
 			quoteIdentifier(table.columns.find((column) => column.id === id)!.name),
@@ -832,6 +969,14 @@ function renderTable(
 		lines.push(
 			`  CONSTRAINT ${quoteIdentifier(name)} UNIQUE${nullsNotDistinct} (${columns.join(", ")})`,
 		);
+	}
+	for (const { view, foreignKeyConstraintName, uniqueConstraintName } of foreignKeys) {
+		lines.push(
+			`  CONSTRAINT ${quoteIdentifier(foreignKeyConstraintName)} FOREIGN KEY (${quoteIdentifier(view.referencingColumn.name)}) ` +
+			`REFERENCES ${quoteIdentifier(view.referencedTable.name)} (${quoteIdentifier(view.referencedColumn!.name)}) ` +
+			`ON UPDATE ${view.relationship.onUpdate ?? "NO ACTION"} ON DELETE ${view.relationship.onDelete ?? "NO ACTION"}`,
+		);
+		if (view.ownsUniqueness && uniqueConstraintName) lines.push(`  CONSTRAINT ${quoteIdentifier(uniqueConstraintName)} UNIQUE (${quoteIdentifier(view.referencingColumn.name)})`);
 	}
 	return `CREATE TABLE ${quoteIdentifier(table.name)} (\n${lines.join(",\n")}\n);`;
 }

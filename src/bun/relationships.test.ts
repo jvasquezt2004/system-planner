@@ -613,7 +613,8 @@ describe("one-to-many relationships", () => {
 			columnId: requireColumn(authorsTable, "id").id,
 			changes: { primaryKey: false },
 		});
-		expect(withoutKey.sql.status).toBe("stale");
+		// A table without a key is valid PostgreSQL (it only warns), but nothing can reference it.
+		expect(withoutKey.sql.status).toBe("current");
 		const revision = withoutKey.revision;
 
 		await expect(

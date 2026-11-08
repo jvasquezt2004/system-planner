@@ -256,6 +256,21 @@ export type DesignManyToManyAssociation = {
 	rightRelationshipId: string;
 };
 
+/**
+ * A PostgreSQL statement the structured Design cannot represent, kept verbatim so any
+ * SQL the designer or Assistant writes still reaches the sandbox. Statements run in order.
+ */
+export type DesignRawStatement = {
+	id: string;
+	sql: string;
+	/** "before" suits extensions, schemas, domains, and composite types the tables may use. */
+	phase: "before" | "after";
+	/** The object this statement creates, such as "view:orders_v", so DROP can remove it again. */
+	creates?: string;
+	/** The relation this statement alters, so removing the relation's creator removes it too. */
+	attachedTo?: string;
+};
+
 export type Design = {
 	tables: DesignTable[];
 	relationships: DesignRelationship[];
@@ -264,6 +279,7 @@ export type Design = {
 	enumTypes?: DesignEnumType[];
 	functions?: DesignFunction[];
 	triggers?: DesignTrigger[];
+	rawStatements?: DesignRawStatement[];
 };
 export type UpdateFunctionsAction = { functions: DesignFunction[]; designId: string };
 export type UpdateTriggersAction = { triggers: DesignTrigger[]; designId: string };
@@ -284,7 +300,7 @@ export type SqlState =
 			sql: string | null;
 			designId?: string;
 	  }
-	| { status: "current"; revision: number; sql: string; designId?: string }
+	| { status: "current"; revision: number; sql: string; designId?: string; /** Best-practice advice that does not block the SQL. */ warnings?: string[] }
 	| {
 			status: "stale";
 			revision: number;

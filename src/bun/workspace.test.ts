@@ -1346,12 +1346,12 @@ describe("design workspace", () => {
 		expect(cleared.revision).toBe(5);
 		expect(cleared.save).toMatchObject({ status: "saved", revision: 5 });
 		expect(requireColumn(requireTable(cleared.design?.tables[0]), 1).primaryKey).toBe(false);
-		expect(cleared.sql.status).toBe("stale");
-		if (cleared.sql.status !== "stale") {
-			throw new Error("Expected the SQL preview to be out of date without a key.");
+		// A table without a primary key is valid PostgreSQL, so it only draws a warning.
+		expect(cleared.sql.status).toBe("current");
+		if (cleared.sql.status !== "current") {
+			throw new Error("Expected SQL to be generated for a table without a key.");
 		}
-		expect(cleared.sql.errors.join(" ")).toContain("exactly one primary key column");
-		expect(cleared.sandbox).toMatchObject({ status: "applied", revision: 4 });
+		expect(cleared.sql.warnings?.join(" ")).toContain("no primary key");
 
 		const contradictory = await workspace.updateColumn({ designId: workspace.getState().activeDesignId!,
 			tableId: table.id,
@@ -1359,11 +1359,12 @@ describe("design workspace", () => {
 			changes: { primaryKey: true, nullable: true },
 		});
 		expect(contradictory.save).toMatchObject({ status: "saved", revision: 6 });
-		expect(contradictory.sql.status).toBe("stale");
-		if (contradictory.sql.status !== "stale") {
-			throw new Error("Expected a nullable key to block SQL generation.");
+		// The SQL says NOT NULL for a key whatever the flag says, so the contradiction is advice, not an error.
+		expect(contradictory.sql.status).toBe("current");
+		if (contradictory.sql.status !== "current") {
+			throw new Error("Expected a nullable key to still generate SQL.");
 		}
-		expect(contradictory.sql.errors.join(" ")).toContain("must be required");
+		expect(contradictory.sql.warnings?.join(" ")).toContain("marked Nullable");
 
 		await closeTestWorkspace(workspace);
 		const reopened = await reopenTestWorkspace(databasePath);
@@ -1371,7 +1372,7 @@ describe("design workspace", () => {
 			requireColumn(requireTable(reopened.getState().design?.tables[0]), 1),
 		).toMatchObject({ primaryKey: true, nullable: true });
 		expect(reopened.getState().save).toMatchObject({ status: "saved", revision: 6 });
-		expect(reopened.getState().sql.status).toBe("empty");
+		expect(["checking", "current"]).toContain(reopened.getState().sql.status);
 	}, 30_000);
 
 	test("saves column notes without advancing the schema revision or rebuilding the sandbox", async () => {

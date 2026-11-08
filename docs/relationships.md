@@ -121,18 +121,29 @@ ways without recreating its column.
 
 ## Generated SQL
 
-Foreign keys and relationship-owned uniqueness are emitted after every table
-exists, so card order never has to satisfy a dependency:
+Tables are written in dependency order, so each foreign key sits inside the
+`CREATE TABLE` of the table that owns it and only refers to tables created
+before it (or to itself). Card order on the canvas never has to satisfy a
+dependency. Only a reference that is part of a cycle is added afterwards with
+`ALTER TABLE`:
 
 ```sql
-ALTER TABLE "Books"
-  ADD CONSTRAINT "Books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "Authors" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;
-ALTER TABLE "Books"
-  ADD CONSTRAINT "Books_author_id_key" UNIQUE ("author_id");
+CREATE TABLE "Books" (
+  "id" bigint GENERATED ALWAYS AS IDENTITY NOT NULL,
+  "author_id" bigint,
+  PRIMARY KEY ("id"),
+  CONSTRAINT "Books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "Authors" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION,
+  CONSTRAINT "Books_author_id_key" UNIQUE ("author_id")
+);
 
 ALTER TABLE "StudentsCourses"
   ADD CONSTRAINT "StudentsCourses_pair_key" UNIQUE ("student_id", "course_id");
 ```
+
+A many-to-many junction gets its pair constraint only when it is not already
+unique on those two columns, through a unique constraint or a unique index of its
+own; the same uniqueness is never built twice. The SQL panel also notes indexes
+that only repeat the start of another index or constraint.
 
 The single-column uniqueness statement appears only for a one-to-one
 relationship that owns uniqueness. Many-to-many pair uniqueness is composite:

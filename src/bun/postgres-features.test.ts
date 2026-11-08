@@ -135,7 +135,7 @@ describe("PostgreSQL indexes and pgvector", () => {
 		try { expect((await sandbox.apply(generated.sql)).ok).toBe(true); } finally { await sandbox.dispose(); }
 	});
 
-	test("renders referential actions and validates nullability requirements", () => {
+	test("renders referential actions and only warns about nullability, which PostgreSQL accepts", async () => {
 		const draft = design();
 		draft.tables.push({
 			id: "owners",
@@ -177,9 +177,14 @@ describe("PostgreSQL indexes and pgvector", () => {
 		expect(generated.ok).toBe(true);
 		if (generated.ok) expect(generated.sql).toContain("ON UPDATE CASCADE ON DELETE SET NULL");
 		draft.tables[0].columns.find((column) => column.id === "owner-fk")!.nullable = false;
-		const invalid = generateDesignSql(draft);
-		expect(invalid.ok).toBe(false);
-		if (!invalid.ok) expect(invalid.errors.join(" ")).toContain("SET NULL");
+		// PostgreSQL accepts ON DELETE SET NULL on a required column; it only fails if a delete ever needs it.
+		const required = generateDesignSql(draft);
+		expect(required.ok).toBe(true);
+		if (required.ok) {
+			expect(required.warnings.join(" ")).toContain("SET NULL");
+			const sandbox = createPGliteSandbox();
+			try { expect((await sandbox.apply(required.sql)).ok).toBe(true); } finally { await sandbox.dispose(); }
+		}
 	});
 
 	test("enforces composite unique constraints in the sandbox", async () => {

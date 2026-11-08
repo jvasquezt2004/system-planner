@@ -70,6 +70,8 @@ export type PreparedProjectImport = {
 export type ProjectTransferResult =
 	| { status: "exported"; path: string; name: string }
 	| { status: "imported"; projectId: string; name: string }
+	/** Files attached to the open Project; the view reloads its list. */
+	| { status: "attached"; added: string[]; skipped: Array<{ name: string; reason: string }> }
 	| { status: "cancelled" }
 	| { status: "failed"; error: string };
 

@@ -1,4 +1,9 @@
 export type AssistantProviderId = "anthropic" | "openai" | "google";
+export type CodexPendingRequest = {
+	id: string;
+	method: "item/commandExecution/requestApproval" | "item/fileChange/requestApproval" | "item/tool/requestUserInput" | "item/permissions/requestApproval" | "mcpServer/elicitation/request" | "form/request";
+	params: Record<string, unknown>;
+};
 export type AssistantAuthMethod = "api-key" | "oauth";
 
 export type AssistantProviderConnection = {
@@ -30,6 +35,9 @@ export type AssistantModel = {
 	contextWindow: number;
 	/** The saved default model for new conversations. */
 	isDefault?: boolean;
+	/** Reasoning efforts the model itself offers; absent means the standard thinking levels. */
+	reasoningEfforts?: Array<{ id: AssistantThinkingLevel; description?: string }>;
+	defaultReasoningEffort?: AssistantThinkingLevel;
 };
 
 export type AssistantMessage = {
@@ -40,7 +48,7 @@ export type AssistantMessage = {
 	created_at?: number;
 };
 
-export type AssistantThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type AssistantThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
 
 export type AssistantConversation = {
 	id: string;

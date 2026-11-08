@@ -599,8 +599,9 @@ export class TurnTracker {
 			}
 		}
 		for (const [, removed] of this.removedRelationships) {
-			const refTable = currentDesign.tables.find((t) => t.id === removed.referencingTableId);
-			const targetTable = currentDesign.tables.find((t) => t.id === removed.referencedTableId);
+			// A table removed by this turn will be restored with the relationship.
+			const refTable = currentDesign.tables.find((t) => t.id === removed.referencingTableId) ?? this.removedTables.get(removed.referencingTableId);
+			const targetTable = currentDesign.tables.find((t) => t.id === removed.referencedTableId) ?? this.removedTables.get(removed.referencedTableId);
 			if (!refTable) {
 				conflicts.push("referencing table for relationship does not exist");
 			}

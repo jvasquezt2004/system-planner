@@ -14,6 +14,17 @@ _Avoid_: Database design, unrelated collection of systems
 The authoritative description of a planned database structure and its visual layout. A design may be unfinished or temporarily invalid.
 _Avoid_: System design, sandbox, live database
 
+**Project file**:
+A document the designer attaches to a Project, such as a specification or PDF, so
+the Assistant can read background about a feature. It never changes the Design.
+_Avoid_: Attachment, upload
+
+**Raw SQL statement**:
+A PostgreSQL statement the Design cannot represent as tables, columns, or other
+modelled parts, kept verbatim in the Design and run with its generated schema.
+Dropping the object it creates removes it.
+_Avoid_: Migration, script
+
 **System design**:
 The authoritative description of a Project's planned system architecture,
 including its components, connections, and service boundaries.

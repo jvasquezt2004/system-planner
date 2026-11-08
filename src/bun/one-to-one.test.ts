@@ -129,10 +129,10 @@ describe("one-to-one relationships", () => {
 		expect(related.save).toMatchObject({ status: "saved" });
 		const sql = requireCurrentSql(related);
 		expect(sql).toContain(
-			'ADD CONSTRAINT "Books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "Authors" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION;',
+			'CONSTRAINT "Books_author_id_fkey" FOREIGN KEY ("author_id") REFERENCES "Authors" ("id") ON UPDATE NO ACTION ON DELETE NO ACTION',
 		);
 		expect(sql).toContain(
-			'ADD CONSTRAINT "Books_author_id_key" UNIQUE ("author_id");',
+			'CONSTRAINT "Books_author_id_key" UNIQUE ("author_id")',
 		);
 
 		const booksColumn = requireAppliedTable(related, "Books").columns.find(
@@ -208,7 +208,7 @@ describe("one-to-one relationships", () => {
 		const optionalSql = requireCurrentSql(optional);
 		expect(optionalSql).toContain('"author_id" bigint,');
 		expect(optionalSql).toContain(
-			'ADD CONSTRAINT "Books_author_id_key" UNIQUE ("author_id");',
+			'CONSTRAINT "Books_author_id_key" UNIQUE ("author_id")',
 		);
 		expect(
 			requireAppliedTable(optional, "Books").columns.find(
@@ -265,7 +265,7 @@ describe("one-to-one relationships", () => {
 		});
 		expect(requireRelationship(oneToOne, relationship.id).cardinality).toBe("one-to-one");
 		expect(requireCurrentSql(oneToOne)).toContain(
-			'ADD CONSTRAINT "Books_author_id_key" UNIQUE ("author_id");',
+			'CONSTRAINT "Books_author_id_key" UNIQUE ("author_id")',
 		);
 		expect(
 			requireAppliedTable(oneToOne, "Books").columns.find(
@@ -323,10 +323,10 @@ describe("one-to-one relationships", () => {
 		expect(renamed.relationships).toEqual([{ ...relationship, cardinality: "one-to-one" }]);
 		const renamedSql = requireCurrentSql(renamedTable);
 		expect(renamedSql).toContain(
-			'ADD CONSTRAINT "Books_writer_id_fkey" FOREIGN KEY ("writer_id") REFERENCES "Writers" ("id")',
+			'CONSTRAINT "Books_writer_id_fkey" FOREIGN KEY ("writer_id") REFERENCES "Writers" ("id")',
 		);
 		expect(renamedSql).toContain(
-			'ADD CONSTRAINT "Books_writer_id_key" UNIQUE ("writer_id");',
+			'CONSTRAINT "Books_writer_id_key" UNIQUE ("writer_id")',
 		);
 		expect(
 			requireAppliedTable(renamedTable, "Books").columns.find(

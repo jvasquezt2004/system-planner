@@ -46,10 +46,12 @@ sandbox. No Docker or installed PostgreSQL server is required.
 - Write TypeScript Scenarios using a Supabase-style client and run them against
   fresh, isolated Sandboxes, with expectations, request logs, and result grids.
 - Author TypeScript Edge functions belonging to a database Design.
-- Use the project Assistant to inspect and edit project content, with provider
-  connections, saved Conversations, and tools for design and code changes.
-  Assistant use requires a configured provider connection; core editing works
-  without one.
+- Use the project Assistant to inspect and edit project content. Select Codex
+  or OpenCode to use an installed, signed-in CLI with its own tools and
+  settings, plus Project tools available only to the app's own sessions.
+  Existing provider connections remain available. Core editing works without an Assistant.
+- Attach specifications and PDFs to a Project so the Assistant can read them as
+  background for a feature.
 - Autosave Projects locally in SQLite, including unfinished work and layouts.
   Undo and redo cover project content, including grouped Assistant changes.
 - Export and import portable `.dbplanner.json` Project files. Exports include
@@ -103,6 +105,18 @@ hutch run dev
 For frontend hot reload, use `hutch run dev:hmr`. The app is a desktop application;
 its frontend communicates with the Bun main process through Electrobun RPC, so
 opening the Vite URL alone does not provide the full application.
+
+To use Codex in the Assistant, install the Codex CLI, make `codex` available on
+the desktop app's `PATH`, and run `codex login` in a terminal. Select **Codex
+(default model)** or another listed Codex model in the Assistant. The default
+option uses the CLI's configured model. The app starts Codex in the Project's folder
+(`~/Schema Designer/<project>/`, a readable copy of its SQL and System design;
+Codex changes the schema by editing `schema.sql` there and applying it).
+Codex handles file and command
+permissions; Project Revert covers Schema Designer Project changes, not files
+or commands outside the app. OpenCode works the same way: install it and run
+`opencode auth login`, then pick **OpenCode (default model)** or a listed model.
+See [Assistant](docs/assistant.md) for details.
 
 ### Install on Linux
 

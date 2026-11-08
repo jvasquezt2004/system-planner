@@ -348,6 +348,17 @@ function SqlPreview({
 				</div>
 			)}
 
+			{sql.status === "current" && (sql.warnings?.length ?? 0) > 0 && (
+				<div className="mt-3 border-l-2 border-rule bg-wash px-3 py-2.5">
+					<p className="kicker text-ink-3!">Worth a look</p>
+					<ul className="mt-1.5 list-disc space-y-0.5 pl-4 text-[12px] text-ink-2">
+						{sql.warnings!.map((message) => (
+							<li key={message}>{message}</li>
+						))}
+					</ul>
+				</div>
+			)}
+
 			{preview === null ? (
 				<p className="mt-4 font-display text-[17px] text-ink-3 italic">
 					SQL will appear here when the design can generate it.

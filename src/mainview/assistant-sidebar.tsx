@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
-import { BookOpen, ChevronLeft, ChevronRight, Database, FileCode2, MessageSquare, MoreHorizontal, Play, Plus, Send, Wrench, X } from "lucide-react";
+import { BookOpen, ChevronLeft, ChevronRight, Database, FileCode2, FolderOpen, MessageSquare, MoreHorizontal, Play, Plus, Send, Wrench, X } from "lucide-react";
 import { Input } from "@/components/ui/input";
+import { HarnessFormPanel } from "./harness-form";
+import { ProjectFilesPanel, type ProjectFilesApi } from "./project-files-panel";
+import type { HarnessFormField } from "../shared/harness-form";
 import {
 	Trace,
 	TraceCollapsible,
@@ -29,6 +32,7 @@ import type {
 	AssistantThinkingLevel,
 	AssistantTotalUsage,
 	AssistantTurnUsage,
+	CodexPendingRequest,
 } from "../shared/assistant";
 import { workspaceClient } from "./workspace-client";
 import { buildTranscript, foldAssistantEvent, type TranscriptDisplayItem, type TranscriptToolItem } from "./assistant-transcript";
@@ -55,6 +59,9 @@ type AssistantApi = Pick<
 	| "stopAssistantTurn"
 	| "continueAssistantTurn"
 	| "getAssistantTurnStatus"
+	| "getCodexRequest"
+	| "answerCodexRequest"
+	| "verifyCodexRequest"
 	| "updateAssistantConversationSelection"
 	| "confirmAssistantDdlDrop"
 	| "rejectAssistantDdlDrop"
@@ -74,6 +81,8 @@ export function AssistantSidebar({
 	onCollapse,
 	onExpand,
 	onResizeStart,
+	onShowProjectFolder,
+	filesApi,
 	onSelectTable,
 	onSelectCodeSource,
 }: {
@@ -84,6 +93,10 @@ export function AssistantSidebar({
 	onCollapse: () => void;
 	onExpand: () => void;
 	onResizeStart: (event: React.PointerEvent) => void;
+	/** Opens the Project's read-only folder, which Codex reads. */
+	onShowProjectFolder?: () => void;
+	/** Attaching and listing the files the Assistant reads as background; absent in views that do not support it. */
+	filesApi?: ProjectFilesApi;
 	onSelectTable: (tableId: string) => void;
 	onSelectCodeSource: (kind: "scenario" | "edge-function" | "function-body", id: string) => void;
 }) {
@@ -108,6 +121,9 @@ export function AssistantSidebar({
 	const [pending, setPending] = useState(false);
 	const [turnPaused, setTurnPaused] = useState(false);
 	const [confirmationRequired, setConfirmationRequired] = useState(false);
+	const [codexRequest, setCodexRequest] = useState<CodexPendingRequest | null>(null);
+	const [codexElicitation, setCodexElicitation] = useState("{}");
+	const [codexVerifying, setCodexVerifying] = useState(false);
 	const [expandedSettings, setExpandedSettings] = useState(false);
 	const [revertAvailable, setRevertAvailable] = useState(false);
 	const initialConversationModelRef = useRef<string | null>(null);
@@ -126,6 +142,7 @@ export function AssistantSidebar({
 	useEffect(() => {
 		let live = true;
 		setPending(false);
+		setCodexRequest(null);
 		setConversations([]);
 		setMessages([]);
 		setActiveId("");
@@ -164,6 +181,7 @@ export function AssistantSidebar({
 	useEffect(() => {
 		let live = true;
 		setPending(false);
+		setCodexRequest(null);
 		if (!activeId) {
 			setMessages([]);
 			setTurnPaused(false);
@@ -204,6 +222,7 @@ export function AssistantSidebar({
 				if (running !== undefined) setPending(running);
 			}
 		}).catch((cause: unknown) => { if (live) setError(String(cause)); });
+		api.getCodexRequest(activeId).then((request) => { if (live) setCodexRequest(request); }).catch((cause: unknown) => { if (live) setError(String(cause)); });
 		return () => {
 			live = false;
 		};
@@ -260,6 +279,11 @@ export function AssistantSidebar({
 					if (errorEvent.error) setError(errorEvent.error);
 					setPending(false);
 				}
+				if (envelope.event.type === "codex_request") {
+					setCodexRequest((envelope.event as unknown as { request: CodexPendingRequest }).request);
+					setCodexElicitation("{}");
+				}
+				if (envelope.event.type === "codex_request_resolved") setCodexRequest(null);
 				if (envelope.event.type === "agent_end" || envelope.event.type === "assistant_turn_ended") {
 					void reloadConversation(activeId);
 				}
@@ -369,16 +393,16 @@ export function AssistantSidebar({
 			if (!targetConversationId) {
 				const conversation = await api.createAssistantConversation(projectId);
 				targetConversationId = conversation.id;
+				await api.updateAssistantConversationSelection(targetConversationId, effectiveConnectionId || null, effectiveModel, effectiveThinkingValue);
 				setConversations((current) => [conversation, ...current.filter((item) => item.id !== conversation.id)]);
-				const createdUsable = pickUsableModel(models, conversation.connection_id, conversation.model);
-				const createdConnId = createdUsable?.connectionId ?? conversation.connection_id ?? "";
-				const createdModel = createdUsable?.id ?? conversation.model ?? "";
+				const createdConnId = effectiveConnectionId;
+				const createdModel = effectiveModel;
 				setSelectedConnectionId(createdConnId);
 				setModel(createdModel);
 				initialConversationModelRef.current = `${createdConnId}:${createdModel}`;
 				setActiveId(targetConversationId);
 			}
-			await api.sendAssistantMessage(targetConversationId, message, effectiveModel, thinking, effectiveConnectionId || undefined);
+			await api.sendAssistantMessage(targetConversationId, message, effectiveModel, effectiveThinkingValue, effectiveConnectionId || undefined);
 		} catch (cause) {
 			if (contextRef.current.generation === requestContext.generation) {
 				setError(String(cause));
@@ -429,6 +453,16 @@ export function AssistantSidebar({
 		? candidateModelValue
 		: allPickerModelValues.find((val) => val.endsWith(`::${effectiveModelId}`)) ?? (allPickerModelValues[0] ?? undefined);
 
+	/** Codex models advertise their own efforts; other connections use the standard levels. */
+	function effortsFor(item: AssistantModel | undefined): AssistantThinkingLevel[] {
+		if (item?.reasoningEfforts?.length) return item.reasoningEfforts.map((effort) => effort.id).filter(isThinkingLevel);
+		const connection = item?.connectionId ?? effectiveConnId;
+		if (connection === "opencode-harness") return item && item.id !== "opencode-default" ? [] : ["low", "medium", "high", "xhigh", "max"];
+		return connection === "codex-harness" ? ["low", "medium", "high", "xhigh", "max"] : ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
+	}
+	const effortOptions = effortsFor(usableModel ?? undefined);
+	const effectiveThinkingValue = effortOptions.includes(thinking) ? thinking : (usableModel?.defaultReasoningEffort && effortOptions.includes(usableModel.defaultReasoningEffort) ? usableModel.defaultReasoningEffort : effortOptions.includes("medium") ? "medium" : effortOptions[0]);
+
 	async function renameConversation() {
 		const conversation = conversations.find(({ id }) => id === activeId);
 		if (!conversation) return;
@@ -456,6 +490,10 @@ export function AssistantSidebar({
 		}
 	}
 	function persistSelection(nextConnectionId: string | null, nextModel: string, nextThinking: AssistantThinkingLevel) {
+		if (messages.some((message) => message.role === "user") && (isHarnessConnection(selectedConnectionId) || isHarnessConnection(nextConnectionId)) && (selectedConnectionId || null) !== (nextConnectionId || null)) {
+			setError("Start a new Conversation to switch between Codex, OpenCode, and provider connections.");
+			return;
+		}
 		setSelectedConnectionId(nextConnectionId ?? "");
 		setModel(nextModel);
 		setThinking(nextThinking);
@@ -597,6 +635,23 @@ export function AssistantSidebar({
 		}
 	}
 
+	async function answerCodex(response: unknown) {
+		if (!codexRequest || !activeId) return;
+		try {
+			if (!await api.answerCodexRequest(activeId, codexRequest.id, response)) throw new Error("This Codex request is no longer available.");
+			setCodexRequest(null);
+		} catch (cause) { setError(String(cause)); }
+	}
+
+	async function verifyCodex() {
+		if (!codexRequest || !activeId || codexVerifying) return;
+		setCodexVerifying(true);
+		try {
+			if (await api.verifyCodexRequest(activeId, codexRequest.id)) setCodexRequest(null);
+		} catch (cause) { setError(String(cause)); }
+		finally { setCodexVerifying(false); }
+	}
+
 	if (collapsed) {
 		return (
 			<aside className="absolute inset-y-0 right-0 z-20 flex w-10 flex-col items-center border-l border-ink/15 bg-paper pt-3">
@@ -645,6 +700,11 @@ export function AssistantSidebar({
 						))}
 					</SelectContent>
 				</Select>
+				{onShowProjectFolder && (
+					<button aria-label="Show project folder" title="Show project folder" onClick={onShowProjectFolder} className="rounded p-1.5 hover:bg-ink/5">
+						<FolderOpen className="size-4" />
+					</button>
+				)}
 				<button aria-label="Rename conversation" disabled={!activeId} onClick={() => void renameConversation()} className="rounded p-1.5 hover:bg-ink/5 disabled:opacity-40">
 					<MoreHorizontal className="size-4" />
 				</button>
@@ -692,6 +752,45 @@ export function AssistantSidebar({
 			</div>
 			{error && <div role="alert" className="px-3 py-2 text-xs text-proof-red">{error}</div>}
 			<div className="shrink-0 border-t border-ink/15 p-3">
+				{codexRequest && (
+					<div className="mb-2 max-h-[55vh] overflow-y-auto overscroll-contain rounded border border-ink/25 bg-surface p-2 text-xs" role="group" aria-label="Codex request">
+						{codexRequest.method === "form/request" ? (
+							<HarnessFormPanel
+								key={codexRequest.id}
+								title={String(codexRequest.params.title ?? `${String(codexRequest.params.harnessName ?? "Codex")} needs your input`)}
+								message={typeof codexRequest.params.message === "string" ? codexRequest.params.message : undefined}
+								form={{ fields: Array.isArray(codexRequest.params.fields) ? codexRequest.params.fields as HarnessFormField[] : [] }}
+								onSubmit={(answer) => void answerCodex({ answer })}
+								onCancel={() => void answerCodex({ cancel: true })}
+							/>
+						) : codexRequest.method === "mcpServer/elicitation/request" ? (
+							<div>
+								<p className="font-semibold">{String(codexRequest.params.serverName ?? "MCP server")} needs your input</p>
+								{codexRequest.params.mode === "openai/userVerification" && <p className="mt-1 font-medium">{String(codexRequest.params.title ?? "Verify your identity")}</p>}
+								<p className="mt-1 whitespace-pre-wrap">{String(codexRequest.params.message ?? codexRequest.params.description ?? "Review this request.")}</p>
+								{codexRequest.params.mode === "url" && typeof codexRequest.params.url === "string" && /^https?:\/\//i.test(codexRequest.params.url) && <a className="mt-1 block break-all underline" href={codexRequest.params.url} target="_blank" rel="noreferrer">{codexRequest.params.url}</a>}
+								{["form", "openai/form", "openaiForm"].includes(String(codexRequest.params.mode)) && <><pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap">{JSON.stringify(codexRequest.params.requestedSchema, null, 2)}</pre><label className="mt-1 block">Response (JSON)<textarea aria-label="MCP response JSON" value={codexElicitation} onChange={(event) => setCodexElicitation(event.target.value)} className="mt-1 block h-20 w-full rounded border border-ink/20 bg-transparent p-1 font-mono" /></label></>}
+								<div className="mt-2 flex gap-2"><button disabled={codexVerifying} onClick={() => {
+									if (codexRequest.params.mode === "openai/userVerification") { void verifyCodex(); return; }
+									try { const content = codexRequest.params.mode === "url" ? null : JSON.parse(codexElicitation); void answerCodex({ action: "accept", content, _meta: null }); }
+									catch { setError("Enter a valid JSON response."); }
+								}} className="rounded border border-ink/30 px-2 py-1 disabled:opacity-40">{codexVerifying ? "Verifying…" : codexRequest.params.mode === "openai/userVerification" ? "Verify" : "Continue"}</button><button onClick={() => void answerCodex({ action: "decline", content: null, _meta: null })} className="rounded border border-ink/30 px-2 py-1">Decline</button></div>
+							</div>
+						) : (
+							<>
+								<p className="font-semibold">{String(codexRequest.params.harnessName ?? "Codex")} requests permission</p>
+								<p className="mt-1 whitespace-pre-wrap break-all">{String(codexRequest.params.reason ?? "Review this action before allowing it.")}</p>
+								{typeof codexRequest.params.command === "string" && <pre className="mt-1 overflow-auto whitespace-pre-wrap">{codexRequest.params.command}</pre>}
+								{typeof codexRequest.params.cwd === "string" && <p className="mt-1 break-all">Working directory: {codexRequest.params.cwd}</p>}
+								{codexRequest.method === "item/permissions/requestApproval" && <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(codexRequest.params.permissions, null, 2)}</pre>}
+								{codexRequest.params.networkApprovalContext != null && <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap break-all">{JSON.stringify(codexRequest.params.networkApprovalContext, null, 2)}</pre>}
+								{typeof codexRequest.params.grantRoot === "string" && <p className="mt-1 break-all">Requested write root: {codexRequest.params.grantRoot}</p>}
+								{codexRequest.method === "item/fileChange/requestApproval" && <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{Array.isArray((codexRequest.params.item as { changes?: unknown } | undefined)?.changes) && ((codexRequest.params.item as { changes: unknown[] }).changes.length > 0) ? JSON.stringify(codexRequest.params.item, null, 2) : "File change details are unavailable; this request cannot be approved here."}</pre>}
+								<div className="mt-2 flex gap-2"><button disabled={(codexRequest.method === "item/fileChange/requestApproval" && (!Array.isArray((codexRequest.params.item as { changes?: unknown } | undefined)?.changes) || !(codexRequest.params.item as { changes: unknown[] }).changes.length)) || (codexRequest.method === "item/commandExecution/requestApproval" && typeof codexRequest.params.command !== "string" && !codexRequest.params.networkApprovalContext)} onClick={() => void answerCodex({ decision: "accept" })} className="rounded border border-ink/30 px-2 py-1 disabled:opacity-40">Allow</button><button onClick={() => void answerCodex({ decision: "decline" })} className="rounded border border-ink/30 px-2 py-1">Decline</button></div>
+							</>
+						)}
+					</div>
+				)}
 				{cacheWarning && (
 					<div role="status" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs text-ink-2">
 						{cacheWarning}
@@ -753,7 +852,9 @@ export function AssistantSidebar({
 				{selectedConnection?.error && (
 					<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
 						<span className="min-w-0 flex-1">{selectedConnection.name}: {selectedConnection.error}</span>
-						{selectedConnection.authMethod === "oauth" ? (
+						{isHarnessConnection(selectedConnection.providerId) ? (
+							<button onClick={() => void reloadConnections()} className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink">Check again</button>
+						) : selectedConnection.authMethod === "oauth" ? (
 							<button
 								onClick={() => void startOAuthLogin(selectedConnection.providerId)}
 								className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink"
@@ -770,14 +871,17 @@ export function AssistantSidebar({
 						)}
 					</div>
 				)}
+				{filesApi && <ProjectFilesPanel projectId={projectId} api={filesApi} />}
 				<div className="mb-2 flex items-center gap-2">
 					<Select
 						value={selectedModelValue}
 						onValueChange={(val) => {
 							const [connId, ...rest] = val.split("::");
-							persistSelection(connId || null, rest.join("::"), thinking);
+							const next = models.find((item) => item.connectionId === connId && item.id === rest.join("::"));
+							const nextEfforts = effortsFor(next);
+							persistSelection(connId || null, rest.join("::"), nextEfforts.includes(thinking) ? thinking : (next?.defaultReasoningEffort && nextEfforts.includes(next.defaultReasoningEffort) ? next.defaultReasoningEffort : nextEfforts.includes("medium") ? "medium" : nextEfforts[0]));
 						}}
-						disabled={models.length === 0}
+						disabled={models.length === 0 || pending || confirmationRequired}
 					>
 						<SelectTrigger aria-label="Model" className="h-8 min-w-0 flex-1 text-xs">
 							<SelectValue placeholder="Select model" />
@@ -801,7 +905,8 @@ export function AssistantSidebar({
 						</SelectContent>
 					</Select>
 					<Select
-						value={thinking}
+						value={effectiveThinkingValue}
+						disabled={pending || confirmationRequired}
 						onValueChange={(val) => {
 							if (isThinkingLevel(val)) {
 								persistSelection(selectedConnectionId, model, val);
@@ -812,13 +917,9 @@ export function AssistantSidebar({
 							<SelectValue />
 						</SelectTrigger>
 						<SelectContent position="popper" align="end" className="max-h-80">
-							<SelectItem value="off">Off</SelectItem>
-							<SelectItem value="minimal">Minimal</SelectItem>
-							<SelectItem value="low">Low</SelectItem>
-							<SelectItem value="medium">Medium</SelectItem>
-							<SelectItem value="high">High</SelectItem>
-							<SelectItem value="xhigh">Extra high</SelectItem>
-							<SelectItem value="max">Max</SelectItem>
+							{effortOptions.map((level) => (
+								<SelectItem key={level} value={level}>{THINKING_LABELS[level]}</SelectItem>
+							))}
 						</SelectContent>
 					</Select>
 				</div>
@@ -862,8 +963,16 @@ export function AssistantSidebar({
 						Provider connections · {connections.filter((c) => c.connected).length} connected
 					</summary>
 					<div className="mt-2 space-y-3">
+						<div className="rounded border border-ink/10 p-2 text-xs">
+							<div className="flex items-center justify-between font-medium"><span>Codex</span><span className="text-[11px] text-ink-3">{connections.find((c) => c.providerId === "codex-harness")?.connected ? "Ready" : "Setup needed"}</span></div>
+							<p className="mt-1 text-ink-3">Uses the installed Codex CLI and its sign-in and reasoning settings. Run <code>codex login</code> in a terminal if needed. Codex starts in the Project's read-only folder; its file and command actions follow its own permissions. Project Revert covers Project changes only.</p>
+						</div>
+						<div className="rounded border border-ink/10 p-2 text-xs">
+							<div className="flex items-center justify-between font-medium"><span>OpenCode</span><span className="text-[11px] text-ink-3">{connections.find((c) => c.providerId === "opencode-harness")?.connected ? "Ready" : "Setup needed"}</span></div>
+							<p className="mt-1 text-ink-3">Uses the installed OpenCode with its own providers, models, and permissions. Run <code>opencode auth login</code> in a terminal to connect a provider. OpenCode starts in the Project's read-only folder and receives the Project tools only from this app. Project Revert covers Project changes only.</p>
+						</div>
 						<label className="flex items-center justify-between gap-2 text-xs">
-							<span>Model requests per Assistant turn</span>
+							<span>Provider runtime requests per turn</span>
 							<input
 								aria-label="Model requests per Assistant turn"
 								type="number"
@@ -1327,6 +1436,12 @@ function TranscriptView({
 		</>
 	);
 }
+const THINKING_LABELS: Record<AssistantThinkingLevel, string> = {
+	off: "Off", minimal: "Minimal", low: "Low", medium: "Medium", high: "High", xhigh: "Extra high", max: "Max", ultra: "Ultra",
+};
+function isHarnessConnection(id: string | null | undefined): boolean {
+	return id === "codex-harness" || id === "opencode-harness";
+}
 function isThinkingLevel(value: string): value is AssistantThinkingLevel {
-	return ["off", "minimal", "low", "medium", "high", "xhigh", "max"].includes(value);
+	return value in THINKING_LABELS;
 }

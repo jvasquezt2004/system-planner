@@ -453,6 +453,19 @@ export const workspaceClient = {
 			await rpc.send.chooseProjectImportFile({ requestId });
 		});
 	},
+	/** Attaches files the designer picks to the open Project, for the Assistant to read as background. */
+	async attachProjectFiles(): Promise<ProjectTransferResult> {
+		const { requestId } = await rpc.request.beginProjectFilesAdd({});
+		return awaitProjectTransfer(requestId, async () => {
+			await rpc.send.chooseProjectFiles({ requestId });
+		});
+	},
+	listProjectFiles(projectId: string) {
+		return rpc.request.listProjectFiles({ projectId });
+	},
+	removeProjectFile(projectId: string, fileId: string) {
+		return rpc.request.removeProjectFile({ projectId, fileId });
+	},
 	copySchemaCode(snapshot: SchemaCodeSnapshot): Promise<SqlPreviewCopyResult> {
 		return rpc.request.copySchemaCode({ snapshot });
 	},
@@ -483,6 +496,18 @@ export const workspaceClient = {
 	},
 	stopAssistantTurn(conversationId: string) {
 		return rpc.request.stopAssistantTurn({ conversationId });
+	},
+	revealProjectFolder() {
+		return rpc.request.revealProjectFolder({});
+	},
+	getCodexRequest(conversationId: string) {
+		return rpc.request.getCodexRequest({ conversationId });
+	},
+	answerCodexRequest(conversationId: string, requestId: string, response: unknown) {
+		return rpc.request.answerCodexRequest({ conversationId, requestId, response });
+	},
+	verifyCodexRequest(conversationId: string, requestId: string) {
+		return rpc.request.verifyCodexRequest({ conversationId, requestId });
 	},
 	listAssistantConnections() {
 		return rpc.request.listAssistantConnections({});

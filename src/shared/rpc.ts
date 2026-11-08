@@ -143,6 +143,10 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			beginProjectExport: { params: Record<string, never>; response: { requestId: string } };
 			/** Starts the native file picker for a Project import; the outcome arrives as projectTransferCompleted. */
 			beginProjectImport: { params: Record<string, never>; response: { requestId: string } };
+			/** Starts the native multi-file picker for attaching files to the open Project; the outcome arrives as projectTransferCompleted. */
+			beginProjectFilesAdd: { params: Record<string, never>; response: { requestId: string } };
+			listProjectFiles: { params: { projectId: string }; response: import("./project-files").ProjectFileSummary[] };
+			removeProjectFile: { params: { projectId: string; fileId: string }; response: boolean };
 			createDesign: { params: CreateDesignAction; response: WorkspaceState };
 			openDesign: { params: OpenDesignAction; response: WorkspaceState };
 			renameDesign: { params: RenameDesignAction; response: WorkspaceState };
@@ -319,6 +323,11 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			stopAssistantTurn: { params: { conversationId: string }; response: void };
 			continueAssistantTurn: { params: { conversationId: string }; response: { started: boolean } };
 			getAssistantTurnStatus: { params: { conversationId: string }; response: { paused: boolean; confirmationRequired: boolean; revertAvailable: boolean; running?: boolean } };
+			/** Opens the open Project's read-only folder in the system file manager. */
+			revealProjectFolder: { params: Record<string, never>; response: { path: string | null; opened: boolean } };
+			getCodexRequest: { params: { conversationId: string }; response: import("./assistant").CodexPendingRequest | null };
+			answerCodexRequest: { params: { conversationId: string; requestId: string; response: unknown }; response: boolean };
+			verifyCodexRequest: { params: { conversationId: string; requestId: string }; response: boolean };
 			revertAssistantTurn: { params: { conversationId: string }; response: AssistantConversationRecord | null };
 			updateAssistantConversationSelection: { params: { conversationId: string; connectionId: string | null; modelId: string; thinkingLevel: AssistantThinkingLevel }; response: void };
 			confirmAssistantDdlDrop: { params: { conversationId: string; toolCallId: string }; response: { started: boolean } };
@@ -328,6 +337,7 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			chooseSqlPreviewExportDirectory: { requestId: string };
 			chooseProjectExportDirectory: { requestId: string };
 			chooseProjectImportFile: { requestId: string };
+			chooseProjectFiles: { requestId: string };
 			chooseSystemDesignSvgExportDirectory: { requestId: string };
 			chooseSystemDesignPngExportDirectory: { requestId: string };
 			assistantScenarioRunCompleted: { requestId: string; designId?: string; run: ScenarioRun | null; error?: string };
