@@ -17,29 +17,9 @@ use schema_store::{DatabaseDesignSummary, DesignSave, ScenarioSave};
 use serde::Deserialize;
 use serde_json::{json, Value};
 
+use crate::history::{HistoryAction, ASSISTANT_TURN_ACTION_NAME};
 use crate::state::{saved, saving};
 use crate::{edits, require_open_project, to_json, Inner, Result, Workspace, WorkspaceState};
-
-const ASSISTANT_TURN_ACTION_NAME: &str = "Assistant turn";
-
-/// How one content change is named, grouped, and attributed in the Project history.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct HistoryAction {
-    pub name: String,
-    /// Edits with the same key in a row merge into one history entry (typing in one field).
-    pub coalesce_key: Option<String>,
-    pub assistant_turn_id: Option<String>,
-}
-
-impl HistoryAction {
-    fn named(name: impl Into<String>) -> Self {
-        Self { name: name.into(), coalesce_key: None, assistant_turn_id: None }
-    }
-
-    fn coalescing(name: impl Into<String>, key: impl Into<String>) -> Self {
-        Self { name: name.into(), coalesce_key: Some(key.into()), assistant_turn_id: None }
-    }
-}
 
 /// An Assistant-attributed change joins its turn's single history action.
 fn attributed(turn: &Option<String>, action: HistoryAction) -> HistoryAction {
@@ -275,10 +255,6 @@ pub(crate) struct AddWalkthroughBlock {
 }
 
 impl Workspace {
-    /// Where the Project's history is recorded. Undo and Redo are not ported yet, so this only
-    /// carries the action the original would have recorded; every handler already names it.
-    fn record_history(&self, _inner: &mut Inner, _action: &HistoryAction) {}
-
     /* --------------------------------------------------------- persistence */
 
     /// Applies one System design change: validate it, record it as one history action, then save
@@ -297,7 +273,10 @@ impl Workspace {
         if same_content(&next, &current) && orders == inner.key_orders {
             return Ok(inner.state.clone());
         }
-        self.record_history(&mut inner, &action);
+        let design = inner.state.design.clone().ok_or("Open a project before editing its design.")?;
+        let before = self.project_content(&inner, &design, Some(&current), None, &inner.key_orders);
+        let after = self.project_content(&inner, &design, Some(&next), None, &orders);
+        self.record_content_change(&mut inner, &action, before, after, false);
         inner.key_orders = orders;
         Ok(self.persist_system_design(&mut inner, &project_id, &design_id, next))
     }
@@ -341,7 +320,10 @@ impl Workspace {
         if next == current {
             return Ok(inner.state.clone());
         }
-        self.record_history(&mut inner, &action);
+        let design = inner.state.design.clone().ok_or("Open a project before editing its design.")?;
+        let before = self.project_content(&inner, &design, None, Some(&current), &inner.key_orders);
+        let after = self.project_content(&inner, &design, None, Some(&next), &inner.key_orders);
+        self.record_content_change(&mut inner, &action, before, after, false);
         inner.walkthrough_document_revision += 1;
         let revision = inner.walkthrough_document_revision;
         let saved_at = self.now();

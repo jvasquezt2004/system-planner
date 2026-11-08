@@ -299,6 +299,10 @@ export const OPERATIONS: Operation[] = [
 	op("openDesign", 2, (c) => ({ designId: c.anyDesignId() })),
 	op("renameDesign", 1, (c) => ({ designId: c.anyDesignId(), name: c.pick(["Renamed", "", "  ", "Reporting", "reporting", "Design 1"]) })),
 
+	// Undo and Redo.
+	op("undo", 7, (c) => ({ designId: c.designId() })),
+	op("redo", 4, (c) => ({ designId: c.designId() })),
+
 	// Tables and columns.
 	op("addTable", 7, (c) => {
 		const params: Record<string, unknown> = { designId: c.designId(), name: c.tableName() };
@@ -592,7 +596,7 @@ const hasRelationships = (state: WorkspaceState) => count(state.design?.relation
 const hasFunctions = (state: WorkspaceState) => count(state.design?.functions) > 0;
 
 const NEEDS: Record<string, (state: WorkspaceState) => boolean> = {
-	setActiveView: hasProject,
+	setActiveView: hasProject, undo: hasProject, redo: hasProject,
 	createDesign: hasProject, openDesign: hasProject, renameDesign: hasProject,
 	addTable: hasProject,
 	removeTable: hasTables, removeColumn: hasTables, addRelationship: hasTables, updateIndexes: hasTables, updateUniqueConstraints: hasTables, updatePolicies: hasTables,

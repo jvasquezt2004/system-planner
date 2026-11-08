@@ -187,6 +187,8 @@ impl Workspace {
             "moveTable" => call!(MoveTable, |p| self.move_table(&p.design_id, &p.table_id, p.position)),
             "addColumn" => call!(AddColumn, |p| self.add_column(&p.design_id, &p.table_id, p.name.as_deref(), p.r#type.as_deref())),
             "updateColumn" => call!(UpdateColumn, |p| self.update_column(&p.design_id, &p.table_id, &p.column_id, &p.changes)),
+            "undo" => call!(DesignId, |p| self.undo(&p.design_id)),
+            "redo" => call!(DesignId, |p| self.redo(&p.design_id)),
             "removeTable" => call!(RemoveTable, |p| self.remove_table(&p.design_id, &p.table_id, p.confirmed == Some(true))),
             "removeColumn" => call!(RemoveColumn, |p| self.remove_column(&p.design_id, &p.table_id, &p.column_id, p.confirmed == Some(true))),
             "removeFunction" => call!(RemoveFunction, |p| self.remove_function(&p.design_id, &p.function_id, p.confirmed == Some(true))),

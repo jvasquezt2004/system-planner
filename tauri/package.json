@@ -5,7 +5,7 @@
 	"scripts": {
 		"dev": "../node_modules/.bin/vite --config vite.config.ts",
 		"build": "../node_modules/.bin/vite build --config vite.config.ts",
-		"fixtures": "bun fixtures/export-catalog.ts && bun fixtures/export-column-types.ts && bun fixtures/export-index-methods.ts && bun fixtures/generate-normalizers.ts && bun fixtures/generate-designs.ts && bun fixtures/generate-store.ts && bun fixtures/generate-system-ops.ts && bun fixtures/generate-walkthrough-ops.ts && bun fixtures/generate-columns.ts && bun fixtures/generate-identifiers.ts && bun fixtures/generate-design-sql.ts && bun fixtures/generate-workspace.ts"
+		"fixtures": "bun fixtures/export-catalog.ts && bun fixtures/export-column-types.ts && bun fixtures/export-index-methods.ts && bun fixtures/generate-normalizers.ts && bun fixtures/generate-designs.ts && bun fixtures/generate-store.ts && bun fixtures/generate-system-ops.ts && bun fixtures/generate-walkthrough-ops.ts && bun fixtures/generate-columns.ts && bun fixtures/generate-identifiers.ts && bun fixtures/generate-design-sql.ts && bun fixtures/generate-history.ts && bun fixtures/generate-workspace.ts"
 	},
 	"dependencies": {
 		"@tauri-apps/api": "^2"

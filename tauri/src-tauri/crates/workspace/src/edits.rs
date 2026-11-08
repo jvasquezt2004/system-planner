@@ -203,9 +203,9 @@ fn same_column(a: &DesignColumn, b: &DesignColumn) -> bool {
 pub enum ColumnEdit {
     Unchanged,
     /// A change PostgreSQL would see.
-    Schema(Design),
+    Schema { design: Design, name: String },
     /// Only the designer's note changed; the SQL and sandbox stay as they are.
-    NotesOnly(Design),
+    NotesOnly { design: Design, name: String, column_id: String },
 }
 
 pub fn update_column(design: &Design, table_id: &str, column_id: &str, changes: &Value) -> Result<ColumnEdit> {
@@ -285,7 +285,11 @@ pub fn update_column(design: &Design, table_id: &str, column_id: &str, changes: 
     }
     let next = replace_table(design, DesignTable { columns, ..table.clone() });
     let schema_changed = changes.keys.iter().any(|key| key != "notes");
-    Ok(if schema_changed { ColumnEdit::Schema(next) } else { ColumnEdit::NotesOnly(next) })
+    Ok(if schema_changed {
+        ColumnEdit::Schema { design: next, name: updated.name }
+    } else {
+        ColumnEdit::NotesOnly { design: next, name: updated.name, column_id: column.id.clone() }
+    })
 }
 
 /* ------------------------------------------------------------ relationships */

@@ -16,8 +16,8 @@ use schema_store::Store;
 use schema_workspace::{Options, SandboxFactory, Workspace, WorkspaceState};
 use serde_json::{json, Value};
 
-/// Top-level fields not compared yet: they belong to Undo/Redo, which is not ported.
-const NOT_YET_PORTED: &[&str] = &["undoRedo", "undoActionName", "redoActionName"];
+/// Top-level fields not compared yet. Everything the view reads is compared now.
+const NOT_YET_PORTED: &[&str] = &[];
 
 /// The same stub the TypeScript driver uses: it reports each `CREATE TABLE` as a table with its
 /// columns, and fails on SQL naming `reject_me` or `boom`.

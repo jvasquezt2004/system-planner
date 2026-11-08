@@ -324,7 +324,7 @@ Known gaps seen in the slice:
 - **System overview is not wired.** It is the view a new Project opens on. The
   System design and Walkthrough operations are ported and fixture-verified but have no
   RPC handlers yet, so the primary view cannot edit anything.
-- No Undo/Redo (the buttons render disabled; history is not ported).
+- ~~No Undo/Redo~~ (done, see "Undo and Redo").
 - The Project files panel shows `listProjectFiles` as not implemented; the Assistant
   lists answer empty.
 - Not exercised in the real window: clicks and typing. Synthetic input would go to
@@ -340,7 +340,7 @@ Next, in the order the results suggest:
 2. ~~A differential oracle for the workspace~~ (done): drive the TypeScript workspace with a
    stubbed sandbox through scripted sessions, record the settled state after each call
    and the ordered status trail it pushes, and replay them against Rust.
-3. ~~The remaining Design edits~~ (done) and Undo/Redo.
+3. ~~The remaining Design edits~~ and ~~Undo/Redo~~ (both done).
 4. Project files, exports and imports (native dialogs), then Scenarios and the
    Assistant harnesses.
 
@@ -381,7 +381,7 @@ Known gaps, now visible in the window:
 - ~~**Arrange**~~ applying a computed layout is ported (see below). Computing one
   (`computeSystemLayout`, used by the Assistant's layout tool) is not.
 - **Export SVG/PNG, project export/import, attaching files** need native dialogs.
-- **Undo/Redo** still does nothing.
+- ~~**Undo/Redo** still does nothing.~~ (done)
 - Interaction in the real window is untested by me (no synthetic input).
 
 ## Workspace oracle and database edits
@@ -439,8 +439,37 @@ Differences that remain, none reachable from the view:
 - A policy without `using` or `withCheck` gets empty text; the original keeps it absent.
 - `updatePolicies` with something that is not a list is a `TypeError` in the original (its
   text is the JavaScript engine's); here it is "Policies must be a list.".
-- Undo/Redo names for these edits (for example "Remove table “x”") are not recorded yet;
-  they belong to the history port.
+
+## Undo and Redo
+
+`project-history.ts` is ported as `schema_domain::project_history` and held to the original
+by `generate-history.ts`: 30 random sessions of 60 calls (record, coalesce, Assistant turns
+that fold the manual edits made between their changes, undo, redo), with a fingerprint of the
+whole history after every call. Ten deliberate breaks are caught, including the window being
+inclusive, an Assistant entry being coalesced into, and `swap_remove` instead of `shift_remove`
+when a rebase deletes a key (key order is part of what the original compares).
+
+`workspace/src/history.rs` records the Project content (Design, Scenarios, Edge functions,
+System design content, Walkthroughs) before and after every action, one history per database
+design, and `undo`/`redo` restore one side and save only the parts that differ in one atomic
+write. Every Design, System and Walkthrough edit names its action as the original does
+(`Add table “x”`, `Edit notes on “x”`, and so on), and typing in one field coalesces. The
+workspace oracle now compares `undoRedo`, `undoActionName` and `redoActionName` on every call,
+and its generators and a scripted session (`history`) cover Undo and Redo across all three
+kinds of content, across designs, after removing a table with its relationships, and through
+coalesced renames, notes and Function edits. 14 sessions, 3420 calls; 12 more deliberate
+breaks are caught.
+
+Two details the original's behaviour made necessary:
+
+- A System edit that only reorders optional keys (setting a description again) is a change and
+  an Undo step there. History snapshots therefore carry the key order, and Undo restores it.
+- Restoring System content keeps the open design's viewport, drops collapsed Services whose
+  Service no longer exists, and drops focus when its Service is gone.
+
+Not ported yet: the Assistant's own entry points (`applyAssistantDesign`,
+`restoreAssistantProjectSnapshot`), which use the same history, and Scenario / Edge function edits,
+which will record into it.
 
 ### Build environment note
 

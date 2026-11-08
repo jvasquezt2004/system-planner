@@ -15,10 +15,12 @@
 
 mod database;
 mod edits;
+mod history;
 mod rpc;
 mod state;
 mod system;
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -29,6 +31,8 @@ use schema_domain::geometry::{CanvasPoint, CanvasViewport, DEFAULT_VIEWPORT};
 use schema_domain::sql::{generate_design_sql, SqlGeneration};
 use schema_domain::system_design::{create_empty_system_design, normalize_system_design, SystemViewName};
 use schema_domain::walkthrough::normalize_walkthroughs;
+use history::{HistoryAction, ProjectContent};
+use schema_domain::project_history::ProjectHistory;
 use schema_sandbox::Sandbox;
 use schema_store::{DesignSave, ProjectSummary, Store};
 use serde_json::{json, Value};
@@ -87,6 +91,12 @@ struct Inner {
     scheduled: Option<ScheduledPreview>,
     /// Optional-key order of the System design's Components and Connections; see `system::KeyOrders`.
     key_orders: system::KeyOrders,
+    /// Orders Scenario and Edge function document writes.
+    scenario_revision: i64,
+    edge_function_revision: i64,
+    /// One content history per database design, for the session. Each design's Undo and Redo move
+    /// only its own content, so switching designs never changes what another design's Undo reverses.
+    histories: HashMap<String, ProjectHistory<ProjectContent>>,
 }
 
 /// A preview to build straight away, outside the debounce.
@@ -129,6 +139,9 @@ impl Workspace {
                     preview_request_id: 0,
                     scheduled: None,
                     key_orders: Default::default(),
+                    scenario_revision: 0,
+                    edge_function_revision: 0,
+                    histories: HashMap::new(),
                 }),
                 listeners: Mutex::new(Vec::new()),
                 options,
@@ -163,12 +176,22 @@ impl Workspace {
     /// Replaces the observable state and tells every listener. Listeners must not call back in.
     fn set_state(&self, inner: &mut Inner, next: WorkspaceState) {
         inner.state = next;
+        Self::refresh_undo_redo(inner);
         self.notify(&inner.state);
     }
 
     fn update(&self, inner: &mut Inner, change: impl FnOnce(&mut WorkspaceState)) {
         change(&mut inner.state);
+        Self::refresh_undo_redo(inner);
         self.notify(&inner.state);
+    }
+
+    /// Every state carries what Undo and Redo would do next for the active design.
+    fn refresh_undo_redo(inner: &mut Inner) {
+        let description = Self::describe_history(inner);
+        inner.state.undo_redo = json!({ "canUndo": description.can_undo, "canRedo": description.can_redo });
+        inner.state.undo_action_name = description.undo_action_name;
+        inner.state.redo_action_name = description.redo_action_name;
     }
 
     fn notify(&self, state: &WorkspaceState) {
@@ -269,6 +292,10 @@ impl Workspace {
         inner.active_project_id = Some(project.id.clone());
         inner.active_design_id = Some(design_id.to_owned());
         inner.document_revision = record.document_revision;
+        // Revisions only move forward within a session, so a save still in flight for an earlier
+        // activation can never share a revision with a new one.
+        inner.edge_function_revision = inner.edge_function_revision.max(edge_document.revision);
+        inner.scenario_revision = scenario_document.revision;
         if opening {
             inner.system_document_revision = system_record.as_ref().map_or(0, |record| record.document_revision);
             inner.walkthrough_document_revision = walkthrough_record.as_ref().map_or(0, |record| record.revision);
@@ -384,7 +411,7 @@ impl Workspace {
         let table = edits::create_default_table(name, position, &mut || self.new_id());
         let mut next = design;
         next.tables.push(table);
-        self.apply_structural_change(&project_id, next, &design_id)
+        self.apply_structural_change(&project_id, next, Some(HistoryAction::named(format!("Add table “{name}”"))), &design_id)
     }
 
     pub fn rename_table(&self, design_id: &str, table_id: &str, name: &str) -> Result<WorkspaceState> {
@@ -397,8 +424,9 @@ impl Workspace {
         if table.name == name {
             return Ok(self.state());
         }
+        let action = HistoryAction::coalescing(format!("Rename table to “{name}”"), format!("table-name:{}", table.id));
         let next = edits::replace_table(&design, DesignTable { name: name.to_owned(), ..table.clone() });
-        self.apply_structural_change(&project_id, next, &design_id)
+        self.apply_structural_change(&project_id, next, Some(action), &design_id)
     }
 
     pub fn move_table(&self, design_id: &str, table_id: &str, position: CanvasPoint) -> Result<WorkspaceState> {
@@ -408,8 +436,9 @@ impl Workspace {
         if table.position == position {
             return Ok(self.state());
         }
+        let action = HistoryAction::named(format!("Move table “{}”", table.name));
         let next = edits::replace_table(&design, DesignTable { position, ..table.clone() });
-        self.apply_non_schema_change(&project_id, next, &design_id)
+        self.apply_non_schema_change(&project_id, next, Some(action), &design_id)
     }
 
     pub fn add_column(&self, design_id: &str, table_id: &str, name: Option<&str>, column_type: Option<&str>) -> Result<WorkspaceState> {
@@ -423,11 +452,12 @@ impl Workspace {
             None => "text".to_owned(),
             Some(value) => edits::require_column_type(value)?,
         };
+        let action = HistoryAction::named(format!("Add column “{name}”"));
         let column = edits::new_column(self.new_id(), name, column_type);
         let mut table = table.clone();
         table.columns.push(column);
         let next = edits::replace_table(&design, table);
-        self.apply_structural_change(&project_id, next, &design_id)
+        self.apply_structural_change(&project_id, next, Some(action), &design_id)
     }
 
     pub fn update_column(&self, design_id: &str, table_id: &str, column_id: &str, changes: &Value) -> Result<WorkspaceState> {
@@ -435,8 +465,13 @@ impl Workspace {
         let outcome = edits::update_column(&design, table_id, column_id, changes)?;
         match outcome {
             edits::ColumnEdit::Unchanged => Ok(self.state()),
-            edits::ColumnEdit::Schema(next) => self.apply_structural_change(&project_id, next, &design_id),
-            edits::ColumnEdit::NotesOnly(next) => self.apply_non_schema_change(&project_id, next, &design_id),
+            edits::ColumnEdit::Schema { design: next, name } => {
+                self.apply_structural_change(&project_id, next, Some(HistoryAction::named(format!("Edit column “{name}”"))), &design_id)
+            }
+            edits::ColumnEdit::NotesOnly { design: next, name, column_id } => {
+                let action = HistoryAction::coalescing(format!("Edit notes on “{name}”"), format!("column-notes:{column_id}"));
+                self.apply_non_schema_change(&project_id, next, Some(action), &design_id)
+            }
         }
     }
 
@@ -450,15 +485,16 @@ impl Workspace {
         if design.viewport == viewport {
             return Ok(self.state());
         }
-        self.apply_non_schema_change(&project_id, Design { viewport, ..design }, &design_id)
+        self.apply_non_schema_change(&project_id, Design { viewport, ..design }, None, &design_id)
     }
 
     /* ----------------------------------------------------- Save and preview */
 
     /// Saves the draft immediately and debounces its disposable preview rebuild.
-    fn apply_structural_change(&self, project_id: &str, design: Design, design_id: &str) -> Result<WorkspaceState> {
+    fn apply_structural_change(&self, project_id: &str, design: Design, action: Option<HistoryAction>, design_id: &str) -> Result<WorkspaceState> {
         let (revision, document_revision, waiting) = {
             let mut inner = self.lock();
+            self.record_design_change(&mut inner, action.as_ref(), &design, true)?;
             let revision = inner.state.revision + 1;
             let document_revision = inner.document_revision + 1;
             inner.document_revision = document_revision;
@@ -491,9 +527,10 @@ impl Workspace {
 
     /// Applies an edit that does not change the schema: card layout, canvas viewport, and column notes.
     /// The schema revision, SQL preview, and applied sandbox stay exactly as they were.
-    fn apply_non_schema_change(&self, project_id: &str, design: Design, design_id: &str) -> Result<WorkspaceState> {
+    fn apply_non_schema_change(&self, project_id: &str, design: Design, action: Option<HistoryAction>, design_id: &str) -> Result<WorkspaceState> {
         let (revision, document_revision) = {
             let mut inner = self.lock();
+            self.record_design_change(&mut inner, action.as_ref(), &design, false)?;
             let revision = inner.state.revision;
             let document_revision = inner.document_revision + 1;
             inner.document_revision = document_revision;
@@ -505,6 +542,18 @@ impl Workspace {
         };
         self.save_document(project_id, revision, document_revision, &design, design_id);
         Ok(self.state())
+    }
+
+    /// Records a Design edit against the Design the Project holds now, unless the edit is not an action.
+    fn record_design_change(&self, inner: &mut Inner, action: Option<&HistoryAction>, design: &Design, structural: bool) -> Result<()> {
+        let Some(action) = action else { return Ok(()) };
+        let before = inner.state.design.clone().ok_or("Open a project before editing its design.")?;
+        let (before, after) = (
+            self.project_content(inner, &before, None, None, &inner.key_orders),
+            self.project_content(inner, design, None, None, &inner.key_orders),
+        );
+        self.record_content_change(inner, action, before, after, structural);
+        Ok(())
     }
 
     fn save_document(&self, project_id: &str, revision: i64, document_revision: i64, design: &Design, design_id: &str) {
