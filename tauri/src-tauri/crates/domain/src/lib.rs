@@ -6,10 +6,12 @@
 
 pub mod catalog;
 pub mod column_defaults;
+pub mod column_types;
 pub mod design;
 pub mod geometry;
 pub mod js;
 pub mod patch;
+pub mod postgres_identifiers;
 pub mod system_design;
 pub mod system_ops;
 pub mod walkthrough;

@@ -21,6 +21,9 @@ TypeScript behaviour or a generator changed.
 | `generate-store.ts` | `openDesignStore` and every `DesignStore` method | `data/store-ops.json`, `data/store-legacy.json` | `crates/store/tests/fixtures.rs` |
 | `generate-system-ops.ts` | the System design editing functions in `system-design.ts` | `data/system-ops.json` | `crates/domain/tests/system_ops.rs` |
 | `generate-walkthrough-ops.ts` | the Walkthrough editing functions in `walkthrough.ts` | `data/walkthrough-ops.json` | `crates/domain/tests/walkthrough_ops.rs` |
+| `generate-columns.ts` | `columnDefaultProblem`, `renderDefaultExpression`, `renderColumnType` | `data/columns.json` | `crates/domain/tests/columns.rs` |
+| `generate-identifiers.ts` | `postgres-identifiers.ts` (UTF-8 byte arithmetic) | `data/identifiers.json` | `crates/domain/tests/columns.rs` |
+| `export-column-types.ts` | `column-types.ts` | `src-tauri/crates/domain/data/column-types.json` (embedded, not a fixture) | `crates/domain/src/column_types.rs` |
 | `export-catalog.ts` | `component-catalog.ts` | `src-tauri/crates/domain/data/component-catalog.json` (embedded, not a fixture) | `crates/domain/src/catalog.rs` |
 
 ## What each corpus covers
@@ -49,6 +52,9 @@ TypeScript behaviour or a generator changed.
   are compared as `<uuid#n>` placeholders by first appearance.
 
 ## Known, deliberate differences
+
+- A JSON default containing a lone surrogate escape (`"\ud800"`) is valid for
+  JavaScript's `JSON.parse` and rejected by `serde_json`; it is not in the corpus.
 
 - A Design whose `tables` is not a list: the oracle throws a JavaScript
   `TypeError` whose text is engine-specific, so those inputs are excluded.

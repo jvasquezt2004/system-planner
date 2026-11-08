@@ -98,7 +98,8 @@ pub fn to_js_string(value: &Value) -> String {
     }
 }
 
-fn number_to_string(n: f64) -> String {
+/// `String(n)` / template-literal formatting of a number.
+pub fn number_to_string(n: f64) -> String {
     if n.fract() == 0.0 && n.abs() < 1.0e21 {
         format!("{}", n as i128)
     } else {
