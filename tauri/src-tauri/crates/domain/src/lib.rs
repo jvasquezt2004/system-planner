@@ -9,5 +9,8 @@ pub mod column_defaults;
 pub mod design;
 pub mod geometry;
 pub mod js;
+pub mod patch;
 pub mod system_design;
+pub mod system_ops;
 pub mod walkthrough;
+pub mod walkthrough_ops;

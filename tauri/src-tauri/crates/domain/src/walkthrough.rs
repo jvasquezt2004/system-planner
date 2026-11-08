@@ -197,7 +197,7 @@ fn require_new_entry_id(value: Option<&Value>, label: &str, entry_ids: &mut Hash
 }
 
 /// Checks the structural limits: step count, container count, and nesting depth.
-fn checked(walkthrough: Walkthrough) -> Result<Walkthrough> {
+pub(crate) fn checked(walkthrough: Walkthrough) -> Result<Walkthrough> {
     fn count(blocks: &[WalkthroughBlock], steps: &mut usize, containers: &mut usize) {
         for block in blocks {
             match block {
@@ -239,7 +239,7 @@ fn checked(walkthrough: Walkthrough) -> Result<Walkthrough> {
     Ok(walkthrough)
 }
 
-fn require_identity(value: Option<&Value>, label: &str) -> Result<String> {
+pub(crate) fn require_identity(value: Option<&Value>, label: &str) -> Result<String> {
     match value.and_then(Value::as_str) {
         Some(id) if !js::trim(id).is_empty() => Ok(id.to_owned()),
         _ => Err(format!("{label} is required.")),
@@ -250,6 +250,11 @@ fn require_name(value: Option<&Value>, label: &str) -> Result<String> {
     let Some(text) = value.and_then(Value::as_str) else {
         return Err(format!("{label} is required."));
     };
+    name_text(text, label)
+}
+
+/// `requireName` for text already known to be a string.
+pub(crate) fn name_text(text: &str, label: &str) -> Result<String> {
     let trimmed = js::trim(text);
     if trimmed.is_empty() {
         return Err(format!("{label} is required."));
@@ -265,6 +270,11 @@ fn require_text(value: Option<&Value>, label: &str, limit: usize) -> Result<Stri
     let Some(text) = value.and_then(Value::as_str) else {
         return Err(format!("{label} must be text."));
     };
+    text_within(text, label, limit)
+}
+
+/// `requireText` for text already known to be a string.
+pub(crate) fn text_within(text: &str, label: &str, limit: usize) -> Result<String> {
     let trimmed = js::trim(text);
     if js::length(trimmed) > limit {
         return Err(format!("{label} must be {limit} characters or fewer."));
@@ -286,6 +296,11 @@ fn require_action(value: Option<&Value>) -> Result<String> {
     }
 }
 
+/// `requireAction` for text already known to be a string.
+pub(crate) fn action_text(action: &str) -> Result<String> {
+    require_action(Some(&Value::String(action.to_owned())))
+}
+
 fn optional_stored_number(value: Option<&Value>, require: fn(&Value) -> Result<i64>) -> Result<Option<i64>> {
     match value {
         None => Ok(None),
@@ -297,19 +312,19 @@ fn whole_number_in(value: &Value, min: f64, max: f64) -> Option<i64> {
     js::integer(value).filter(|n| *n >= min && *n <= max).map(|n| n as i64)
 }
 
-fn require_duration(value: &Value) -> Result<i64> {
+pub(crate) fn require_duration(value: &Value) -> Result<i64> {
     whole_number_in(value, DURATION_MIN_MS, DURATION_MAX_MS).ok_or_else(|| {
         format!("Step duration must be a whole number of milliseconds from {DURATION_MIN_MS} to {DURATION_MAX_MS}.")
     })
 }
 
-fn require_travel_percent(value: &Value) -> Result<i64> {
+pub(crate) fn require_travel_percent(value: &Value) -> Result<i64> {
     whole_number_in(value, TRAVEL_PERCENT_MIN, TRAVEL_PERCENT_MAX).ok_or_else(|| {
         format!("Step travel share must be a whole percent from {TRAVEL_PERCENT_MIN} to {TRAVEL_PERCENT_MAX}.")
     })
 }
 
-fn require_repeat_count(value: Option<&Value>) -> Result<i64> {
+pub(crate) fn require_repeat_count(value: Option<&Value>) -> Result<i64> {
     value
         .and_then(|value| whole_number_in(value, REPEAT_COUNT_MIN, REPEAT_COUNT_MAX))
         .ok_or_else(|| format!("A repeated block runs from {REPEAT_COUNT_MIN} to {REPEAT_COUNT_MAX} times."))

@@ -19,6 +19,9 @@ TypeScript behaviour or a generator changed.
 | `generate-normalizers.ts` | `normalizeSystemDesign`, `normalizeWalkthroughs` | `data/system-design.json`, `data/walkthroughs.json` | `crates/domain/tests/normalizers.rs` |
 | `generate-designs.ts` | `normalizeDesign`, driven through the real workspace's project load | `data/designs.json` | `crates/domain/tests/normalizers.rs` |
 | `generate-store.ts` | `openDesignStore` and every `DesignStore` method | `data/store-ops.json`, `data/store-legacy.json` | `crates/store/tests/fixtures.rs` |
+| `generate-system-ops.ts` | the System design editing functions in `system-design.ts` | `data/system-ops.json` | `crates/domain/tests/system_ops.rs` |
+| `generate-walkthrough-ops.ts` | the Walkthrough editing functions in `walkthrough.ts` | `data/walkthrough-ops.json` | `crates/domain/tests/walkthrough_ops.rs` |
+| `export-catalog.ts` | `component-catalog.ts` | `src-tauri/crates/domain/data/component-catalog.json` (embedded, not a fixture) | `crates/domain/src/catalog.rs` |
 
 ## What each corpus covers
 
@@ -27,6 +30,13 @@ TypeScript behaviour or a generator changed.
   oversized text, rounding ties) and the oracle's output or error message is
   recorded for each. Roughly a third are accepted and two thirds rejected, so
   both paths are exercised, and error messages must match exactly.
+- **Editing operations** are long random sessions. Arguments are built from the
+  current document (existing ids, missing ids, blank and oversized names,
+  rounding-tie coordinates, valid and invalid kinds, branch indexes) and a
+  successful call becomes the next state. Roughly 40-65% of calls are rejected,
+  so error ordering is exercised as much as results. The generators print a
+  per-operation tally; an operation with no accepted or no rejected calls is
+  a generator bug, not coverage.
 - **Designs** are hand-built variants of each field `normalizeDesign` touches,
   plus legacy shapes. `normalizeDesign` is private to `workspace.ts`, so the
   oracle opens a real Project through the real workspace.

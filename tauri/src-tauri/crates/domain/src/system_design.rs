@@ -359,7 +359,7 @@ pub fn normalize_system_design(value: &Value) -> Result<SystemDesign> {
 }
 
 /// True when `target` is reachable from `from` through member Groups.
-fn reaches_group(groups: &[SystemGroup], from: &str, target: &str) -> bool {
+pub(crate) fn reaches_group(groups: &[SystemGroup], from: &str, target: &str) -> bool {
     let mut seen: HashSet<&str> = HashSet::new();
     let mut stack = vec![from];
     while let Some(current) = stack.pop() {
@@ -415,31 +415,36 @@ fn normalize_route_fields(item: &Map<String, Value>) -> Result<Route> {
     Ok(Route { from_side, to_side, bend_points, label_offset })
 }
 
-fn require_side(value: &Value) -> Result<String> {
+pub(crate) fn require_side(value: &Value) -> Result<String> {
     match value.as_str() {
         Some(side @ ("auto" | "top" | "right" | "bottom" | "left")) => Ok(side.to_owned()),
         _ => Err("A Connection side must be top, right, bottom, left, or auto.".into()),
     }
 }
 
-fn require_kind(value: Option<&Value>) -> Result<String> {
+pub(crate) fn require_kind(value: Option<&Value>) -> Result<String> {
     match value.and_then(Value::as_str) {
         Some(kind) if is_system_component_kind(kind) => Ok(kind.to_owned()),
         _ => Err(format!("Unsupported Component kind \"{}\".", value.map_or("undefined".into(), js::to_js_string))),
     }
 }
 
-fn require_identity(value: Option<&Value>, label: &str) -> Result<String> {
+pub(crate) fn require_identity(value: Option<&Value>, label: &str) -> Result<String> {
     match value.and_then(Value::as_str) {
         Some(id) if !js::trim(id).is_empty() => Ok(id.to_owned()),
         _ => Err(format!("{label} is required.")),
     }
 }
 
-fn require_name(value: Option<&Value>, label: &str, limit: usize) -> Result<String> {
+pub(crate) fn require_name(value: Option<&Value>, label: &str, limit: usize) -> Result<String> {
     let Some(text) = value.and_then(Value::as_str) else {
         return Err(format!("{label} is required."));
     };
+    name_text(text, label, limit)
+}
+
+/// `requireSystemName` for text already known to be a string: trimmed, non-empty, within `limit`.
+pub(crate) fn name_text(text: &str, label: &str, limit: usize) -> Result<String> {
     let trimmed = js::trim(text);
     if trimmed.is_empty() {
         return Err(format!("{label} is required."));
@@ -450,7 +455,7 @@ fn require_name(value: Option<&Value>, label: &str, limit: usize) -> Result<Stri
     Ok(trimmed.to_owned())
 }
 
-fn require_position(point: Option<&Value>, label: &str) -> Result<CanvasPoint> {
+pub(crate) fn require_position(point: Option<&Value>, label: &str) -> Result<CanvasPoint> {
     let finite = |key: &str| point.and_then(Value::as_object).and_then(|point| point.get(key)).and_then(js::finite);
     match (finite("x"), finite("y")) {
         (Some(x), Some(y)) => Ok(CanvasPoint { x: js::round2(x), y: js::round2(y) }),
@@ -458,7 +463,7 @@ fn require_position(point: Option<&Value>, label: &str) -> Result<CanvasPoint> {
     }
 }
 
-fn normalize_frame_size(size: Option<&Value>, default: Size, minimum: Size) -> Result<Size> {
+pub(crate) fn normalize_frame_size(size: Option<&Value>, default: Size, minimum: Size) -> Result<Size> {
     // A missing or non-record size falls back to the default; a record must carry finite numbers.
     let Some(record) = size.and_then(js::record) else { return Ok(normalize_size(default, minimum)) };
     match (record.get("width").and_then(js::finite), record.get("height").and_then(js::finite)) {
@@ -471,7 +476,7 @@ fn normalize_size(size: Size, minimum: Size) -> Size {
     Size { width: minimum.width.max(js::round(size.width)), height: minimum.height.max(js::round(size.height)) }
 }
 
-fn normalize_properties(values: &[Value]) -> Result<Vec<ComponentProperty>> {
+pub(crate) fn normalize_properties(values: &[Value]) -> Result<Vec<ComponentProperty>> {
     if values.len() > PROPERTY_LIMIT {
         return Err(format!("A Component can have at most {PROPERTY_LIMIT} properties."));
     }
@@ -492,12 +497,12 @@ fn normalize_properties(values: &[Value]) -> Result<Vec<ComponentProperty>> {
         .collect()
 }
 
-fn optional_text(value: Option<&str>) -> Option<String> {
+pub(crate) fn optional_text(value: Option<&str>) -> Option<String> {
     let trimmed = js::trim(value?);
     (!trimmed.is_empty()).then(|| js::slice(trimmed, 500))
 }
 
-fn optional_icon(icon: Option<&Value>) -> Result<Option<String>> {
+pub(crate) fn optional_icon(icon: Option<&Value>) -> Result<Option<String>> {
     match icon {
         None | Some(Value::Null) => Ok(None),
         Some(Value::String(icon)) if is_custom_icon(icon) => Ok(Some(icon.clone())),

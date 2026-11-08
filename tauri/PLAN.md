@@ -104,7 +104,7 @@ unchanged UI.
    (`tauri/fixtures`) landed here. Still to port from this phase: the pure
    model operations in `system-design.ts` / `walkthrough.ts` / `workspace.ts`
    (add, move, remove, describe-removal, repair, ...), which phase 2 needs.
-2. **Workspace and RPC.** Project/design/system-design/walkthrough operations,
+2. **Workspace and RPC. (in progress, see "Phase 2 progress")** Project/design/system-design/walkthrough operations,
    undo/redo and project history, state push. UI usable for editing with no SQL
    preview yet.
 3. **SQL and schema code.** `sql.ts`, SQL preview, the four ORM generators,
@@ -205,6 +205,43 @@ Findings worth remembering:
 - Only the document normalizers and the store are ported so far. Column type
   registry, default validation, SQL rendering and every editing operation are
   still TypeScript-only.
+
+## Phase 2 progress
+
+The pure editing layer is ported and verified; the workspace around it is not.
+
+| Ported | Source | Verified by |
+| --- | --- | --- |
+| System design operations (Services, Groups, Components, Connections, collapse, focus, removal plans) | `system-design.ts` | 12 sessions, 1680 steps, 705 of them rejected |
+| Walkthrough operations (Walkthroughs, steps, parallel/repeat blocks, move, repair, accept redirection, impact on Connections, step status) | `walkthrough.ts` | 10 sessions, 1600 steps, 1017 of them rejected |
+| Component catalog identity data | `component-catalog.ts` | generated from the TypeScript source and embedded |
+
+Both suites were mutation-checked (five deliberate breaks each, all caught).
+
+Design points settled here:
+
+- `Patch<T>` models a changes-object field that is absent, `null`, or set,
+  reproducing the `"field" in changes` checks. Over RPC an `undefined` field
+  never arrives, so absent and `null` are the only two states that matter.
+- The operations return the design unchanged when nothing differs, as the
+  originals do. The originals detect that with `JSON.stringify`, which also
+  depends on key order, so a no-op can produce a re-ordered but equal document in
+  TypeScript. Content is identical either way; the workspace must compare by
+  content, not by identity, when deciding whether to record history.
+
+Still to port for this phase, in dependency order:
+
+1. `system-design-operations.ts` and `walkthrough-operations.ts`: id
+   generation, Assistant attribution, and the removal plans that combine a
+   design plan with Walkthrough impact.
+2. `project-history.ts`: Undo/Redo across System design, Walkthroughs, Scenarios
+   and Edge functions, including grouped Assistant turns.
+3. The database Design operations in `workspace.ts` (tables, columns,
+   relationships, indexes, enums, Functions, Triggers, policies). These need the
+   column type registry and default validation first.
+4. Save scheduling, revisions and the `WorkspaceState` that drives the view,
+   including the SQL and sandbox state (so phase 3's SQL generation matters here).
+5. The `rpc_request` handlers and the state push.
 
 ### Build environment note
 
