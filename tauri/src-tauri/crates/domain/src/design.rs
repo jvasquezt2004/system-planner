@@ -242,6 +242,20 @@ pub struct Design {
     pub raw_statements: Option<Vec<DesignRawStatement>>,
 }
 
+/// A design with nothing in it, for code that must carry a placeholder while it reports a problem.
+pub fn empty_design() -> Design {
+    Design {
+        tables: vec![],
+        relationships: vec![],
+        many_to_many_relationships: vec![],
+        viewport: crate::geometry::DEFAULT_VIEWPORT,
+        enum_types: None,
+        functions: None,
+        triggers: None,
+        raw_statements: None,
+    }
+}
+
 impl Design {
     /// Reads a stored Design: normalizes the document, then types it.
     pub fn load(stored: &Value) -> Result<Self, String> {

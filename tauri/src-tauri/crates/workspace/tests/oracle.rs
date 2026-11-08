@@ -237,7 +237,9 @@ fn replay(session: &Value) -> Result<usize, String> {
     let fingerprint = fnv(&canonical(&dump(&path)));
     let expected = session["storeFingerprint"].as_str().unwrap();
     if fingerprint != expected {
-        return Err(format!("{name}: the database ends differently (expected {expected}, got {fingerprint})"));
+        let written = std::env::temp_dir().join(format!("oracle-store-{name}.json"));
+        let _ = std::fs::write(&written, serde_json::to_string_pretty(&dump(&path)).unwrap_or_default());
+        return Err(format!("{name}: the database ends differently (expected {expected}, got {fingerprint}); the store as Rust holds it is in {} (bun tauri/fixtures/explain-workspace.ts {name} store prints the original's)", written.display()));
     }
     Ok(steps.len())
 }

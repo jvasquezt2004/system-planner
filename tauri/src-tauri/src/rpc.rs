@@ -91,8 +91,8 @@ mod tests {
         assert!(!methods.is_empty() && methods.iter().all(|method| method == "workspaceState"));
 
         // Calls that are not ported say so by name instead of inventing an answer.
-        let error = backend.request("exportProject", json!({})).unwrap_err();
-        assert!(error.contains("exportProject") && error.contains("not implemented"), "{error}");
+        let error = backend.request("exportAssistantThing", json!({})).unwrap_err();
+        assert!(error.contains("exportAssistantThing") && error.contains("not implemented"), "{error}");
         // Database edits go through the same dispatcher: a plan, a refused removal, then the removal.
         let plan = backend.request("describeRemoval", json!({ "kind": "table", "tableId": table_id, "designId": design_id })).unwrap();
         assert_eq!(plan["target"], "purchases");

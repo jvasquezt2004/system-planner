@@ -15,6 +15,7 @@ pub mod js;
 pub mod patch;
 pub mod postgres_identifiers;
 pub mod project_history;
+pub mod project_portability;
 pub mod relationships;
 pub mod sql;
 pub mod system_design;

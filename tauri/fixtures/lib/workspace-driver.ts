@@ -92,6 +92,8 @@ const PLAN_METHODS: Record<string, (params: any) => unknown> = {
 	describeSystemComponentRemoval: (params) => params.componentId,
 	describeSystemConnectionRemoval: (params) => params.connectionId,
 	describeRemoval: (params) => params,
+	// Takes no argument; the answer is the portable document.
+	exportProject: () => undefined,
 };
 
 export type Driver = {

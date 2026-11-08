@@ -19,7 +19,7 @@ import { dumpStore } from "./lib/store-dump";
 import { canonical, fnv, fingerprints, openDriver, type StepOutcome } from "./lib/workspace-driver";
 import { seededRng } from "./lib/mutate";
 import { OPERATIONS } from "./lib/workspace-ops";
-import { SCRIPTS, type Script } from "./lib/workspace-scripts";
+import { SCRIPTS, transferScript, type Script } from "./lib/workspace-scripts";
 
 type Step = { method: string; params: unknown; outcome: StepOutcome; after?: Record<string, string>; trail: string[] };
 type Session = { name: string; steps: Step[]; storeFingerprint: string };
@@ -30,10 +30,11 @@ async function runSession(name: string, seed: number, length: number, script?: S
 		const driver = await openDriver(directory);
 		const rng = seededRng(seed);
 		const steps: Step[] = [];
+		let lastOutcome: StepOutcome | undefined;
 		// Every session starts by opening a Project, so the rest has something to edit.
 		const first = { method: "createProject", params: { name: "Shop" } };
 		const planned = (index: number) => {
-			if (script) return script[index]!(driver.workspace.getState());
+			if (script) return script[index]!(driver.workspace.getState(), lastOutcome);
 			if (index === 0) return first;
 			const state = driver.workspace.getState();
 			// Mostly calls that make sense now; a tenth are unconditional so refusals stay covered.
@@ -50,6 +51,7 @@ async function runSession(name: string, seed: number, length: number, script?: S
 			// After a refusal, or for a plan, what the workspace holds is still part of the contract.
 			if ("error" in outcome || "value" in outcome.ok) step.after = fingerprints(state);
 			steps.push(step);
+			lastOutcome = outcome;
 		}
 		await driver.close();
 		const store = openDesignStore(join(directory, "workspace.sqlite"));
@@ -64,7 +66,7 @@ async function runSession(name: string, seed: number, length: number, script?: S
 const started = Date.now();
 const seeds = [0x101, 0x202, 0x303, 0x404, 0x505, 0x606, 0x707, 0x808];
 const random = seeds.map((seed, index) => runSession(`s${index + 1}`, seed * 7919, 400));
-const scripted = Object.entries(SCRIPTS).map(([name, script]) => runSession(`script-${name}`, 0, 0, script));
+const scripted = Object.entries({ ...SCRIPTS, transfer: await transferScript() }).map(([name, script]) => runSession(`script-${name}`, 0, 0, script));
 const sessions = await Promise.all([...random, ...scripted]);
 
 const all = sessions.flatMap((session) => session.steps);

@@ -16,6 +16,7 @@
 mod database;
 mod edits;
 mod history;
+mod portability;
 mod rpc;
 mod state;
 mod system;

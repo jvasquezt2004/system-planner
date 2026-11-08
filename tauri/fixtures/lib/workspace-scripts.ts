@@ -4,9 +4,15 @@
  * Each step reads ids from the live state, so a script is a list of intentions.
  */
 import type { WorkspaceState } from "../../../src/shared/design";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mutateOnce, seededRng } from "./mutate";
+import { openDriver, type StepOutcome } from "./workspace-driver";
 
 export type Call = { method: string; params: unknown };
-export type Script = Array<(state: WorkspaceState) => Call>;
+/** A script step reads the live state and the outcome of the call before it. */
+export type Script = Array<(state: WorkspaceState, last?: StepOutcome) => Call>;
 
 const design = (state: WorkspaceState) => state.design!;
 const table = (state: WorkspaceState, name: string) => design(state).tables.find((candidate) => candidate.name === name)!;
@@ -245,4 +251,169 @@ export const SCRIPTS: Record<string, Script> = {
 		(state) => ({ method: "undo", params: { designId: "bogus" } }),
 		(state) => ({ method: "redo", params: on(state) }),
 	],
+
 };
+
+/**
+ * What the typed Rust `Design` requires. The original stores a hand-damaged design as it is (a
+ * column without `nullable`, an index key that is not an object); the Rust model refuses it with
+ * a typed error instead. Documents that differ only by that are left out of the recorded sessions.
+ */
+export function typedDesignProblem(design: any): string | null {
+	const isString = (value: unknown) => typeof value === "string";
+	const isBoolean = (value: unknown) => typeof value === "boolean";
+	const optional = (value: unknown, check: (value: unknown) => boolean) => value === undefined || value === null || check(value);
+	const isObject = (value: unknown) => value !== null && typeof value === "object" && !Array.isArray(value);
+	const isNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value);
+	const list = (value: unknown, check: (item: any) => boolean) => Array.isArray(value) && value.every(check);
+	const strings = (value: unknown) => list(value, isString);
+	const point = (value: any) => isObject(value) && isNumber(value.x) && isNumber(value.y);
+	const column = (value: any) =>
+		isObject(value) && [value.id, value.name, value.type, value.notes].every(isString) && [value.nullable, value.primaryKey, value.unique, value.identity].every(isBoolean)
+		&& isObject(value.default) && optional(value.enumTypeId, isString)
+		&& optional(value.typeParameters, (parameters) => isObject(parameters) && Object.entries(parameters as Record<string, unknown>).every(([key, entry]) => (key === "array" ? isBoolean(entry) || entry === undefined : isNumber(entry) || entry === undefined)));
+	const key = (value: any) => isObject(value) && isString(value.columnId) && optional(value.order, isString) && optional(value.nulls, isString) && optional(value.operatorClass, isString);
+	const index = (value: any) =>
+		isObject(value) && isString(value.id) && isString(value.method) && optional(value.name, isString) && list(value.keys, key) && optional(value.unique, isBoolean)
+		&& optional(value.nullsNotDistinct, isBoolean) && optional(value.includeColumnIds, strings) && optional(value.with, isObject);
+	const unique = (value: any) => isObject(value) && isString(value.id) && optional(value.name, isString) && strings(value.columnIds) && optional(value.nullsNotDistinct, isBoolean);
+	const policy = (value: any) => isObject(value) && [value.id, value.name, value.command, value.mode, value.using, value.withCheck].every(isString) && strings(value.roles);
+	const table = (value: any) =>
+		isObject(value) && isString(value.id) && isString(value.name) && point(value.position) && list(value.columns, column) && optional(value.indexes, (items) => list(items, index))
+		&& optional(value.uniqueConstraints, (items) => list(items, unique)) && isBoolean(value.rowLevelSecurity) && list(value.policies, policy);
+	const relationship = (value: any) =>
+		isObject(value) && [value.id, value.cardinality, value.referencingTableId, value.referencingColumnId, value.referencedTableId].every(isString)
+		&& optional(value.onDelete, isString) && optional(value.onUpdate, isString);
+	const association = (value: any) =>
+		isObject(value) && [value.id, value.leftTableId, value.rightTableId, value.junctionTableId, value.leftRelationshipId, value.rightRelationshipId].every(isString);
+	const enumType = (value: any) => isObject(value) && isString(value.id) && isString(value.name) && strings(value.labels);
+	const raw = (value: any) => isObject(value) && isString(value.id) && isString(value.sql) && isString(value.phase) && optional(value.creates, isString) && optional(value.attachedTo, isString);
+	if (!isObject(design)) return "design";
+	if (!list(design.tables, table)) return "tables";
+	if (!list(design.relationships, relationship)) return "relationships";
+	if (!list(design.manyToManyRelationships, association)) return "manyToManyRelationships";
+	if (!(isObject(design.viewport) && [design.viewport.x, design.viewport.y, design.viewport.zoom].every(isNumber))) return "viewport";
+	if (!optional(design.enumTypes, (items) => list(items, enumType))) return "enumTypes";
+	if (!optional(design.rawStatements, (items) => list(items, raw))) return "rawStatements";
+	return null;
+}
+
+/** Imports whose Scenarios and Edge functions are valid, repeated, mis-named or missing a source. */
+function sourceVariants(exported: any): unknown[] {
+	const withSources = (scenarios: unknown, edgeFunctions: unknown) => ({
+		...exported,
+		designs: exported.designs.map((entry: any, index: number) => (index === 0 ? { ...entry, scenarios, edgeFunctions } : entry)),
+	});
+	const scenario = (id: string, name: string, source = "export default async () => {}") => ({ id, name, source });
+	const edge = (id: string, name: string, source = "export default () => new Response('ok')") => ({ id, name, source });
+	return [
+		withSources([scenario("s1", "Happy path"), scenario("s2", "  Padded name  ")], [edge("f1", "hello"), edge("f2", "with-dash_and_9")]),
+		withSources([scenario("s1", "Same id"), scenario("s1", "Other")], []),
+		withSources([scenario("s1", "x".repeat(80))], []),
+		withSources([scenario("s1", "x".repeat(81))], []),
+		withSources([scenario("s1", "é".repeat(80))], []),
+		withSources([scenario("s1", "💥".repeat(41))], []),
+		withSources([scenario("s1", "   ")], []),
+		withSources([scenario("", "No id")], []),
+		withSources([{ id: "s1", name: "No source" }], []),
+		withSources([], [edge("f1", "Upper")]),
+		withSources([], [edge("f1", "has space")]),
+		withSources([], [edge("f1", "same"), edge("f2", "same")]),
+		withSources([], [edge("f1", "one"), edge("f1", "two")]),
+		withSources([], [edge("f1", "")]),
+		withSources([], [{ id: "f1", name: "no-source" }]),
+		withSources([], [edge("f1", "é")]),
+		withSources(scenario("s1", "not a list"), []),
+		withSources([], "not a list"),
+		withSources([scenario("s1", "Fine")], [edge("f1", "fine")]),
+	];
+}
+
+/** Engine-specific messages from malformed input to the original's unchecked code: no other engine words them alike. */
+const ENGINE_ERROR = /Spread syntax|Type error|is not an object|is not a function|is not iterable|\(In '|evaluating '/;
+
+/**
+ * Exporting a Project and importing it, then importing the same file damaged in many ways. A damaged
+ * file is kept only when the original answers it the same way anywhere: accepted, or refused with a
+ * message of its own, without writing anything. Input that makes the JavaScript engine itself throw
+ * (an unchecked `.map` on a missing list) is dropped, as its message belongs to the engine.
+ */
+export async function transferScript(): Promise<Script> {
+	const prefix: Script = [
+			open, add("orders"), add("customers"), addColumn("orders", "total", "numeric"), addColumn("orders", "status"),
+			(state) => ({ method: "addRelationship", params: { ...on(state), referencingTableId: table(state, "orders").id, referencedTableId: table(state, "customers").id } }),
+			(state) => ({ method: "updateEnumTypes", params: { ...on(state), enumTypes: [{ id: "e1", name: "state", labels: ["open", "closed"] }] } }),
+			(state) => ({ method: "updateFunctions", params: { ...on(state), functions: [triggerFunction, { id: "fn-sum", name: "sum_orders", arguments: [], returnType: "numeric", returnsSet: false, language: "sql", volatility: "stable", security: "invoker", body: "SELECT sum(total) FROM orders" }] } }),
+			(state) => ({
+				method: "updateTriggers",
+				params: { ...on(state), triggers: [{ id: "tr-1", name: "touch_orders", tableId: table(state, "orders").id, timing: "BEFORE", events: [{ event: "UPDATE", columnIds: [column(state, "orders", "status").id] }], level: "ROW", functionId: "fn-touch", when: "" }] },
+			}),
+			(state) => ({ method: "updateIndexes", params: { ...on(state), tableId: table(state, "orders").id, indexes: [{ id: "ix-1", name: "by_total", method: "btree", keys: [{ columnId: column(state, "orders", "total").id }], with: { fillfactor: 70 } }] } }),
+			(state) => ({ method: "updatePolicies", params: { ...on(state), tableId: table(state, "customers").id, rowLevelSecurity: true, policies: [{ id: "p1", name: "read", command: "SELECT", roles: ["anon"], mode: "permissive", using: "true", withCheck: "" }] } }),
+			(state) => ({ method: "createDesign", params: { name: "Reporting" } }),
+			add("facts"),
+			(state) => ({ method: "addSystemService", params: { x: 0, y: 0, name: "Backend" } }),
+			(state) => ({ method: "addSystemComponent", params: { x: 20, y: 20, kind: "database", name: "Primary", serviceId: state.systemDesign!.services[0]!.id } }),
+			(state) => ({ method: "addSystemComponent", params: { x: 300, y: 20, kind: "api", name: "Gateway" } }),
+			(state) => ({ method: "linkSystemDatabase", params: { componentId: state.systemDesign!.components[0]!.id, designId: state.designs[1]!.id } }),
+			(state) => ({ method: "addSystemConnection", params: { sourceId: state.systemDesign!.components[1]!.id, targetId: state.systemDesign!.components[0]!.id, label: "reads", protocol: "SQL" } }),
+			(state) => ({ method: "createWalkthrough", params: { name: "Checkout" } }),
+			(state) => ({ method: "addWalkthroughStep", params: { walkthroughId: state.walkthroughs[0]!.id, connectionId: state.systemDesign!.connections[0]!.id, title: "Read", action: "send" } }),
+			(state) => ({ method: "setActiveView", params: { view: "database" } }),
+	];
+	const scratch = async (run: (driver: Awaited<ReturnType<typeof openDriver>>) => Promise<unknown>) => {
+		const directory = mkdtempSync(join(tmpdir(), "db-planner-scratch-"));
+		try {
+			const driver = await openDriver(directory);
+			const result = await run(driver);
+			await driver.close();
+			return result;
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	};
+	const exported = (await scratch(async (driver) => {
+		let last: StepOutcome | undefined;
+		for (const [index, step] of prefix.entries()) {
+			const call = step(driver.workspace.getState(), last);
+			last = (await driver.run(call.method, JSON.parse(JSON.stringify(call.params)), index)).outcome;
+		}
+		const final = await driver.run("exportProject", {}, prefix.length);
+		return (final.outcome as { ok: { value: unknown } }).ok.value;
+	})) as any;
+
+	const accepted: unknown[] = [];
+	for (let seed = 1; accepted.length < 160 && seed < 2000; seed += 1) {
+		const rng = seededRng(seed * 9973);
+		const copy = structuredClone(exported);
+		for (let times = 1 + Math.floor(rng() * 3); times > 0; times -= 1) mutateOnce(copy, rng);
+		// A Function's recorded dependencies that are not a list are spread into characters by the original.
+		const odd = (copy.designs ?? []).some((entry: any) => Array.isArray(entry?.design?.functions) && entry.design.functions.some((fn: any) => fn && fn.tableDependencies !== undefined && !Array.isArray(fn.tableDependencies)));
+		if (odd) continue;
+		const clean = await scratch(async (driver) => {
+			const { outcome } = await driver.run("importProject", JSON.parse(JSON.stringify(copy)), 0);
+			if ("error" in outcome) return !ENGINE_ERROR.test(outcome.error) && driver.workspace.getState().projects.length === 0;
+			const stored = (await driver.run("exportProject", {}, 1)).outcome as { ok: { value: any } };
+			return stored.ok.value.designs.every((entry: any) => typedDesignProblem(entry.design) === null);
+		});
+		if (clean) accepted.push(copy);
+	}
+	return [
+		...prefix,
+			() => ({ method: "exportProject", params: {} }),
+			() => ({ method: "importProject", params: exported }),
+			() => ({ method: "exportProject", params: {} }),
+			() => ({ method: "importProject", params: { ...exported, version: 2 } }),
+			() => ({ method: "importProject", params: { ...exported, version: "1" } }),
+			() => ({ method: "importProject", params: { ...exported, format: "other" } }),
+			() => ({ method: "importProject", params: [] }),
+			() => ({ method: "importProject", params: null }),
+			() => ({ method: "importProject", params: { ...exported, designs: [] } }),
+			() => ({ method: "importProject", params: { ...exported, project: { ...exported.project, activeDesignId: "nope" } } }),
+			() => ({ method: "importProject", params: { ...exported, designs: [exported.designs[0], exported.designs[0]] } }),
+			// Scenarios and Edge functions: the checks on names, identities and sources.
+			...sourceVariants(exported).map((document) => (): Call => ({ method: "importProject", params: document })),
+			...accepted.map((document) => (): Call => ({ method: "importProject", params: document })),
+			() => ({ method: "exportProject", params: {} }),
+	];
+}

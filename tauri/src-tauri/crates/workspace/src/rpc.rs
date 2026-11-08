@@ -21,6 +21,10 @@ fn parse<T: DeserializeOwned>(method: &str, value: Value) -> Result<T> {
     serde_json::from_value(value).map_err(|error| format!("`{method}` received invalid parameters: {error}"))
 }
 
+fn call_state(result: Result<WorkspaceState>) -> Result<Value> {
+    state(result?)
+}
+
 fn state(state: WorkspaceState) -> Result<Value> {
     serde_json::to_value(state).map_err(|error| error.to_string())
 }
@@ -187,6 +191,8 @@ impl Workspace {
             "moveTable" => call!(MoveTable, |p| self.move_table(&p.design_id, &p.table_id, p.position)),
             "addColumn" => call!(AddColumn, |p| self.add_column(&p.design_id, &p.table_id, p.name.as_deref(), p.r#type.as_deref())),
             "updateColumn" => call!(UpdateColumn, |p| self.update_column(&p.design_id, &p.table_id, &p.column_id, &p.changes)),
+            "exportProject" => self.export_project(),
+            "importProject" => call_state(self.import_project(&value)),
             "undo" => call!(DesignId, |p| self.undo(&p.design_id)),
             "redo" => call!(DesignId, |p| self.redo(&p.design_id)),
             "removeTable" => call!(RemoveTable, |p| self.remove_table(&p.design_id, &p.table_id, p.confirmed == Some(true))),
