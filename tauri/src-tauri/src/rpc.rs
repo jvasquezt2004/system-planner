@@ -20,6 +20,7 @@ impl Backend {
     pub fn start(database_path: std::path::PathBuf, platform: Arc<dyn Platform>, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
         let push = Arc::new(push);
         let sandbox: schema_workspace::SandboxFactory = Arc::new(|| Box::new(schema_sandbox::PgliteSandbox));
+        let path = database_path.clone();
         let workspace = Workspace::open(Options::new(database_path, sandbox))?;
         let state_push = push.clone();
         workspace.subscribe(Arc::new(move |state| {
@@ -28,7 +29,9 @@ impl Backend {
             }
         }));
         let actions = Actions::new(platform, Arc::new(workspace.clone()));
-        let transfers = Arc::new(Transfers::new(actions, move |message| push(message)));
+        // Attached files sit beside the Project's own data, in the same database file.
+        let files = schema_files::ProjectFiles::open(&path, || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)).ok().map(Arc::new);
+        let transfers = Arc::new(Transfers::new(actions, files, move |message| push(message)));
         Ok(Self { workspace, transfers })
     }
 
@@ -75,6 +78,9 @@ mod tests {
         }
         fn choose_file(&self) -> Option<String> {
             None
+        }
+        fn choose_files(&self) -> Vec<String> {
+            vec![]
         }
         fn write_clipboard_text(&self, _text: &str) -> Result<(), String> {
             Ok(())

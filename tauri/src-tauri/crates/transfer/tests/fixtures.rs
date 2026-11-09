@@ -57,6 +57,10 @@ impl Platform for Fake {
         self.import_file.clone()
     }
 
+    fn choose_files(&self) -> Vec<String> {
+        vec![]
+    }
+
     fn write_clipboard_text(&self, text: &str) -> Result<(), String> {
         if let Some(error) = &self.clipboard_error {
             return Err(error.clone());
@@ -77,6 +81,10 @@ struct Host {
 impl ProjectHost for Host {
     fn has_open_project(&self) -> bool {
         true
+    }
+
+    fn open_project_id(&self) -> Option<String> {
+        Some("p1".into())
     }
 
     fn export_project(&self) -> Result<Value, String> {

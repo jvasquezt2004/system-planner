@@ -7,9 +7,11 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{json, Value};
 
+use schema_files::ProjectFiles;
+
 use crate::Actions;
 
-type Work = Box<dyn FnOnce(&Actions) -> Value + Send>;
+type Work = Box<dyn FnOnce(&Actions, &Option<Arc<ProjectFiles>>) -> Value + Send>;
 
 struct Pending {
     work: Work,
@@ -20,16 +22,21 @@ struct Pending {
 /// Routes the requests and messages that involve files, pickers and the clipboard.
 pub struct Transfers {
     actions: Actions,
+    files: Option<Arc<ProjectFiles>>,
     pending: Mutex<HashMap<String, Pending>>,
     push: Arc<dyn Fn(Value) + Send + Sync>,
 }
 
 impl Transfers {
-    pub fn new(actions: Actions, push: impl Fn(Value) + Send + Sync + 'static) -> Self {
-        Self { actions, pending: Mutex::new(HashMap::new()), push: Arc::new(push) }
+    pub fn new(actions: Actions, files: Option<Arc<ProjectFiles>>, push: impl Fn(Value) + Send + Sync + 'static) -> Self {
+        Self { actions, files, pending: Mutex::new(HashMap::new()), push: Arc::new(push) }
     }
 
     fn register(&self, completed: &'static str, work: impl FnOnce(&Actions) -> Value + Send + 'static) -> Value {
+        self.register_with_files(completed, move |actions, _| work(actions))
+    }
+
+    fn register_with_files(&self, completed: &'static str, work: impl FnOnce(&Actions, &Option<Arc<ProjectFiles>>) -> Value + Send + 'static) -> Value {
         let request_id = uuid::Uuid::new_v4().to_string();
         self.pending.lock().expect("pending transfers").insert(request_id.clone(), Pending { work: Box::new(work), completed });
         json!({ "requestId": request_id })
@@ -66,6 +73,20 @@ impl Transfers {
                     Err("Open a project before exporting it.".into())
                 }
             }
+            "beginProjectFilesAdd" => {
+                if self.files.is_none() {
+                    Err("Project files are not available.".into())
+                } else if !host.has_open_project() {
+                    Err("Open a project before attaching files.".into())
+                } else {
+                    Ok(self.register_with_files("projectTransferCompleted", |actions, files| match files {
+                        Some(files) => actions.attach_files(files),
+                        None => json!({ "status": "failed", "error": "Project files are not available." }),
+                    }))
+                }
+            }
+            "listProjectFiles" => Ok(self.files.as_ref().map_or(Ok(json!([])), |files| files.list(params["projectId"].as_str().unwrap_or_default()).map(Value::Array)).unwrap_or_else(|_| json!([]))),
+            "removeProjectFile" => Ok(json!(self.files.as_ref().is_some_and(|files| files.remove(params["projectId"].as_str().unwrap_or_default(), params["fileId"].as_str().unwrap_or_default()).unwrap_or(false)))),
             "beginProjectImport" => Ok(self.register("projectTransferCompleted", |actions| actions.import_project())),
             "beginSystemDesignSvgExport" | "beginSystemDesignPngExport" => {
                 if !host.has_open_project() {
@@ -89,6 +110,7 @@ impl Transfers {
             "chooseSqlPreviewExportDirectory"
                 | "chooseProjectExportDirectory"
                 | "chooseProjectImportFile"
+                | "chooseProjectFiles"
                 | "chooseSystemDesignSvgExportDirectory"
                 | "chooseSystemDesignPngExportDirectory"
         ) {
@@ -96,9 +118,9 @@ impl Transfers {
         }
         let request_id = params.get("requestId").and_then(Value::as_str).unwrap_or_default().to_owned();
         let Some(pending) = self.pending.lock().expect("pending transfers").remove(&request_id) else { return Some(Ok(())) };
-        let (actions, push) = (self.actions.clone(), self.push.clone());
+        let (actions, files, push) = (self.actions.clone(), self.files.clone(), self.push.clone());
         std::thread::spawn(move || {
-            let result = (pending.work)(&actions);
+            let result = (pending.work)(&actions, &files);
             push(json!({ "method": pending.completed, "payload": { "requestId": request_id, "result": result } }));
         });
         Some(Ok(()))

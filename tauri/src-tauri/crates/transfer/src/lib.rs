@@ -25,6 +25,8 @@ pub trait Platform: Send + Sync {
     fn choose_directory(&self) -> Option<String>;
     /// The native file picker. `None` means the designer cancelled.
     fn choose_file(&self) -> Option<String>;
+    /// The native multi-file picker. Empty means the designer cancelled.
+    fn choose_files(&self) -> Vec<String>;
     fn write_clipboard_text(&self, text: &str) -> Result<(), String>;
     /// Milliseconds since the epoch.
     fn now_millis(&self) -> i64;
@@ -33,6 +35,8 @@ pub trait Platform: Send + Sync {
 /// The open Project, as far as transfers need it.
 pub trait ProjectHost: Send + Sync {
     fn has_open_project(&self) -> bool;
+    /// The id of the open Project.
+    fn open_project_id(&self) -> Option<String>;
     fn export_project(&self) -> Result<Value, String>;
     /// Imports a document and returns the id and name of the Project it opened, if one opened.
     fn import_project(&self, document: &Value) -> Result<Option<(String, String)>, String>;
@@ -43,6 +47,10 @@ pub trait ProjectHost: Send + Sync {
 impl ProjectHost for schema_workspace::Workspace {
     fn has_open_project(&self) -> bool {
         self.state().project.is_some()
+    }
+
+    fn open_project_id(&self) -> Option<String> {
+        self.state().project.map(|project| project.id)
     }
 
     fn export_project(&self) -> Result<Value, String> {
@@ -223,6 +231,18 @@ impl Actions {
             Ok(json!({ "status": "exported", "path": path.to_string_lossy(), "name": name }))
         })();
         outcome.unwrap_or_else(|error| json!({ "status": "failed", "error": error }))
+    }
+
+    /// Attaches files the designer picks to the open Project.
+    pub fn attach_files(&self, files: &schema_files::ProjectFiles) -> Value {
+        let Some(project_id) = self.host.open_project_id() else { return json!({ "status": "failed", "error": "Open a project before attaching files." }) };
+        let paths = self.platform.choose_files();
+        if paths.is_empty() {
+            return json!({ "status": "cancelled" });
+        }
+        let (added, skipped) = files.add_from_paths(&project_id, &paths);
+        let names: Vec<Value> = added.iter().map(|file| file["name"].clone()).collect();
+        json!({ "status": "attached", "added": names, "skipped": skipped })
     }
 
     /// Creates a new Project from a file the designer picks. The open Project is unchanged unless the import succeeds.

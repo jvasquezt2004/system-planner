@@ -20,6 +20,11 @@ impl Platform for Desktop {
         file.into_path().ok().map(|path| path.to_string_lossy().into_owned())
     }
 
+    fn choose_files(&self) -> Vec<String> {
+        let files = self.app.dialog().file().blocking_pick_files().unwrap_or_default();
+        files.into_iter().filter_map(|file| file.into_path().ok()).map(|path| path.to_string_lossy().into_owned()).collect()
+    }
+
     fn write_clipboard_text(&self, text: &str) -> Result<(), String> {
         self.app.clipboard().write_text(text.to_owned()).map_err(|error| error.to_string())
     }

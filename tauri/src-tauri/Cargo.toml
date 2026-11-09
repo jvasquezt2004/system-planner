@@ -21,6 +21,7 @@ schema-domain = { path = "crates/domain" }
 schema-sandbox = { path = "crates/sandbox" }
 schema-workspace = { path = "crates/workspace" }
 schema-transfer = { path = "crates/transfer" }
+schema-files = { path = "crates/files" }
 tauri-plugin-dialog = "2"
 tauri-plugin-clipboard-manager = "2"
 
