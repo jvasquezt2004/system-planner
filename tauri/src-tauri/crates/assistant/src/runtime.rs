@@ -16,7 +16,8 @@ use serde_json::{json, Map, Value};
 
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
 use crate::form::{codex_answers_from_form, form_from_codex_questions, form_from_json_schema, validate_form_answer};
-use crate::read_tools::{ReadProject, ToolContext};
+use crate::read_tools::{ReadProject, ReadState, ToolContext};
+use crate::walkthrough_tools::{EditWalkthroughs, ReadWalkthroughs};
 use crate::store::AssistantStore;
 use crate::tools::{ProjectTool, ToolBridge, ToolCall, ToolResult};
 
@@ -78,6 +79,8 @@ struct State {
     requests: HashMap<String, PendingRequest>,
     turn_ids: HashMap<String, String>,
     request_queues: HashMap<String, Arc<Mutex<()>>>,
+    /// What each conversation has read, which its edits are checked against.
+    reads: HashMap<String, Arc<Mutex<ReadState>>>,
 }
 
 struct Shared {
@@ -362,7 +365,7 @@ impl Runtime {
     }
 
     fn tools(&self, context: Arc<ToolContext>) -> Vec<Arc<dyn ProjectTool>> {
-        vec![Arc::new(ReadProject(context))]
+        vec![Arc::new(ReadProject(context.clone())), Arc::new(ReadWalkthroughs(context.clone())), Arc::new(EditWalkthroughs(context))]
     }
 
     fn instructions(&self, folder: Option<&PathBuf>) -> String {
@@ -429,7 +432,11 @@ impl Runtime {
     }
 
     fn start_harness(&self, conversation_id: &str, bound: &Bound, label: &'static str, folder: Option<PathBuf>, previous: Option<&Value>, abort: &Arc<AtomicBool>) -> Result<Harness> {
+        let reads = self.state().reads.entry(conversation_id.to_owned()).or_default().clone();
+        let (turn_runtime, turn_conversation) = (self.clone(), conversation_id.to_owned());
         let context = Arc::new(ToolContext {
+            reads,
+            turn_id: Box::new(move || turn_runtime.state().turn_ids.get(&turn_conversation).cloned()),
             workspace: self.workspace().clone(),
             store: self.shared.store.clone(),
             files: self.shared.options.files.clone(),

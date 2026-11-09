@@ -5,5 +5,6 @@ pub mod codex;
 pub mod form;
 pub mod read_tools;
 pub mod runtime;
+pub mod walkthrough_tools;
 pub mod store;
 pub mod tools;

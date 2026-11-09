@@ -307,6 +307,17 @@ impl Workspace {
         inner.state.clone()
     }
 
+    /// Replaces the Walkthroughs with a validated batch result as one history action; an Assistant turn's
+    /// changes join the turn's single action.
+    pub fn replace_walkthroughs(&self, walkthroughs: &Value, assistant_turn_id: Option<&str>) -> Result<WorkspaceState> {
+        let next = schema_domain::walkthrough::normalize_walkthroughs(walkthroughs)?;
+        let action = match assistant_turn_id {
+            Some(turn) => HistoryAction { name: ASSISTANT_TURN_ACTION_NAME.into(), coalesce_key: None, assistant_turn_id: Some(turn.to_owned()) },
+            None => HistoryAction::named("Edit walkthroughs"),
+        };
+        self.apply_walkthrough_change(|_, _| Ok((next, action)))
+    }
+
     /// Applies one Walkthrough change, as above, saving the whole Walkthrough document.
     fn apply_walkthrough_change(
         &self,

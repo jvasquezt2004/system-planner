@@ -13,7 +13,18 @@ use crate::tools::{ProjectTool, ToolResult};
 type Result<T> = std::result::Result<T, String>;
 
 /// What a conversation's tools may read and the Design their turn is bound to.
+/// What a conversation has read of the Project, so an edit can refuse what changed since.
+#[derive(Default)]
+pub struct ReadState {
+    pub walkthroughs: Option<Vec<schema_domain::walkthrough::Walkthrough>>,
+    /// The System design's content (services, groups, components, connections) as last read.
+    pub system: Option<Value>,
+}
+
 pub struct ToolContext {
+    pub reads: Arc<std::sync::Mutex<ReadState>>,
+    /// The Assistant turn running now, which its edits join as one history action.
+    pub turn_id: Box<dyn Fn() -> Option<String> + Send + Sync>,
     pub workspace: Workspace,
     pub store: Arc<AssistantStore>,
     pub files: Option<Arc<ProjectFiles>>,
