@@ -4697,6 +4697,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema-assistant"
+version = "0.0.1"
+dependencies = [
+ "regex",
+ "rusqlite",
+ "schema-domain",
+ "schema-store",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "uuid",
+]
+
+[[package]]
 name = "schema-designer"
 version = "0.0.1"
 dependencies = [

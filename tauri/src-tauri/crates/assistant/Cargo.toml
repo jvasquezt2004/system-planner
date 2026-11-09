@@ -1,0 +1,18 @@
+[package]
+name = "schema-assistant"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "The Assistant over Codex and OpenCode: conversations, harness protocol and Project tools"
+
+[dependencies]
+schema-domain = { path = "../domain" }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+
+[dev-dependencies]
+tempfile = "3"
+schema-store = { path = "../store" }
