@@ -4,6 +4,14 @@ Status: planning. The Electrobun app in `src/` stays the shipping app until this
 folder reaches parity (see "Definition of parity"). Nothing here changes `src/`
 until phase 0 deliberately introduces a shared RPC seam.
 
+## Where things stand (2026-11-09)
+
+See `PARITY.md` for the feature-by-feature comparison with the Electrobun app. In short: everything
+except Scenario runs and the Assistant is ported and verified, and the app starts and renders on the
+Rust backend. The Assistant's own agent runtime is discarded; it will only mount over Codex and
+OpenCode, which needs an ADR before code (what the harness may read and edit, how `apply_schema`
+reads an edited `schema.sql` back into a Design, and what replaces the provider connections strip).
+
 ## Decisions (agreed with the owner)
 
 | Question | Decision |
