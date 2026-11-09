@@ -60,8 +60,10 @@ jobs:
           workspaces: tauri/src-tauri
       - name: Install dependencies
         run: bun install --frozen-lockfile && cd tauri && bun install --frozen-lockfile
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version "^2" --locked
       - name: Build
-        run: cd tauri && bun run tauri build
+        run: cd tauri && cargo tauri build
       - uses: actions/upload-artifact@v4
         with:
           name: schema-designer-${{ matrix.os }}
