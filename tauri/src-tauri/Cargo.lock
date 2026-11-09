@@ -4931,7 +4931,10 @@ dependencies = [
  "regex",
  "rusqlite",
  "schema-domain",
+ "schema-files",
+ "schema-sandbox",
  "schema-store",
+ "schema-workspace",
  "serde",
  "serde_json",
  "tempfile",
@@ -4942,6 +4945,7 @@ dependencies = [
 name = "schema-designer"
 version = "0.0.1"
 dependencies = [
+ "schema-assistant",
  "schema-domain",
  "schema-files",
  "schema-folder",

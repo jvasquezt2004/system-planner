@@ -25,6 +25,8 @@ TypeScript behaviour or a generator changed.
 | `generate-columns.ts` | `columnDefaultProblem`, `renderDefaultExpression`, `renderColumnType` | `data/columns.json` | `crates/domain/tests/columns.rs` |
 | `generate-identifiers.ts` | `postgres-identifiers.ts` (UTF-8 byte arithmetic) | `data/identifiers.json` | `crates/domain/tests/columns.rs` |
 | `generate-folder.ts` | the Project folder rendering (`renderProjectFolder`, `folderSlug`) over the exports the workspace sessions recorded | `data/folder.json` | `crates/folder/tests/fixtures.rs` |
+| `generate-harness-form.ts` | the harness question forms (`harness-form.ts`) over hand-written and mutated Codex questions, JSON Schemas and answers | `data/harness-form.json` | `crates/assistant/tests/form.rs` |
+| `export-assistant-prompt.ts` | the harness system prompt (`harnessSystemPrompt(SYSTEM_PROMPT)`) | `src-tauri/crates/assistant/data/harness-prompt.txt` (embedded, not a fixture) | `crates/assistant/src/runtime.rs` |
 | `generate-assistant-store.ts` | the Assistant's conversation store: random sessions of creating, appending, renaming, retargeting, deleting, usage and settings | `data/assistant-store.json` | `crates/assistant/tests/store.rs` |
 | `generate-project-files.ts` | attached files: naming and type rules, text read from non-PDF files, the project file store | `data/project-files.json` | `crates/files/tests/fixtures.rs` |
 | `generate-transfer.ts` | the SQL/ORM copy and export, System design SVG/PNG export and Project file export/import actions, run against fake pickers and clipboard | `data/transfer.json` (results, clipboard text, files left behind) | `crates/transfer/tests/fixtures.rs` |

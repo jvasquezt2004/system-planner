@@ -13,6 +13,7 @@ pub struct Backend {
     transfers: Arc<Transfers>,
     folder: Arc<crate::folder::Folder>,
     platform: Arc<dyn Platform>,
+    assistant: schema_assistant::runtime::Runtime,
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -36,12 +37,30 @@ impl Backend {
         let folder = crate::folder::Folder::start(projects_root, workspace.clone(), files.clone());
         let changed = folder.clone();
         workspace.subscribe(Arc::new(move |_| changed.changed()));
-        let transfers = Arc::new(Transfers::new(actions, files, move |message| push(message)));
-        Ok(Self { workspace, transfers, folder, platform })
+        let transfer_push = push.clone();
+        let transfers = Arc::new(Transfers::new(actions, files.clone(), move |message| transfer_push(message)));
+        // The Assistant keeps its conversations in the same database file as the Project.
+        let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64);
+        let store = Arc::new(schema_assistant::store::AssistantStore::open(&path, now)?);
+        let assistant = schema_assistant::runtime::Runtime::new(
+            schema_assistant::runtime::Options {
+                workspace: workspace.clone(),
+                files,
+                folder: Some(folder.clone()),
+                push: Arc::new(move |message| push(message)),
+                codex_executable: None,
+                codex_args: schema_assistant::runtime::Options::standard_codex_args(),
+            },
+            store,
+        );
+        Ok(Self { workspace, transfers, folder, platform, assistant })
     }
 
     pub fn request(&self, method: &str, value: Value) -> Result<Value> {
         if let Some(answer) = self.transfers.request(method, &value) {
+            return answer;
+        }
+        if let Some(answer) = crate::assistant::request(&self.assistant, method, &value) {
             return answer;
         }
         if method == "revealProjectFolder" {
@@ -52,8 +71,6 @@ impl Backend {
         match method {
             // The Assistant is ported last, and its harnesses are the only part kept. Until then it has
             // no conversations, models or connections, which is true, so the sidebar can say so.
-            "listAssistantConversations" | "listAssistantModels" | "listAssistantConnections" => Ok(json!([])),
-            "getClaudeOptIn" => Ok(json!(false)),
             _ => self.workspace.request(method, value).inspect_err(|error| {
                 if error.contains(schema_workspace::NOT_IMPLEMENTED) {
                     eprintln!("[rpc] not implemented yet: {method}");
@@ -140,6 +157,15 @@ mod tests {
         assert!(!methods.is_empty() && methods.iter().all(|method| method == "workspaceState"));
 
         // Calls that are not ported say so by name instead of inventing an answer.
+        // The Assistant's conversations are kept with the Project.
+        let project_id = created["project"]["id"].as_str().unwrap();
+        let conversation = backend.request("createAssistantConversation", json!({ "projectId": project_id })).unwrap();
+        assert_eq!(conversation["connection_id"], "codex-harness");
+        let listed = backend.request("listAssistantConversations", json!({ "projectId": project_id })).unwrap();
+        assert_eq!(listed[0]["id"], conversation["id"]);
+        let record = backend.request("getAssistantConversation", json!({ "conversationId": conversation["id"] })).unwrap();
+        assert_eq!(record["messages"][0]["kind"], "assistant-context");
+        assert!(backend.request("setAssistantApiKey", json!({ "providerId": "openai", "apiKey": "x" })).unwrap_err().contains("not part of this app"));
         let error = backend.request("exportAssistantThing", json!({})).unwrap_err();
         assert!(error.contains("exportAssistantThing") && error.contains("not implemented"), "{error}");
         // Database edits go through the same dispatcher: a plan, a refused removal, then the removal.

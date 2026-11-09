@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
+mod assistant;
 mod folder;
 mod platform;
 mod rpc;

@@ -2,5 +2,8 @@
 //! in later modules, the harness protocol and the Project tools.
 
 pub mod codex;
+pub mod form;
+pub mod read_tools;
+pub mod runtime;
 pub mod store;
 pub mod tools;
