@@ -12,6 +12,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
+jsonschema = { version = "0.61", default-features = false }
 
 [[bin]]
 name = "fake_codex"

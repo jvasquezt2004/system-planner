@@ -48,6 +48,8 @@ of everything that stores credentials.
 
 ## Order of work
 
+Progress, 2026-11-09: steps 1 and 2 are done, and the tool bridge from step 3.
+
 1. Conversation store (same tables, trimmed of everything provider-related), checked against the original.
 2. Codex app-server client and session, tested against a fake server.
 3. Turn orchestration: events to the view, stored messages, stop, status, requests the harness raises.
