@@ -61,6 +61,10 @@ impl Platform for Fake {
         vec![]
     }
 
+    fn open_path(&self, _path: &str) -> bool {
+        false
+    }
+
     fn write_clipboard_text(&self, text: &str) -> Result<(), String> {
         if let Some(error) = &self.clipboard_error {
             return Err(error.clone());

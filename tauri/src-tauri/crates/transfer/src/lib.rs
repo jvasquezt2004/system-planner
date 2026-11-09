@@ -28,6 +28,8 @@ pub trait Platform: Send + Sync {
     /// The native multi-file picker. Empty means the designer cancelled.
     fn choose_files(&self) -> Vec<String>;
     fn write_clipboard_text(&self, text: &str) -> Result<(), String>;
+    /// Opens a folder or file in the system's file manager or default app.
+    fn open_path(&self, path: &str) -> bool;
     /// Milliseconds since the epoch.
     fn now_millis(&self) -> i64;
 }

@@ -24,6 +24,7 @@ TypeScript behaviour or a generator changed.
 | `generate-design-sql.ts` | `generateDesignSql`, `renderSchemaFile`, `planSchemaObjectNames`, `postgresSchemaRelationNames`, relationship resolution, removal plans, `indexMethodProblem` | `data/design-sql.json` (edits + results, SQL as a hash) | `crates/domain/tests/design_sql.rs` |
 | `generate-columns.ts` | `columnDefaultProblem`, `renderDefaultExpression`, `renderColumnType` | `data/columns.json` | `crates/domain/tests/columns.rs` |
 | `generate-identifiers.ts` | `postgres-identifiers.ts` (UTF-8 byte arithmetic) | `data/identifiers.json` | `crates/domain/tests/columns.rs` |
+| `generate-folder.ts` | the Project folder rendering (`renderProjectFolder`, `folderSlug`) over the exports the workspace sessions recorded | `data/folder.json` | `crates/folder/tests/fixtures.rs` |
 | `generate-project-files.ts` | attached files: naming and type rules, text read from non-PDF files, the project file store | `data/project-files.json` | `crates/files/tests/fixtures.rs` |
 | `generate-transfer.ts` | the SQL/ORM copy and export, System design SVG/PNG export and Project file export/import actions, run against fake pickers and clipboard | `data/transfer.json` (results, clipboard text, files left behind) | `crates/transfer/tests/fixtures.rs` |
 | `generate-history.ts` | the Project history (`project-history.ts`): record, coalesce, fold Assistant turns, step | `data/history.json` (a fingerprint of the whole history after every call) | `crates/domain/tests/history.rs` |

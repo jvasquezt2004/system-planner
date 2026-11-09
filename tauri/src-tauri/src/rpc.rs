@@ -11,13 +11,15 @@ use serde_json::{json, Value};
 pub struct Backend {
     workspace: Workspace,
     transfers: Arc<Transfers>,
+    folder: Arc<crate::folder::Folder>,
+    platform: Arc<dyn Platform>,
 }
 
 type Result<T> = std::result::Result<T, String>;
 
 impl Backend {
     /// Opens the workspace on `database_path` and starts pushing state changes through `push`.
-    pub fn start(database_path: std::path::PathBuf, platform: Arc<dyn Platform>, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
+    pub fn start(database_path: std::path::PathBuf, projects_root: std::path::PathBuf, platform: Arc<dyn Platform>, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
         let push = Arc::new(push);
         let sandbox: schema_workspace::SandboxFactory = Arc::new(|| Box::new(schema_sandbox::PgliteSandbox));
         let path = database_path.clone();
@@ -28,16 +30,24 @@ impl Backend {
                 state_push(json!({ "method": "workspaceState", "payload": payload }));
             }
         }));
-        let actions = Actions::new(platform, Arc::new(workspace.clone()));
+        let actions = Actions::new(platform.clone(), Arc::new(workspace.clone()));
         // Attached files sit beside the Project's own data, in the same database file.
         let files = schema_files::ProjectFiles::open(&path, || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64)).ok().map(Arc::new);
+        let folder = crate::folder::Folder::start(projects_root, workspace.clone(), files.clone());
+        let changed = folder.clone();
+        workspace.subscribe(Arc::new(move |_| changed.changed()));
         let transfers = Arc::new(Transfers::new(actions, files, move |message| push(message)));
-        Ok(Self { workspace, transfers })
+        Ok(Self { workspace, transfers, folder, platform })
     }
 
     pub fn request(&self, method: &str, value: Value) -> Result<Value> {
         if let Some(answer) = self.transfers.request(method, &value) {
             return answer;
+        }
+        if method == "revealProjectFolder" {
+            let path = self.folder.sync(false)?;
+            let opened = path.as_ref().is_some_and(|path| self.platform.open_path(&path.to_string_lossy()));
+            return Ok(json!({ "path": path.map(|path| path.to_string_lossy().into_owned()), "opened": opened }));
         }
         match method {
             // The Assistant is ported last, and its harnesses are the only part kept. Until then it has
@@ -82,6 +92,9 @@ mod tests {
         fn choose_files(&self) -> Vec<String> {
             vec![]
         }
+        fn open_path(&self, _path: &str) -> bool {
+            false
+        }
         fn write_clipboard_text(&self, _text: &str) -> Result<(), String> {
             Ok(())
         }
@@ -96,7 +109,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let pushed = Arc::new(Mutex::new(Vec::<Value>::new()));
         let sink = pushed.clone();
-        let backend = Backend::start(directory.path().join("rpc.sqlite"), Arc::new(NoPlatform), move |message| sink.lock().unwrap().push(message)).unwrap();
+        let backend = Backend::start(directory.path().join("rpc.sqlite"), directory.path().join("projects"), Arc::new(NoPlatform), move |message| sink.lock().unwrap().push(message)).unwrap();
 
         let created = backend.request("createProject", json!({ "name": "Shop" })).unwrap();
         let design_id = created["activeDesignId"].as_str().unwrap().to_owned();
