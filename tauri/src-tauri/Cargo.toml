@@ -20,6 +20,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schema-domain = { path = "crates/domain" }
 schema-sandbox = { path = "crates/sandbox" }
 schema-workspace = { path = "crates/workspace" }
+schema-transfer = { path = "crates/transfer" }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
 
 # Further crates join as phases need them (see ../PLAN.md): rusqlite, pg_query,
 # pglite-oxide, tokio, and the Tauri dialog/clipboard/opener plugins.

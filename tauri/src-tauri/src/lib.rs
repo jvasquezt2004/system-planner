@@ -16,6 +16,7 @@ use std::path::PathBuf;
 use serde_json::Value;
 use tauri::{Emitter, Manager};
 
+mod platform;
 mod rpc;
 
 use rpc::Backend;
@@ -46,11 +47,14 @@ fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .setup(|app| {
             let path = database_path(app.handle())?;
             eprintln!("[workspace] database={}", path.display());
             let handle = app.handle().clone();
-            let backend = Backend::start(path, move |message| {
+            let platform = std::sync::Arc::new(platform::Desktop { app: app.handle().clone() });
+            let backend = Backend::start(path, platform, move |message| {
                 let _ = handle.emit("rpc-message", message);
             })?;
             app.manage(backend);

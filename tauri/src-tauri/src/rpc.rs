@@ -3,30 +3,39 @@
 
 use std::sync::Arc;
 
+use schema_transfer::{Actions, Platform, Transfers};
 use schema_workspace::{Options, Workspace};
 use serde_json::{json, Value};
 
 #[derive(Clone)]
 pub struct Backend {
     workspace: Workspace,
+    transfers: Arc<Transfers>,
 }
 
 type Result<T> = std::result::Result<T, String>;
 
 impl Backend {
     /// Opens the workspace on `database_path` and starts pushing state changes through `push`.
-    pub fn start(database_path: std::path::PathBuf, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
+    pub fn start(database_path: std::path::PathBuf, platform: Arc<dyn Platform>, push: impl Fn(Value) + Send + Sync + 'static) -> Result<Self> {
+        let push = Arc::new(push);
         let sandbox: schema_workspace::SandboxFactory = Arc::new(|| Box::new(schema_sandbox::PgliteSandbox));
         let workspace = Workspace::open(Options::new(database_path, sandbox))?;
+        let state_push = push.clone();
         workspace.subscribe(Arc::new(move |state| {
             if let Ok(payload) = serde_json::to_value(state) {
-                push(json!({ "method": "workspaceState", "payload": payload }));
+                state_push(json!({ "method": "workspaceState", "payload": payload }));
             }
         }));
-        Ok(Self { workspace })
+        let actions = Actions::new(platform, Arc::new(workspace.clone()));
+        let transfers = Arc::new(Transfers::new(actions, move |message| push(message)));
+        Ok(Self { workspace, transfers })
     }
 
     pub fn request(&self, method: &str, value: Value) -> Result<Value> {
+        if let Some(answer) = self.transfers.request(method, &value) {
+            return answer;
+        }
         match method {
             // The Assistant is ported last, and its harnesses are the only part kept. Until then it has
             // no conversations, models or connections, which is true, so the sidebar can say so.
@@ -40,7 +49,10 @@ impl Backend {
         }
     }
 
-    pub fn message(&self, method: &str, _value: Value) -> Result<()> {
+    pub fn message(&self, method: &str, value: Value) -> Result<()> {
+        if let Some(answer) = self.transfers.message(method, &value) {
+            return answer;
+        }
         eprintln!("[rpc] not implemented yet: {method}");
         Err(format!("`{method}` {}", schema_workspace::NOT_IMPLEMENTED))
     }
@@ -53,6 +65,24 @@ mod tests {
     use serde_json::{json, Value};
 
     use super::Backend;
+    use schema_transfer::Platform;
+
+    struct NoPlatform;
+
+    impl Platform for NoPlatform {
+        fn choose_directory(&self) -> Option<String> {
+            None
+        }
+        fn choose_file(&self) -> Option<String> {
+            None
+        }
+        fn write_clipboard_text(&self, _text: &str) -> Result<(), String> {
+            Ok(())
+        }
+        fn now_millis(&self) -> i64 {
+            0
+        }
+    }
 
     /// The calls below use exactly the JSON the view sends (see `src/mainview/workspace-client.ts`).
     #[test]
@@ -60,7 +90,7 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let pushed = Arc::new(Mutex::new(Vec::<Value>::new()));
         let sink = pushed.clone();
-        let backend = Backend::start(directory.path().join("rpc.sqlite"), move |message| sink.lock().unwrap().push(message)).unwrap();
+        let backend = Backend::start(directory.path().join("rpc.sqlite"), Arc::new(NoPlatform), move |message| sink.lock().unwrap().push(message)).unwrap();
 
         let created = backend.request("createProject", json!({ "name": "Shop" })).unwrap();
         let design_id = created["activeDesignId"].as_str().unwrap().to_owned();
