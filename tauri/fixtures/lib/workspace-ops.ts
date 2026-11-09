@@ -65,6 +65,14 @@ class C {
 	text(): string | undefined {
 		return this.pick([undefined, "Fastify", "  trimmed  ", "", "y".repeat(501), "A description"]);
 	}
+	scenario(): string {
+		const ids = this.s.scenarios.map((item) => item.id);
+		return ids.length === 0 || this.chance(0.06) ? "missing-scenario" : this.pick(ids);
+	}
+	edgeFunction(): string {
+		const ids = this.s.edgeFunctions.map((item) => item.id);
+		return ids.length === 0 || this.chance(0.06) ? "missing-edge-function" : this.pick(ids);
+	}
 	// Database design objects.
 	confirmed(): boolean | undefined {
 		return this.pick([true, true, false, undefined]);
@@ -298,6 +306,16 @@ export const OPERATIONS: Operation[] = [
 	op("createDesign", 1, (c) => ({ name: c.pick(["", "Reporting", "  Analytics ", "Design 2", "reporting", "x".repeat(30)]) })),
 	op("openDesign", 2, (c) => ({ designId: c.anyDesignId() })),
 	op("renameDesign", 1, (c) => ({ designId: c.anyDesignId(), name: c.pick(["Renamed", "", "  ", "Reporting", "reporting", "Design 1"]) })),
+
+	// Scenarios and Edge functions.
+	op("createScenario", 3, (c) => ({ designId: c.designId(), name: c.pick(["Happy path", "  Padded  ", "", "   ", "Checkout", "Happy path"]) })),
+	op("renameScenario", 2, (c) => ({ designId: c.designId(), scenarioId: c.scenario(), name: c.pick(["Renamed", "", "  ", "Happy path", "Checkout"]) })),
+	op("removeScenario", 1, (c) => ({ designId: c.designId(), scenarioId: c.scenario() })),
+	op("updateScenarioSource", 4, (c) => ({ designId: c.designId(), scenarioId: c.scenario(), source: c.pick(["", "await api.from('a').select()", "const x = 1;", "const x = 1;\n// more"]) })),
+	op("createEdgeFunction", 3, (c) => ({ designId: c.designId(), name: c.pick(["hello", "  hello  ", "Hello", "with-dash_9", "has space", "", "welcome", "é"]) })),
+	op("renameEdgeFunction", 2, (c) => ({ designId: c.designId(), edgeFunctionId: c.edgeFunction(), name: c.pick(["hello", "welcome", "bye", "Bad Name", ""]) })),
+	op("removeEdgeFunction", 1, (c) => ({ designId: c.designId(), edgeFunctionId: c.edgeFunction() })),
+	op("updateEdgeFunctionSource", 4, (c) => ({ designId: c.designId(), edgeFunctionId: c.edgeFunction(), source: c.pick(["", "Deno.serve(() => new Response('x'));", "export {};"]) })),
 
 	// Undo and Redo.
 	op("undo", 7, (c) => ({ designId: c.designId() })),
@@ -597,6 +615,8 @@ const hasFunctions = (state: WorkspaceState) => count(state.design?.functions) >
 
 const NEEDS: Record<string, (state: WorkspaceState) => boolean> = {
 	setActiveView: hasProject, undo: hasProject, redo: hasProject,
+	createScenario: hasProject, renameScenario: (state) => count(state.scenarios) > 0, removeScenario: (state) => count(state.scenarios) > 0, updateScenarioSource: (state) => count(state.scenarios) > 0,
+	createEdgeFunction: hasProject, renameEdgeFunction: (state) => count(state.edgeFunctions) > 0, removeEdgeFunction: (state) => count(state.edgeFunctions) > 0, updateEdgeFunctionSource: (state) => count(state.edgeFunctions) > 0,
 	createDesign: hasProject, openDesign: hasProject, renameDesign: hasProject,
 	addTable: hasProject,
 	removeTable: hasTables, removeColumn: hasTables, addRelationship: hasTables, updateIndexes: hasTables, updateUniqueConstraints: hasTables, updatePolicies: hasTables,

@@ -146,6 +146,30 @@ export const SCRIPTS: Record<string, Script> = {
 		(state) => ({ method: "removeFunction", params: { ...on(state), functionId: "fn-touch" } }),
 	],
 
+	// Scenarios and Edge functions, with Undo across them and typing grouped into one step.
+	sources: [
+		open,
+		(state) => ({ method: "createScenario", params: { ...on(state), name: "  Happy path " } }),
+		(state) => ({ method: "createScenario", params: { ...on(state), name: "Checkout" } }),
+		(state) => ({ method: "updateScenarioSource", params: { ...on(state), scenarioId: state.scenarios[0]!.id, source: "a" } }),
+		(state) => ({ method: "updateScenarioSource", params: { ...on(state), scenarioId: state.scenarios[0]!.id, source: "ab" } }),
+		(state) => ({ method: "renameScenario", params: { ...on(state), scenarioId: state.scenarios[0]!.id, name: "Renamed" } }),
+		(state) => ({ method: "renameScenario", params: { ...on(state), scenarioId: state.scenarios[0]!.id, name: "Renamed again" } }),
+		(state) => ({ method: "createEdgeFunction", params: { ...on(state), name: "hello" } }),
+		(state) => ({ method: "createEdgeFunction", params: { ...on(state), name: "hello" } }),
+		(state) => ({ method: "createEdgeFunction", params: { ...on(state), name: "Hello" } }),
+		(state) => ({ method: "createEdgeFunction", params: { ...on(state), name: "bye" } }),
+		(state) => ({ method: "renameEdgeFunction", params: { ...on(state), edgeFunctionId: state.edgeFunctions[0]!.id, name: "bye" } }),
+		(state) => ({ method: "renameEdgeFunction", params: { ...on(state), edgeFunctionId: state.edgeFunctions[0]!.id, name: "hello" } }),
+		(state) => ({ method: "updateEdgeFunctionSource", params: { ...on(state), edgeFunctionId: state.edgeFunctions[0]!.id, source: "one" } }),
+		(state) => ({ method: "updateEdgeFunctionSource", params: { ...on(state), edgeFunctionId: state.edgeFunctions[0]!.id, source: "two" } }),
+		(state) => ({ method: "removeEdgeFunction", params: { ...on(state), edgeFunctionId: state.edgeFunctions[1]!.id } }),
+		(state) => ({ method: "removeScenario", params: { ...on(state), scenarioId: state.scenarios[1]!.id } }),
+		...Array.from({ length: 12 }, () => (state: WorkspaceState): Call => ({ method: "undo", params: on(state) })),
+		...Array.from({ length: 12 }, () => (state: WorkspaceState): Call => ({ method: "redo", params: on(state) })),
+		(state) => ({ method: "exportProject", params: {} }),
+	],
+
 	// Policies and row-level security.
 	policies: [
 		open, add("accounts"),

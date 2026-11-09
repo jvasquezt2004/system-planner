@@ -17,6 +17,7 @@ mod database;
 mod edits;
 mod history;
 mod portability;
+mod sources;
 mod rpc;
 mod state;
 mod system;
@@ -233,6 +234,7 @@ impl Workspace {
         inner.document_revision = revision;
         inner.system_document_revision = revision;
         inner.walkthrough_document_revision = 0;
+        inner.scenario_revision = 0;
         inner.key_orders = Default::default();
         inner.last_generatable_sql = None;
         let projects = inner.store.list_projects().map_err(|error| error.to_string())?;

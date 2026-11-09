@@ -11,6 +11,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::sources::SourceAction;
 use crate::system::*;
 use crate::{Result, Workspace, WorkspaceState};
 
@@ -193,6 +194,14 @@ impl Workspace {
             "updateColumn" => call!(UpdateColumn, |p| self.update_column(&p.design_id, &p.table_id, &p.column_id, &p.changes)),
             "exportProject" => self.export_project(),
             "importProject" => call_state(self.import_project(&value)),
+            "createScenario" => call!(SourceAction, |p| self.create_scenario(p)),
+            "renameScenario" => call!(SourceAction, |p| self.rename_scenario(p)),
+            "removeScenario" => call!(SourceAction, |p| self.remove_scenario(p)),
+            "updateScenarioSource" => call!(SourceAction, |p| self.update_scenario_source(p)),
+            "createEdgeFunction" => call!(SourceAction, |p| self.create_edge_function(p)),
+            "renameEdgeFunction" => call!(SourceAction, |p| self.rename_edge_function(p)),
+            "removeEdgeFunction" => call!(SourceAction, |p| self.remove_edge_function(p)),
+            "updateEdgeFunctionSource" => call!(SourceAction, |p| self.update_edge_function_source(p)),
             "undo" => call!(DesignId, |p| self.undo(&p.design_id)),
             "redo" => call!(DesignId, |p| self.redo(&p.design_id)),
             "removeTable" => call!(RemoveTable, |p| self.remove_table(&p.design_id, &p.table_id, p.confirmed == Some(true))),
