@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
 use crate::form::{codex_answers_from_form, form_from_codex_questions, form_from_json_schema, validate_form_answer};
 use crate::read_tools::{ReadProject, ReadState, ToolContext};
+use crate::system_tools::{EditSystemDesign, ReadSystemDesign};
 use crate::walkthrough_tools::{EditWalkthroughs, ReadWalkthroughs};
 use crate::store::AssistantStore;
 use crate::tools::{ProjectTool, ToolBridge, ToolCall, ToolResult};
@@ -365,7 +366,13 @@ impl Runtime {
     }
 
     fn tools(&self, context: Arc<ToolContext>) -> Vec<Arc<dyn ProjectTool>> {
-        vec![Arc::new(ReadProject(context.clone())), Arc::new(ReadWalkthroughs(context.clone())), Arc::new(EditWalkthroughs(context))]
+        vec![
+            Arc::new(ReadProject(context.clone())),
+            Arc::new(ReadSystemDesign(context.clone())),
+            Arc::new(EditSystemDesign(context.clone())),
+            Arc::new(ReadWalkthroughs(context.clone())),
+            Arc::new(EditWalkthroughs(context)),
+        ]
     }
 
     fn instructions(&self, folder: Option<&PathBuf>) -> String {
