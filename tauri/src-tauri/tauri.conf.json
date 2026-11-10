@@ -30,6 +30,10 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "DeveloperTool",
+    "shortDescription": "Design PostgreSQL schemas, systems and scenarios",
+    "longDescription": "Schema Designer: a visual designer for PostgreSQL schemas and the systems around them, with a PostgreSQL sandbox, Scenarios and an Assistant that works through Codex or OpenCode.",
+    "copyright": "Schema Designer"
   }
 }

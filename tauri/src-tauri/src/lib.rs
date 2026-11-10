@@ -43,14 +43,13 @@ async fn rpc_message(backend: tauri::State<'_, Backend>, method: String, params:
     tauri::async_runtime::spawn_blocking(move || backend.message(&method, params)).await.map_err(|error| error.to_string())?
 }
 
-/// `DB_PLANNER_DATABASE_PATH` wins, as in the Electrobun app. Otherwise the rewrite keeps its own
-/// database beside the app's data, so running it never touches the Electrobun app's projects.
-/// The shared location is a decision for cutover.
+/// `DB_PLANNER_DATABASE_PATH` wins, as in the Electrobun app. Otherwise the app keeps its own
+/// database in its data directory. It never reads the Electrobun app's database (ADR 0003).
 fn database_path(app: &tauri::AppHandle) -> Result<PathBuf, Box<dyn std::error::Error>> {
     if let Some(path) = std::env::var_os("DB_PLANNER_DATABASE_PATH") {
         return Ok(PathBuf::from(path));
     }
-    Ok(app.path().app_data_dir()?.join("tauri-dev").join("schema-designer.sqlite"))
+    Ok(app.path().app_data_dir()?.join("schema-designer.sqlite"))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
