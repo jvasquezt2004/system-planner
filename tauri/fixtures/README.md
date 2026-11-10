@@ -20,6 +20,7 @@ TypeScript behaviour or a generator changed.
 | `generate-designs.ts` | `normalizeDesign`, driven through the real workspace's project load | `data/designs.json` | `crates/domain/tests/normalizers.rs` |
 | `generate-store.ts` | `openDesignStore` and every `DesignStore` method | `data/store-ops.json`, `data/store-legacy.json` | `crates/store/tests/fixtures.rs` |
 | `generate-system-ops.ts` | the System design editing functions in `system-design.ts` | `data/system-ops.json` | `crates/domain/tests/system_ops.rs` |
+| `generate-layout.ts` | the layout engine (`computeSystemLayout`, `frameAroundMembers`) and spot helpers over every design the System design fixtures produced | `data/layout.json` | `crates/domain/tests/layout.rs` |
 | `generate-walkthrough-ops.ts` | the Walkthrough editing functions in `walkthrough.ts` | `data/walkthrough-ops.json` | `crates/domain/tests/walkthrough_ops.rs` |
 | `generate-design-sql.ts` | `generateDesignSql`, `renderSchemaFile`, `planSchemaObjectNames`, `postgresSchemaRelationNames`, relationship resolution, removal plans, `indexMethodProblem` | `data/design-sql.json` (edits + results, SQL as a hash) | `crates/domain/tests/design_sql.rs` |
 | `generate-columns.ts` | `columnDefaultProblem`, `renderDefaultExpression`, `renderColumnType` | `data/columns.json` | `crates/domain/tests/columns.rs` |
