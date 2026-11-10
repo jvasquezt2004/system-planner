@@ -15,6 +15,7 @@ serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 regex = "1"
 uuid = { version = "1", features = ["v4"] }
 jsonschema = { version = "0.61", default-features = false }
+pg_query = "18.1.0"
 
 [[bin]]
 name = "fake_codex"

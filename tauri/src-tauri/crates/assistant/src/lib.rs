@@ -3,6 +3,7 @@
 
 pub mod code_tools;
 pub mod codex;
+pub mod ddl;
 pub mod form;
 pub mod read_tools;
 pub mod runtime;
