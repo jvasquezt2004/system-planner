@@ -22,6 +22,7 @@ use crate::system::KeyOrders;
 use crate::{Inner, Result, Workspace, WorkspaceState};
 
 pub(crate) const ASSISTANT_TURN_ACTION_NAME: &str = "Assistant turn";
+pub(crate) use ASSISTANT_TURN_ACTION_NAME as ASSISTANT_TURN_ASSISTANT_NAME;
 
 /// How one content change is named, grouped, and attributed in the Project history.
 #[derive(Debug, Clone, PartialEq)]

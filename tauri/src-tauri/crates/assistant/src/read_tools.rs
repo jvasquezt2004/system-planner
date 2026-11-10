@@ -19,6 +19,10 @@ pub struct ReadState {
     pub walkthroughs: Option<Vec<schema_domain::walkthrough::Walkthrough>>,
     /// The System design's content (services, groups, components, connections) as last read.
     pub system: Option<Value>,
+    /// The Scenarios, Edge functions and Function bodies as last read.
+    pub scenarios: Option<Vec<Value>>,
+    pub edge_functions: Option<Vec<Value>>,
+    pub functions: Option<Vec<Value>>,
 }
 
 pub struct ToolContext {
@@ -99,6 +103,12 @@ impl ProjectTool for ReadProject {
         let design = state.design.as_ref().ok_or("Open a project before reading it.")?;
         let generated = generate_design_sql(design, false)?;
         context.store.observe_project_snapshot(&context.conversation_id, &project_snapshot(&state), state.revision)?;
+        if let Ok(mut reads) = context.reads.lock() {
+            reads.scenarios = Some(state.scenarios.clone());
+            reads.edge_functions = Some(state.edge_functions.clone());
+            reads.functions = Some(design.functions.as_ref().map(|functions| functions.iter().map(|function| json!(function)).collect()).unwrap_or_default());
+            reads.system = state.system_design.as_ref().map(crate::system_tools::content_of);
+        }
         let system = state.system_design.as_ref().map(|system| json!({ "services": system.services, "groups": system.groups, "components": system.components, "connections": system.connections }));
         let mut body = serde_json::Map::new();
         body.insert("projectId".into(), json!(context.target.0));

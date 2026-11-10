@@ -15,6 +15,7 @@ use schema_workspace::{Workspace, WorkspaceState};
 use serde_json::{json, Map, Value};
 
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
+use crate::code_tools::ManageCode;
 use crate::form::{codex_answers_from_form, form_from_codex_questions, form_from_json_schema, validate_form_answer};
 use crate::read_tools::{ReadProject, ReadState, ToolContext};
 use crate::system_tools::{EditSystemDesign, ReadSystemDesign};
@@ -371,7 +372,8 @@ impl Runtime {
             Arc::new(ReadSystemDesign(context.clone())),
             Arc::new(EditSystemDesign(context.clone())),
             Arc::new(ReadWalkthroughs(context.clone())),
-            Arc::new(EditWalkthroughs(context)),
+            Arc::new(EditWalkthroughs(context.clone())),
+            Arc::new(ManageCode(context)),
         ]
     }
 

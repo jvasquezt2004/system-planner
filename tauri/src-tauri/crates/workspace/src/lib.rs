@@ -14,6 +14,7 @@
 //! edits, Scenarios and the rest arrive with later phases.
 
 mod database;
+mod assistant;
 mod edits;
 mod history;
 mod portability;
