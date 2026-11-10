@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use schema_files::ProjectFiles;
-use schema_workspace::{Workspace, WorkspaceState};
+use schema_workspace::Workspace;
 use serde_json::{json, Map, Value};
 
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
@@ -438,7 +438,7 @@ impl Runtime {
         match (&state.design, &project, &design_id) {
             (Some(_), Some(project), Some(design_id)) if conversation["project_id"].as_str() == Some(project.as_str()) => {
                 let target = (project.clone(), design_id.clone());
-                Ok(Bound { conversation, state, target })
+                Ok(Bound { conversation, target })
             }
             _ => Err("This conversation requires its project and an active Design to use project tools.".into()),
         }
@@ -853,6 +853,5 @@ impl Runtime {
 
 struct Bound {
     conversation: Value,
-    state: WorkspaceState,
     target: (String, String),
 }

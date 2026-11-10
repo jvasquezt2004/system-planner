@@ -78,7 +78,7 @@ impl ProjectTool for ManageCode {
 
     fn execute(&self, _call_id: &str, arguments: &Value) -> Result<ToolResult> {
         let context = &self.0;
-        let state = context.bound_state()?;
+        context.bound_state()?;
         let (mut action, kind) = (arguments["action"].as_str().unwrap_or_default().to_owned(), arguments["kind"].as_str().unwrap_or_default().to_owned());
         let mut id = arguments["id"].as_str().filter(|id| !id.is_empty()).map(str::to_owned);
         let name = arguments["name"].as_str().filter(|name| !name.is_empty());

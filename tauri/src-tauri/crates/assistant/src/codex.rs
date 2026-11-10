@@ -298,7 +298,7 @@ impl CodexSession {
         if method != "turn/completed" {
             return;
         }
-        let mut state = self.state.lock().expect("session");
+        let state = self.state.lock().expect("session");
         if params["threadId"].as_str() != state.thread_id.as_deref() {
             return;
         }
