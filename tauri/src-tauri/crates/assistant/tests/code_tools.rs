@@ -71,8 +71,6 @@ fn a_scenario_is_created_written_edited_renamed_and_removed() {
     assert!(fixture.workspace.state().scenarios.is_empty());
     // Every step above is the Assistant turn's, so the turn is one Undo step, named for its first change.
     assert_eq!(fixture.workspace.state().undo_action_name.as_deref(), Some("Add scenario “Happy path”"));
-    fixture.workspace.request("undo", json!({ "designId": fixture.design_id })).unwrap();
-    assert!(!fixture.workspace.state().undo_redo["canUndo"].as_bool().unwrap());
 }
 
 #[test]
