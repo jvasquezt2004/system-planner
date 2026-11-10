@@ -55,7 +55,7 @@ pub fn request(runtime: &Runtime, method: &str, params: &Value) -> Option<Result
         }
         "continueAssistantTurn" => Err("This Assistant turn is not waiting to continue.".into()),
         "confirmAssistantDdlDrop" | "rejectAssistantDdlDrop" => Err("The Assistant turn for this confirmation is no longer active.".into()),
-        "revertAssistantTurn" => Err("This Assistant turn is no longer available to revert.".into()),
+        "revertAssistantTurn" => runtime.revert_turn(text(params, "conversationId")),
         "setAssistantApiKey" | "removeAssistantConnection" | "startAssistantOAuthLogin" | "answerAssistantOAuthPrompt" | "cancelAssistantOAuthLogin" | "setClaudeOptIn" => Err(NO_PROVIDERS.into()),
         "getClaudeOptIn" => Ok(json!(false)),
         _ => return None,

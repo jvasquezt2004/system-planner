@@ -169,6 +169,35 @@ impl Workspace {
         describe_project_history(history)
     }
 
+    /// Whether the open design's history holds an entry for this Assistant turn.
+    pub fn has_assistant_turn(&self, turn_id: &str) -> bool {
+        let inner = self.lock();
+        inner.active_design_id.as_ref().and_then(|id| inner.histories.get(id)).is_some_and(|history| history.entries.iter().any(|entry| entry.change.assistant_turn_id.as_deref() == Some(turn_id)))
+    }
+
+    /// Takes back what an Assistant turn changed: the inverse of the turn's history entry is applied
+    /// onto the Project as it is now, merged by identity, so the designer's own later edits stay.
+    pub fn revert_assistant_turn(&self, target_design_id: &str, turn_id: &str) -> Result<WorkspaceState> {
+        let (project_id, design_id, target, structural) = {
+            let mut inner = self.lock();
+            let (project_id, design, design_id) = self.require_open_design(&inner, target_design_id)?;
+            let entry = inner
+                .histories
+                .get(&design_id)
+                .and_then(|history| history.entries.iter().find(|entry| entry.change.assistant_turn_id.as_deref() == Some(turn_id)))
+                .cloned()
+                .ok_or("This Assistant turn is no longer available to revert.")?;
+            let current = self.project_content(&inner, &design, None, None, &inner.key_orders);
+            let target = <ProjectContent as Snapshot>::rebase(&entry.change.after, &entry.change.before, &current);
+            if target.same(&current) {
+                return Err("This Assistant turn has no changes to revert.".into());
+            }
+            self.record_content_change(&mut inner, &HistoryAction::named("Revert Assistant turn"), current, target.clone(), entry.change.structural);
+            (project_id, design_id, target, entry.change.structural)
+        };
+        self.apply_project_content(&project_id, &design_id, target, structural)
+    }
+
     pub fn undo(&self, design_id: &str) -> Result<WorkspaceState> {
         self.apply_history_change(Direction::Undo, design_id)
     }

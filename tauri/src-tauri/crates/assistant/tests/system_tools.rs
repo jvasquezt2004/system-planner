@@ -177,3 +177,27 @@ fn the_tool_schema_lists_what_the_original_lists() {
     assert!(!validator.is_valid(&json!({ "operations": [{ "op": "update_connection", "fromSide": "diagonal" }] })));
     assert!(!validator.is_valid(&json!({ "operations": [{ "op": "add_component", "icon": "star" }] })));
 }
+
+#[test]
+fn reverting_a_turn_takes_back_its_changes_and_keeps_the_designers_own_edits() {
+    let fixture = fixture();
+    run(&fixture.edit, batch(json!([
+        { "op": "add_service", "id": "backend", "name": "Backend", "x": 0, "y": 0 },
+        { "op": "add_component", "id": "api", "name": "API", "ownerServiceId": "backend", "x": 40, "y": 40 },
+    ]))).unwrap();
+    // The turn also changes the schema, as one change with the rest.
+    fixture.workspace.request("addTable", json!({ "designId": fixture.design_id, "name": "orders", "assistantTurnId": "turn-1" })).ok();
+    // The designer keeps working after the turn.
+    fixture.workspace.request("addSystemComponent", json!({ "id": "mine", "name": "Mine", "x": 700, "y": 0 })).unwrap();
+    fixture.workspace.request("addTable", json!({ "designId": fixture.design_id, "name": "customers" })).unwrap();
+    assert!(fixture.workspace.has_assistant_turn("turn-1"));
+    let reverted = fixture.workspace.revert_assistant_turn(&fixture.design_id, "turn-1").unwrap();
+    let system = reverted.system_design.unwrap();
+    assert_eq!(system.services.len(), 0, "the Service the turn added is gone");
+    assert_eq!(system.components.iter().map(|component| component.id.as_str()).collect::<Vec<_>>(), ["mine"], "the designer's Component stays");
+    assert_eq!(reverted.undo_action_name.as_deref(), Some("Revert Assistant turn"));
+    // Reverting is itself one step, which Undo takes back.
+    let undone = fixture.workspace.request("undo", json!({ "designId": fixture.design_id })).unwrap();
+    assert_eq!(undone["systemDesign"]["components"].as_array().unwrap().len(), 2);
+    assert_eq!(fixture.workspace.revert_assistant_turn(&fixture.design_id, "no-such-turn").unwrap_err(), "This Assistant turn is no longer available to revert.");
+}

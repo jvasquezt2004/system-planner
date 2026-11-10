@@ -83,6 +83,8 @@ struct State {
     request_queues: HashMap<String, Arc<Mutex<()>>>,
     /// What each conversation has read, which its edits are checked against.
     reads: HashMap<String, Arc<Mutex<ReadState>>>,
+    /// The latest Assistant turn that changed each Project, by Project id: (conversation, design, turn).
+    last_turns: HashMap<String, (String, String, String)>,
 }
 
 struct Shared {
@@ -299,7 +301,34 @@ impl Runtime {
 
     pub fn turn_status(&self, conversation_id: &str) -> Value {
         let running = self.state().running.contains(conversation_id);
-        json!({ "paused": false, "confirmationRequired": false, "revertAvailable": false, "running": running })
+        json!({ "paused": false, "confirmationRequired": false, "revertAvailable": self.can_revert(conversation_id), "running": running })
+    }
+
+    /// The conversation's turn is the latest to change the open Project, and it can still be taken back.
+    fn can_revert(&self, conversation_id: &str) -> bool {
+        let state = self.workspace().state();
+        let Some(project) = state.project.as_ref() else { return false };
+        let last = self.state().last_turns.get(&project.id).cloned();
+        match last {
+            Some((conversation, design, turn)) => conversation == conversation_id && state.active_design_id.as_deref() == Some(design.as_str()) && self.workspace().has_assistant_turn(&turn),
+            None => false,
+        }
+    }
+
+    /// Takes back the conversation's latest turn, keeping the designer's own later edits.
+    pub fn revert_turn(&self, conversation_id: &str) -> Result<Value> {
+        let state = self.workspace().state();
+        let Some(project) = state.project.as_ref() else { return Err("This Assistant turn is no longer available to revert.".into()) };
+        let last = self.state().last_turns.get(&project.id).cloned();
+        let Some((conversation, design, turn)) = last.filter(|(conversation, _, _)| conversation == conversation_id) else {
+            return Err("This Assistant turn is no longer available to revert.".into());
+        };
+        if state.active_design_id.as_deref() != Some(design.as_str()) {
+            return Err("Open the design this Assistant turn changed to revert it.".into());
+        }
+        self.workspace().revert_assistant_turn(&design, &turn)?;
+        self.state().last_turns.remove(&project.id);
+        self.load_conversation(&conversation)
     }
 
     pub fn is_turn_running(&self, conversation_id: &str) -> bool {
@@ -388,6 +417,16 @@ impl Runtime {
     /// Runs one turn on the conversation's harness thread, blocking until it ends.
     fn run_turn(&self, conversation_id: &str, text: &str, model_id: &str, thinking: Option<&str>, connection_id: &str) -> Result<()> {
         let outcome = self.run_turn_inner(conversation_id, text, model_id, thinking, connection_id);
+        let turn = self.state().turn_ids.get(conversation_id).cloned();
+        {
+            // A turn that changed the Project can be reverted, as long as it stays the latest one.
+            let workspace_state = self.workspace().state();
+            if let (Some(turn), Some(project), Some(design)) = (turn, workspace_state.project.as_ref(), workspace_state.active_design_id.as_ref()) {
+                if self.workspace().has_assistant_turn(&turn) {
+                    self.state().last_turns.insert(project.id.clone(), (conversation_id.to_owned(), design.clone(), turn));
+                }
+            }
+        }
         {
             let mut state = self.state();
             state.aborts.remove(conversation_id);
