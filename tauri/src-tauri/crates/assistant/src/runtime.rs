@@ -216,14 +216,6 @@ impl Runtime {
         self.store().update_default_selection(connection_id, model, thinking)
     }
 
-    pub fn get_max_requests_per_turn(&self) -> Result<i64> {
-        self.store().get_max_requests_per_turn()
-    }
-
-    pub fn set_max_requests_per_turn(&self, limit: f64) -> Result<()> {
-        self.store().set_max_requests_per_turn(limit)
-    }
-
     /* ------------------------------------------------------- models and connections */
 
     fn discovery_server(&self) -> Result<CodexProcess> {

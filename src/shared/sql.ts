@@ -1,9 +1,9 @@
 import {
 	columnDefaultProblem,
 	renderDefaultExpression,
-} from "../shared/column-defaults";
-import { columnTypeInfo, findColumnTypeInfo, isSupportedColumnType } from "../shared/column-types";
-import { renderColumnType } from "../shared/column-types";
+} from "./column-defaults";
+import { columnTypeInfo, findColumnTypeInfo, isSupportedColumnType } from "./column-types";
+import { renderColumnType } from "./column-types";
 import type {
 	Design,
 	DesignColumn,
@@ -14,20 +14,20 @@ import type {
 	DesignUniqueConstraint,
 	DesignFunction,
 	DesignTrigger,
-} from "../shared/design";
+} from "./design";
 import {
 	relationshipConstraintName,
 	relationshipUniqueConstraintName,
 	resolveRelationship,
 	resolveRelationships,
 	type RelationshipView,
-} from "../shared/relationships";
+} from "./relationships";
 import {
 	postgresGeneratedObjectName,
 	truncatePostgresIdentifier,
 	uniquePostgresIdentifier,
-} from "../shared/postgres-identifiers";
-import { findIndexMethod, indexOperatorClasses } from "../shared/index-methods";
+} from "./postgres-identifiers";
+import { findIndexMethod, indexOperatorClasses } from "./index-methods";
 
 export type SqlGeneration =
 	| { ok: true; sql: string; /** Advice that does not stop the SQL: PostgreSQL accepts it, but it is usually a mistake. */ warnings: string[] }

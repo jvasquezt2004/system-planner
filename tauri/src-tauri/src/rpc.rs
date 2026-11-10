@@ -175,7 +175,8 @@ mod tests {
         assert_eq!(listed[0]["id"], conversation["id"]);
         let record = backend.request("getAssistantConversation", json!({ "conversationId": conversation["id"] })).unwrap();
         assert_eq!(record["messages"][0]["kind"], "assistant-context");
-        assert!(backend.request("setAssistantApiKey", json!({ "providerId": "openai", "apiKey": "x" })).unwrap_err().contains("not part of this app"));
+        // Provider connections are not part of the app any more, so their calls are simply unknown.
+        assert!(backend.request("setAssistantApiKey", json!({ "providerId": "openai", "apiKey": "x" })).unwrap_err().contains("not implemented"));
         let error = backend.request("exportAssistantThing", json!({})).unwrap_err();
         assert!(error.contains("exportAssistantThing") && error.contains("not implemented"), "{error}");
         // Database edits go through the same dispatcher: a plan, a refused removal, then the removal.

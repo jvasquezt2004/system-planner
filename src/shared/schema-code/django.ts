@@ -1,4 +1,4 @@
-import { planSchemaObjectNames } from "../../bun/sql";
+import { planSchemaObjectNames } from "../sql";
 import type {
 	Design,
 	DesignColumn,

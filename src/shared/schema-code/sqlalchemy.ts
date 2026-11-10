@@ -1,4 +1,4 @@
-import { planSchemaObjectNames } from "../../bun/sql";
+import { planSchemaObjectNames } from "../sql";
 import { resolveRelationship } from "../relationships";
 import type { Design, DesignColumn, DesignIndex, DesignTable } from "../design";
 import type { SchemaCodeGeneration } from "./types";

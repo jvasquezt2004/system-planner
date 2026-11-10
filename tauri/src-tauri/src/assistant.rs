@@ -19,8 +19,6 @@ impl ProjectFolderSync for Folder {
     }
 }
 
-const NO_PROVIDERS: &str = "Provider connections are not part of this app. The Assistant works through Codex or OpenCode.";
-
 fn text<'a>(params: &'a Value, key: &str) -> &'a str {
     params[key].as_str().unwrap_or_default()
 }
@@ -35,8 +33,6 @@ pub fn request(runtime: &Runtime, method: &str, params: &Value) -> Option<Result
         "deleteAssistantConversation" => runtime.delete_conversation(text(params, "conversationId")).map(|deleted| json!(deleted)),
         "listAssistantModels" => runtime.list_models(),
         "listAssistantConnections" => runtime.list_connections(),
-        "getAssistantRequestCap" => runtime.get_max_requests_per_turn().map(|cap| json!(cap)),
-        "setAssistantRequestCap" => runtime.set_max_requests_per_turn(params["limit"].as_f64().unwrap_or(f64::NAN)).map(|()| Value::Null),
         "sendAssistantMessage" => {
             let thinking = params["thinkingLevel"].as_str().unwrap_or("medium");
             runtime.send_message(text(params, "conversationId"), text(params, "text"), text(params, "modelId"), thinking, params["connectionId"].as_str())
@@ -56,8 +52,6 @@ pub fn request(runtime: &Runtime, method: &str, params: &Value) -> Option<Result
         "continueAssistantTurn" => Err("This Assistant turn is not waiting to continue.".into()),
         "confirmAssistantDdlDrop" | "rejectAssistantDdlDrop" => Err("The Assistant turn for this confirmation is no longer active.".into()),
         "revertAssistantTurn" => runtime.revert_turn(text(params, "conversationId")),
-        "setAssistantApiKey" | "removeAssistantConnection" | "startAssistantOAuthLogin" | "answerAssistantOAuthPrompt" | "cancelAssistantOAuthLogin" | "setClaudeOptIn" => Err(NO_PROVIDERS.into()),
-        "getClaudeOptIn" => Ok(json!(false)),
         _ => return None,
     })
 }

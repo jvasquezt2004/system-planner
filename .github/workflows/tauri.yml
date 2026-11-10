@@ -2,15 +2,15 @@ name: Tauri rewrite
 
 on:
   pull_request:
-    paths: ["tauri/**", "src/shared/**", "src/bun/**", ".github/workflows/tauri.yml"]
+    paths: ["tauri/**", "src/**", "package.json", "tsconfig.json", ".github/workflows/tauri.yml"]
   push:
     branches: [main, rewrite]
-    paths: ["tauri/**", "src/shared/**", "src/bun/**", ".github/workflows/tauri.yml"]
+    paths: ["tauri/**", "src/**", "package.json", "tsconfig.json", ".github/workflows/tauri.yml"]
   workflow_dispatch:
 
 jobs:
   rust:
-    name: Rust tests and fixture drift
+    name: Rust tests and view tests
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -28,11 +28,8 @@ jobs:
           workspaces: tauri/src-tauri
       - name: Install dependencies
         run: bun install --frozen-lockfile && (cd tauri && bun install --frozen-lockfile)
-      # The TypeScript code is the oracle. Regenerating the fixtures must change nothing.
-      - name: Regenerate fixtures
-        run: cd tauri && bun run fixtures
-      - name: Fixtures are up to date
-        run: git diff --exit-code -- tauri/fixtures/data tauri/src-tauri/crates/domain/data
+      - name: View tests and type check
+        run: bun test src && bunx tsc --noEmit -p tsconfig.json
       - name: Rust tests
         run: cd tauri/src-tauri && cargo test --workspace
 

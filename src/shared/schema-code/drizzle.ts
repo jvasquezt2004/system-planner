@@ -6,7 +6,7 @@ import type {
 	DesignRelationship,
 	DesignTable,
 } from "../design";
-import { planSchemaObjectNames } from "../../bun/sql";
+import { planSchemaObjectNames } from "../sql";
 import { postgresGeneratedObjectName } from "../postgres-identifiers";
 import { modelWords, planRelationshipNames, splitWords, type NameWords } from "./naming";
 import { unrepresentedPostgresqlLogicNotice } from "./postgresql-logic-notice";

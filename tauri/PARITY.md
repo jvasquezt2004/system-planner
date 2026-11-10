@@ -1,6 +1,6 @@
-# Feature parity: Tauri rewrite against the Electrobun app
+# Feature parity: the Tauri app against the Electrobun app it replaced
 
-Compared on 2026-11-09 at the head of the `rewrite` branch. The Electrobun app is the oracle; the
+Compared on 2026-11-10 at the head of the `rewrite` branch, before the Electrobun app and its TypeScript backend were removed (last commit that has them: `2e78461`). It was the oracle; the
 Assistant's own agent runtime (providers, API keys, OAuth, its tools) is out of scope by decision. The
 Assistant will only mount over Codex and OpenCode.
 
@@ -8,9 +8,7 @@ How it was checked: every request and message in `AppRPCSchema` (`src/shared/rpc
 Rust backend answers, then each feature against the evidence that backs it. "Verified" means a
 differential fixture or oracle session recorded from the TypeScript code and replayed in Rust.
 
-**Result: not at parity yet.** The remaining gaps are OpenCode and packaging; the
-provider flows are dropped by decision. (The request audit has not been rerun since the Assistant
-work; it was 93 of 119 before.)
+**Result: at parity, with the gaps listed below.** All 119 requests of the original's RPC contract are answered (the provider flows were removed from the contract and the view). What is not done is listed under "Not done" and "Not tested".
 
 ## Done and verified
 
@@ -26,6 +24,7 @@ work; it was 93 of 119 before.)
 | SQL preview and ORM code: copy and export; System design SVG/PNG export; Project export/import files | transfer fixtures (160 cases) |
 | ORM code generation (Prisma, Drizzle, SQLAlchemy, Django) | runs in the view from `src/shared`, unchanged |
 | Scenario runs: the PostgREST emulation over the sandbox (filters, embeds, writes, upserts, RPC, roles and RLS), run lifecycle, result grids, request log | Scenario API fixtures (379 requests against the original, 41 of them refusals); run lifecycle test; run in the real window |
+| Assistant over Codex and OpenCode (ADR 0003) | Conversations in the app's own database (matches the original over 800 calls), turns in the Project folder, streamed messages and tool use, the harness's questions as forms (637 cases), approvals, stop, steering, model and sign-in listing, Revert of a turn. Project tools: `read_project`, `read_system_design`, `edit_system_design` (layout engine over 11k cases), `read_walkthroughs`, `edit_walkthroughs`, `manage_code`, `apply_schema` (DDL translation against the original on 1.7k scripts and 874 edits), `run_scenarios`. Real Codex turn in the app (edited `schema.sql`, `apply_schema`, `run_scenarios`, Revert); real OpenCode turn through the loopback MCP endpoint (opt-in test) |
 | Attached Project files (list, remove, attach, text for plain files and PDFs) | project-files fixtures; PDFs tested separately (a different extractor) |
 | Project folder (the readable copy of the Project on disk, Reveal Project folder) | rendering fixtures on recorded Projects; sync behaviour tested directly |
 | Existing databases open unchanged (schema, migrations, legacy shapes) | store fixtures including legacy databases |
@@ -34,9 +33,12 @@ work; it was 93 of 119 before.)
 
 | Area | What is missing | Size |
 | --- | --- | --- |
-| **Assistant over Codex** (ADR 0003) | Working: conversations (own database), turns in the Project folder, streamed messages and tool use as events, the harness's questions as forms (637 cases against the original), approvals, stop, steering, status, model listing, Revert of a turn, and a real Codex run (opt-in test: one turn that calls `read_project`). Project tools: `read_project`, `read_system_design`, `edit_system_design` (layout engine checked over 11k cases), `read_walkthroughs`, `edit_walkthroughs`, `manage_code` (without TypeScript diagnostics), `apply_schema` (the DDL translation matches the original on 1.7k scripts and 874 file edits). `run_scenarios` (the view runs the code; checked with a fake view and with a real Codex turn). A real Codex turn in the app edited `schema.sql`, called `apply_schema` and `run_scenarios`, and Revert took it back. **Not done:** the DDL drop-confirmation flow (only `apply_ddl` used it, which harnesses do not have), and OpenCode (its harness and tool endpoint; selecting it reports that it is unavailable). | medium |
-| Dropped by decision | provider API keys, OAuth login, connections, Claude opt-in, the Assistant's own models. The view still shows a "Provider connections" strip that should be replaced when the harness work lands. | small, with the harness |
-| Packaging | CI builds on three platforms (untested until it runs); icons, signing, updater and the data location are undecided. The rewrite keeps its own database (`…/tauri-dev/schema-designer.sqlite`); sharing the Electrobun app's database is a cutover decision. | medium |
+| TypeScript diagnostics for Assistant code edits | `manage_code` writes Scenarios, Edge functions and Function bodies but cannot run the TypeScript compiler, so its result says no diagnostics are available. | small |
+| DDL drop confirmation | Only the original's own-agent `apply_ddl` used it; harnesses edit `schema.sql` and call `apply_schema`, which needs no confirmation step. | none for harnesses |
+| Release signing and updates | Need certificates and keys; the steps are in `RELEASE.md`. | medium |
+
+Removed by decision (ADR 0003): provider API keys, OAuth sign-in, connections, Claude opt-in, the Assistant's
+own models and request cap. The sidebar now shows the two harnesses and their status.
 
 ## Fixed rather than copied
 
@@ -69,7 +71,7 @@ These are deliberate or not reachable from the view; each is also noted where it
 
 ## Not tested
 
-- The Assistant with OpenCode, and with Codex beyond the one turn above.
+- The Assistant with Codex beyond the real turns described above, and with OpenCode beyond one read-only turn.
 - Real dialogs and the clipboard: the pickers and clipboard are behind a trait and tested with fakes.
   They compile and the app starts with them, but nothing has driven them in the window.
 - Native clicks and typing: the window was driven through a debug-only bridge that runs scripts inside it, not through the desktop's input.

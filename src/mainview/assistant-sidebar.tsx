@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from "react";
 import { BookOpen, ChevronLeft, ChevronRight, Database, FileCode2, FolderOpen, MessageSquare, MoreHorizontal, Play, Plus, Send, Wrench, X } from "lucide-react";
-import { Input } from "@/components/ui/input";
 import { HarnessFormPanel } from "./harness-form";
 import { ProjectFilesPanel, type ProjectFilesApi } from "./project-files-panel";
 import type { HarnessFormField } from "../shared/harness-form";
@@ -48,13 +47,6 @@ type AssistantApi = Pick<
 	| "deleteAssistantConversation"
 	| "listAssistantModels"
 	| "listAssistantConnections"
-	| "setAssistantApiKey"
-	| "removeAssistantConnection"
-	| "startAssistantOAuthLogin"
-	| "answerAssistantOAuthPrompt"
-	| "cancelAssistantOAuthLogin"
-	| "getClaudeOptIn"
-	| "setClaudeOptIn"
 	| "sendAssistantMessage"
 	| "stopAssistantTurn"
 	| "continueAssistantTurn"
@@ -67,9 +59,6 @@ type AssistantApi = Pick<
 	| "rejectAssistantDdlDrop"
 	| "revertAssistantTurn"
 	| "subscribeAssistantEvents"
-	| "subscribeAssistantOAuthEvents"
-	| "getAssistantRequestCap"
-	| "setAssistantRequestCap"
 >;
 type StreamEnvelope = { conversationId: string; event: unknown };
 
@@ -106,14 +95,7 @@ export function AssistantSidebar({
 	const [models, setModels] = useState<AssistantModel[]>([]);
 	const [connections, setConnections] = useState<AssistantConnectionStatus[]>([]);
 	const [selectedConnectionId, setSelectedConnectionId] = useState("");
-	const [claudeOptIn, setClaudeOptIn] = useState(false);
-	const [deviceCode, setDeviceCode] = useState<{ providerId: string; userCode: string; verificationUri: string } | null>(null);
-	const [oAuthProgress, setOAuthProgress] = useState<{ providerId: string; message: string } | null>(null);
-	const [oAuthPrompt, setOAuthPrompt] = useState<{ providerId: string; promptId: string; message: string; placeholder?: string; secret: boolean } | null>(null);
-	const [oAuthAnswer, setOAuthAnswer] = useState("");
 	const [cacheWarning, setCacheWarning] = useState<string | null>(null);
-	const [requestCap, setRequestCap] = useState(40);
-	const [apiKeys, setApiKeys] = useState<Record<string, string>>({ anthropic: "", openai: "", google: "" });
 	const [model, setModel] = useState("");
 	const [thinking, setThinking] = useState<AssistantThinkingLevel>("medium");
 	const [text, setText] = useState("");
@@ -152,17 +134,13 @@ export function AssistantSidebar({
 			api.listAssistantConversations(projectId),
 			api.listAssistantModels(),
 			api.listAssistantConnections(),
-			api.getClaudeOptIn(),
-			api.getAssistantRequestCap(),
 		])
-			.then(([items, available, connectionList, optIn, cap]) => {
+			.then(([items, available, connectionList]) => {
 				if (!live) return;
 				const recent = [...items].sort((a, b) => b.updated_at - a.updated_at);
 				setConversations(recent);
 				setModels(available);
 				setConnections(connectionList);
-				setClaudeOptIn(optIn);
-				setRequestCap(cap);
 				const initial = pickUsableModel(available);
 				if (initial) {
 					setModel(initial.id);
@@ -291,44 +269,6 @@ export function AssistantSidebar({
 			setMessages((current) => foldAssistantEvent(current, envelope.event));
 		});
 	}, [activeId, api]);
-	useEffect(() => {
-		return api.subscribeAssistantOAuthEvents(({ providerId, event }) => {
-			if (!event || typeof event !== "object") return;
-			const record = event as {
-				type?: string;
-				userCode?: string;
-				verificationUri?: string;
-				message?: string;
-				promptId?: string;
-				promptType?: string;
-				placeholder?: string;
-				success?: boolean;
-				error?: string;
-			};
-			if (record.type === "device_code" && record.userCode && record.verificationUri) {
-				setDeviceCode({ providerId, userCode: record.userCode, verificationUri: record.verificationUri });
-			} else if (record.type === "progress" && record.message) {
-				setOAuthProgress({ providerId, message: record.message });
-			} else if (record.type === "prompt" && record.promptId) {
-				setOAuthAnswer("");
-				setOAuthPrompt({
-					providerId,
-					promptId: record.promptId,
-					message: record.message ?? "Complete sign-in in your browser.",
-					placeholder: record.placeholder,
-					secret: record.promptType === "secret",
-				});
-			} else if (record.type === "prompt_closed" && record.promptId) {
-				setOAuthPrompt((current) => (current?.promptId === record.promptId ? null : current));
-			} else if (record.type === "login_finished") {
-				setOAuthProgress(null);
-				setDeviceCode(null);
-				setOAuthPrompt(null);
-				if (record.success === false && record.error) setError(record.error);
-				void reloadConnections();
-			}
-		});
-	}, [api]);
 
 	useEffect(() => {
 		scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight });
@@ -517,60 +457,6 @@ export function AssistantSidebar({
 			]);
 			setModels(available);
 			setConnections(connectionList);
-		} catch (cause) {
-			setError(String(cause));
-		}
-	}
-
-	async function saveApiKey(providerId: string) {
-		const apiKey = apiKeys[providerId]?.trim();
-		if (!apiKey) return;
-		try {
-			await api.setAssistantApiKey(providerId, apiKey);
-			setApiKeys((current) => ({ ...current, [providerId]: "" }));
-			setError("");
-			await reloadConnections();
-		} catch (cause) {
-			setError(String(cause));
-		}
-	}
-
-	async function removeConnection(connectionId: string) {
-		try {
-			await api.removeAssistantConnection(connectionId);
-			setError("");
-			await reloadConnections();
-		} catch (cause) {
-			setError(String(cause));
-		}
-	}
-
-	async function startOAuthLogin(providerId: string) {
-		setError("");
-		setOAuthProgress({ providerId, message: "Complete sign-in in your browser…" });
-		try {
-			// The outcome arrives as a "login_finished" sign-in event.
-			await api.startAssistantOAuthLogin(providerId);
-		} catch (cause) {
-			setError(String(cause));
-			setOAuthProgress(null);
-			setDeviceCode(null);
-		}
-	}
-
-	async function submitOAuthAnswer() {
-		if (!oAuthPrompt || !oAuthAnswer.trim()) return;
-		const { promptId } = oAuthPrompt;
-		setOAuthPrompt(null);
-		await api.answerAssistantOAuthPrompt(promptId, oAuthAnswer.trim());
-		setOAuthAnswer("");
-	}
-
-	async function toggleClaudeOptIn(enabled: boolean) {
-		try {
-			await api.setClaudeOptIn(enabled);
-			setClaudeOptIn(enabled);
-			await reloadConnections();
 		} catch (cause) {
 			setError(String(cause));
 		}
@@ -796,54 +682,6 @@ export function AssistantSidebar({
 						{cacheWarning}
 					</div>
 				)}
-				{deviceCode && (
-					<div className="mb-2 rounded border border-ink/25 bg-surface p-2 text-xs">
-						<p className="font-semibold">Sign in with device code</p>
-						<p className="mt-1">Code: <strong className="font-mono text-sm tracking-wider">{deviceCode.userCode}</strong></p>
-						<p className="mt-1 text-ink-3">
-							Verification URL:{" "}
-							<a href={deviceCode.verificationUri} target="_blank" rel="noreferrer" className="underline underline-offset-2">
-								{deviceCode.verificationUri}
-							</a>
-						</p>
-					</div>
-				)}
-				{oAuthProgress && (
-					<div className="mb-2 flex items-center justify-between gap-2 rounded border border-ink/20 p-2 text-xs text-ink-2">
-						<span className="min-w-0 flex-1">{oAuthProgress.message}</span>
-						<button
-							onClick={() => void api.cancelAssistantOAuthLogin(oAuthProgress.providerId)}
-							className="shrink-0 rounded border border-ink/30 bg-paper px-2 py-1 text-xs font-medium text-ink"
-						>
-							Cancel
-						</button>
-					</div>
-				)}
-				{oAuthPrompt && (
-					<form
-						className="mb-2 rounded border border-ink/20 p-2 text-xs text-ink-2"
-						onSubmit={(event) => {
-							event.preventDefault();
-							void submitOAuthAnswer();
-						}}
-					>
-						<label htmlFor="assistant-oauth-answer" className="block">{oAuthPrompt.message}</label>
-						<div className="mt-1 flex gap-2">
-							<Input
-								id="assistant-oauth-answer"
-								aria-label="Sign-in answer"
-								type={oAuthPrompt.secret ? "password" : "text"}
-								value={oAuthAnswer}
-								placeholder={oAuthPrompt.placeholder}
-								onChange={(event: ChangeEvent<HTMLInputElement>) => setOAuthAnswer(event.target.value)}
-								className="h-8 min-w-0 flex-1 text-xs"
-							/>
-							<button type="submit" className="shrink-0 rounded border border-ink/30 bg-paper px-2 py-1 text-xs font-medium text-ink">
-								Submit
-							</button>
-						</div>
-					</form>
-				)}
 				{isConnectionRemoved && (
 					<div role="alert" className="mb-2 rounded border border-ink/20 bg-ink/5 p-2 text-xs">
 						The provider connection for this conversation was removed. Please select a connection and model to continue.
@@ -852,22 +690,8 @@ export function AssistantSidebar({
 				{selectedConnection?.error && (
 					<div role="alert" className="mb-2 flex items-center justify-between gap-2 rounded border border-proof-red/40 bg-proof-red/10 p-2 text-xs text-proof-red">
 						<span className="min-w-0 flex-1">{selectedConnection.name}: {selectedConnection.error}</span>
-						{isHarnessConnection(selectedConnection.providerId) ? (
+						{(
 							<button onClick={() => void reloadConnections()} className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink">Check again</button>
-						) : selectedConnection.authMethod === "oauth" ? (
-							<button
-								onClick={() => void startOAuthLogin(selectedConnection.providerId)}
-								className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink"
-							>
-								Re-sign in
-							</button>
-						) : (
-							<button
-								onClick={() => setExpandedSettings(true)}
-								className="shrink-0 rounded border border-proof-red/50 bg-paper px-2 py-1 text-xs font-medium text-ink"
-							>
-								Update key
-							</button>
 						)}
 					</div>
 				)}
@@ -960,7 +784,7 @@ export function AssistantSidebar({
 				</div>
 				<details className="mt-2" open={expandedSettings} onToggle={(event) => setExpandedSettings((event.target as HTMLDetailsElement).open)}>
 					<summary className="cursor-pointer text-[11px] text-ink-3">
-						Provider connections · {connections.filter((c) => c.connected).length} connected
+						Harnesses · {connections.filter((c) => c.connected).length} ready
 					</summary>
 					<div className="mt-2 space-y-3">
 						<div className="rounded border border-ink/10 p-2 text-xs">
@@ -971,170 +795,7 @@ export function AssistantSidebar({
 							<div className="flex items-center justify-between font-medium"><span>OpenCode</span><span className="text-[11px] text-ink-3">{connections.find((c) => c.providerId === "opencode-harness")?.connected ? "Ready" : "Setup needed"}</span></div>
 							<p className="mt-1 text-ink-3">Uses the installed OpenCode with its own providers, models, and permissions. Run <code>opencode auth login</code> in a terminal to connect a provider. OpenCode starts in the Project's read-only folder and receives the Project tools only from this app. Project Revert covers Project changes only.</p>
 						</div>
-						<label className="flex items-center justify-between gap-2 text-xs">
-							<span>Provider runtime requests per turn</span>
-							<input
-								aria-label="Model requests per Assistant turn"
-								type="number"
-								min={1}
-								max={500}
-								value={requestCap}
-								onChange={(event) => {
-									const cap = Number(event.target.value);
-									setRequestCap(cap);
-									if (Number.isInteger(cap) && cap >= 1 && cap <= 500) {
-										void api.setAssistantRequestCap(cap).catch((cause: unknown) => setError(String(cause)));
-									}
-								}}
-								className="w-16 rounded border border-ink/20 bg-transparent px-1 py-0.5"
-							/>
-						</label>
-						{/* Anthropic / Claude connection */}
-						<div className="rounded border border-ink/10 p-2 text-xs">
-							<div className="flex items-center justify-between font-medium">
-								<span>Anthropic / Claude</span>
-								<span className="text-[11px] text-ink-3">
-									{connections.find((c) => c.providerId === "anthropic")?.connected ? "Connected" : "Not connected"}
-								</span>
-							</div>
-							{connections.find((c) => c.providerId === "anthropic")?.error && (
-								<p role="alert" className="mt-1 text-[11px] text-proof-red">
-									{connections.find((c) => c.providerId === "anthropic")?.error}
-								</p>
-							)}
-							<div className="mt-2 border-t border-ink/10 pt-2">
-								<label className="flex items-start gap-2 text-xs">
-									<input
-										type="checkbox"
-										checked={claudeOptIn}
-										onChange={(event) => void toggleClaudeOptIn(event.target.checked)}
-										className="mt-0.5"
-									/>
-									<div>
-										<span className="font-medium">Enable Claude account sign-in (Pro/Max)</span>
-										<p className="mt-0.5 text-[10px] text-ink-3">
-											Anthropic's consumer terms restrict using a Pro/Max sign-in in third-party apps. Use at your own risk.
-										</p>
-									</div>
-								</label>
-								{claudeOptIn && (
-									<div className="mt-2 flex gap-2">
-										<button
-											onClick={() => void startOAuthLogin("anthropic")}
-											className="rounded border border-ink/20 px-2 py-1 text-xs hover:bg-ink/5"
-										>
-											{connections.find((c) => c.providerId === "anthropic" && c.authMethod === "oauth")?.error ? "Re-sign in with Claude" : "Sign in with Claude"}
-										</button>
-									</div>
-								)}
-							</div>
-							<div className="mt-2 border-t border-ink/10 pt-2">
-								<div className="flex gap-2">
-									<Input
-										type="password"
-										value={apiKeys.anthropic ?? ""}
-										onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, anthropic: event.target.value }))}
-										placeholder="Paste Anthropic API key"
-										autoComplete="off"
-									/>
-									<button
-										onClick={() => void saveApiKey("anthropic")}
-										disabled={!apiKeys.anthropic}
-										className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
-									>
-										Save
-									</button>
-								</div>
-							</div>
-							{connections.find((c) => c.providerId === "anthropic")?.connected && (
-								<button onClick={() => void removeConnection("anthropic")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
-									Remove connection
-								</button>
-							)}
-						</div>
-
-						{/* OpenAI / ChatGPT connection */}
-						<div className="rounded border border-ink/10 p-2 text-xs">
-							<div className="flex items-center justify-between font-medium">
-								<span>OpenAI / ChatGPT</span>
-								<span className="text-[11px] text-ink-3">
-									{connections.find((c) => c.providerId === "openai")?.connected ? "Connected" : "Not connected"}
-								</span>
-							</div>
-							{connections.find((c) => c.providerId === "openai")?.error && (
-								<p role="alert" className="mt-1 text-[11px] text-proof-red">
-									{connections.find((c) => c.providerId === "openai")?.error}
-								</p>
-							)}
-							<div className="mt-2 flex gap-2">
-								<button
-									onClick={() => void startOAuthLogin("openai")}
-									className="rounded border border-ink/20 px-2 py-1 text-xs hover:bg-ink/5"
-								>
-									{connections.find((c) => c.providerId === "openai" && c.authMethod === "oauth")?.error ? "Re-sign in with ChatGPT" : "Sign in with ChatGPT"}
-								</button>
-							</div>
-							<div className="mt-2 border-t border-ink/10 pt-2 flex gap-2">
-								<Input
-									type="password"
-									value={apiKeys.openai ?? ""}
-									onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, openai: event.target.value }))}
-									placeholder="Paste OpenAI API key"
-									autoComplete="off"
-								/>
-								<button
-									onClick={() => void saveApiKey("openai")}
-									disabled={!apiKeys.openai}
-									className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
-								>
-									Save
-								</button>
-							</div>
-							{connections.find((c) => c.providerId === "openai")?.connected && (
-								<button onClick={() => void removeConnection("openai")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
-									Remove connection
-								</button>
-							)}
-						</div>
-
-						{/* Google Gemini connection */}
-						<div className="rounded border border-ink/10 p-2 text-xs">
-							<div className="flex items-center justify-between font-medium">
-								<span>Google Gemini</span>
-								<span className="text-[11px] text-ink-3">
-									{connections.find((c) => c.providerId === "google")?.connected ? "Connected" : "Not connected"}
-								</span>
-							</div>
-							{connections.find((c) => c.providerId === "google")?.error && (
-								<p role="alert" className="mt-1 text-[11px] text-proof-red">
-									{connections.find((c) => c.providerId === "google")?.error}
-								</p>
-							)}
-							<div className="mt-2 flex gap-2">
-								<Input
-									type="password"
-									value={apiKeys.google ?? ""}
-									onChange={(event: ChangeEvent<HTMLInputElement>) => setApiKeys((cur) => ({ ...cur, google: event.target.value }))}
-									placeholder="Paste Google Gemini API key"
-									autoComplete="off"
-								/>
-								<button
-									onClick={() => void saveApiKey("google")}
-									disabled={!apiKeys.google}
-									className="rounded border border-ink/20 px-2 text-xs disabled:opacity-40"
-								>
-									Save
-								</button>
-							</div>
-							{connections.find((c) => c.providerId === "google")?.connected && (
-								<button onClick={() => void removeConnection("google")} className="mt-2 rounded border border-ink/20 px-2 py-1 text-xs">
-									Remove connection
-								</button>
-							)}
-							<p className="mt-1.5 text-[10px] text-ink-3">Google account sign-in is not offered. Gemini connections require an API key.</p>
-						</div>
 					</div>
-					<p className="mt-2 text-[10px] text-ink-3">Stored in the operating-system credential service, never in conversation content or SQLite.</p>
 				</details>
 			</div>
 		</aside>

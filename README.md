@@ -2,7 +2,7 @@
 
 Design a system, explore its databases, and explain how the pieces work together.
 Schema Designer is a local desktop app for system architecture and PostgreSQL
-schema design, built with TypeScript, React, Electrobun, and an embedded PGlite
+schema design, built with Rust and Tauri, a React view, and an embedded PGlite
 sandbox. No Docker or installed PostgreSQL server is required.
 
 ![A commerce system with a storefront, checkout service, database, queue, and worker](docs/screenshots/readme-system-design.png)
@@ -48,8 +48,8 @@ sandbox. No Docker or installed PostgreSQL server is required.
 - Author TypeScript Edge functions belonging to a database Design.
 - Use the project Assistant to inspect and edit project content. Select Codex
   or OpenCode to use an installed, signed-in CLI with its own tools and
-  settings, plus Project tools available only to the app's own sessions.
-  Existing provider connections remain available. Core editing works without an Assistant.
+  settings, plus Project tools available only to the app's own sessions. The app
+  keeps no provider keys of its own. Core editing works without an Assistant.
 - Attach specifications and PDFs to a Project so the Assistant can read them as
   background for a feature.
 - Autosave Projects locally in SQLite, including unfinished work and layouts.
@@ -68,43 +68,21 @@ rebuildable preview data, not a connection to a production database.
 
 ### Prerequisites
 
-- Git.
-- [Hutch](https://github.com/blackboardsh/electrobun/blob/main/docs/src/content/docs/electrobun/guides/quick-start.mdx),
-  which manages the Electrobun devkit and toolchains. The repository pins its
-  versions in [hutch.config.ts](hutch.config.ts).
-- [Bun](https://bun.sh/docs/installation) for the test and typecheck commands below.
-- The native runtime dependencies for your platform. Linux uses GTK 3,
-  WebKitGTK 4.1, and an app indicator library; Windows uses WebView2.
-
-Install Hutch on Linux or macOS:
-
-```bash
-curl -fsSL https://hutch.blackboard.sh/hutch/install.sh | sh
-```
-
-Or in Windows PowerShell:
-
-```powershell
-& ([scriptblock]::Create((irm https://hutch.blackboard.sh/hutch/install.ps1)))
-```
-
-Restart your terminal if needed, then check `hutch --version`.
-See the upstream [platform dependency guide](https://github.com/blackboardsh/electrobun/blob/main/docs/src/content/docs/electrobun/guides/cross-platform-development.mdx)
-for native runtime packages. The repository includes a Linux installer and
-packaging checks for Linux and Windows; macOS packaging is not verified here.
+- Git, [Bun](https://bun.sh/docs/installation) and a stable [Rust](https://rustup.rs) toolchain.
+- The [Tauri CLI](https://tauri.app/start/): `cargo install tauri-cli --version "^2"`.
+- The native runtime dependencies for your platform
+  ([Tauri prerequisites](https://tauri.app/start/prerequisites/)). Linux uses GTK 3 and
+  WebKitGTK 4.1; Windows uses WebView2. The first build compiles PostgreSQL's parser and the PGlite
+  runtime, so it takes a while and wants a few GB of memory (`CARGO_BUILD_JOBS=3` helps on small machines).
 
 ### Start the app
 
 ```bash
 git clone https://github.com/jvasquezt2004/db-planner.git
 cd db-planner
-hutch run install
-hutch run dev
+bun install && (cd tauri && bun install)
+cd tauri && cargo tauri dev
 ```
-
-For frontend hot reload, use `hutch run dev:hmr`. The app is a desktop application;
-its frontend communicates with the Bun main process through Electrobun RPC, so
-opening the Vite URL alone does not provide the full application.
 
 To use Codex in the Assistant, install the Codex CLI, make `codex` available on
 the desktop app's `PATH`, and run `codex login` in a terminal. Select **Codex
@@ -118,46 +96,14 @@ or commands outside the app. OpenCode works the same way: install it and run
 `opencode auth login`, then pick **OpenCode (default model)** or a listed model.
 See [Assistant](docs/assistant.md) for details.
 
-### Install on Linux
-
-Install the native runtime libraries and `rsvg-convert`, which the installer uses
-to render the app icons. For example, on Ubuntu/Debian:
-
-```bash
-sudo apt install libgtk-3-0 libwebkit2gtk-4.1-0 libayatana-appindicator3-1 librsvg2-bin
-```
-
-From the prepared checkout:
-
-```bash
-hutch run install:linux
-schema-designer
-```
-
-The installer builds the stable app, installs its files under
-`${XDG_DATA_HOME:-~/.local/share}/schema-designer`, creates the
-`~/.local/bin/schema-designer` launcher, and registers a desktop entry and icons.
-Ensure `~/.local/bin` is on your `PATH`, or launch **Schema Designer** from your
-application menu. The current installer expects a Linux x64 build.
-
-Run `hutch run install:linux` again to upgrade. To remove the application:
-
-```bash
-hutch run uninstall:linux
-```
-
-Upgrades and uninstalls preserve the separate user database.
-
 ### Build a distributable
 
 ```bash
-hutch run build
+cd tauri && cargo tauri build
 ```
 
-Packaged output is written under `build/` for the stable channel and current
-platform. On Windows, use the generated setup executable to install the app.
-See the [Windows smoke-check guide](docs/packaged-windows-smoke-check.md) for
-packaged verification and runtime troubleshooting.
+Bundles are written under `tauri/src-tauri/target/release/bundle/` (or `$CARGO_TARGET_DIR`).
+See [tauri/RELEASE.md](tauri/RELEASE.md) for signing and updates.
 
 ## First project
 
@@ -187,48 +133,40 @@ and build plan also contain planned work.
 | Executable previews | [Sandbox API](docs/sandbox-api.md), [Scenario expectations](docs/scenario-expectations.md) |
 | Assistant | [Assistant architecture and behavior](docs/assistant.md) |
 | Persistence and portability | [Architecture decisions](docs/adr/), [Project export/import contract](docs/adr/0012-portable-project-export-and-import.md) |
-| Packaging | [Windows smoke check](docs/packaged-windows-smoke-check.md), [canvas proof evidence](docs/packaged-canvas-proof-evidence.md) |
+| Packaging | [Release notes](tauri/RELEASE.md) |
 
 ## Development
 
 | Command | Purpose |
 | --- | --- |
-| `hutch run install` | Install locked project dependencies |
-| `hutch run dev` | Build the frontend and run the desktop app with main-process watching |
-| `hutch run dev:hmr` | Run the desktop app with Vite hot reload |
-| `hutch run build` | Build the stable desktop package |
-| `hutch run build:canary` | Build a canary desktop package |
-| `bun test` | Run the behavioral tests, including real SQLite and PGlite tests |
-| `bunx tsc --noEmit` | Check TypeScript types |
+| `cd tauri && cargo tauri dev` | Run the desktop app with Vite hot reload |
+| `cd tauri && cargo tauri build` | Build the desktop package |
+| `cd tauri/src-tauri && cargo test --workspace` | Run the Rust tests, which replay the recorded behaviour in `tauri/fixtures` |
+| `bun test src` | Run the view's tests |
+| `bunx tsc --noEmit` | Check the view's TypeScript types |
 
 ### Code map
 
+- `tauri/src-tauri/crates/` — the backend as Rust crates: `domain` (Designs, SQL generation, System design,
+  Walkthroughs), `store` (SQLite), `workspace` (edits, history, autosave, Scenario runs), `sandbox` and
+  `scenario` (PGlite), `transfer`, `files`, `folder` (Project export, files, folder), `assistant` (Codex and
+  OpenCode harnesses and the Project tools).
+- `tauri/src-tauri/src/` — the Tauri shell: commands, dialogs, clipboard, Project folder sync.
+- `tauri/shims/` — adapters that give the view its RPC client on top of Tauri.
+- `tauri/fixtures/` — recordings of the original TypeScript implementation's behaviour, replayed by the Rust tests.
 - `src/shared/` — domain models, component catalog, Walkthrough playback, schema
   code generators, and the typed RPC contract.
-- `src/bun/` — workspace operations, SQLite persistence, SQL generation,
-  sandbox orchestration, Assistant runtime, and native file exports.
 - `src/mainview/` — React views, architecture and database canvases, inspectors,
   code editors, and the Assistant sidebar.
 - `src/mainview/components/ui/` — shared Radix-based UI components.
 - `src/mainview/index.css` — typography, colors, and UI design tokens.
-- `electrobun.config.ts` — desktop packaging, native platform options, and bundled
-  assets, including the PGlite and parser WebAssembly files.
-- `hutch.config.ts` — pinned toolchain versions and development/build commands.
 
 ### Local data
 
-The app stores its authoritative project data in `schema-designer.sqlite` under
-Electrobun's per-user application data directory. Stable and development runs use
-separate channels. On Linux the default stable database is:
-
-```text
-~/.local/share/com.dbplanner.schema-designer/stable/schema-designer.sqlite
-```
-
-On Windows it lives beneath `%LOCALAPPDATA%\com.dbplanner.schema-designer\` in
-the channel's application data location. Set `DB_PLANNER_DATABASE_PATH` to use a
-separate database, for example for demos or smoke checks. Provider credentials
-are handled separately from portable Project files.
+The app stores its authoritative project data in `schema-designer.sqlite` in its per-user data directory
+(on Linux `~/.local/share/com.dbplanner.schema-designer/`), and a readable copy of each Project in
+`~/Schema Designer/`. Set `DB_PLANNER_DATABASE_PATH` and `DB_PLANNER_PROJECTS_PATH` to use other locations,
+for example for demos or smoke checks. The app does not read the database of the earlier Electrobun version.
 
 The README screenshots show the application frontend connected to an isolated
 demo backend, using an illustrative commerce Project.

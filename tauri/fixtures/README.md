@@ -1,18 +1,19 @@
 # Parity fixtures
 
-The Electrobun app's TypeScript is the oracle for the Rust rewrite. These scripts
-run the real TypeScript code and record what it does; the Rust crates replay the
-recordings and must agree. Nothing here changes `src/`.
+These files are recordings of what the TypeScript implementation did, which the Rust crates replay and
+must agree with. The TypeScript backend was the oracle while the app was rewritten; it was removed at
+cutover, so **the recordings are now frozen**: they are the specification of behaviour the rewrite
+matched, and a Rust change that breaks one is a behaviour change to decide on, not a drift to regenerate.
+
+The last commit that contains the TypeScript backend and the generators that produced these files is
+`2e78461`. To regenerate or extend a recording, check that commit out beside this one, run its
+`bun run fixtures` in `tauri/`, and copy `fixtures/data` back.
 
 ```bash
-cd tauri
-bun run fixtures          # regenerate everything under fixtures/data
-cargo test --workspace    # from tauri/src-tauri, with CARGO_TARGET_DIR/TMPDIR on a real disk
+cd tauri/src-tauri && cargo test --workspace   # with CARGO_TARGET_DIR/TMPDIR on a real disk
 ```
 
-Generation is deterministic (seeded), so regenerating without changing the
-TypeScript produces a byte-identical `data/`. A diff after regenerating means the
-TypeScript behaviour or a generator changed.
+What each file records and which test replays it (generators named for reference, at `2e78461`):
 
 | Generator | Oracle | Writes | Replayed by |
 | --- | --- | --- | --- |

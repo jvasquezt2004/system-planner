@@ -300,7 +300,6 @@ impl Workspace {
                 let files = self.lock().store.list_project_files(&p.project_id).map_err(|error| error.to_string())?;
                 serde_json::to_value(files).map_err(|error| error.to_string())
             }
-            "getAssistantRequestCap" => Ok(serde_json::json!(self.lock().store.assistant_request_cap().map_err(|error| error.to_string())?)),
 
             other => Err(format!("`{other}` {NOT_IMPLEMENTED}")),
         }
