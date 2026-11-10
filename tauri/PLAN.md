@@ -1,3 +1,6 @@
+> Historical: this was the plan for the rewrite. It is finished; see PARITY.md for the result and
+> `docs/adr/0004-electrobun-removed-recordings-frozen.md` for the cutover.
+
 # Tauri rewrite plan
 
 Status: planning. The Electrobun app in `src/` stays the shipping app until this

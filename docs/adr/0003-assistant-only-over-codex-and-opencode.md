@@ -39,7 +39,7 @@ of everything that stores credentials.
 ## Consequences
 
 - The own agent is not ported at all, and the "Provider connections"
-  strip in the sidebar is replaced by a harness picker.
+  strip in the sidebar is replaced by the two harnesses' status; the model picker lists both harnesses' models.
 - Reading an edited `schema.sql` back into a Design (`apply_schema`) needs a PostgreSQL parser. The
   rewrite uses libpg_query through the `pg_query` crate, so the parse matches the server's.
 - The Assistant cannot be verified end to end without Codex or OpenCode installed. The protocol layers
@@ -48,7 +48,7 @@ of everything that stores credentials.
 
 ## Order of work
 
-Progress, 2026-11-10: steps 1–6 and 8 are done for Codex. A real Codex turn in the app edited `schema.sql`, called `apply_schema` and `run_scenarios`, and the turn was reverted. Remaining: step 7 (OpenCode and its MCP endpoint) and the DDL drop-confirmation flow, which `apply_schema` does not need.
+Progress, 2026-11-10: all eight steps are done. A real Codex turn and a real OpenCode turn each edited `schema.sql`, called `apply_schema` and were reverted in the app. The sidebar's provider section was replaced by the two harnesses' status. Left out on purpose: the DDL drop-confirmation flow (only `apply_ddl` used it) and TypeScript diagnostics in `manage_code`.
 
 1. Conversation store (same tables, trimmed of everything provider-related), checked against the original.
 2. Codex app-server client and session, tested against a fake server.
