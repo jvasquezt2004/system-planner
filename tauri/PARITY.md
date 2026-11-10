@@ -8,7 +8,7 @@ How it was checked: every request and message in `AppRPCSchema` (`src/shared/rpc
 Rust backend answers, then each feature against the evidence that backs it. "Verified" means a
 differential fixture or oracle session recorded from the TypeScript code and replayed in Rust.
 
-**Result: not at parity yet.** The remaining gaps are Scenario runs, OpenCode, and packaging; the
+**Result: not at parity yet.** The remaining gaps are OpenCode and packaging; the
 provider flows are dropped by decision. (The request audit has not been rerun since the Assistant
 work; it was 93 of 119 before.)
 
@@ -25,6 +25,7 @@ work; it was 93 of 119 before.)
 | Scenario and Edge function edits (create, rename, remove, edit source) | workspace oracle |
 | SQL preview and ORM code: copy and export; System design SVG/PNG export; Project export/import files | transfer fixtures (160 cases) |
 | ORM code generation (Prisma, Drizzle, SQLAlchemy, Django) | runs in the view from `src/shared`, unchanged |
+| Scenario runs: the PostgREST emulation over the sandbox (filters, embeds, writes, upserts, RPC, roles and RLS), run lifecycle, result grids, request log | Scenario API fixtures (379 requests against the original, 41 of them refusals); run lifecycle test; run in the real window |
 | Attached Project files (list, remove, attach, text for plain files and PDFs) | project-files fixtures; PDFs tested separately (a different extractor) |
 | Project folder (the readable copy of the Project on disk, Reveal Project folder) | rendering fixtures on recorded Projects; sync behaviour tested directly |
 | Existing databases open unchanged (schema, migrations, legacy shapes) | store fixtures including legacy databases |
@@ -33,8 +34,7 @@ work; it was 93 of 119 before.)
 
 | Area | What is missing | Size |
 | --- | --- | --- |
-| **Scenario runs** | `beginScenarioRun`, `handleSandboxApiRequest`, `finishScenarioRun` and the result grids: the PostgREST emulation over the sandbox database (`scenario-api.ts`, ~1,000 lines). Scenarios can be written and saved but not run. | large |
-| **Assistant over Codex** (ADR 0003) | Working: conversations (own database), turns in the Project folder, streamed messages and tool use as events, the harness's questions as forms (637 cases against the original), approvals, stop, steering, status, model listing, Revert of a turn, and a real Codex run (opt-in test: one turn that calls `read_project`). Project tools: `read_project`, `read_system_design`, `edit_system_design` (layout engine checked over 11k cases), `read_walkthroughs`, `edit_walkthroughs`, `manage_code` (without TypeScript diagnostics), `apply_schema` (the DDL translation matches the original on 1.7k scripts and 874 file edits). **Not done:** `run_scenarios` (needs Scenario runs), the DDL drop-confirmation flow (only `apply_ddl` used it, which harnesses do not have), and OpenCode (its harness and tool endpoint; selecting it reports that it is unavailable). | medium |
+| **Assistant over Codex** (ADR 0003) | Working: conversations (own database), turns in the Project folder, streamed messages and tool use as events, the harness's questions as forms (637 cases against the original), approvals, stop, steering, status, model listing, Revert of a turn, and a real Codex run (opt-in test: one turn that calls `read_project`). Project tools: `read_project`, `read_system_design`, `edit_system_design` (layout engine checked over 11k cases), `read_walkthroughs`, `edit_walkthroughs`, `manage_code` (without TypeScript diagnostics), `apply_schema` (the DDL translation matches the original on 1.7k scripts and 874 file edits). `run_scenarios` (the view runs the code; checked with a fake view and with a real Codex turn). A real Codex turn in the app edited `schema.sql`, called `apply_schema` and `run_scenarios`, and Revert took it back. **Not done:** the DDL drop-confirmation flow (only `apply_ddl` used it, which harnesses do not have), and OpenCode (its harness and tool endpoint; selecting it reports that it is unavailable). | medium |
 | Dropped by decision | provider API keys, OAuth login, connections, Claude opt-in, the Assistant's own models. The view still shows a "Provider connections" strip that should be replaced when the harness work lands. | small, with the harness |
 | Packaging | CI builds on three platforms (untested until it runs); icons, signing, updater and the data location are undecided. The rewrite keeps its own database (`…/tauri-dev/schema-designer.sqlite`); sharing the Electrobun app's database is a cutover decision. | medium |
 
@@ -48,6 +48,8 @@ and one field is looked up under the wrong name):
 - `numeric(10, 0)` keeps the whole table as raw SQL; here it is a numeric column with scale 0.
 - Any Function with parameters is kept as raw SQL; here its parameters are read.
 - A column's `COLLATE` is dropped without a trace; here the table is kept as raw SQL so it survives.
+- Timestamps in the sandbox are in UTC (the original follows the machine's time zone); result-grid cells show PostgreSQL's text form of a timestamp.
+- A Scenario run whose view went away (a page reload) is given up on after 45 seconds instead of blocking the next run for good.
 - A comment above a statement stays with it, as in the original, but the parser is PostgreSQL 18's
   (the original's is 17).
 
@@ -67,8 +69,8 @@ These are deliberate or not reachable from the view; each is also noted where it
 
 ## Not tested
 
-- The Assistant with OpenCode, and with Codex beyond one read-only turn.
+- The Assistant with OpenCode, and with Codex beyond the one turn above.
 - Real dialogs and the clipboard: the pickers and clipboard are behind a trait and tested with fakes.
   They compile and the app starts with them, but nothing has driven them in the window.
-- Clicks and typing in the window (no synthetic input).
+- Native clicks and typing: the window was driven through a debug-only bridge that runs scripts inside it, not through the desktop's input.
 - Windows and macOS builds.

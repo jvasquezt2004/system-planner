@@ -22,7 +22,13 @@ pub struct ActiveRun {
     scenario_revision: i64,
     edge_function_revision: i64,
     database: Option<Arc<RunDatabase>>,
+    /// When the run last did anything; a run whose view went away is eventually given up on.
+    touched: std::time::Instant,
 }
+
+/// The view reports a run within 30 seconds or stops it, so a run quiet for longer has lost its view
+/// (for instance because the page reloaded) and no longer blocks the next one.
+const ABANDONED_AFTER: std::time::Duration = std::time::Duration::from_secs(45);
 
 fn expired_run() -> Value {
     json!({
@@ -51,8 +57,19 @@ impl Workspace {
         let (run_id, sql, schema) = {
             let mut inner = self.lock();
             let (project_id, _, design_id) = self.require_open_design(&inner, design_id)?;
-            if inner.active_scenario_run.is_some() {
-                return Err("Another Scenario run is already active.".into());
+            if let Some(active) = inner.active_scenario_run.as_ref() {
+                if active.touched.elapsed() < ABANDONED_AFTER {
+                    return Err("Another Scenario run is already active.".into());
+                }
+                let (abandoned, scenario_id) = (active.id.clone(), active.scenario_id.clone());
+                inner.active_scenario_run = None;
+                self.update(&mut inner, |state| {
+                    if let Some(record) = state.scenario_runs.get_mut(&scenario_id).and_then(Value::as_object_mut).filter(|record| record["id"] == abandoned.as_str() && record["status"] == "running") {
+                        record.insert("status".into(), json!("errored"));
+                        record.insert("reason".into(), json!("stopped"));
+                        record.insert("console".into(), json!(["The run was abandoned: the view stopped reporting."]));
+                    }
+                });
             }
             let scenario = inner
                 .state
@@ -72,6 +89,7 @@ impl Workspace {
                 scenario_revision: inner.scenario_revision,
                 edge_function_revision: inner.edge_function_revision,
                 database: None,
+                touched: std::time::Instant::now(),
             };
             let schema = RunSchema {
                 tables: serde_json::from_value(snapshot["tables"].clone()).map_err(|error| error.to_string())?,
@@ -133,6 +151,9 @@ impl Workspace {
             database
         };
         let Some((response, entry)) = database.handle(request.clone()) else { return expired_run() };
+        if let Some(run) = self.lock().active_scenario_run.as_mut().filter(|run| run.id == run_id) {
+            run.touched = std::time::Instant::now();
+        }
         let mut inner = self.lock();
         let Some(run) = inner.active_scenario_run.as_ref().filter(|run| run.id == run_id) else { return response };
         let scenario_id = run.scenario_id.clone();

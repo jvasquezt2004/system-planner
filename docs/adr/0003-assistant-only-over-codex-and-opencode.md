@@ -48,7 +48,7 @@ of everything that stores credentials.
 
 ## Order of work
 
-Progress, 2026-11-10: steps 1–6 are done for Codex, including a run against a real Codex (read tool, one turn). Remaining: step 7 (OpenCode and its MCP endpoint), step 8 (`run_scenarios`, once Scenario runs exist) and the DDL drop-confirmation flow, which `apply_schema` does not need.
+Progress, 2026-11-10: steps 1–6 and 8 are done for Codex. A real Codex turn in the app edited `schema.sql`, called `apply_schema` and `run_scenarios`, and the turn was reverted. Remaining: step 7 (OpenCode and its MCP endpoint) and the DDL drop-confirmation flow, which `apply_schema` does not need.
 
 1. Conversation store (same tables, trimmed of everything provider-related), checked against the original.
 2. Codex app-server client and session, tested against a fake server.
