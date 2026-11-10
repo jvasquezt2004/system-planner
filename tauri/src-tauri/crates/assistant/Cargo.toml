@@ -17,6 +17,7 @@ regex = "1"
 uuid = { version = "1", features = ["v4"] }
 jsonschema = { version = "0.61", default-features = false }
 pg_query = "18.1.0"
+ureq = { version = "3", default-features = false }
 
 [[bin]]
 name = "fake_codex"

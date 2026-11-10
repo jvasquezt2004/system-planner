@@ -342,6 +342,30 @@ impl CodexSession {
     }
 }
 
+impl crate::harness::HarnessSession for CodexSession {
+    fn target(&self) -> Option<(String, Option<String>)> {
+        CodexSession::target(self)
+    }
+    fn default_model(&self) -> Option<String> {
+        CodexSession::default_model(self)
+    }
+    fn send(&self, text: &str, model: Option<&str>, effort: Option<&str>) -> Result<()> {
+        CodexSession::send(self, text, model, effort)
+    }
+    fn interrupt(&self) -> Result<()> {
+        CodexSession::interrupt(self)
+    }
+    fn steer(&self, text: &str) -> Result<()> {
+        CodexSession::steer(self, text)
+    }
+    fn close(&self, reason: &str) {
+        CodexSession::close(self, reason)
+    }
+    fn accept_notification(&self, method: &str, params: &Value) {
+        CodexSession::accept_notification(self, method, params)
+    }
+}
+
 /// A running app-server process and its client.
 pub struct CodexProcess {
     pub client: Arc<CodexClient>,

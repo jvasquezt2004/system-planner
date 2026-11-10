@@ -43,6 +43,7 @@ fn fixture() -> Fixture {
             push: Arc::new(move |message| sink.lock().unwrap().push(message["payload"].clone())),
             codex_executable: Some(env!("CARGO_BIN_EXE_fake_codex").into()),
             codex_args: vec![],
+            opencode_executable: None,
         },
         store,
     );

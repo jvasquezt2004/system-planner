@@ -15,6 +15,7 @@ use schema_workspace::{Workspace, WorkspaceState};
 use serde_json::{json, Map, Value};
 
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
+use crate::harness::HarnessSession;
 use crate::code_tools::ManageCode;
 use crate::scenario_tools::RunScenarios;
 use crate::schema_tools::ApplySchema;
@@ -30,6 +31,7 @@ type Result<T> = std::result::Result<T, String>;
 pub const CODEX_CONNECTION_ID: &str = "codex-harness";
 pub const CODEX_MODEL_ID: &str = "codex-default";
 pub const OPENCODE_CONNECTION_ID: &str = "opencode-harness";
+pub const OPENCODE_MODEL_ID: &str = "opencode-default";
 
 const HARNESS_PROMPT: &str = include_str!("../data/harness-prompt.txt");
 
@@ -59,6 +61,7 @@ pub struct Options {
     pub push: Arc<dyn Fn(Value) + Send + Sync>,
     pub codex_executable: Option<PathBuf>,
     pub codex_args: Vec<String>,
+    pub opencode_executable: Option<PathBuf>,
 }
 
 impl Options {
@@ -68,8 +71,15 @@ impl Options {
 }
 
 struct Harness {
-    session: Arc<CodexSession>,
-    process: CodexProcess,
+    session: Arc<dyn HarnessSession>,
+    /// Ends the harness's process and whatever else it owns.
+    close: Box<dyn Fn() + Send + Sync>,
+}
+
+impl Harness {
+    fn close(&self) {
+        (self.close)();
+    }
 }
 
 struct PendingRequest {
@@ -188,7 +198,7 @@ impl Runtime {
         self.abort(conversation_id);
         let harness = self.state().sessions.remove(conversation_id);
         if let Some(harness) = harness {
-            harness.process.close();
+            harness.close();
         }
         self.store().delete_conversation(conversation_id)
     }
@@ -240,21 +250,43 @@ impl Runtime {
             status["error"] = json!(error);
             status
         };
-        if !self.codex_available() {
-            return Ok(json!([status(false, Some("Install the Codex CLI and sign in with codex login.".into()))]));
-        }
-        let outcome = self.discovery_server().and_then(|server| {
-            let account = server.client.request("account/read", json!({ "refreshToken": false }));
-            server.close();
-            account
-        });
-        Ok(json!([match outcome {
-            Ok(account) => {
-                let connected = !account["account"].is_null() && account.get("account").is_some() || account["requiresOpenaiAuth"] == false;
-                status(connected, if connected { None } else { Some("Run codex login in a terminal to sign in.".into()) })
+        let codex = if !self.codex_available() {
+            status(false, Some("Install the Codex CLI and sign in with codex login.".into()))
+        } else {
+            let outcome = self.discovery_server().and_then(|server| {
+                let account = server.client.request("account/read", json!({ "refreshToken": false }));
+                server.close();
+                account
+            });
+            match outcome {
+                Ok(account) => {
+                    let connected = !account["account"].is_null() && account.get("account").is_some() || account["requiresOpenaiAuth"] == false;
+                    status(connected, if connected { None } else { Some("Run codex login in a terminal to sign in.".into()) })
+                }
+                Err(error) => status(false, Some(format!("Could not start Codex: {error}"))),
             }
-            Err(error) => status(false, Some(format!("Could not start Codex: {error}"))),
-        }]))
+        };
+        Ok(json!([codex, self.opencode_status()]))
+    }
+
+    fn opencode_executable(&self) -> Option<PathBuf> {
+        self.shared.options.opencode_executable.clone().filter(|path| path.is_file()).or_else(crate::opencode::find_opencode_executable)
+    }
+
+    fn opencode_status(&self) -> Value {
+        let base = json!({ "id": OPENCODE_CONNECTION_ID, "providerId": OPENCODE_CONNECTION_ID, "name": "OpenCode", "authMethod": "oauth" });
+        let status = |connected: bool, error: Option<String>| {
+            let mut status = base.clone();
+            status["connected"] = json!(connected);
+            status["error"] = json!(error);
+            status
+        };
+        let Some(executable) = self.opencode_executable() else { return status(false, Some("Install OpenCode and connect a provider with opencode auth login.".into())) };
+        match crate::opencode::discover_models(Some(executable)) {
+            Ok((models, _)) if !models.is_empty() => status(true, None),
+            Ok(_) => status(false, Some("OpenCode has no usable models. Connect a provider with opencode auth login.".into())),
+            Err(error) => status(false, Some(format!("Could not start OpenCode: {error}"))),
+        }
     }
 
     pub fn list_models(&self) -> Result<Value> {
@@ -297,6 +329,27 @@ impl Runtime {
                 server.close();
                 Ok(())
             })();
+        }
+        if let Some(executable) = self.opencode_executable() {
+            let is_default = |model: &str| selection["connectionId"] == OPENCODE_CONNECTION_ID && selection["model"] == model;
+            models.push(json!({
+                "id": OPENCODE_MODEL_ID, "name": "OpenCode (default model)", "provider": OPENCODE_CONNECTION_ID, "connectionId": OPENCODE_CONNECTION_ID,
+                "connectionName": "OpenCode", "reasoning": true, "contextWindow": 0, "isDefault": is_default(OPENCODE_MODEL_ID),
+            }));
+            // Discovery failing keeps the default entry available.
+            if let Ok((found, _)) = crate::opencode::discover_models(Some(executable)) {
+                for model in found {
+                    let efforts: Vec<String> = model.variants.iter().filter_map(|variant| crate::opencode::variant_to_level(variant)).collect();
+                    let mut entry = json!({
+                        "id": model.id, "name": model.name, "provider": OPENCODE_CONNECTION_ID, "connectionId": OPENCODE_CONNECTION_ID, "connectionName": "OpenCode",
+                        "reasoning": !efforts.is_empty(), "contextWindow": 0, "isDefault": is_default(&model.id),
+                    });
+                    if !efforts.is_empty() {
+                        entry["reasoningEfforts"] = json!(efforts.iter().map(|id| json!({ "id": id })).collect::<Vec<_>>());
+                    }
+                    models.push(entry);
+                }
+            }
         }
         Ok(Value::Array(models))
     }
@@ -445,9 +498,6 @@ impl Runtime {
     fn run_turn_inner(&self, conversation_id: &str, text: &str, model_id: &str, thinking: Option<&str>, connection_id: &str) -> Result<()> {
         let label = harness_label(connection_id);
         let thread_kind = if connection_id == OPENCODE_CONNECTION_ID { "opencode-thread" } else { "codex-thread" };
-        if connection_id == OPENCODE_CONNECTION_ID {
-            return Err("OpenCode is not available yet in this version.".into());
-        }
         let bound = self.bound_state(conversation_id)?;
         let abort = Arc::new(AtomicBool::new(false));
         let turn_id = uuid::Uuid::new_v4().to_string();
@@ -464,7 +514,7 @@ impl Runtime {
                 let folder = self.shared.options.folder.as_ref().and_then(|folder| folder.sync(false));
                 let harness = Arc::new(self.start_harness(conversation_id, &bound, label, folder, previous.as_ref(), &abort)?);
                 if abort.load(Ordering::SeqCst) {
-                    harness.process.close();
+                    harness.close();
                     return Err("Codex turn was stopped".into());
                 }
                 self.state().sessions.insert(conversation_id.to_owned(), harness.clone());
@@ -478,8 +528,10 @@ impl Runtime {
         if abort.load(Ordering::SeqCst) {
             return Err("Codex turn was stopped".into());
         }
-        let model = (model_id != CODEX_MODEL_ID).then_some(model_id);
-        match harness.session.send(text, model, codex_effort(thinking)) {
+        let default_model = if connection_id == OPENCODE_CONNECTION_ID { OPENCODE_MODEL_ID } else { CODEX_MODEL_ID };
+        let model = (model_id != default_model).then_some(model_id);
+        let effort = if connection_id == OPENCODE_CONNECTION_ID { thinking.filter(|level| !level.is_empty()) } else { codex_effort(thinking) };
+        match harness.session.send(text, model, effort) {
             Err(_) if abort.load(Ordering::SeqCst) => Ok(()),
             other => other,
         }
@@ -500,7 +552,7 @@ impl Runtime {
             conversation_id: conversation_id.to_owned(),
             target: bound.target.clone(),
         });
-        let session_slot: Arc<Mutex<Option<Arc<CodexSession>>>> = Arc::new(Mutex::new(None));
+        let session_slot: Arc<Mutex<Option<Arc<dyn HarnessSession>>>> = Arc::new(Mutex::new(None));
         let items: Arc<Mutex<HashMap<String, Value>>> = Arc::new(Mutex::new(HashMap::new()));
 
         // Tools.
@@ -561,12 +613,28 @@ impl Runtime {
             }
         });
 
-        let args: Vec<&str> = self.shared.options.codex_args.iter().map(String::as_str).collect();
         let cwd = folder.as_ref().map(|folder| folder.to_string_lossy().into_owned()).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+        let instructions = self.instructions(folder.as_ref());
+        if label == "OpenCode" {
+            let harness = crate::opencode::start_harness(crate::opencode::StartOptions {
+                cwd,
+                executable: self.shared.options.opencode_executable.clone(),
+                instructions,
+                thread_id: previous.and_then(|previous| previous["threadId"].as_str().map(str::to_owned)),
+                default_model: previous.and_then(|previous| previous["defaultModel"].as_str().map(str::to_owned)),
+                bridge: bridge.clone(),
+                on_notification,
+                on_request,
+                on_close,
+            })?;
+            let session: Arc<dyn HarnessSession> = harness.session.clone();
+            *session_slot.lock().expect("session slot") = Some(session.clone());
+            return Ok(Harness { session, close: Box::new(move || harness.close()) });
+        }
+        let args: Vec<&str> = self.shared.options.codex_args.iter().map(String::as_str).collect();
         let process = start_codex_app_server(self.shared.options.codex_executable.clone(), &args, &cwd, on_notification, on_request, on_close)?;
         let session = CodexSession::new(process.client.clone());
-        *session_slot.lock().expect("session slot") = Some(session.clone());
-        let instructions = self.instructions(folder.as_ref());
+        *session_slot.lock().expect("session slot") = Some(session.clone() as Arc<dyn HarnessSession>);
         let outcome = match previous.and_then(|previous| previous["threadId"].as_str()) {
             Some(thread) => session.resume(thread, &cwd, &instructions, previous.and_then(|previous| previous["defaultModel"].as_str())),
             None => session.start(&cwd, &instructions, &bridge.specs(), None).map(|_| ()),
@@ -575,7 +643,7 @@ impl Runtime {
             process.close();
             return Err(error);
         }
-        Ok(Harness { session, process })
+        Ok(Harness { session, close: Box::new(move || process.close()) })
     }
 
     fn on_codex_notification(&self, conversation_id: &str, items: &Mutex<HashMap<String, Value>>, method: &str, params: &Value) {
@@ -613,7 +681,7 @@ impl Runtime {
         }
     }
 
-    fn on_codex_request(&self, conversation_id: &str, items: &Mutex<HashMap<String, Value>>, slot: &Mutex<Option<Arc<CodexSession>>>, label: &str, method: &str, params: &Value) -> Result<Value> {
+    fn on_codex_request(&self, conversation_id: &str, items: &Mutex<HashMap<String, Value>>, slot: &Mutex<Option<Arc<dyn HarnessSession>>>, label: &str, method: &str, params: &Value) -> Result<Value> {
         if method == "currentTime/read" {
             return Ok(json!({ "currentTimeAt": now_millis() / 1000 }));
         }

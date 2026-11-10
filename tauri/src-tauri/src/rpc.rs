@@ -54,6 +54,7 @@ impl Backend {
                 push: Arc::new(move |message| assistant_push(message)),
                 codex_executable: None,
                 codex_args: schema_assistant::runtime::Options::standard_codex_args(),
+                opencode_executable: None,
             },
             store,
         );

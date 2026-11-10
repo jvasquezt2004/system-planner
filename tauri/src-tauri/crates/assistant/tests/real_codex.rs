@@ -39,6 +39,7 @@ fn runtime() -> (Runtime, Workspace, Arc<Mutex<Vec<Value>>>, String, tempfile::T
             push: Arc::new(move |message| sink.lock().unwrap().push(message["payload"]["event"].clone())),
             codex_executable: None,
             codex_args: Options::standard_codex_args(),
+            opencode_executable: None,
         },
         Arc::new(AssistantStore::open(&path, || 1).unwrap()),
     );
