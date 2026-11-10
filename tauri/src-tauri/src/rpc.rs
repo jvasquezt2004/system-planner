@@ -14,6 +14,7 @@ pub struct Backend {
     folder: Arc<crate::folder::Folder>,
     platform: Arc<dyn Platform>,
     assistant: schema_assistant::runtime::Runtime,
+    scenario_runner: Arc<crate::scenario::ViewScenarioRunner>,
 }
 
 type Result<T> = std::result::Result<T, String>;
@@ -42,18 +43,21 @@ impl Backend {
         // The Assistant keeps its conversations in the same database file as the Project.
         let now = || std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |elapsed| elapsed.as_millis() as i64);
         let store = Arc::new(schema_assistant::store::AssistantStore::open(&path, now)?);
+        let assistant_push = push.clone();
+        let scenario_runner = Arc::new(crate::scenario::ViewScenarioRunner::new(push.clone()));
         let assistant = schema_assistant::runtime::Runtime::new(
             schema_assistant::runtime::Options {
                 workspace: workspace.clone(),
                 files,
                 folder: Some(folder.clone()),
-                push: Arc::new(move |message| push(message)),
+                scenario_runner: Some(scenario_runner.clone()),
+                push: Arc::new(move |message| assistant_push(message)),
                 codex_executable: None,
                 codex_args: schema_assistant::runtime::Options::standard_codex_args(),
             },
             store,
         );
-        Ok(Self { workspace, transfers, folder, platform, assistant })
+        Ok(Self { workspace, transfers, folder, platform, assistant, scenario_runner })
     }
 
     pub fn request(&self, method: &str, value: Value) -> Result<Value> {
@@ -82,6 +86,11 @@ impl Backend {
     pub fn message(&self, method: &str, value: Value) -> Result<()> {
         if let Some(answer) = self.transfers.message(method, &value) {
             return answer;
+        }
+        if method == "assistantScenarioRunCompleted" {
+            let request_id = value["requestId"].as_str().unwrap_or_default();
+            self.scenario_runner.completed(request_id, value["run"].clone(), value["error"].as_str().map(str::to_owned));
+            return Ok(());
         }
         eprintln!("[rpc] not implemented yet: {method}");
         Err(format!("`{method}` {}", schema_workspace::NOT_IMPLEMENTED))

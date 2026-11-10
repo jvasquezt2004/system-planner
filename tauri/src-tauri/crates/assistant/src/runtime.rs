@@ -16,6 +16,8 @@ use serde_json::{json, Map, Value};
 
 use crate::codex::{start_codex_app_server, CloseHandler, CodexProcess, CodexSession, NotificationHandler, RequestHandler};
 use crate::code_tools::ManageCode;
+use crate::scenario_tools::RunScenarios;
+use crate::schema_tools::ApplySchema;
 use crate::form::{codex_answers_from_form, form_from_codex_questions, form_from_json_schema, validate_form_answer};
 use crate::read_tools::{ReadProject, ReadState, ToolContext};
 use crate::system_tools::{EditSystemDesign, ReadSystemDesign};
@@ -51,6 +53,8 @@ pub struct Options {
     pub workspace: Workspace,
     pub files: Option<Arc<ProjectFiles>>,
     pub folder: Option<Arc<dyn ProjectFolderSync>>,
+    /// Runs Scenarios for `run_scenarios`; the app's view does.
+    pub scenario_runner: Option<Arc<dyn crate::scenario_tools::ScenarioRunner>>,
     /// Receives `{ method, payload }` messages for the view.
     pub push: Arc<dyn Fn(Value) + Send + Sync>,
     pub codex_executable: Option<PathBuf>,
@@ -402,7 +406,9 @@ impl Runtime {
             Arc::new(EditSystemDesign(context.clone())),
             Arc::new(ReadWalkthroughs(context.clone())),
             Arc::new(EditWalkthroughs(context.clone())),
-            Arc::new(ManageCode(context)),
+            Arc::new(ManageCode(context.clone())),
+            Arc::new(ApplySchema(context.clone())),
+            Arc::new(RunScenarios(context)),
         ]
     }
 
@@ -488,6 +494,9 @@ impl Runtime {
             workspace: self.workspace().clone(),
             store: self.shared.store.clone(),
             files: self.shared.options.files.clone(),
+            folder: self.shared.options.folder.clone(),
+            scenario_runner: self.shared.options.scenario_runner.clone(),
+            abort: abort.clone(),
             conversation_id: conversation_id.to_owned(),
             target: bound.target.clone(),
         });

@@ -43,6 +43,9 @@ params!(ProjectId { project_id: String });
 // `listProjectFiles` takes the same shape, `{ projectId }`.
 params!(View { view: SystemViewName });
 params!(DesignId { design_id: String });
+params!(BeginScenarioRun { scenario_id: String, design_id: String });
+params!(HandleSandboxApiRequest { run_id: String, request: Value });
+params!(FinishScenarioRun { run_id: String, status: String, console: Vec<String>, expectations: Option<Value>, reason: Option<String> });
 params!(RenameDesign { design_id: String, name: String });
 params!(AddTable { name: String, position: Option<CanvasPoint>, design_id: String });
 params!(RenameTable { table_id: String, name: String, design_id: String });
@@ -202,6 +205,19 @@ impl Workspace {
             "renameEdgeFunction" => call!(SourceAction, |p| self.rename_edge_function(p)),
             "removeEdgeFunction" => call!(SourceAction, |p| self.remove_edge_function(p)),
             "updateEdgeFunctionSource" => call!(SourceAction, |p| self.update_edge_function_source(p)),
+            "beginScenarioRun" => {
+                let p: BeginScenarioRun = parse(method, value)?;
+                let (run_id, state) = self.begin_scenario_run(&p.scenario_id, &p.design_id)?;
+                Ok(serde_json::json!({ "runId": run_id, "state": state }))
+            }
+            "handleSandboxApiRequest" => {
+                let p: HandleSandboxApiRequest = parse(method, value)?;
+                Ok(self.handle_sandbox_api_request(&p.run_id, &p.request))
+            }
+            "finishScenarioRun" => {
+                let p: FinishScenarioRun = parse(method, value)?;
+                state(self.finish_scenario_run(&p.run_id, &p.status, p.console, p.expectations, p.reason))
+            }
             "undo" => call!(DesignId, |p| self.undo(&p.design_id)),
             "redo" => call!(DesignId, |p| self.redo(&p.design_id)),
             "removeTable" => call!(RemoveTable, |p| self.remove_table(&p.design_id, &p.table_id, p.confirmed == Some(true))),

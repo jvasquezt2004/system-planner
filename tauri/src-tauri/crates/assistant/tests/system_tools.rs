@@ -39,6 +39,9 @@ fn fixture() -> Fixture {
         workspace: workspace.clone(),
         store,
         files: None,
+        folder: None,
+        scenario_runner: None,
+        abort: Default::default(),
         conversation_id: conversation,
         target: (project_id, design_id.clone()),
     });

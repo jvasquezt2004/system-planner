@@ -35,6 +35,7 @@ fn runtime() -> (Runtime, Workspace, Arc<Mutex<Vec<Value>>>, String, tempfile::T
             workspace: workspace.clone(),
             files: None,
             folder: None,
+            scenario_runner: None,
             push: Arc::new(move |message| sink.lock().unwrap().push(message["payload"]["event"].clone())),
             codex_executable: None,
             codex_args: Options::standard_codex_args(),

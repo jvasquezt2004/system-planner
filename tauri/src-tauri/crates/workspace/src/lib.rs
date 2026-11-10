@@ -20,6 +20,7 @@ mod history;
 mod portability;
 mod sources;
 mod rpc;
+pub mod scenario_runs;
 mod state;
 mod system;
 
@@ -100,6 +101,8 @@ struct Inner {
     /// One content history per database design, for the session. Each design's Undo and Redo move
     /// only its own content, so switching designs never changes what another design's Undo reverses.
     histories: HashMap<String, ProjectHistory<ProjectContent>>,
+    /// The Scenario run in progress, if any: its private database and the snapshot it runs against.
+    active_scenario_run: Option<scenario_runs::ActiveRun>,
 }
 
 /// A preview to build straight away, outside the debounce.
@@ -145,6 +148,7 @@ impl Workspace {
                     scenario_revision: 0,
                     edge_function_revision: 0,
                     histories: HashMap::new(),
+                    active_scenario_run: None,
                 }),
                 listeners: Mutex::new(Vec::new()),
                 options,
@@ -179,12 +183,14 @@ impl Workspace {
     /// Replaces the observable state and tells every listener. Listeners must not call back in.
     fn set_state(&self, inner: &mut Inner, next: WorkspaceState) {
         inner.state = next;
+        Self::refresh_stale_runs(inner);
         Self::refresh_undo_redo(inner);
         self.notify(&inner.state);
     }
 
     fn update(&self, inner: &mut Inner, change: impl FnOnce(&mut WorkspaceState)) {
         change(&mut inner.state);
+        Self::refresh_stale_runs(inner);
         Self::refresh_undo_redo(inner);
         self.notify(&inner.state);
     }
@@ -232,6 +238,7 @@ impl Workspace {
         invalidate_preview(&mut inner);
         inner.active_project_id = Some(project.id.clone());
         inner.active_design_id = Some(design_id.clone());
+        inner.active_scenario_run = None;
         inner.document_revision = revision;
         inner.system_document_revision = revision;
         inner.walkthrough_document_revision = 0;
@@ -295,6 +302,7 @@ impl Workspace {
         invalidate_preview(inner);
         inner.active_project_id = Some(project.id.clone());
         inner.active_design_id = Some(design_id.to_owned());
+        inner.active_scenario_run = None;
         inner.document_revision = record.document_revision;
         // Revisions only move forward within a session, so a save still in flight for an earlier
         // activation can never share a revision with a new one.

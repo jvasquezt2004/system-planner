@@ -8,9 +8,9 @@ How it was checked: every request and message in `AppRPCSchema` (`src/shared/rpc
 Rust backend answers, then each feature against the evidence that backs it. "Verified" means a
 differential fixture or oracle session recorded from the TypeScript code and replayed in Rust.
 
-**Result: not at parity yet.** 93 of 119 requests are answered. Of the 26 that are not, 7 are the
-dropped provider flows, 3 are Scenario runs, 1 is gone now (the Project folder), and the rest are the
-Assistant harness.
+**Result: not at parity yet.** The remaining gaps are Scenario runs, OpenCode, and packaging; the
+provider flows are dropped by decision. (The request audit has not been rerun since the Assistant
+work; it was 93 of 119 before.)
 
 ## Done and verified
 
@@ -34,10 +34,22 @@ Assistant harness.
 | Area | What is missing | Size |
 | --- | --- | --- |
 | **Scenario runs** | `beginScenarioRun`, `handleSandboxApiRequest`, `finishScenarioRun` and the result grids: the PostgREST emulation over the sandbox database (`scenario-api.ts`, ~1,000 lines). Scenarios can be written and saved but not run. | large |
-| **Assistant over Codex** (ADR 0003) | Working, tested against a fake Codex server only: conversations (stored in the rewrite's own database), turns in the Project folder, streamed messages and tool use as events, the harness's questions as forms (checked against the original over 637 cases), approvals, stop, steering a running turn, status, model and sign-in listing. Project tools so far: `read_project`, `read_walkthroughs`, `edit_walkthroughs` (batches apply in full or not at all; one Undo step per turn). **Not done:** `read_system_design` and `edit_system_design` (need the layout engine and the batch planner), `manage_code` (Scenarios and Edge functions), `apply_schema` (needs a PostgreSQL parser to read an edited `schema.sql` back into a Design), `run_scenarios` (needs Scenario runs), turn tracking and Revert (the Revert button answers that the turn is not available), the DDL drop confirmation flow, and OpenCode (its harness and tool endpoint; selecting it reports that it is unavailable). Never run against a real Codex. | large |
+| **Assistant over Codex** (ADR 0003) | Working: conversations (own database), turns in the Project folder, streamed messages and tool use as events, the harness's questions as forms (637 cases against the original), approvals, stop, steering, status, model listing, Revert of a turn, and a real Codex run (opt-in test: one turn that calls `read_project`). Project tools: `read_project`, `read_system_design`, `edit_system_design` (layout engine checked over 11k cases), `read_walkthroughs`, `edit_walkthroughs`, `manage_code` (without TypeScript diagnostics), `apply_schema` (the DDL translation matches the original on 1.7k scripts and 874 file edits). **Not done:** `run_scenarios` (needs Scenario runs), the DDL drop-confirmation flow (only `apply_ddl` used it, which harnesses do not have), and OpenCode (its harness and tool endpoint; selecting it reports that it is unavailable). | medium |
 | Dropped by decision | provider API keys, OAuth login, connections, Claude opt-in, the Assistant's own models. The view still shows a "Provider connections" strip that should be replaced when the harness work lands. | small, with the harness |
-| Assistant entry points into the history | `applyAssistantDesign`, `restoreAssistantProjectSnapshot` (they use the history that is already ported) | with the harness |
 | Packaging | CI builds on three platforms (untested until it runs); icons, signing, updater and the data location are undecided. The rewrite keeps its own database (`…/tauri-dev/schema-designer.sqlite`); sharing the Electrobun app's database is a cutover decision. | medium |
+
+## Fixed rather than copied
+
+Reading `schema.sql` back into a Design (`apply_schema`) differs from the original where the original
+mis-reads what PostgreSQL's parser says (the parser's JSON leaves out zero, `false` and empty values,
+and one field is looked up under the wrong name):
+
+- `DEFAULT 0` and `DEFAULT false` are stored as the text `[object Object]`; here they keep their value.
+- `numeric(10, 0)` keeps the whole table as raw SQL; here it is a numeric column with scale 0.
+- Any Function with parameters is kept as raw SQL; here its parameters are read.
+- A column's `COLLATE` is dropped without a trace; here the table is kept as raw SQL so it survives.
+- A comment above a statement stays with it, as in the original, but the parser is PostgreSQL 18's
+  (the original's is 17).
 
 ## Known differences that remain
 
@@ -55,6 +67,7 @@ These are deliberate or not reachable from the view; each is also noted where it
 
 ## Not tested
 
+- The Assistant with OpenCode, and with Codex beyond one read-only turn.
 - Real dialogs and the clipboard: the pickers and clipboard are behind a trait and tested with fakes.
   They compile and the app starts with them, but nothing has driven them in the window.
 - Clicks and typing in the window (no synthetic input).

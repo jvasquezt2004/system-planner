@@ -5178,6 +5178,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "schema-scenario"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "pglite-oxide",
+ "schema-domain",
+ "schema-sandbox",
+ "serde",
+ "serde_json",
+ "url",
+]
+
+[[package]]
 name = "schema-store"
 version = "0.0.1"
 dependencies = [
@@ -5211,6 +5225,7 @@ dependencies = [
  "regex",
  "schema-domain",
  "schema-sandbox",
+ "schema-scenario",
  "schema-store",
  "serde",
  "serde_json",

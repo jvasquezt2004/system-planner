@@ -32,6 +32,12 @@ pub struct ToolContext {
     pub workspace: Workspace,
     pub store: Arc<AssistantStore>,
     pub files: Option<Arc<ProjectFiles>>,
+    /// The Project folder the harness works in; `apply_schema` reads a Design's `schema.sql` from it.
+    pub folder: Option<Arc<dyn crate::runtime::ProjectFolderSync>>,
+    /// Runs Scenarios in the view, when one is connected.
+    pub scenario_runner: Option<Arc<dyn crate::scenario_tools::ScenarioRunner>>,
+    /// Set when the designer stops the turn.
+    pub abort: Arc<std::sync::atomic::AtomicBool>,
     pub conversation_id: String,
     /// The Project and Design the turn started on; tools refuse once another Design is open.
     pub target: (String, String),

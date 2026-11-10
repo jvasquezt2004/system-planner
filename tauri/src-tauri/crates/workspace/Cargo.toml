@@ -10,6 +10,7 @@ description = "The design workspace behind the view: open Project, edits, autosa
 schema-domain = { path = "../domain" }
 schema-store = { path = "../store" }
 schema-sandbox = { path = "../sandbox" }
+schema-scenario = { path = "../scenario" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 uuid = { version = "1", features = ["v4"] }

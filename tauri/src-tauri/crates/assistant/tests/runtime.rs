@@ -39,6 +39,7 @@ fn fixture() -> Fixture {
             workspace: workspace.clone(),
             files: None,
             folder: None,
+            scenario_runner: None,
             push: Arc::new(move |message| sink.lock().unwrap().push(message["payload"].clone())),
             codex_executable: Some(env!("CARGO_BIN_EXE_fake_codex").into()),
             codex_args: vec![],
@@ -122,7 +123,7 @@ fn a_tool_refuses_once_another_design_is_open() {
     let id = conversation(&fixture);
     let first = fixture.workspace.state().active_design_id.unwrap();
     let store = Arc::new(AssistantStore::open(fixture._directory.path().join("app.sqlite"), || 1).unwrap());
-    let tool = ReadProject(Arc::new(ToolContext { reads: Default::default(), turn_id: Box::new(|| None), workspace: fixture.workspace.clone(), store, files: None, conversation_id: id, target: (fixture.project_id.clone(), first) }));
+    let tool = ReadProject(Arc::new(ToolContext { reads: Default::default(), turn_id: Box::new(|| None), workspace: fixture.workspace.clone(), store, files: None, folder: None, scenario_runner: None, abort: Default::default(), conversation_id: id, target: (fixture.project_id.clone(), first) }));
     assert!(tool.execute("c1", &json!({})).is_ok());
     // Opening another Design makes the turn's tools refuse, rather than act on whatever is shown.
     fixture.workspace.request("createDesign", json!({ "name": "Other" })).unwrap();

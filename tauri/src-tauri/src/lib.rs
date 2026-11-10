@@ -17,9 +17,11 @@ use serde_json::Value;
 use tauri::{Emitter, Manager};
 
 mod assistant;
+mod debug_bridge;
 mod folder;
 mod platform;
 mod rpc;
+mod scenario;
 
 use rpc::Backend;
 
@@ -32,6 +34,11 @@ async fn rpc_request(backend: tauri::State<'_, Backend>, method: String, params:
 
 #[tauri::command]
 async fn rpc_message(backend: tauri::State<'_, Backend>, method: String, params: Value) -> Result<(), String> {
+    #[cfg(all(debug_assertions, unix))]
+    if method == "__debugReport" {
+        debug_bridge::report(params["id"].as_u64().unwrap_or(0), params["result"].as_str().unwrap_or("").to_owned());
+        return Ok(());
+    }
     let backend = backend.inner().clone();
     tauri::async_runtime::spawn_blocking(move || backend.message(&method, params)).await.map_err(|error| error.to_string())?
 }
@@ -61,6 +68,8 @@ pub fn run() {
                 let _ = handle.emit("rpc-message", message);
             })?;
             app.manage(backend);
+            #[cfg(all(debug_assertions, unix))]
+            debug_bridge::start(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![rpc_request, rpc_message])
