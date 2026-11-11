@@ -39,7 +39,7 @@ substitute for those database-side definitions.
 
 ## View
 
-`src/mainview/sql-preview.tsx` adds a code-format switch. An ORM format shows
+`src/sql-preview.tsx` adds a code-format switch. An ORM format shows
 its schema code only while the draft's PostgreSQL is current; otherwise it
 shows the validation errors instead of an older schema. Copy and export carry a
 `SchemaCodeSnapshot` (format, revision, code) through the `copySchemaCode` and

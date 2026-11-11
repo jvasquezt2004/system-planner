@@ -69,7 +69,6 @@ rebuildable preview data, not a connection to a production database.
 ### Prerequisites
 
 - Git, [Bun](https://bun.sh/docs/installation) and a stable [Rust](https://rustup.rs) toolchain.
-- The [Tauri CLI](https://tauri.app/start/): `cargo install tauri-cli --version "^2"`.
 - The native runtime dependencies for your platform
   ([Tauri prerequisites](https://tauri.app/start/prerequisites/)). Linux uses GTK 3 and
   WebKitGTK 4.1; Windows uses WebView2. The first build compiles PostgreSQL's parser and the PGlite
@@ -80,8 +79,8 @@ rebuildable preview data, not a connection to a production database.
 ```bash
 git clone https://github.com/jvasquezt2004/db-planner.git
 cd db-planner
-bun install && (cd tauri && bun install)
-cd tauri && cargo tauri dev
+bun install
+bun run tauri dev
 ```
 
 To use Codex in the Assistant, install the Codex CLI, make `codex` available on
@@ -99,11 +98,11 @@ See [Assistant](docs/assistant.md) for details.
 ### Build a distributable
 
 ```bash
-cd tauri && cargo tauri build
+bun run tauri build
 ```
 
-Bundles are written under `tauri/src-tauri/target/release/bundle/` (or `$CARGO_TARGET_DIR`).
-See [tauri/RELEASE.md](tauri/RELEASE.md) for signing and updates.
+Bundles are written under `src-tauri/target/release/bundle/` (or `$CARGO_TARGET_DIR`).
+See [docs/release.md](docs/release.md) for signing and updates.
 
 ## First project
 
@@ -133,33 +132,37 @@ and build plan also contain planned work.
 | Executable previews | [Sandbox API](docs/sandbox-api.md), [Scenario expectations](docs/scenario-expectations.md) |
 | Assistant | [Assistant architecture and behavior](docs/assistant.md) |
 | Persistence and portability | [Architecture decisions](docs/adr/), [Project export/import contract](docs/adr/0012-portable-project-export-and-import.md) |
-| Packaging | [Release notes](tauri/RELEASE.md) |
+| Packaging | [Release notes](docs/release.md) |
 
 ## Development
 
 | Command | Purpose |
 | --- | --- |
 | `cd tauri && cargo tauri dev` | Run the desktop app with Vite hot reload |
-| `cd tauri && cargo tauri build` | Build the desktop package |
-| `cd tauri/src-tauri && cargo test --workspace` | Run the Rust tests, which replay the recorded behaviour in `tauri/fixtures` |
-| `bun test src` | Run the view's tests |
-| `bunx tsc --noEmit` | Check the view's TypeScript types |
+| `bun run tauri build` | Build the desktop package |
+| `cd src-tauri && cargo test --workspace` | Run the Rust tests, which replay the recorded behaviour in `src-tauri/fixtures` |
+| `bun run test` | Run the view's tests |
+| `bun run typecheck` | Check the view's TypeScript types |
 
 ### Code map
 
-- `tauri/src-tauri/crates/` — the backend as Rust crates: `domain` (Designs, SQL generation, System design,
+The repository is one Tauri project: the React view in `src/`, the Rust backend in `src-tauri/`.
+
+- `src/` — the view: React views, architecture and database canvases, inspectors, code editors and the
+  Assistant sidebar. `src/components/ui/` holds the shared Radix-based components and `src/index.css` the
+  typography, colors and design tokens.
+- `src/shared/` — domain models, component catalog, Walkthrough playback, schema code generators and the typed
+  RPC contract (`rpc.ts`) the view and the backend agree on.
+- `src/backend/` — the view's connection to the backend: requests and pushes over Tauri commands and events.
+- `src-tauri/crates/` — the backend as Rust crates: `domain` (Designs, SQL generation, System design,
   Walkthroughs), `store` (SQLite), `workspace` (edits, history, autosave, Scenario runs), `sandbox` and
   `scenario` (PGlite), `transfer`, `files`, `folder` (Project export, files, folder), `assistant` (Codex and
   OpenCode harnesses and the Project tools).
-- `tauri/src-tauri/src/` — the Tauri shell: commands, dialogs, clipboard, Project folder sync.
-- `tauri/shims/` — adapters that give the view its RPC client on top of Tauri.
-- `tauri/fixtures/` — recordings of the original TypeScript implementation's behaviour, replayed by the Rust tests.
-- `src/shared/` — domain models, component catalog, Walkthrough playback, schema
-  code generators, and the typed RPC contract.
-- `src/mainview/` — React views, architecture and database canvases, inspectors,
-  code editors, and the Assistant sidebar.
-- `src/mainview/components/ui/` — shared Radix-based UI components.
-- `src/mainview/index.css` — typography, colors, and UI design tokens.
+- `src-tauri/src/` — the Tauri shell: commands, dialogs, clipboard, Project folder sync.
+- `src-tauri/fixtures/` — recordings of the original TypeScript implementation's behaviour, replayed by the
+  Rust tests (see its README).
+- `docs/` — guides, ADRs, and the rewrite's [parity report](docs/parity.md), [release notes](docs/release.md) and
+  [development notes](docs/development.md).
 
 ### Local data
 

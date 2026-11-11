@@ -73,7 +73,7 @@ database execution distinct from illustrative architecture playback.
 - [Implementation plan and validation gates](docs/system-design-build-plan.md)
 - [Canonical vocabulary](GLOSSARY.md)
 - [Architecture decisions](docs/adr/)
-- Existing UI assets, CSS, and responsive screenshots under `src/mainview/` and
+- Existing UI assets, CSS, and responsive screenshots under `src/` and
   `docs/screenshots/`.
 
 ## Product Principles

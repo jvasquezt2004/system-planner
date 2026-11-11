@@ -42,11 +42,11 @@ are storage/model integrity rules, distinct from editable incomplete content.
 | `src/bun/store.ts` | Replace the one-Design-per-Project assumption with Design identity plus Project ownership; add System design and Walkthrough persistence and database-scoped code artifacts. |
 | `src/bun/workspace.ts` | Preserve one public mutation boundary for manual and Assistant actions; extend validation, autosave, revision handling, history, and dependency checks across Project artifacts. |
 | `src/shared/rpc.ts` and `src/bun/rpc-handlers.ts` | Carry explicit Project, Design, and artifact identity for reads, edits, runs, and asynchronous completions. |
-| `src/mainview/App.tsx` | Add system overview, Service focus, Walkthrough navigation, and selected database workspace; preserve existing Assistant and database views. |
-| `src/mainview/canvas.tsx` | Keep the specialized database canvas and its existing relationship notation. Add a separate architecture canvas behind the shared Project shell. |
+| `src/App.tsx` | Add system overview, Service focus, Walkthrough navigation, and selected database workspace; preserve existing Assistant and database views. |
+| `src/canvas.tsx` | Keep the specialized database canvas and its existing relationship notation. Add a separate architecture canvas behind the shared Project shell. |
 | `src/bun/assistant-runtime.ts` | Extend scoped reads and tools for architecture and Walkthrough editing; add read-version preconditions and attributed change tracking. |
-| `src/mainview/scenario-run-driver.ts` and Scenario workers | Bind runs and handler lookup to a particular database Design, independent of navigation. |
-| `src/shared/scenario-types.ts` and `src/mainview/monaco-setup.ts` | Supply the selected Design's declarations without merging incompatible global Database types. |
+| `src/scenario-run-driver.ts` and Scenario workers | Bind runs and handler lookup to a particular database Design, independent of navigation. |
+| `src/shared/scenario-types.ts` and `src/monaco-setup.ts` | Supply the selected Design's declarations without merging incompatible global Database types. |
 | `src/bun/sql-preview.ts` and existing export lifecycle | Reuse native picker/cancellation and click-time snapshot patterns; add Project and diagram exporters separately from SQL generation. |
 
 Proposed additions should have narrow responsibilities:

@@ -1,7 +1,7 @@
-.hutch/
 node_modules/
-build/
 dist/
 artifacts/
 *.tsbuildinfo
-.cottontail-tmp/
+# Rust
+src-tauri/target/
+src-tauri/gen/
