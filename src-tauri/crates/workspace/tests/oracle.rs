@@ -58,6 +58,25 @@ impl Sandbox for Stub {
 }
 
 /// FNV-1a 64-bit over UTF-8, the fingerprint the fixtures use.
+/// A pushed-state trail as two independent sequences: how the save went, and how everything else
+/// (revision, SQL, sandbox, ...) went, each without immediate repeats. The save runs on the calling
+/// thread and the preview on its own, so which of the two reports first is a race (the TypeScript
+/// original has no such race); what each one reports, and in what order, is not.
+fn lanes(trail: &[String]) -> (Vec<String>, Vec<String>) {
+    let (mut saves, mut others): (Vec<String>, Vec<String>) = (vec![], vec![]);
+    for state in trail {
+        let save = state.split(' ').find(|token| token.starts_with("save:")).unwrap_or("").to_owned();
+        let rest = state.split(' ').filter(|token| !token.starts_with("save:")).collect::<Vec<_>>().join(" ");
+        if saves.last() != Some(&save) {
+            saves.push(save);
+        }
+        if others.last() != Some(&rest) {
+            others.push(rest);
+        }
+    }
+    (saves, others)
+}
+
 fn fnv(text: &str) -> String {
     let mut hash: u64 = 0xcbf29ce484222325;
     for byte in text.bytes() {
@@ -228,7 +247,7 @@ fn replay(session: &Value) -> Result<usize, String> {
             }
         }
         let expected_trail: Vec<String> = serde_json::from_value(expected["trail"].clone()).unwrap();
-        if pushed != expected_trail {
+        if lanes(&pushed) != lanes(&expected_trail) {
             return Err(format!("{}\n  pushed states differ\n  expected {expected_trail:#?}\n  actual   {pushed:#?}", context()));
         }
     }
