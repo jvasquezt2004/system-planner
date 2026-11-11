@@ -223,7 +223,7 @@ impl Runtime {
         start_codex_app_server(
             self.shared.options.codex_executable.clone(),
             &args,
-            &std::env::var("HOME").unwrap_or_else(|_| ".".into()),
+            &crate::platform::home_or_current(),
             Arc::new(|_, _| {}),
             Arc::new(|_, _| Err("Unexpected Codex request".into())),
             Arc::new(|_| {}),
@@ -605,7 +605,7 @@ impl Runtime {
             }
         });
 
-        let cwd = folder.as_ref().map(|folder| folder.to_string_lossy().into_owned()).unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| ".".into()));
+        let cwd = folder.as_ref().map(|folder| folder.to_string_lossy().into_owned()).unwrap_or_else(crate::platform::home_or_current);
         let instructions = self.instructions(folder.as_ref());
         if label == "OpenCode" {
             let harness = crate::opencode::start_harness(crate::opencode::StartOptions {

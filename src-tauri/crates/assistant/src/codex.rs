@@ -26,11 +26,11 @@ pub type CloseHandler = Arc<dyn Fn(&str) + Send + Sync>;
 
 /// GUI launchers may have a smaller PATH than an interactive shell.
 pub fn find_codex_executable() -> Option<PathBuf> {
-    let on_path = std::env::var_os("PATH").and_then(|paths| std::env::split_paths(&paths).map(|dir| dir.join("codex")).find(|candidate| candidate.is_file()));
+    let on_path = crate::platform::find_on_path("codex");
     if on_path.is_some() {
         return on_path;
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let home = crate::platform::home_dir()?;
     [
         home.join(".local/bin/codex"),
         home.join(".local/share/mise/command-wrappers/bin/codex"),
@@ -389,7 +389,9 @@ pub fn start_codex_app_server(
     on_close: CloseHandler,
 ) -> Result<CodexProcess> {
     let executable = executable.or_else(find_codex_executable).unwrap_or_else(|| PathBuf::from("codex"));
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    crate::platform::hide_console(&mut command);
+    let mut child = command
         .args(args)
         .current_dir(cwd)
         .stdin(Stdio::piped())

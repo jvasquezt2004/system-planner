@@ -38,20 +38,13 @@ pub fn find_opencode_executable() -> Option<PathBuf> {
             path.is_file()
         }
     };
-    if let Some(paths) = std::env::var_os("PATH") {
-        for directory in std::env::split_paths(&paths) {
-            for name in ["opencode", "opencode.exe", "opencode.cmd"] {
-                let candidate = directory.join(name);
-                if usable(&candidate) {
-                    return Some(candidate);
-                }
-            }
-        }
+    if let Some(found) = crate::platform::find_on_path("opencode").filter(|path| usable(path)) {
+        return Some(found);
     }
     if cfg!(windows) {
         return None;
     }
-    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let home = crate::platform::home_dir();
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Some(home) = &home {
         for relative in [".opencode/bin/opencode", ".local/bin/opencode", ".local/share/mise/shims/opencode", ".cargo/bin/opencode"] {
@@ -135,6 +128,7 @@ impl OpenCodeServer {
         let password = uuid::Uuid::new_v4().to_string();
         let executable = executable.or_else(find_opencode_executable).unwrap_or_else(|| PathBuf::from("opencode"));
         let mut command = Command::new(&executable);
+        crate::platform::hide_console(&mut command);
         command.args(["serve", "--hostname", "127.0.0.1", "--port", "0"]).current_dir(cwd).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).env("OPENCODE_SERVER_PASSWORD", &password);
         if let Some(config) = config {
             command.env("OPENCODE_CONFIG_CONTENT", config.to_string());
@@ -923,7 +917,7 @@ pub fn start_harness(options: StartOptions) -> Result<Arc<OpenCodeHarness>> {
 
 /// One-shot discovery of what the installed OpenCode can run, using a bare private server.
 pub fn discover_models(executable: Option<PathBuf>) -> Result<(Vec<ModelInfo>, Option<String>)> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    let home = crate::platform::home_or_current();
     let server = OpenCodeServer::start(&home, executable, None, Arc::new(|_| {}))?;
     let outcome = (|| {
         let models = parse_models(&server.request("GET", "/api/model", None)?);

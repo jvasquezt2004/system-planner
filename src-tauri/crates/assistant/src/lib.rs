@@ -7,6 +7,7 @@ pub mod ddl;
 pub mod form;
 pub mod harness;
 pub mod opencode;
+pub mod platform;
 pub mod read_tools;
 pub mod runtime;
 pub mod scenario_tools;
