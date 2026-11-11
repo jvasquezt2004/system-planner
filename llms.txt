@@ -1,24 +1,11 @@
-# Electrobun Project
+# Schema Designer
 
-This is an Electrobun desktop application.
+A Tauri desktop app (Rust backend in `src-tauri/`, React view in `src/`) for designing systems and PostgreSQL schemas.
+It was rewritten from an Electrobun app; nothing of Electrobun remains in the code.
 
-IMPORTANT: Electrobun is NOT Electron. Do not use Electron APIs or patterns.
-
-## Documentation
-
-Full API reference: https://framework.blackboard.sh/electrobun/apis/
-Getting started: https://framework.blackboard.sh/electrobun/guides/quick-start/
-
-## Quick Reference
-
-Import patterns:
-- Main process (Bun): `import { BrowserWindow } from "electrobun/main"`
-- Browser context: `import { Electroview } from "electrobun/view"`
-
-Use `views://` URLs to load bundled assets (e.g., `url: "views://mainview/index.html"`).
-Views must be configured in `electrobun.config.ts` to be built and copied into the bundle.
-
-## About
-
-Electrobun is built by Blackboard (https://blackboard.sh), an innovation lab building
-tools and funding teams that define the next generation of technology.
+- Run: `bun install`, then `bun run tauri dev` (or `cargo tauri dev`). Build: `bun run tauri build`.
+- Rust tests: `cd src-tauri && cargo test --workspace`. View tests: `bun run test`. Types: `bun run typecheck`.
+- The view and the backend talk through the typed contract in `src/shared/rpc.ts` over Tauri commands
+  (`src/backend/tauri-rpc.ts`, `src-tauri/src/rpc.rs`).
+- Behaviour of the backend is pinned by recordings in `src-tauri/fixtures/` (see its README).
+- Start with README.md and docs/development.md.

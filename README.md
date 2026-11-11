@@ -64,24 +64,74 @@ The Sandbox API implements a documented subset of PostgREST. It rejects
 unsupported requests rather than approximating their behavior. Sandbox data is
 rebuildable preview data, not a connection to a production database.
 
-## Install and run from source
+## Install
 
-### Prerequisites
+Schema Designer is a Tauri desktop app. There are no tagged releases yet, so you either take the installer
+that CI builds or build it yourself.
 
-- Git, [Bun](https://bun.sh/docs/installation) and a stable [Rust](https://rustup.rs) toolchain.
-- The native runtime dependencies for your platform
-  ([Tauri prerequisites](https://tauri.app/start/prerequisites/)). Linux uses GTK 3 and
-  WebKitGTK 4.1; Windows uses WebView2. The first build compiles PostgreSQL's parser and the PGlite
-  runtime, so it takes a while and wants a few GB of memory (`CARGO_BUILD_JOBS=3` helps on small machines).
+### Use a CI build
 
-### Start the app
+Every run of the *Tauri rewrite* workflow on `main` uploads one installer folder per platform. Open the
+repository's **Actions** tab, pick the latest run, and download `schema-designer-ubuntu-latest`,
+`schema-designer-macos-latest` or `schema-designer-windows-latest` from **Artifacts** (you need to be signed in
+to GitHub; artifacts are kept for 90 days). The builds are not signed yet, so Windows SmartScreen and macOS
+Gatekeeper warn about an unknown publisher; see [docs/release.md](docs/release.md).
+
+### Install the package
+
+Whether you downloaded it or built it (next section), the installers are in
+`src-tauri/target/release/bundle/` (or `$CARGO_TARGET_DIR/release/bundle/`), one folder per format:
+
+| System | Package | Install | Remove |
+| --- | --- | --- | --- |
+| Debian, Ubuntu | `deb/Schema Designer_<version>_amd64.deb` | `sudo apt install ./"Schema Designer_<version>_amd64.deb"` | `sudo apt remove schema-designer` |
+| Fedora, openSUSE | `rpm/Schema Designer-<version>-1.x86_64.rpm` | `sudo dnf install ./"Schema Designer-<version>-1.x86_64.rpm"` | `sudo dnf remove schema-designer` |
+| Any Linux | `appimage/Schema Designer_<version>_amd64.AppImage` | `chmod +x "<file>.AppImage" && ./"<file>.AppImage"` | delete the file |
+| Windows | `nsis/Schema Designer_<version>_x64-setup.exe` or `msi/Schema Designer_<version>_x64_en-US.msi` | run it; at the SmartScreen warning choose **More info** then **Run anyway** | Settings, Apps |
+| macOS | `dmg/Schema Designer_<version>_aarch64.dmg` | open it and drag the app to Applications; the first time, right-click the app and choose **Open** | delete the app |
+
+CI builds every format listed. On your own machine you get the ones your platform supports (`cargo tauri build`
+builds them all; `--bundles deb` builds one). The macOS build in CI is for Apple Silicon (`aarch64`); an Intel Mac
+builds its own with the steps below. The installed Linux app is `schema-designer` on your `PATH` and in the
+application menu. Your projects stay when you remove or upgrade the app (see [Local data](#local-data)).
+
+### Build it yourself
+
+You need Git, [Bun](https://bun.sh/docs/installation), a stable [Rust](https://rustup.rs) toolchain and the
+native dependencies for your platform ([Tauri prerequisites](https://tauri.app/start/prerequisites/)): GTK 3 and
+WebKitGTK 4.1 on Linux, the Visual Studio C++ build tools (WebView2 is already on Windows 10 and 11) on Windows,
+Xcode's command-line tools on macOS. The first build compiles PostgreSQL's parser and the PGlite runtime, so it
+takes several minutes and a few GB of memory (`CARGO_BUILD_JOBS=3` helps on small machines).
 
 ```bash
 git clone https://github.com/jvasquezt2004/db-planner.git
 cd db-planner
 bun install
-bun run tauri dev
 ```
+
+Bun installs the view's dependencies and builds the view in either route below. Choose how to run Tauri's
+command-line tool:
+
+**With Bun** (the tool comes from `bun install`):
+
+```bash
+bun run tauri dev      # run the app with hot reload
+bun run tauri build    # build the installers
+```
+
+**With Cargo** (install the tool once, then use it as a Cargo command):
+
+```bash
+cargo install tauri-cli --version "^2" --locked
+cargo tauri dev        # run the app with hot reload
+cargo tauri build      # build the installers
+```
+
+Both do the same thing; the Cargo route only swaps where the Tauri tool comes from, because the view is always
+built with Bun. `cargo tauri build --bundles deb` builds just one format (`deb`, `rpm`, `appimage`, `nsis`,
+`msi` or `dmg`, for the platform you are on).
+
+### Use the Assistant
 
 To use Codex in the Assistant, install the Codex CLI, make `codex` available on
 the desktop app's `PATH`, and run `codex login` in a terminal. Select **Codex
@@ -94,15 +144,6 @@ permissions; Project Revert covers Schema Designer Project changes, not files
 or commands outside the app. OpenCode works the same way: install it and run
 `opencode auth login`, then pick **OpenCode (default model)** or a listed model.
 See [Assistant](docs/assistant.md) for details.
-
-### Build a distributable
-
-```bash
-bun run tauri build
-```
-
-Bundles are written under `src-tauri/target/release/bundle/` (or `$CARGO_TARGET_DIR`).
-See [docs/release.md](docs/release.md) for signing and updates.
 
 ## First project
 

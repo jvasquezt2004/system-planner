@@ -1,3 +1,5 @@
+> **Historical.** This record is about the Electrobun build, which was removed (see ADR 0004). It is kept as history; the app is now built with Tauri.
+
 # Packaged Canvas & SVG Playback Proof Evidence
 
 **Ticket:** [#117 — Prove the architecture canvas and SVG playback in packaged apps](https://github.com/jvasquezt2004/db-planner/issues/117)  
