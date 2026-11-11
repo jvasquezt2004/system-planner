@@ -1,0 +1,28 @@
+[package]
+name = "schema-assistant"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "The Assistant over Codex and OpenCode: conversations, harness protocol and Project tools"
+
+[dependencies]
+schema-domain = { path = "../domain" }
+schema-workspace = { path = "../workspace" }
+schema-files = { path = "../files" }
+schema-sandbox = { path = "../sandbox" }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+regex = "1"
+uuid = { version = "1", features = ["v4"] }
+jsonschema = { version = "0.61", default-features = false }
+pg_query = "18.1.0"
+ureq = { version = "3", default-features = false }
+
+[[bin]]
+name = "fake_codex"
+path = "src/bin/fake_codex.rs"
+
+[dev-dependencies]
+tempfile = "3"
+schema-store = { path = "../store" }

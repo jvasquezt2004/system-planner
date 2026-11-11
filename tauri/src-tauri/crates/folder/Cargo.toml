@@ -1,0 +1,16 @@
+[package]
+name = "schema-folder"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "A readable copy of the open Project on disk, for tools that work on files"
+
+[dependencies]
+schema-domain = { path = "../domain" }
+schema-files = { path = "../files" }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+regex = "1"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,12 @@
+{
+	"name": "schema-designer-tauri",
+	"private": true,
+	"description": "Tauri shell for the Schema Designer rewrite. Reuses the repository's React frontend (dependencies at the repository root); only the Tauri API package is installed here.",
+	"scripts": {
+		"dev": "../node_modules/.bin/vite --config vite.config.ts",
+		"build": "../node_modules/.bin/vite build --config vite.config.ts"
+	},
+	"dependencies": {
+		"@tauri-apps/api": "^2"
+	}
+}

@@ -5,7 +5,7 @@ import type {
 	DesignIndex,
 	DesignTable,
 } from "../design";
-import { planSchemaObjectNames, type SchemaObjectNames } from "../../bun/sql";
+import { planSchemaObjectNames, type SchemaObjectNames } from "../sql";
 import { renderColumnType } from "../column-types";
 import {
 	modelWords,

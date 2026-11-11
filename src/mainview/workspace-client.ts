@@ -69,7 +69,6 @@ import type { Scenario } from "../shared/design";
 
 const listeners = new Set<(state: WorkspaceState) => void>();
 const assistantListeners = new Set<(event: { conversationId: string; event: unknown }) => void>();
-const assistantOAuthListeners = new Set<(event: { providerId: string; event: unknown }) => void>();
 const assistantScenarioRunListeners = new Set<(request: { requestId: string; projectId: string; designId: string; scenario: Scenario }) => void>();
 const assistantScenarioRunCancelListeners = new Set<(requestId: string) => void>();
 let latestState: WorkspaceState | null = null;
@@ -136,9 +135,6 @@ const rpc = defineElectrobunRPC<AppRPCSchema, "webview">("webview", {
 			},
 			assistantEvent({ conversationId, event }) {
 				for (const listener of assistantListeners) listener({ conversationId, event });
-			},
-			assistantOAuthEvent({ providerId, event }) {
-				for (const listener of assistantOAuthListeners) listener({ providerId, event });
 			},
 			assistantScenarioRunRequest(request) {
 				for (const listener of assistantScenarioRunListeners) listener(request);
@@ -511,37 +507,6 @@ export const workspaceClient = {
 	},
 	listAssistantConnections() {
 		return rpc.request.listAssistantConnections({});
-	},
-	setAssistantApiKey(providerId: string, apiKey: string) {
-		return rpc.request.setAssistantApiKey({ providerId, apiKey });
-	},
-	removeAssistantConnection(connectionId: string) {
-		return rpc.request.removeAssistantConnection({ connectionId });
-	},
-	startAssistantOAuthLogin(providerId: string) {
-		return rpc.request.startAssistantOAuthLogin({ providerId });
-	},
-	answerAssistantOAuthPrompt(promptId: string, value: string) {
-		return rpc.request.answerAssistantOAuthPrompt({ promptId, value });
-	},
-	cancelAssistantOAuthLogin(providerId: string) {
-		return rpc.request.cancelAssistantOAuthLogin({ providerId });
-	},
-	getClaudeOptIn() {
-		return rpc.request.getClaudeOptIn({});
-	},
-	setClaudeOptIn(enabled: boolean) {
-		return rpc.request.setClaudeOptIn({ enabled });
-	},
-	getAssistantRequestCap() {
-		return rpc.request.getAssistantRequestCap({});
-	},
-	setAssistantRequestCap(limit: number) {
-		return rpc.request.setAssistantRequestCap({ limit });
-	},
-	subscribeAssistantOAuthEvents(listener: (event: { providerId: string; event: unknown }) => void) {
-		assistantOAuthListeners.add(listener);
-		return () => { assistantOAuthListeners.delete(listener); };
 	},
 	continueAssistantTurn(conversationId: string) {
 		return rpc.request.continueAssistantTurn({ conversationId });

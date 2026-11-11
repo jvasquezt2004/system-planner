@@ -1,6 +1,6 @@
 /**
  * Sample designs shared by the ORM generator tests. Every fixture is accepted
- * by the PostgreSQL generator and the sandbox (see src/bun/schema-code.test.ts),
+ * by the PostgreSQL generator and the sandbox (see schema-code/postgres-agreement.test.ts),
  * so a generator test can rely on it being a valid design.
  */
 

@@ -1,0 +1,17 @@
+[package]
+name = "schema-files"
+version = "0.0.1"
+edition = "2024"
+publish = false
+description = "Files a designer attaches to a Project for the Assistant to read"
+
+[dependencies]
+schema-domain = { path = "../domain" }
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+uuid = { version = "1", features = ["v4"] }
+pdf-extract = "0.9"
+
+[dev-dependencies]
+tempfile = "3"
+schema-store = { path = "../store" }

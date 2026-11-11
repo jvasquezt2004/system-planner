@@ -1,5 +1,4 @@
 {
-	"extends": "./.hutch/devkit/tsconfig.json",
 	"compilerOptions": {
 		"target": "ES2021",
 		"useDefineForClassFields": true,
@@ -16,17 +15,16 @@
 		"noUnusedLocals": true,
 		"noUnusedParameters": true,
 		"noFallthroughCasesInSwitch": true,
-		// `paths` replaces the devkit's mapping rather than merging with it, so
-		// the Electrobun entries this app imports are repeated beside the view's
-		// `@/` alias (also declared in vite.config.ts and components.json).
+		"types": ["bun"],
+		// The view was written against Electrobun's RPC client; the Tauri build resolves those two
+		// imports to shims (tauri/vite.config.ts), and so does the type checker.
 		"baseUrl": ".",
 		"paths": {
 			"@/*": ["./src/mainview/*"],
-			"electrobun/main": ["./.hutch/devkit/api/sdks/main/index.ts"],
-			"electrobun/rpc": ["./.hutch/devkit/api/sdks/main/entries/rpc.ts"],
-			"electrobun/view": ["./.hutch/devkit/api/browser/index.ts"]
+			"electrobun/rpc": ["./tauri/shims/electrobun-rpc.ts"],
+			"electrobun/view": ["./tauri/shims/electrobun-view.ts"]
 		}
 	},
-	"include": ["src", "scripts"],
-	"exclude": ["node_modules", "dist", "build", "../../package/dist"]
+	"include": ["src", "tauri/shims"],
+	"exclude": ["node_modules", "dist", "build"]
 }

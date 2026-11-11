@@ -1,0 +1,12 @@
+[package]
+name = "schema-domain"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+description = "Domain models and document normalizers for Schema Designer"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+regex = "1"

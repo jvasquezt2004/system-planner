@@ -1,0 +1,435 @@
+[
+	{
+		"method": "btree",
+		"label": "B-tree",
+		"unique": true,
+		"include": true,
+		"ordering": true,
+		"storageOptions": [
+			"fillfactor"
+		],
+		"defaultTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"jsonb",
+			"bit",
+			"enum"
+		],
+		"arrayDefault": true,
+		"arrayTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"jsonb",
+			"bit",
+			"enum"
+		],
+		"operatorClasses": {
+			"text": [
+				{
+					"name": "text_ops",
+					"default": true
+				},
+				{
+					"name": "text_pattern_ops",
+					"default": false
+				}
+			],
+			"varchar": [
+				{
+					"name": "varchar_ops",
+					"default": true
+				},
+				{
+					"name": "varchar_pattern_ops",
+					"default": false
+				}
+			],
+			"char": [
+				{
+					"name": "bpchar_ops",
+					"default": true
+				},
+				{
+					"name": "bpchar_pattern_ops",
+					"default": false
+				}
+			]
+		}
+	},
+	{
+		"method": "hash",
+		"label": "Hash",
+		"unique": false,
+		"include": false,
+		"ordering": false,
+		"storageOptions": [
+			"fillfactor"
+		],
+		"defaultTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"jsonb",
+			"bit",
+			"enum"
+		],
+		"arrayDefault": true,
+		"arrayTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"jsonb",
+			"bit",
+			"enum"
+		],
+		"operatorClasses": {}
+	},
+	{
+		"method": "gin",
+		"label": "GIN",
+		"unique": false,
+		"include": false,
+		"ordering": false,
+		"storageOptions": [
+			"fastupdate"
+		],
+		"defaultTypes": [
+			"jsonb"
+		],
+		"arrayDefault": true,
+		"arrayTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"jsonb",
+			"bit",
+			"enum"
+		],
+		"operatorClasses": {
+			"jsonb": [
+				{
+					"name": "jsonb_ops",
+					"default": true
+				},
+				{
+					"name": "jsonb_path_ops",
+					"default": false
+				}
+			]
+		}
+	},
+	{
+		"method": "gist",
+		"label": "GiST",
+		"unique": false,
+		"include": true,
+		"ordering": false,
+		"storageOptions": [
+			"fillfactor"
+		],
+		"defaultTypes": [],
+		"arrayDefault": false,
+		"operatorClasses": {
+			"inet": [
+				{
+					"name": "inet_ops",
+					"default": false
+				}
+			],
+			"cidr": [
+				{
+					"name": "inet_ops",
+					"default": false
+				}
+			]
+		}
+	},
+	{
+		"method": "spgist",
+		"label": "SP-GiST",
+		"unique": false,
+		"include": true,
+		"ordering": false,
+		"storageOptions": [
+			"fillfactor"
+		],
+		"defaultTypes": [],
+		"arrayDefault": false,
+		"operatorClasses": {
+			"inet": [
+				{
+					"name": "inet_ops",
+					"default": false
+				}
+			],
+			"cidr": [
+				{
+					"name": "inet_ops",
+					"default": false
+				}
+			]
+		}
+	},
+	{
+		"method": "brin",
+		"label": "BRIN",
+		"unique": false,
+		"include": false,
+		"ordering": false,
+		"storageOptions": [
+			"pagesPerRange"
+		],
+		"defaultTypes": [
+			"bigint",
+			"integer",
+			"smallint",
+			"text",
+			"varchar",
+			"char",
+			"uuid",
+			"boolean",
+			"numeric",
+			"real",
+			"double precision",
+			"date",
+			"time",
+			"timetz",
+			"timestamp",
+			"timestamptz",
+			"interval",
+			"bytea",
+			"inet",
+			"cidr",
+			"macaddr",
+			"money",
+			"bit",
+			"enum"
+		],
+		"arrayDefault": false,
+		"operatorClasses": {}
+	},
+	{
+		"method": "hnsw",
+		"label": "HNSW",
+		"unique": false,
+		"include": false,
+		"ordering": false,
+		"storageOptions": [
+			"m",
+			"efConstruction"
+		],
+		"defaultTypes": [],
+		"arrayDefault": false,
+		"operatorClasses": {
+			"vector": [
+				{
+					"name": "vector_l2_ops",
+					"default": false
+				},
+				{
+					"name": "vector_ip_ops",
+					"default": false
+				},
+				{
+					"name": "vector_cosine_ops",
+					"default": false
+				},
+				{
+					"name": "vector_l1_ops",
+					"default": false
+				}
+			],
+			"halfvec": [
+				{
+					"name": "halfvec_l2_ops",
+					"default": false
+				},
+				{
+					"name": "halfvec_ip_ops",
+					"default": false
+				},
+				{
+					"name": "halfvec_cosine_ops",
+					"default": false
+				},
+				{
+					"name": "halfvec_l1_ops",
+					"default": false
+				}
+			],
+			"sparsevec": [
+				{
+					"name": "sparsevec_l2_ops",
+					"default": false
+				},
+				{
+					"name": "sparsevec_ip_ops",
+					"default": false
+				},
+				{
+					"name": "sparsevec_cosine_ops",
+					"default": false
+				},
+				{
+					"name": "sparsevec_l1_ops",
+					"default": false
+				}
+			],
+			"bit": [
+				{
+					"name": "bit_hamming_ops",
+					"default": false
+				},
+				{
+					"name": "bit_jaccard_ops",
+					"default": false
+				}
+			]
+		}
+	},
+	{
+		"method": "ivfflat",
+		"label": "IVFFlat",
+		"unique": false,
+		"include": false,
+		"ordering": false,
+		"storageOptions": [
+			"lists"
+		],
+		"defaultTypes": [],
+		"arrayDefault": false,
+		"operatorClasses": {
+			"vector": [
+				{
+					"name": "vector_l2_ops",
+					"default": false
+				},
+				{
+					"name": "vector_ip_ops",
+					"default": false
+				},
+				{
+					"name": "vector_cosine_ops",
+					"default": false
+				}
+			],
+			"halfvec": [
+				{
+					"name": "halfvec_l2_ops",
+					"default": false
+				},
+				{
+					"name": "halfvec_ip_ops",
+					"default": false
+				},
+				{
+					"name": "halfvec_cosine_ops",
+					"default": false
+				}
+			],
+			"bit": [
+				{
+					"name": "bit_hamming_ops",
+					"default": false
+				}
+			]
+		}
+	}
+]

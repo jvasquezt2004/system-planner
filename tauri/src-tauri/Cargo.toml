@@ -1,0 +1,38 @@
+[package]
+name = "schema-designer"
+version = "0.0.1"
+description = "Schema Designer, rewritten on Tauri"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+
+[lib]
+name = "schema_designer_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+schema-domain = { path = "crates/domain" }
+schema-sandbox = { path = "crates/sandbox" }
+schema-workspace = { path = "crates/workspace" }
+schema-transfer = { path = "crates/transfer" }
+schema-files = { path = "crates/files" }
+schema-folder = { path = "crates/folder" }
+schema-assistant = { path = "crates/assistant" }
+tauri-plugin-opener = "2"
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+
+# Further crates join as phases need them (see ../PLAN.md): rusqlite, pg_query,
+# pglite-oxide, tokio, and the Tauri dialog/clipboard/opener plugins.
+
+[dev-dependencies]
+tempfile = "3"
+
+[workspace]
+members = ["crates/*"]

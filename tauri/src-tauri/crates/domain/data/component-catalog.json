@@ -1,0 +1,731 @@
+{
+	"kinds": [
+		"person",
+		"browser",
+		"mobile_app",
+		"external_system",
+		"dns",
+		"cdn",
+		"load_balancer",
+		"api_gateway",
+		"proxy",
+		"application",
+		"api",
+		"worker",
+		"scheduled_job",
+		"serverless_handler",
+		"database",
+		"cache",
+		"object_storage_bucket",
+		"file_storage",
+		"search_index",
+		"queue",
+		"topic",
+		"event_bus",
+		"event_stream",
+		"identity_provider",
+		"secrets_store",
+		"configuration",
+		"observability",
+		"custom"
+	],
+	"customIcons": [
+		"rectangle",
+		"hexagon",
+		"diamond",
+		"cylinder",
+		"cloud",
+		"document",
+		"gear"
+	],
+	"entries": [
+		{
+			"kind": "person",
+			"label": "Person",
+			"family": "clients",
+			"defaultName": "Person",
+			"descriptors": [
+				{
+					"key": "Role",
+					"placeholder": "e.g. Customer, administrator"
+				},
+				{
+					"key": "Intention",
+					"placeholder": "What they are trying to do"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "browser",
+			"label": "Browser",
+			"family": "clients",
+			"defaultName": "Browser",
+			"descriptors": [
+				{
+					"key": "App",
+					"placeholder": "e.g. Storefront web app"
+				},
+				{
+					"key": "URL",
+					"placeholder": "Optional page or entry point"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "mobile_app",
+			"label": "Mobile app",
+			"family": "clients",
+			"defaultName": "Mobile app",
+			"descriptors": [
+				{
+					"key": "Platform",
+					"placeholder": "e.g. iOS, Android"
+				},
+				{
+					"key": "App",
+					"placeholder": "e.g. Shopper app"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "external_system",
+			"label": "External system",
+			"family": "clients",
+			"defaultName": "External system",
+			"descriptors": [
+				{
+					"key": "Provider",
+					"placeholder": "e.g. Payment processor"
+				},
+				{
+					"key": "Responsibility",
+					"placeholder": "What the system is responsible for"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "dns",
+			"label": "DNS",
+			"family": "traffic",
+			"defaultName": "DNS",
+			"descriptors": [
+				{
+					"key": "Zone",
+					"placeholder": "e.g. example.com"
+				},
+				{
+					"key": "Record description",
+					"placeholder": "e.g. A record to the load balancer"
+				}
+			],
+			"operations": [
+				{
+					"id": "resolve",
+					"label": "Resolve"
+				},
+				{
+					"id": "no-record",
+					"label": "No record"
+				}
+			]
+		},
+		{
+			"kind": "cdn",
+			"label": "CDN",
+			"family": "traffic",
+			"defaultName": "CDN",
+			"descriptors": [
+				{
+					"key": "Content",
+					"placeholder": "e.g. Static assets, images"
+				},
+				{
+					"key": "Cache policy",
+					"placeholder": "e.g. Cache for one day"
+				}
+			],
+			"operations": [
+				{
+					"id": "cache-hit",
+					"label": "Cache hit"
+				},
+				{
+					"id": "cache-miss",
+					"label": "Cache miss"
+				},
+				{
+					"id": "cache-fill",
+					"label": "Cache fill"
+				}
+			]
+		},
+		{
+			"kind": "load_balancer",
+			"label": "Load balancer",
+			"family": "traffic",
+			"defaultName": "Load balancer",
+			"descriptors": [
+				{
+					"key": "Routing strategy",
+					"placeholder": "e.g. Round robin, least connections"
+				},
+				{
+					"key": "Targets",
+					"placeholder": "e.g. Web server pool"
+				}
+			],
+			"operations": [
+				{
+					"id": "forward",
+					"label": "Forward"
+				},
+				{
+					"id": "no-target",
+					"label": "No target"
+				}
+			]
+		},
+		{
+			"kind": "api_gateway",
+			"label": "API gateway",
+			"family": "traffic",
+			"defaultName": "API gateway",
+			"descriptors": [
+				{
+					"key": "Routes",
+					"placeholder": "e.g. /orders/* to Orders"
+				},
+				{
+					"key": "Protocols",
+					"placeholder": "e.g. HTTPS, gRPC"
+				},
+				{
+					"key": "Authentication",
+					"placeholder": "e.g. Bearer token"
+				}
+			],
+			"operations": [
+				{
+					"id": "forward",
+					"label": "Forward"
+				},
+				{
+					"id": "rejected",
+					"label": "Rejected"
+				},
+				{
+					"id": "rate-limited",
+					"label": "Rate limited"
+				}
+			]
+		},
+		{
+			"kind": "proxy",
+			"label": "Proxy",
+			"family": "traffic",
+			"defaultName": "Proxy",
+			"descriptors": [
+				{
+					"key": "Role",
+					"placeholder": "e.g. Forward proxy, reverse proxy"
+				},
+				{
+					"key": "Protocols",
+					"placeholder": "e.g. HTTP, TCP"
+				}
+			],
+			"operations": [
+				{
+					"id": "forward",
+					"label": "Forward"
+				}
+			]
+		},
+		{
+			"kind": "application",
+			"label": "Application",
+			"family": "compute",
+			"defaultName": "Application",
+			"descriptors": [
+				{
+					"key": "Responsibility",
+					"placeholder": "What the application is responsible for"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "api",
+			"label": "API",
+			"family": "compute",
+			"defaultName": "API",
+			"descriptors": [
+				{
+					"key": "Operations",
+					"placeholder": "e.g. GET /orders, create order"
+				},
+				{
+					"key": "Protocols",
+					"placeholder": "e.g. HTTPS, gRPC"
+				}
+			],
+			"operations": [
+				{
+					"id": "respond",
+					"label": "Respond"
+				},
+				{
+					"id": "error-response",
+					"label": "Error response"
+				}
+			]
+		},
+		{
+			"kind": "worker",
+			"label": "Worker",
+			"family": "compute",
+			"defaultName": "Worker",
+			"descriptors": [
+				{
+					"key": "Job type",
+					"placeholder": "e.g. Send receipts, resize images"
+				}
+			],
+			"operations": [
+				{
+					"id": "retry",
+					"label": "Retry"
+				}
+			]
+		},
+		{
+			"kind": "scheduled_job",
+			"label": "Scheduled job",
+			"family": "compute",
+			"defaultName": "Scheduled job",
+			"descriptors": [
+				{
+					"key": "Schedule description",
+					"placeholder": "e.g. Every night at 02:00"
+				},
+				{
+					"key": "Job type",
+					"placeholder": "e.g. Expire stale sessions"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "serverless_handler",
+			"label": "Serverless handler",
+			"family": "compute",
+			"defaultName": "Serverless handler",
+			"descriptors": [
+				{
+					"key": "Trigger",
+					"placeholder": "e.g. HTTP request, storage upload"
+				},
+				{
+					"key": "Runtime description",
+					"placeholder": "e.g. Node.js function, 512 MB"
+				}
+			],
+			"operations": []
+		},
+		{
+			"kind": "database",
+			"label": "Database",
+			"family": "data",
+			"defaultName": "Database",
+			"descriptors": [
+				{
+					"key": "Engine",
+					"placeholder": "e.g. PostgreSQL, MongoDB"
+				},
+				{
+					"key": "Database kind",
+					"placeholder": "e.g. Relational, document, key/value"
+				}
+			],
+			"operations": [
+				{
+					"id": "read",
+					"label": "Read"
+				},
+				{
+					"id": "write",
+					"label": "Write"
+				}
+			]
+		},
+		{
+			"kind": "cache",
+			"label": "Cache",
+			"family": "data",
+			"defaultName": "Cache",
+			"descriptors": [
+				{
+					"key": "Engine",
+					"placeholder": "e.g. Redis, Memcached"
+				},
+				{
+					"key": "Key description",
+					"placeholder": "e.g. Product pages by slug"
+				},
+				{
+					"key": "Expiry policy",
+					"placeholder": "e.g. Expire after 10 minutes"
+				}
+			],
+			"operations": [
+				{
+					"id": "hit",
+					"label": "Hit"
+				},
+				{
+					"id": "miss",
+					"label": "Miss"
+				},
+				{
+					"id": "set",
+					"label": "Set"
+				},
+				{
+					"id": "invalidate",
+					"label": "Invalidate"
+				}
+			]
+		},
+		{
+			"kind": "object_storage_bucket",
+			"label": "Object-storage bucket",
+			"family": "data",
+			"defaultName": "Object-storage bucket",
+			"descriptors": [
+				{
+					"key": "Object purpose",
+					"placeholder": "e.g. User avatars"
+				},
+				{
+					"key": "Prefix",
+					"placeholder": "e.g. avatars/"
+				},
+				{
+					"key": "Lifecycle description",
+					"placeholder": "e.g. Delete after 30 days"
+				}
+			],
+			"operations": [
+				{
+					"id": "upload",
+					"label": "Upload"
+				},
+				{
+					"id": "download",
+					"label": "Download"
+				},
+				{
+					"id": "delete",
+					"label": "Delete"
+				}
+			]
+		},
+		{
+			"kind": "file_storage",
+			"label": "File storage",
+			"family": "data",
+			"defaultName": "File storage",
+			"descriptors": [
+				{
+					"key": "Volume",
+					"placeholder": "e.g. 500 GB shared volume"
+				},
+				{
+					"key": "Mount",
+					"placeholder": "e.g. /srv/uploads"
+				},
+				{
+					"key": "Protocol",
+					"placeholder": "e.g. NFS, SMB"
+				}
+			],
+			"operations": [
+				{
+					"id": "read",
+					"label": "Read"
+				},
+				{
+					"id": "write",
+					"label": "Write"
+				}
+			]
+		},
+		{
+			"kind": "search_index",
+			"label": "Search index",
+			"family": "data",
+			"defaultName": "Search index",
+			"descriptors": [
+				{
+					"key": "Indexed subject",
+					"placeholder": "e.g. Product catalog"
+				},
+				{
+					"key": "Indexing approach",
+					"placeholder": "e.g. Near real time from the orders queue"
+				}
+			],
+			"operations": [
+				{
+					"id": "index",
+					"label": "Index"
+				},
+				{
+					"id": "search",
+					"label": "Search"
+				}
+			]
+		},
+		{
+			"kind": "queue",
+			"label": "Queue",
+			"family": "messaging",
+			"defaultName": "Queue",
+			"descriptors": [
+				{
+					"key": "Message type",
+					"placeholder": "e.g. Order placed"
+				},
+				{
+					"key": "Delivery and retry",
+					"placeholder": "e.g. At least once, retry three times"
+				}
+			],
+			"operations": [
+				{
+					"id": "enqueue",
+					"label": "Enqueue"
+				},
+				{
+					"id": "release",
+					"label": "Release"
+				},
+				{
+					"id": "acknowledge",
+					"label": "Acknowledge"
+				},
+				{
+					"id": "retry",
+					"label": "Retry"
+				}
+			]
+		},
+		{
+			"kind": "topic",
+			"label": "Topic",
+			"family": "messaging",
+			"defaultName": "Topic",
+			"descriptors": [
+				{
+					"key": "Event type",
+					"placeholder": "e.g. Order placed"
+				},
+				{
+					"key": "Subscriber description",
+					"placeholder": "e.g. Billing and email services"
+				}
+			],
+			"operations": [
+				{
+					"id": "publish",
+					"label": "Publish"
+				},
+				{
+					"id": "deliver",
+					"label": "Deliver"
+				}
+			]
+		},
+		{
+			"kind": "event_bus",
+			"label": "Event bus",
+			"family": "messaging",
+			"defaultName": "Event bus",
+			"descriptors": [
+				{
+					"key": "Event types",
+					"placeholder": "e.g. Order and payment events"
+				},
+				{
+					"key": "Routing description",
+					"placeholder": "e.g. Route by event type"
+				}
+			],
+			"operations": [
+				{
+					"id": "route",
+					"label": "Route"
+				},
+				{
+					"id": "deliver",
+					"label": "Deliver"
+				}
+			]
+		},
+		{
+			"kind": "event_stream",
+			"label": "Event stream",
+			"family": "messaging",
+			"defaultName": "Event stream",
+			"descriptors": [
+				{
+					"key": "Event type",
+					"placeholder": "e.g. Click events"
+				},
+				{
+					"key": "Partition and retention",
+					"placeholder": "e.g. 12 partitions, keep seven days"
+				}
+			],
+			"operations": [
+				{
+					"id": "append",
+					"label": "Append"
+				},
+				{
+					"id": "consume",
+					"label": "Consume"
+				},
+				{
+					"id": "replay",
+					"label": "Replay"
+				}
+			]
+		},
+		{
+			"kind": "identity_provider",
+			"label": "Identity provider",
+			"family": "supporting",
+			"defaultName": "Identity provider",
+			"descriptors": [
+				{
+					"key": "Authentication method",
+					"placeholder": "e.g. OpenID Connect, SAML"
+				},
+				{
+					"key": "Issuer",
+					"placeholder": "e.g. https://login.example.com"
+				}
+			],
+			"operations": [
+				{
+					"id": "authenticate",
+					"label": "Authenticate"
+				},
+				{
+					"id": "issue-token",
+					"label": "Issue token"
+				},
+				{
+					"id": "deny",
+					"label": "Deny"
+				}
+			]
+		},
+		{
+			"kind": "secrets_store",
+			"label": "Secrets store",
+			"family": "supporting",
+			"defaultName": "Secrets store",
+			"descriptors": [
+				{
+					"key": "Secret references",
+					"placeholder": "e.g. payments/api-key, db/password"
+				},
+				{
+					"key": "Consuming roles",
+					"placeholder": "e.g. Orders API, Worker"
+				}
+			],
+			"operations": [
+				{
+					"id": "retrieve",
+					"label": "Retrieve"
+				},
+				{
+					"id": "deny",
+					"label": "Deny"
+				}
+			]
+		},
+		{
+			"kind": "configuration",
+			"label": "Configuration",
+			"family": "supporting",
+			"defaultName": "Configuration",
+			"descriptors": [
+				{
+					"key": "Configuration scope",
+					"placeholder": "e.g. Production, per service"
+				},
+				{
+					"key": "Consumers",
+					"placeholder": "e.g. Orders API, Worker"
+				}
+			],
+			"operations": [
+				{
+					"id": "fetch",
+					"label": "Fetch"
+				},
+				{
+					"id": "deliver-update",
+					"label": "Deliver update"
+				}
+			]
+		},
+		{
+			"kind": "observability",
+			"label": "Observability",
+			"family": "supporting",
+			"defaultName": "Observability",
+			"descriptors": [
+				{
+					"key": "Signals",
+					"placeholder": "e.g. Logs, metrics, traces"
+				},
+				{
+					"key": "Alert purpose",
+					"placeholder": "e.g. Page on-call when checkout fails"
+				}
+			],
+			"operations": [
+				{
+					"id": "record",
+					"label": "Record"
+				},
+				{
+					"id": "alert",
+					"label": "Alert"
+				}
+			]
+		},
+		{
+			"kind": "custom",
+			"label": "Custom",
+			"family": "custom",
+			"defaultName": "Custom",
+			"descriptors": [
+				{
+					"key": "Purpose",
+					"placeholder": "e.g. Loyalty points calculator"
+				}
+			],
+			"operations": []
+		}
+	]
+}

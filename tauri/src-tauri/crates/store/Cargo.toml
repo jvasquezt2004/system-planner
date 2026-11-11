@@ -1,0 +1,17 @@
+[package]
+name = "schema-store"
+version = "0.0.1"
+edition = "2024"
+rust-version = "1.93"
+publish = false
+description = "SQLite persistence for Schema Designer, compatible with databases written by the Electrobun app"
+
+[dependencies]
+rusqlite = { version = "0.41", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+uuid = { version = "1", features = ["v4"] }
+schema-domain = { path = "../domain" }
+
+[dev-dependencies]
+tempfile = "3"

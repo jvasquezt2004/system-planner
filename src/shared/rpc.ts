@@ -309,16 +309,6 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			deleteAssistantConversation: { params: { conversationId: string }; response: boolean };
 			listAssistantModels: { params: Record<string, never>; response: AssistantModel[] };
 			listAssistantConnections: { params: Record<string, never>; response: AssistantConnectionStatus[] };
-			setAssistantApiKey: { params: { providerId: string; apiKey: string }; response: void };
-			removeAssistantConnection: { params: { connectionId: string }; response: void };
-			/** Starts sign-in and returns at once; the outcome arrives as an assistantOAuthEvent "login_finished". */
-			startAssistantOAuthLogin: { params: { providerId: string }; response: { started: boolean } };
-			answerAssistantOAuthPrompt: { params: { promptId: string; value: string }; response: boolean };
-			cancelAssistantOAuthLogin: { params: { providerId: string }; response: void };
-			getClaudeOptIn: { params: Record<string, never>; response: boolean };
-			setClaudeOptIn: { params: { enabled: boolean }; response: void };
-			getAssistantRequestCap: { params: Record<string, never>; response: number };
-			setAssistantRequestCap: { params: { limit: number }; response: void };
 			sendAssistantMessage: { params: { conversationId: string; text: string; modelId: string; thinkingLevel: AssistantThinkingLevel; connectionId?: string }; response: { started: boolean } };
 			stopAssistantTurn: { params: { conversationId: string }; response: void };
 			continueAssistantTurn: { params: { conversationId: string }; response: { started: boolean } };
@@ -342,7 +332,6 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			chooseSystemDesignPngExportDirectory: { requestId: string };
 			assistantScenarioRunCompleted: { requestId: string; designId?: string; run: ScenarioRun | null; error?: string };
 			assistantEvent: { conversationId: string; event: unknown };
-			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
 	};
 	webview: {
@@ -356,7 +345,6 @@ export interface AppRPCSchema extends ElectrobunRPCSchema {
 			assistantScenarioRunRequest: { requestId: string; projectId: string; designId: string; scenario: Scenario };
 			assistantScenarioRunCancel: { requestId: string };
 			assistantEvent: { conversationId: string; event: unknown };
-			assistantOAuthEvent: { providerId: string; event: unknown };
 		};
 	};
 }
