@@ -11,7 +11,7 @@ React Flow's `parentId` is a single optional string, so its built-in parent/chil
 
 ## Packaged proof findings
 
-The current proof implementation is in `src/mainview/architecture-proof/` and `scripts/verify-packaged-proof.ts`. It runs through the built desktop app's native WebView instead of relying only on source-module tests.
+The current proof implementation is in `src/architecture-proof/` and `scripts/verify-packaged-proof.ts`. It runs through the built desktop app's native WebView instead of relying only on source-module tests.
 
 The observed Linux WebKitGTK run passed all 16 required checks. It exercised component drag and connected-path updates, an overlapping Group drag with single movement of its member, Service collapse/expand and focus, parallel SVG paths, native path sampling, timeline controls and stepping, reduced motion, bundled font loading, no external HTTP(S) assets, and in-WebView SVG-to-PNG export. Exact host, user-agent, viewport, and measured export values are recorded in `docs/packaged-canvas-proof-evidence.md`; the per-run JSON report is `build/webview-proof-report.json`.
 

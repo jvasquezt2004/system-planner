@@ -16,15 +16,11 @@
 		"noUnusedParameters": true,
 		"noFallthroughCasesInSwitch": true,
 		"types": ["bun"],
-		// The view was written against Electrobun's RPC client; the Tauri build resolves those two
-		// imports to shims (tauri/vite.config.ts), and so does the type checker.
 		"baseUrl": ".",
 		"paths": {
-			"@/*": ["./src/mainview/*"],
-			"electrobun/rpc": ["./tauri/shims/electrobun-rpc.ts"],
-			"electrobun/view": ["./tauri/shims/electrobun-view.ts"]
+			"@/*": ["./src/*"]
 		}
 	},
-	"include": ["src", "tauri/shims"],
+	"include": ["src"],
 	"exclude": ["node_modules", "dist", "build"]
 }

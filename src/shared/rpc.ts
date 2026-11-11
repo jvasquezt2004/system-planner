@@ -1,5 +1,4 @@
 import type { SystemLayoutAction } from "./system-layout";
-import type { ElectrobunRPCSchema } from "electrobun/rpc";
 import type {
 	AssistantConnectionStatus,
 	AssistantConversation,
@@ -119,13 +118,18 @@ export type SystemDesignExportResult =
 	| { status: "cancelled" }
 	| { status: "failed"; error: string };
 
+/** The shape of an RPC schema: what the view asks the backend, and what the backend pushes to the view. */
+export type RpcSchema = {
+	backend: { requests: Record<string, { params: any; response: any }>; messages: Record<string, any> };
+	webview: { requests: Record<string, { params: any; response: any }>; messages: Record<string, any> };
+};
+
 /**
- * Typed Electrobun communication between the Bun main process and the React
- * view. The design workspace interface is the only application seam the view
- * talks to.
+ * Typed communication between the Rust backend and the React view. The design
+ * workspace interface is the only application seam the view talks to.
  */
-export interface AppRPCSchema extends ElectrobunRPCSchema {
-	bun: {
+export interface AppRPCSchema extends RpcSchema {
+	backend: {
 		requests: {
 			getWorkspaceState: {
 				params: Record<string, never>;
