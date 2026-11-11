@@ -37,6 +37,8 @@ jobs:
     name: Build the app
     needs: rust
     strategy:
+      # Each platform reports on its own; one failing must not cancel the others.
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
