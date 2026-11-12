@@ -36,3 +36,7 @@ tempfile = "3"
 
 [workspace]
 members = ["crates/*"]
+
+# pg_query without its bindgen build step, so building needs no LLVM (see vendor/pg_query/VENDORED.md).
+[patch.crates-io]
+pg_query = { path = "vendor/pg_query" }

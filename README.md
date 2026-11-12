@@ -100,7 +100,7 @@ application menu. Your projects stay when you remove or upgrade the app (see [Lo
 You need Git, [Bun](https://bun.sh/docs/installation), a stable [Rust](https://rustup.rs) toolchain and the
 native dependencies for your platform ([Tauri prerequisites](https://tauri.app/start/prerequisites/)): GTK 3 and
 WebKitGTK 4.1 on Linux, the Visual Studio C++ build tools (WebView2 is already on Windows 10 and 11) on Windows,
-Xcode's command-line tools on macOS. The first build compiles PostgreSQL's parser and the PGlite runtime, so it
+Xcode's command-line tools on macOS. No LLVM, CMake or protoc is needed. The first build compiles PostgreSQL's parser and the PGlite runtime, so it
 takes several minutes and a few GB of memory (`CARGO_BUILD_JOBS=3` helps on small machines).
 
 ```bash
