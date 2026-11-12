@@ -57,6 +57,12 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      # The Windows runner ships LLVM; remove it so a green build shows the app builds without it.
+      - name: Remove LLVM
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: |
+          if (Test-Path 'C:\Program Files\LLVM') { Remove-Item -Recurse -Force 'C:\Program Files\LLVM' }
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Build
